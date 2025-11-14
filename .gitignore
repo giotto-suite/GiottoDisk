@@ -1,0 +1,12 @@
+.Rproj.user
+.Rhistory
+inst/doc
+*.DS_Store
+*.Rproj
+.git_old
+.vscode/*
+.Rprofile
+docs
+codecov.yml
+pkgdown
+cell_rna*

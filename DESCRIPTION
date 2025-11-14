@@ -1,0 +1,41 @@
+Package: GiottoDisk
+Type: Package
+Title: Disk backed representations for Giotto
+Version: 0.0.0.0001
+Authors@R: c(
+    person("Ruben", "Dries", email = "rubendries@gmail.com",
+		 role = c("aut", "cre"), comment = c(ORCID = "0000-0001-7650-7754")),
+	person("Jiaji", "George Chen", email = "jiajic@bu.edu",
+		 role = c("aut")),
+	person("Guo-Cheng", "Yuan", email = "guo-cheng.yuan@mssm.edu",
+		 role = c("aut")),
+	person("Joselyn C.", "Chávez-Fuentes", email = "joselynchavezf@gmail.com",
+	     role = c("aut"), comment = c(ORCID = "0000-0002-4974-4591"))
+    )
+Description: Giotto on-disk processing
+License: MIT
+Encoding: UTF-8
+LazyData: true
+Depends:
+    R (>= 4.4.0)
+Imports:
+    arrow,
+    checkmate,
+    data.table (>= 1.12.2),
+    dplyr,
+    GiottoClass,
+    GiottoUtils,
+    methods,
+    mirai,
+    terra,
+    uuid
+RoxygenNote: 7.3.2
+Collate: 
+    'pkg_imports.R'
+    'classes.R'
+    'dim-methods.R'
+    'ext-methods.R'
+    'extract-methods.R'
+    'initialize-methods.R'
+    'plot-methods.R'
+    'show-methods.R'
