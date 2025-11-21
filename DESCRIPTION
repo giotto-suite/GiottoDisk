@@ -29,13 +29,17 @@ Imports:
     mirai,
     terra,
     uuid
-RoxygenNote: 7.3.2
+RoxygenNote: 7.3.3
 Collate: 
+    'AllGenerics.R'
     'pkg_imports.R'
-    'classes.R'
-    'dim-methods.R'
-    'ext-methods.R'
-    'extract-methods.R'
-    'initialize-methods.R'
-    'plot-methods.R'
-    'show-methods.R'
+    'utils.R'
+    'class-dataStore.R'
+    'methods-accessors.R'
+    'methods-show.R'
+    'methods-storeRead.R'
+    'methods-storeWrite.R'
+    'utils-arrow.R'
+    'utils-spatial.R'
+    'utils-tile.R'
+Roxygen: list(markdown = TRUE)
