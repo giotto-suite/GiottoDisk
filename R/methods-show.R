@@ -30,3 +30,15 @@ setMethod("show", signature("parquetGeomTileStore"), function(object) {
     if (!file.exists(object@path)) return(invisible())
     cat(sprintf("tiles: %d\n", length(object@tiles)))
 })
+
+setMethod("show", signature("h5ArrayStore"), function(object) {
+    callNextMethod(object)
+    if (!file.exists(object@path)) return(invisible())
+    cat(sprintf("name: \"%s\"\n", object@name))
+})
+
+setMethod("show", signature("tileDBArrayStore"), function(object) {
+    callNextMethod(object)
+    if (!file.exists(object@path)) return(invisible())
+    cat(sprintf("name: \"%s\"\n", object@name))
+})

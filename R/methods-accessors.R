@@ -1,10 +1,28 @@
 
 # definitions ####
 
+# * dim ####
+setMethod("dim", signature("fileStore"), function(x) {
+    dim(storeRead(x))
+})
+
 # * nrow ####
+setMethod("nrow", signature("fileStore"), function(x) {
+    dims <- dim(x)
+    if (is.null(dims)) return(0L)
+    dims[1]
+})
+
 setMethod("nrow", signature("parquetStore"), function(x) {
     atab <- storeRead(x)
     .dplyr_nrow(atab)
+})
+
+# * ncol ####
+setMethod("ncol", signature("fileStore"), function(x) {
+    dims <- dim(x)
+    if (is.null(dims)) return(0L)
+    dims[2]
 })
 
 # * colnames ####

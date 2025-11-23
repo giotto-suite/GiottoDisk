@@ -158,6 +158,27 @@ setMethod("storeWrite", signature("parquetGeomTileStore", "fileStore"),
         store
 })
 
+setMethod("storeWrite", signature("h5ArrayStore", "memoryMatrix"),
+    function(store, data, ...) {
+        HDF5Array::writeHDF5Array(
+            x = data,
+            filepath = store@path,
+            name = store@name,
+            ...
+        )
+        store
+    })
+
+setMethod("storeWrite", signature("tileDBArrayStore", "memoryMatrix"),
+    function(store, data, ...) {
+        p <- store@path
+        if (!dir.exists(p)) dir.create(p, recursive = TRUE)
+        TileDBArray::writeTileDBArray(data,
+            path = p,
+            ...
+        )
+        store
+    })
 
 # internals ####
 
@@ -170,8 +191,8 @@ setMethod("storeWrite", signature("parquetGeomTileStore", "fileStore"),
     type <- match.arg(type, choices = c("point", "polygon"))
     tile_i = as.integer(tile_i)
     envelope <- switch(type,
-                       "point" = FALSE,
-                       "polygon" = TRUE
+        "point" = FALSE,
+        "polygon" = TRUE
     )
 
     # generate arrow file pointer

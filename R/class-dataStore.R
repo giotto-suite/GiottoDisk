@@ -56,10 +56,14 @@ NULL
 
 # definitions ####
 
+setOldClass("matrix")
+setOldClass("data.frame")
+setOldClass("data.table")
+setClassUnion("memoryMatrix", c("matrix", "Matrix"))
+setClassUnion("memoryStore", c("memoryMatrix", "data.frame", "data.table"))
+
 #' @rdname store
 setClass("dataStore", contains = "VIRTUAL")
-#' @rdname store
-setClass("memoryStore", contains = "dataStore")
 #' @rdname store
 setClass("fileStore",
     contains = "dataStore",
@@ -95,6 +99,22 @@ setClass("parquetGeomTileStore",
     slots = list(tiles = "tileIterator")
 )
 
+
+# * delayed ####
+
+setClass("h5ArrayStore",
+    contains = "fileStore",
+    slots = list(
+        name = "character"
+    )
+)
+
+setClass("tileDBArrayStore",
+    contains = "fileStore",
+    slots = list(
+        name = "character"
+    )
+)
 
 # constructors ####
 
@@ -144,6 +164,27 @@ parquetGeomStore <- function(path = tempfile(), ...) {
 parquetGeomTileStore <- function(path = tempfile(), ...) {
     new("parquetGeomTileStore", path = path, ...)
 }
+
+#' @name arrayStore
+#' @title Array Storage
+#' @export
+h5ArrayStore <- function(
+    path = tempfile(), name = HDF5Array::getHDF5DumpName(), ...) {
+    package_check("HDF5Array", repository = "Bioc")
+    new("h5ArrayStore", path = path, name = name, ...)
+}
+
+#' @rdname arrayStore
+#' @export
+tileDBArrayStore <- function(
+        path = file.path(tempdir(), .random_id()),
+        name = TileDBArray::getTileDBAttr(),
+        ...
+    ) {
+    package_check("TileDBArray", repository = "Bioc")
+    new("tileDBArrayStore", path = path, name = name, ...)
+}
+
 
 #' @name storeCreate
 #' @title Create a Store
