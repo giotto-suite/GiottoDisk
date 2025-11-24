@@ -55,3 +55,18 @@
     x[, (col) := .I + offset]
     x
 }
+
+# unique id generator (10 alphanumerics by default)
+.make_uid <- function(n = 10) {
+    paste(sample(c(letters, LETTERS, 1:9), n), collapse = "")
+}
+
+# generate a character timestamp
+.timestamp <- function() {
+    as.character(format(Sys.time()))
+}
+
+# generate hash
+.hash <- function(x) {
+    digest::digest(x)
+}

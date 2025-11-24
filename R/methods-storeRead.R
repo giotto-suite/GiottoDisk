@@ -1,4 +1,12 @@
 
+#' @name storeRead
+#' @title Read a `dataStore`
+#' @description
+#' Read from a `dataStore` inheriting object. The output should be a useful
+#' representation of the contained data.
+#' @param store `dataStore` inheriting object
+#' @param ... additional params to pass (if any implemented)
+NULL
 
 # definitions ####
 
@@ -29,7 +37,7 @@ setMethod("storeRead", signature("parquetStore"), function(store, fields = NULL,
     }
     switch(output,
         "query" = atab,
-        "tibble" = dplyr::collect(atab)[, fields]
+        "tibble" = dplyr::collect(atab)
     )
 })
 
@@ -45,11 +53,11 @@ setMethod("storeRead", signature("parquetGeomStore"), function(store,
     if (length(store@extent) == 0L) {
         stop("[storeRead] extent info not found\n", call. = FALSE)
     }
-    e_final <- ext(store@extent)
+    e <- ext(store@extent)
     if (!is.null(extent)) {
-        e_final <- terra::intersect(e, ext(extent))
+        e <- terra::intersect(e, ext(extent))
     }
-    if (is.null(e_final)) {
+    if (is.null(e)) {
         stop("[storeRead] No geometries within requested extent\n",
              call. = FALSE)
     }
@@ -57,7 +65,7 @@ setMethod("storeRead", signature("parquetGeomStore"), function(store,
     atab <- .dplyr_crop(atab,
         sdimx = "x_index",
         sdimy = "y_index",
-        extent = e_final,
+        extent = e,
         inclusive = TRUE
     )
 
@@ -92,11 +100,11 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
     if (length(store@extent) == 0L) {
         stop("[storeRead] extent info not found\n", call. = FALSE)
     }
-    e_final <- ext(store@extent)
+    e <- ext(store@extent)
     if (!is.null(extent)) {
-        e_final <- terra::intersect(e, ext(extent))
+        e <- terra::intersect(e, ext(extent))
     }
-    if (is.null(e_final)) {
+    if (is.null(e)) {
         stop("[storeRead] No geometries within requested extent\n",
              call. = FALSE)
     }
@@ -108,7 +116,7 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
     atab <- .dplyr_crop(atab,
         sdimx = "x_index",
         sdimy = "y_index",
-        extent = e_final,
+        extent = e,
         inclusive = TRUE
     )
 
@@ -143,7 +151,7 @@ setMethod("storeRead", signature("h5ArrayStore"), function(store, ...) {
     )
 })
 
-setMethod("storeRead", signature("tileDBMatrixStore"), function(store, ...) {
+setMethod("storeRead", signature("tileDBArrayStore"), function(store, ...) {
    TileDBArray::TileDBArray(path = store@path, attr = store@name)
 })
 

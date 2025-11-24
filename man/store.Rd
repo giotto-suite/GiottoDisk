@@ -4,7 +4,6 @@
 \name{store}
 \alias{store}
 \alias{dataStore-class}
-\alias{memoryStore-class}
 \alias{fileStore-class}
 \title{Data Storage}
 \description{

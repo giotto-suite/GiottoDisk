@@ -198,13 +198,14 @@ tileDBArrayStore <- function(
 #' @export
 storeCreate <- function(path = tempfile(), type = "parquet", ...) {
     type <- match.arg(type,
-        choices = c("parquet", "parquetGeom", "parquetGeomTile", "file")
+        choices = c("parquet", "parquetGeom", "parquetGeomTile", "file", "h5")
     )
     store <- switch(type,
         "parquet" = parquetStore(path = path, ...),
         "parquetGeom" = parquetGeomStore(path = path, ...),
         "parquetGeomTile" = parquetGeomTileStore(path = path, ...),
-        "file" = fileStore(path = path, ...)
+        "file" = fileStore(path = path, ...),
+        "h5" = h5ArrayStore(path = path, ...)
     )
     store
 }

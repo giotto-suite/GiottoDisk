@@ -1,17 +1,94 @@
 
-# definitions ####
+# docs ####
+
+#' @name storeWrite
+#' @title Write to a `dataStore`
+#' @description
+#' Write data to a `dataStore` inheriting class (usually a subclass of
+#' [fileStore-class]). This documentation covers the basic expected API.
+#' For more functional examples, see documentation for specific store
+#' implementations.
+#'
+#' * [storeWrite-parquetStore]
+#' * [storeWrite-parquetGeomStore]
+#' * [storeWrite-parquetGeomTileStore]
+#'
+#' @param store `dataStore` inheriting class
+#' @param data data to write
+#' @param ... additional params to pass
+#' @family storeWrite methods
+NULL
+
+#' @name storeWrite-parquetStore
+#' @title Write to a Parquet Storage Spec
+#' @description
+#' Write tabular data to a parquet. Enforces the presence of an integer
+#' `row_index` column since parquet does not intrinsically encode row order.
+#' @inheritParams storeWrite
+#' @param callback `function` (optional). Function to apply to `data` before
+#' writing. The first param of this function should accept the `data`.
+#' @param row_offset `numeric`, will be coerced to `integer` (default = 0L).
+#' Offset to apply to row number indexing. For example `row_offset = 0L` means
+#' the first `row_index` value in this file will be `1`.
+#' @param ... additional params to pass to [arrow::write_dataset()]
+#' @family storeWrite methods
+NULL
+
+#' @name storeWrite-parquetGeomStore
+#' @title Write to a Parquet Geometry Storage
+#' @description
+#' Write geometry data to a `parquetGeomStore`. Each row is a single geometry.
+#' Enforces the presence of `x_index` and `y_index` cols which are the centroid
+#' (as calculated by the center of the geometry's spatial extent) and the
+#' `row_index` which preserves row ordering.
+#'
+#' May be written either directly from terra `SpatVector` or `data.frame` inputs
+#' that are first parsed via GiottoClass `createGiottoPoints` or
+#' `createGiottoPolygon`, depending on the `type` param.
+#' @inheritParams storeWrite
+#' @inheritParams storeWrite-parquetStore
+#' @param `type` `character`. One of `point` or `polygon` depending on the
+#' geometries to create from the table data.
+#' @param geom_param `list` (optional). Additional params to pass to
+#' [GiottoClass::createGiottoPoints] or [GiottoClass::createGiottoPolygon],
+#' depending on `type`.
+#' @param ... addtional params to pass to `parquetStore` method and
+#' [arrow::write_dataset()]
+#' @family storeWrite methods
+NULL
+
+#' @name storeWrite-parquetGeomTileStore
+#' @title Write to a Parquet Geometry Tiled Storage
+#' @description
+#' Write geometry data in a spatially tiled manner.
+#' @inheritParams storeWrite
+#' @inheritParams storeWrite-parquetStore
+#' @inheritParams storeWrite-parquetGeomStore
+#' @param n_tiles `numeric`. Minimum number of tiles to write across
+#' @param tile GiottoTile `tilePlan` (optional)
+#' @param sdimx,sdimy `character`.
+#' @family storeWrite methods
+NULL
+
+# * general ####
 
 setMethod("storeWrite", signature("ANY", "ANY"), function(store, data, ...) {
-    stop(sprintf("Writing not implemented for store type %s\n"), class(store))
+    stop(sprintf("Writing not implemented for store type %s\n", class(store)),
+         call. = FALSE)
 })
 
 # from fileStore ETL chaining
 # e.g. data coercible to arrow FileSystemDataset -> <fileStore> -> read to FSD -> <parquetStore> write
+#' @rdname storeWrite
+#' @export
 setMethod("storeWrite", signature("fileStore", "fileStore"), function(store, data, ...) {
     storeWrite(store, storeRead(data))
 })
 
+# * parquetStore ####
 # in-memory writes
+#' @rdname storeWrite
+#' @export
 setMethod("storeWrite", signature("parquetStore", "data.frame"), function(store, data, callback = NULL, row_offset = 0L, ...) {
     if (nrow(data) == 0L) return(NULL)
     GiottoUtils::package_check("arrow")
@@ -30,6 +107,8 @@ setMethod("storeWrite", signature("parquetStore", "data.frame"), function(store,
 })
 
 # batched writes
+#' @rdname storeWrite
+#' @export
 setMethod("storeWrite", signature("parquetStore", "ANY"), function(store, data, callback = NULL, row_offset = 0L, ...) {
     GiottoUtils::package_check("arrow")
     checkmate::assert_function(callback, null.ok = TRUE)
@@ -57,9 +136,13 @@ setMethod("storeWrite", signature("parquetStore", "ANY"), function(store, data, 
     store
 })
 
+# * parquetGeomStore ####
+#' @rdname storeWrite
+#' @export
 setMethod("storeWrite", signature("parquetGeomStore", "SpatVector"), function(store, data, row_offset = 0, ...) {
     if (nrow(data) == 0L) return(NULL)
     GiottoUtils::package_check("arrow")
+    store@extent <- .ext_to_num_vec(ext(data))
     data <- .terra_to_parquet_format(data, row_offset = row_offset)
     store_write_next <- methods::getMethod("storeWrite",
         signature("parquetStore", "data.frame")
@@ -68,7 +151,9 @@ setMethod("storeWrite", signature("parquetGeomStore", "SpatVector"), function(st
     store
 })
 
-# parse geometries then pass to further conversion and writes
+# parse geometries via {GiottoClass} then pass to further conversion and writes
+#' @rdname storeWrite
+#' @export
 setMethod("storeWrite", signature("parquetGeomStore", "data.frame"),
           function(store, data, type = c("point", "polygon"), geom_param = list(verbose = FALSE), row_offset = 0, ...) {
     if (nrow(data) == 0L) return(NULL)
@@ -85,7 +170,10 @@ setMethod("storeWrite", signature("parquetGeomStore", "data.frame"),
     store
 })
 
+# * parquetGeomTileStore ####
 # this one cannot use data inputs other than fileStore since it is parallelized
+#' @rdname storeWrite
+#' @export
 setMethod("storeWrite", signature("parquetGeomTileStore", "fileStore"),
     function(store, data,
              n_tiles = 100,
@@ -158,6 +246,9 @@ setMethod("storeWrite", signature("parquetGeomTileStore", "fileStore"),
         store
 })
 
+# * h5ArrayStore ####
+#' @rdname storeWrite
+#' @export
 setMethod("storeWrite", signature("h5ArrayStore", "memoryMatrix"),
     function(store, data, ...) {
         HDF5Array::writeHDF5Array(
@@ -169,6 +260,9 @@ setMethod("storeWrite", signature("h5ArrayStore", "memoryMatrix"),
         store
     })
 
+# * tileDBArrayStore ####
+#' @rdname storeWrite
+#' @export
 setMethod("storeWrite", signature("tileDBArrayStore", "memoryMatrix"),
     function(store, data, ...) {
         p <- store@path
@@ -179,6 +273,8 @@ setMethod("storeWrite", signature("tileDBArrayStore", "memoryMatrix"),
         )
         store
     })
+
+
 
 # internals ####
 
