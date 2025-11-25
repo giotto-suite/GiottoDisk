@@ -277,6 +277,7 @@ NULL
 # pruning ####
 
 .gdsrc_dir_prune <- function(gsrc) {
+    gsrc <- gsrc@read()
     artifacts <- .gdsrc_json_artifacts(gsrc)
     unversioned <- artifacts[is.na(version)]
     for (f in unversioned$fullpaths) {
