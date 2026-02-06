@@ -27,8 +27,7 @@ Imports:
     GiottoUtils,
     methods,
     mirai,
-    terra
-Suggests:
+    terra,
     tilework
 RoxygenNote: 7.3.3
 Collate: 
