@@ -27,8 +27,9 @@ Imports:
     GiottoUtils,
     methods,
     mirai,
-    terra,
-    uuid
+    terra
+Suggests:
+    tilework
 RoxygenNote: 7.3.3
 Collate: 
     'AllGenerics.R'
