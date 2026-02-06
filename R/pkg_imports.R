@@ -1,5 +1,5 @@
 #' @import GiottoUtils
-#' @import GiottoTile
+#' @import tilework
 #' @import methods
 #' @importFrom terra crop ext
 #' @importFrom GiottoClass XY
