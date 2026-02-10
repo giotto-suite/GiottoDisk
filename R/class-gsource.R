@@ -106,10 +106,11 @@ setMethod("initialize", signature("gDirSource"), function(.Object, ...) {
 setMethod("show", signature("gDirSource"), function(object) {
     cat(sprintf("<%s>\n", class(object)))
 
-    if (file.exists(object@path)) {
-        cat("artifacts:", length(object), "\n")
-        # cat("versions:", length(object@catalog$versions), "\n")
-    }
+    gsave_ids <- list.files(.gdsrc_giottosave_dir(object@path),
+        full.names = FALSE, recursive = FALSE, pattern = "\\.rds"
+    )
+    cat("giottosaves:", length(gsave_ids), "\n")
+    cat("artifacts:", length(object), "\n")
 })
 
 setMethod("length", signature("gDirSource"), function(x) {
@@ -122,15 +123,18 @@ setMethod("length", signature("gDirSource"), function(x) {
 })
 
 setMethod("[", signature("gDirSource", i = "character", j = "missing"), function(x, i, j) {
-    .gdsrc_json_consolidate(x@path)
-    data <- .gdsrc_json_read(x@path)
+    data <- .gdsrc_json_read(x@path, consolidate = TRUE)
     data$content[[i]]
 })
 
 setMethod("[", signature("gDirSource", i = "character", j = "character"), function(x, i, j) {
-    .gdsrc_json_consolidate(x@path)
-    data <- .gdsrc_json_read(x@path)
+    data <- .gdsrc_json_read(x@path, consolidate = TRUE)
     data$content[[i]][[j]]
+})
+
+setMethod("[", signature("gDirSource", i = "missing", j = "character"), function(x, i, j) {
+    data <- .gdsrc_json_read(x@path, consolidate = TRUE)
+    lapply(data$content, function(art) art[[j]])
 })
 
 setMethod("[<-", signature("gDirSource", i = "character", j = "missing", value = "ANY"), function(x, i, j, ..., value) {
@@ -175,6 +179,10 @@ NULL
 .gdsrc_artifact_dir <- function(p, uid) {
     vd <- .gdsrc_vault_dir(p)
     file.path(vd, uid)
+}
+
+.gdsrc_giottosave_dir <- function(p) {
+    file.path(p, "giottosave")
 }
 
 ## tools ####
@@ -244,8 +252,12 @@ NULL
 
 #' @describeIn giotto_json Read function for the main
 #' `giottodir.json`. This function does not check or consolidate
-#' pending edits.
-.gdsrc_json_read <- function(p) { # does not consolidate
+#' pending edits by default.
+.gdsrc_json_read <- function(p, consolidate = FALSE) {
+    if (isTRUE(consolidate)) {
+        .gdsrc_json_consolidate(p)
+    }
+  
     etag <- "[gDirSource]" # tag source of error
     if (!dir.exists(p)) {
         stop(etag,
@@ -373,7 +385,7 @@ NULL
     names(edits) <- uids
   
     # append to giottodir.json
-    json_data <- .gdsrc_json_read(p)
+    json_data <- .gdsrc_json_read(p, consolidate = FALSE)
     manifest <- json_data$content
     
     for (artifact in uids) {
@@ -399,100 +411,89 @@ NULL
     invisible(TRUE)
 }
 
+#' @title Coerce gDirSource
+#' @name coerce_gdsrc
+#' @description
+#' Coerce an object to data.frame
+#' @param x object to coerce
+#' @export
+as.list.gDirSource <- function(x) {
+    data <- .gdsrc_json_read(x@path, consolidate = TRUE)
+    data$content
+}
 
+#' @rdname coerce_gdsrc
+#' @param ... additional params to pass
+#' @export
+as.data.frame.gDirSource <- function(x, ...) {
+    data <- as.list.gDirSource(x)
+    data.table::rbindlist(data, 
+        fill = TRUE, idcol = "uid"
+    )
+}
 
-# #' @describeIn giotto_json Hub function for editing the json. Business logic for
-# #' ensuring that edits follow these steps:
-# #'
-# #' 1. reading what exists on-disk
-# #' 2. performing the edit on the manifest content using `fun`
-# #' 3. writing the manifest as a new version of the json
-# #' @param fun function. Function to edit catalog contents before writing.
-# #' @keywords internal
-# .gdsrc_json_edit_content <- function(gsrc, fun) {
-#     gsrc <- gsrc@read()
-#     gsrc@catalog <- fun(gsrc@catalog)
-#     gsrc <- initialize(gsrc) # needed to update the write function
-#     gsrc@write()
-#     gsrc
-# }
+## pruning ####
 
+# protecting tags:
+# - giottosave
+# - depends
+.gdsrc_artifact_prune <- function(p) {
+    gsave_dir <- .gdsrc_giottosave_dir(p)
+    gsave_ids <- list.files(gsave_dir,
+        pattern = "\\.rds", recursive = FALSE, full.names = FALSE
+    )
+    gsave_ids <- gsub("\\.rds$", "", gsave_ids) # strip extension
+  
+    manifest <- .gdsrc_json_read(p, consolidate = TRUE)$content
+    art_ids <- names(manifest)
+  
+    # find directly protected artifacts
+    # (tagged with existing giottosave)
+    is_direct_protect <- vapply(manifest, function(art) {
+        any(art$giottosave %in% gsave_ids)
+    }, FUN.VALUE = logical(1L))
+    protected <- art_ids[is_direct_protect]
+  
+    # recursively protect dependencies
+    # BFS: walk `depends` tags to find all transitively protected
+    # artifacts
+    queue <- protected
+    visited <- character(0L)
+    while (length(queue) > 0L) {
+        current <- queue[[1L]]
+        queue <- queue[-1L]
+        if (current %in% visited) next
+        visited <- c(visited, current)
+      
+        deps <- manifest[[current]]$depends
+        if (!is.null(deps) && length(deps) > 0L) {
+            # only follow deps that exist in the manifest
+            new_deps <- intersect(deps, art_ids)
+            new_deps <- setdiff(new_deps, visited)
+            queue <- c(queue, new_deps)
+        }
+    }
+    protected <- visited
+  
+    # prune unprotected artifacts
+    to_prune <- setdiff(art_ids, protected)
+    
+    for (uid in to_prune) {
+        art_dir <- .gdsrc_artifact_dir(p, uid)
+        if (dir.exists(art_dir)) {
+            unlink(art_dir, recursive = TRUE, force = TRUE)
+        }
+    }
+  
+    # update manifest
+    manifest[to_prune] <- NULL
+    .gdsrc_json_write(p, manifest)
+  
+    message("[GiottoDisk] Pruned ", length(to_prune), 
+        " unprotected artifacts")
+    invisible(to_prune)
+}
 
-# #' @describeIn giotto_json Add a file store_type to the directory.
-# #' @keywords internal
-# .gdsrc_json_add_store <- function(gsrc, store_type, path) {
-#     checkmate::assert_character(store_type)
-#     checkmate::assert_character(path)
-#     gsrc <- gsrc@read()
-#     # return early if store already present
-#     if (store_type %in% names(gsrc@catalog$stores)) return(gsrc)
-
-#     basepath <- gsrc@path
-#     fullpath <- file.path(basepath, path)
-#     if (!dir.exists(fullpath)) {
-#         vmsg("creating", fullpath, "...")
-#         dir.create(fullpath)
-#     }
-
-#     entry <- list(
-#         path = path
-#     )
-
-#     .gdsrc_json_edit_content(gsrc, function(x) {
-#         x$stores[[store_type]] <- entry
-#         x
-#     })
-# }
-
-# #' @describeIn giotto_json Establish a giotto project saved version ID.
-# #' @keywords internal
-# .gdsrc_json_add_project_version <- function(gsrc,
-#     uid = paste0("giottosave_", .make_uid())) {
-#     checkmate::assert_character(uid)
-
-#     entry <- list(
-#         time = .timestamp()
-#     )
-
-#     .gdsrc_json_edit_content(gsrc, function(x) {
-#         x$versions[[uid]] <- entry
-#         x
-#     })
-# }
-
-# #' @describeIn giotto_json Tag specific artifacts (based on uid) as belonging to
-# #' a particular saved version of the giotto project
-# #' @keywords internal
-# .gdsrc_json_artifact_tag_version <- function(gsrc, artifacts, version) {
-#     checkmate::assert_character(artifacts)
-#     checkmate::assert_character(version)
-
-#     .gdsrc_json_edit_content(gsrc, function(x) {
-#         for (id in artifacts) {
-#             x$artifacts[[id]]$version <- version
-#         }
-#         x
-#     })
-# }
-
-# #' @describeIn giotto_json Get table of artifacts information
-# .gdsrc_json_artifacts <- function(gsrc) {
-#     gsrc <- gsrc@read()
-#     version <- store <- NULL # NSE var
-#     artifacts <- gsrc@catalog$artifacts
-#     artifacts <- data.table::rbindlist(artifacts, idcol = "id")
-#     stores <- gsrc@catalog$stores
-#     stores <- data.frame(
-#         store = names(stores),
-#         path = unlist(stores),
-#         stringsAsFactors = FALSE
-#     )
-#     artifacts <- merge(artifacts, stores, by = "store")
-#     artifacts[, "fullpaths" := file.path(gsrc@path, path, id)]
-#     artifacts
-# }
-
-# # pruning ####
 
 # .gdsrc_dir_prune <- function(gsrc) {
 #     gsrc <- gsrc@read()

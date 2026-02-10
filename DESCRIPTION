@@ -30,7 +30,7 @@ Imports:
     terra,
     tilework
 Suggests:
-    filelock,
+    filelock (>= 1.0.2),
     testthat
 RoxygenNote: 7.3.3
 Collate: 
