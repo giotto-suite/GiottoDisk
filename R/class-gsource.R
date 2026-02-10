@@ -493,25 +493,3 @@ as.data.frame.gDirSource <- function(x, ...) {
         " unprotected artifacts")
     invisible(to_prune)
 }
-
-
-# .gdsrc_dir_prune <- function(gsrc) {
-#     gsrc <- gsrc@read()
-#     artifacts <- .gdsrc_json_artifacts(gsrc)
-#     unversioned <- artifacts[is.na(version)]
-#     for (f in unversioned$fullpaths) {
-#         if (file.exists(f)) {
-#             file.remove(f)
-#         } else {
-#             vmsg("File not found (already deleted?):", f)
-#         }
-#     }
-#     vmsg("Removed ", nrow(unversioned), " unversioned artifacts")
-
-#     # update json
-#     keep_ids <- artifacts[!is.na(version), id]
-#     gsrc@catalog$artifacts <- gsrc@catalog$artifacts[keep_ids]
-#     gsrc@write()
-
-#     TRUE
-# }
