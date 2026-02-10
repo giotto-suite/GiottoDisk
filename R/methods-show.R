@@ -1,22 +1,3 @@
-setMethod("show", signature("gDirSource"), function(object) {
-    cat(sprintf("<%s>\n", class(object)))
-
-    if (file.exists(object@path)) {
-        object <- object@read()
-        cat("stores:\n")
-        print_list(object@catalog$stores)
-        cat("\n")
-        cat("artifacts:", length(object@catalog$artifacts), "\n")
-        cat("versions:", length(object@catalog$versions), "\n")
-    } else {
-        cat("giottodir.json not written yet. Use `@write()`\n")
-    }
-
-    cat("\n")
-    cat("* `@read(path)` to read from a Giotto directory json\n")
-    cat("* `@write(path)` to write a Giotto directory json\n")
-})
-
 setMethod("show", signature("fileStore"), function(object) {
     cat(sprintf("<%s>\n", class(object)))
     cat(sprintf("path: %s\n", str_abbreviate(object@path)))

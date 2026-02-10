@@ -29,6 +29,8 @@ Imports:
     mirai,
     terra,
     tilework
+Suggests:
+    filelock
 RoxygenNote: 7.3.3
 Collate: 
     'AllGenerics.R'

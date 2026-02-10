@@ -4,7 +4,8 @@ NULL
 
 # docs ####
 
-#' @name store
+#' @name dataStore-class
+#' @aliases store
 #' @title Data Storage
 #' @description
 #' S4 class define a storage of data. The base class `dataStore` is VIRTUAL
@@ -15,36 +16,68 @@ NULL
 #' @name fileStore-class
 #' @title File Store
 #' @description
-#' S4 class defining a file location and read spec. `fileStore` is a
-#' general purpose customizable class that can be used for non-standard file
-#' formats to read them in with [storeRead()]. A function to read the file
-#' just has to be supplied to the `read_fun` param of the `fileStore()`
-#' constructor.
+#' S4 class for disk-backed data storage. Defines a file system `path` and
+#' a `read_fun` method for accessing the data. Create with [fileStore()].
 #'
-#' Specific file format stores can extend this class.
-#' @param path disk path
-#' @param read_fun `function`. Reader function for the file format. The first
-#' param should be the `path` given as input, such that `read_fun(path)`
-#' reads in the data in a useful format.
-#' @family store_types
+#' `fileStore` serves dual purposes:
+#' * base class for disk-backed stores
+#' * wild card customizable class allowing ad-hoc compatibility with
+#'   [storeRead()] for non-standard file formats.
+#'
+#' @section Extending Store Classes:
+#' Specific stores with particular **file formats** (parquet, HDF5, etc.)
+#' extend this class. These specialized stores provide preset `read_fun`
+#' implementations in their `initialize()` methods, but the ability to
+#' customize remains available for edge cases.
+#'
+#' When extending, register a lightweight `read_fun` to *access* the data,
+#' while specific optimization on reading/filtering should be in the
+#' `storeRead()` method.
+#'
+#' @section Customizing Access:
+#' The `read_fun` is primarily useful for custom file formats:
+#'
+#' ```r
+#' # Wildcard usage - custom formats
+#' rds_store <- fileStore(path = "data.rds", read_fun = readRDS)
+#' fst_store <- fileStore(path = "data.fst", read_fun = fst::read_fst)
+#' ```
+#'
+#' Specialized stores (parquetStore, h5ArrayStore, etc.) have preset readers
+#' but can be overridden for edge cases if needed.
+#'
+#' @slot path `character`. File system path (local or remote URI)
+#' @slot read_fun `function`. Function to access data where `read_fun(path)`
+#'   returns the data in a useful format. Can be customized for
+#'   compression or other access requirements. Do not embed credentials in
+#'   `read_fun()`
+#' @family store types
 NULL
 
 #' @name parquetStore-class
 #' @title Parquet Store
 #' @description
-#' S4 Class extending [fileStore] with specific expected columns for
-#' indexed storage of tabular data. `parquetStores` are not intended to be
-#' updated or edited. They only query and do delayed ops. They can be generated
-#' using constructors described in [parquetStore].
+#' S4 Class extending [fileStore-class] for indexed storage of tabular data
+#' in Apache Parquet format. `parquetStores` provide delayed/query-based
+#' access to data rather than loading into memory. They are not intended for
+#' in-place updates or edits. Create with [parquetStore()].
 #'
-#' No table is contained so that the idea of this class storing state cannot be
-#' entertained.
-#' @slot path `character`. Disk path to file or hive storage directory
-#' @slot fields `character`. Cached column names.
-#' @slot read_fun `function`. Reader function for the file format.
-#' @slot extent `numeric(4)`. xmin, xmax, ymin, ymax extent of data contained.
-#' @slot tiles a \{GiottoTile\} `tileIterator`. Provides understanding of
-#' which tile(s) in a tile plan this store instance is responsible for.
+#' Stores represent a query interface to on-disk data and do not contain the
+#' actual table data as state.
+#'
+#' @slot path character. Local file path or directory, or remote URI
+#'   (s3://, gs://, az://). For remote paths, authentication is handled via
+#'   environment variables (AWS_ACCESS_KEY_ID, etc.) or credential files.
+#'   Can point to a single file or a directory with optional hive-style
+#'   partitioning.
+#' @slot fields character. Cached column names from the parquet dataset.
+#' @slot read_fun function. Preset to `arrow::open_dataset()` for standard
+#'   parquet access. Can be customized for edge cases (see [fileStore-class]).
+#' @slot extent numeric(4). (parquetGeomStore only) Spatial extent as
+#'   xmin, xmax, ymin, ymax of contained geometries.
+#' @slot tiles tileIterator. (parquetGeomTileStore only) \{tilework\} object
+#'   defining which tile(s) in a tile plan this store is responsible for.
+#'
 #' @family store types
 NULL
 
@@ -62,9 +95,9 @@ setOldClass("data.table")
 setClassUnion("memoryMatrix", c("matrix", "Matrix"))
 setClassUnion("memoryStore", c("memoryMatrix", "data.frame", "data.table"))
 
-#' @rdname store
+#' @rdname dataStore-class
 setClass("dataStore", contains = "VIRTUAL")
-#' @rdname store
+#' @rdname fileStore-class
 setClass("fileStore",
     contains = "dataStore",
     slots = list(
@@ -76,7 +109,7 @@ setClass("fileStore",
 # * parquet ####
 
 # cols: row_index, id, ...
-#' @rdname parquetStore
+#' @rdname parquetStore-class
 setClass("parquetStore",
     contains = "fileStore",
     slots = list(
@@ -86,14 +119,14 @@ setClass("parquetStore",
 )
 
 # cols: row_index, x_index, y_index, geom, id, ...
-#' @rdname parquetStore
+#' @rdname parquetStore-class
 setClass("parquetGeomStore",
     contains = "parquetStore",
     slots = list(extent = "numeric")
 )
 
 # cols: row_index, x_index, y_index, tile_index, geom, id, ...
-#' @rdname parquetStore
+#' @rdname parquetStore-class
 setClass("parquetGeomTileStore",
     contains = "parquetGeomStore",
     slots = list(tiles = "tileIterator")
@@ -126,7 +159,7 @@ setClass("tileDBArrayStore",
 #' the `path` to load in the data in a useful format.
 #' @param path `character`. Disk path to file
 #' @param read_fun `function`. Used to read in the data based on the path.
-#' @family Store constructors
+#' @family store constructors
 #' @export
 fileStore <- function(path = tempfile(), read_fun, ...) {
     if (missing(read_fun)) stop(call. = FALSE,
@@ -146,7 +179,7 @@ fileStore <- function(path = tempfile(), read_fun, ...) {
 #' @description
 #' Create a parquet-backed storage.
 #' @param path `character`. Disk path to file or hive storage directory
-#' @family Store constructors
+#' @family store constructors
 #' @seealso [store][parquetStore-class]
 #' @export
 parquetStore <- function(path = tempfile(), ...) {
@@ -193,7 +226,7 @@ tileDBArrayStore <- function(
 #' @param path `character`. Disk path to file or hive storage directory
 #' @param type `character`. Type of store to create. Currently one of
 #' `"parquet"`, `"parquetGeom"`, `"parquetGeomTile"`, or `"file"`.
-#' @family Store constructors
+#' @family store constructors
 #' @seealso [store]
 #' @export
 storeCreate <- function(path = tempfile(), type = "parquet", ...) {
@@ -215,13 +248,39 @@ storeCreate <- function(path = tempfile(), type = "parquet", ...) {
 
 # initialize ####
 
+# cached fields check
+# used for repeated checks across cascading initialize
+.get_fields <- function(x) {
+    if (length(x@fields) > 0L) return(x@fields)
+    colnames(x)
+}
+
+.store_exists <- function(x) {
+    # no path provided
+    if (length(x@path) == 0L || is.na(x@path) || x@path == "") {
+        return(FALSE)
+    }
+
+    if (grepl("^[a-zA-Z][a-zA-Z0-9+.-]*://", x@path)) {
+        # Expensive: actually try to open it
+        if (is.null(x@read_fun)) return(TRUE)
+        tryCatch({
+            dataset <- x@read_fun(x@path)
+            !is.null(dataset)
+        }, error = function(e) {
+            FALSE  # Could be auth error OR missing file
+        })
+    }
+
+    file.exists(x@path)
+}
+
 setMethod("initialize", signature("parquetStore"), function(.Object, ...) {
     .Object <- callNextMethod(.Object, ...)
-    read_fun <- function(x) arrow::open_dataset(sources = x)
-    .Object@read_fun <- read_fun
-    exists <- checkmate::test_file_exists(.Object@path)
-    if (!exists) return(.Object)
-    .Object@fields <- colnames(.Object)
+    # register default read_fun
+    .Object@read_fun <- function(x) arrow::open_dataset(sources = x)
+    if (!.store_exists(.Object)) return(.Object) # skip if not ready to read
+    .Object@fields <- .get_fields(.Object) # cache colnames
     if (!"row_index" %in% .Object@fields) {
         warning("[initialize] 'row_index' column should be present",
                 call. = FALSE)
@@ -231,15 +290,13 @@ setMethod("initialize", signature("parquetStore"), function(.Object, ...) {
 
 setMethod("initialize", signature("parquetGeomStore"), function(.Object, ...) {
     .Object <- callNextMethod(.Object, ...)
-    exists <- checkmate::test_file_exists(.Object@path)
-    if (!exists) return(.Object)
-    .Object@fields <- colnames(.Object)
+    if (!.store_exists(.Object)) return(.Object) # skip if not ready to read
+    # fields should be cached already in `parquetStore` method
     check_cols <- c("x_index", "y_index", "geom")
     missing_cols <- check_cols[!check_cols %in% .Object@fields]
     if (length(missing_cols) > 0L) {
         warning(sprintf("[initialize] '%s' column(s) should be present",
-                        paste(collapse = "', '", missing_cols)),
-                call. = FALSE)
+            toString(missing_cols)), call. = FALSE)
     }
     if (length(.Object@extent) == 0L &&
         all(c("x_index", "y_index") %in% .Object@fields)) {

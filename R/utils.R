@@ -56,9 +56,32 @@
     x
 }
 
-# unique id generator (10 alphanumerics by default)
-.make_uid <- function(n = 10) {
-    paste(sample(c(letters, LETTERS, 1:9), n), collapse = "")
+# make a unique identifier across nodes/process
+.make_uid <- function(n = 8L) {
+    include_node <- getOption("giottodisk.uid_include_node", FALSE)
+    include_pid <- getOption("giottodisk.uid_include_pid", TRUE)
+    count <- getOption("giottodisk.uid_count", 1L)
+    on.exit({
+        options("giottodisk.uid_count" = count + 1L)
+    })
+    GiottoUtils::gwith_seed(seed = Sys.time() + count, {
+        # enforce randomness
+        rand <- paste(
+            sample(c(letters, LETTERS, as.character(0:9)), n), 
+            collapse = ""
+        )
+    })
+
+    parts <- rand
+    if (include_pid) {
+        pid <- Sys.getpid()
+        parts <- c(pid, parts)
+    }
+    if (include_node) {
+        host <- substr(Sys.info()[["nodename"]], 1, 8)
+        parts <- c(host, parts)
+    }
+    paste0(parts, collapse = "_")
 }
 
 # generate a character timestamp

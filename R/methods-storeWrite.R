@@ -19,11 +19,46 @@
 #' @family storeWrite methods
 NULL
 
+
+
+
+.guard_lazy_access <- function(x) {
+    if (!inherits(x, c("FileSystemDataset", "tbl_lazy", "arrow_dplyr_query"))) {
+        stop("[storeWrite] 'data' should be a `FileSystemDataset`, `arrow_dplyr_query`, or `tbl_lazy`")
+    }
+}
+
+.guard_no_data_rows <- function(x) {
+    if (nrow(x) == 0L) stop("[storeWrite] nrow = 0. No values to write.")
+}
+
+
+
+# * general ####
+
+setMethod("storeWrite", signature("ANY", "ANY"), function(store, data, ...) {
+    stop(sprintf("Writing not implemented for store type %s\n", class(store)),
+         call. = FALSE)
+})
+
+# from fileStore ETL chaining
+# e.g. data coercible to arrow FileSystemDataset -> <fileStore> -> read to FSD -> <parquetStore> write
+#' @rdname storeWrite
+#' @export
+setMethod("storeWrite", signature("fileStore", "fileStore"), function(store, data, ...) {
+    storeWrite(store, storeRead(data))
+})
+
+# * parquetStore ####
+# in-memory writes
 #' @name storeWrite-parquetStore
 #' @title Write to a Parquet Storage Spec
 #' @description
 #' Write tabular data to a parquet. Enforces the presence of an integer
 #' `row_index` column since parquet does not intrinsically encode row order.
+#'
+#' The `ANY` signature method is provided for writing lazily accessed data in
+#' batches with possible pre-processing via `callback`.
 #' @inheritParams storeWrite
 #' @param callback `function` (optional). Function to apply to `data` before
 #' writing. The first param of this function should accept the `data`.
@@ -32,8 +67,65 @@ NULL
 #' the first `row_index` value in this file will be `1`.
 #' @param ... additional params to pass to [arrow::write_dataset()]
 #' @family storeWrite methods
-NULL
+#' @returns A `parquetStore` inheriting class
+#' @export
+setMethod("storeWrite", signature("parquetStore", "data.frame"),
+    function(store, data,
+        callback = NULL,
+        row_offset = 0L,
+        ...) {
+    GiottoUtils::package_check("arrow")
+    .guard_no_data_rows(data)
+    checkmate::assert_function(callback, null.ok = TRUE)
+    row_offset <- as.integer(row_offset)
+    if (!is.null(callback)) {
+        data <- callback(data)
+    }
+    has_row_index <- "row_index" %in% colnames(data)
+    if (!has_row_index) {
+        data <- .dt_set_row_index(data, offset = row_offset, col = "row_index")
+    }
+    store@fields <- colnames(data) # record fields info
+    arrow::write_dataset(dataset = data, path = store@path, format = "parquet", ...)
+    store
+})
 
+# batched writes
+
+
+#' @rdname storeWrite-parquetStore
+#' @export
+setMethod("storeWrite", signature("parquetStore", "ANY"), function(store, data,
+    callback = NULL,
+    row_offset = 0L,
+    ...) {
+    GiottoUtils::package_check("arrow")
+    checkmate::assert_function(callback, null.ok = TRUE)
+    row_offset <- as.integer(row_offset)
+    .guard_lazy_access(data)
+    .guard_no_data_rows(data)
+
+    # if no callback fun, and row_index exists, directly write out
+    if (is.null(callback) && "row_index" %in% colnames(data)) {
+        store@fields <- colnames(data)
+        arrow::write_dataset(dataset = data, path = store@path, format = "parquet", ...)
+        return(store)
+    }
+
+    # else, if there is something to be batch processed...
+    # perform any callbacks and add a row_index if needed
+    data <- .arrow_map_batches(data, FUN = callback)
+    # if row_index still missing...
+    if (!"row_index" %in% colnames(data)) {
+        data <- .arrow_add_row_index(data,
+            col = "row_index", offset = row_offset
+        )
+    }
+    arrow::write_dataset(dataset = data, path = store@path, format = "parquet", ...)
+    store
+})
+
+# * parquetGeomStore ####
 #' @name storeWrite-parquetGeomStore
 #' @title Write to a Parquet Geometry Storage
 #' @description
@@ -55,89 +147,6 @@ NULL
 #' @param ... addtional params to pass to `parquetStore` method and
 #' [arrow::write_dataset()]
 #' @family storeWrite methods
-NULL
-
-#' @name storeWrite-parquetGeomTileStore
-#' @title Write to a Parquet Geometry Tiled Storage
-#' @description
-#' Write geometry data in a spatially tiled manner.
-#' @inheritParams storeWrite
-#' @inheritParams storeWrite-parquetStore
-#' @inheritParams storeWrite-parquetGeomStore
-#' @param n_tiles `numeric`. Minimum number of tiles to write across
-#' @param tile GiottoTile `tilePlan` (optional)
-#' @param sdimx,sdimy `character`.
-#' @family storeWrite methods
-NULL
-
-# * general ####
-
-setMethod("storeWrite", signature("ANY", "ANY"), function(store, data, ...) {
-    stop(sprintf("Writing not implemented for store type %s\n", class(store)),
-         call. = FALSE)
-})
-
-# from fileStore ETL chaining
-# e.g. data coercible to arrow FileSystemDataset -> <fileStore> -> read to FSD -> <parquetStore> write
-#' @rdname storeWrite
-#' @export
-setMethod("storeWrite", signature("fileStore", "fileStore"), function(store, data, ...) {
-    storeWrite(store, storeRead(data))
-})
-
-# * parquetStore ####
-# in-memory writes
-#' @rdname storeWrite
-#' @export
-setMethod("storeWrite", signature("parquetStore", "data.frame"), function(store, data, callback = NULL, row_offset = 0L, ...) {
-    if (nrow(data) == 0L) return(NULL)
-    GiottoUtils::package_check("arrow")
-    checkmate::assert_function(callback, null.ok = TRUE)
-    row_offset <- as.integer(row_offset)
-    if (!is.null(callback)) {
-        data <- callback(data)
-    }
-    has_row_index <- "row_index" %in% colnames(data)
-    if (!has_row_index) {
-        data <- .dt_set_row_index(data, offset = row_offset, col = "row_index")
-    }
-    store@fields <- colnames(data) # record fields info
-    arrow::write_dataset(dataset = data, path = store@path, format = "parquet", ...)
-    store
-})
-
-# batched writes
-#' @rdname storeWrite
-#' @export
-setMethod("storeWrite", signature("parquetStore", "ANY"), function(store, data, callback = NULL, row_offset = 0L, ...) {
-    GiottoUtils::package_check("arrow")
-    checkmate::assert_function(callback, null.ok = TRUE)
-    row_offset <- as.integer(row_offset)
-    if (!inherits(data, c("FileSystemDataset", "tbl_lazy", "arrow_dplyr_query"))) {
-        stop("[storeWrite] 'data' should be a `FileSystemDataset` `arrow_dplyr_query`, or `tbl_lazy`")
-    }
-    if (nrow(data) == 0L) return(NULL)
-
-    # if no callback fun, and row_index exists, directly write out
-    if (is.null(callback) && ("row_index" %in% colnames(data))) {
-        store@fields <- colnames(data)
-        arrow::write_dataset(dataset = data, path = store@path, format = "parquet", ...)
-        return(store)
-    }
-
-    # else, if there is something to be batch processed...
-    has_row_index <- "row_index" %in% colnames(data)
-    # perform any callbacks and add a row_index if needed
-    data <- .arrow_map_batches(data, FUN = callback, ...) # dots pass to FUN
-    if (!has_row_index) {
-        data <- .arrow_add_row_index(data, col = "row_index", offset = row_offset)
-    }
-    arrow::write_dataset(dataset = data, path = store@path, format = "parquet", ...)
-    store
-})
-
-# * parquetGeomStore ####
-#' @rdname storeWrite
 #' @export
 setMethod("storeWrite", signature("parquetGeomStore", "SpatVector"), function(store, data, row_offset = 0, ...) {
     if (nrow(data) == 0L) return(NULL)
@@ -152,10 +161,17 @@ setMethod("storeWrite", signature("parquetGeomStore", "SpatVector"), function(st
 })
 
 # parse geometries via {GiottoClass} then pass to further conversion and writes
-#' @rdname storeWrite
+#' @rdname storeWrite-parquetGeomStore
+#' @param type `character`. Either `"point"` or `"polygon"`. What type of
+#'   geometry to write. Determines whether [GiottoClass::createGiottoPoints()]
+#'   or [GiottoClass::createGiottoPolygon()] is used to parse the values.
 #' @export
 setMethod("storeWrite", signature("parquetGeomStore", "data.frame"),
-          function(store, data, type = c("point", "polygon"), geom_param = list(verbose = FALSE), row_offset = 0, ...) {
+    function(store, data,
+        type = c("point", "polygon"),
+        geom_param = list(verbose = FALSE),
+        row_offset = 0,
+        ...) {
     if (nrow(data) == 0L) return(NULL)
     GiottoUtils::package_check("arrow")
     checkmate::assert_list(geom_param)
@@ -172,7 +188,18 @@ setMethod("storeWrite", signature("parquetGeomStore", "data.frame"),
 
 # * parquetGeomTileStore ####
 # this one cannot use data inputs other than fileStore since it is parallelized
-#' @rdname storeWrite
+#' @name storeWrite-parquetGeomTileStore
+#' @title Write to a Parquet Geometry Tiled Storage
+#' @description
+#' Write geometry data in a spatially tiled manner.
+#' @inheritParams storeWrite
+#' @inheritParams storeWrite-parquetStore
+#' @inheritParams storeWrite-parquetGeomStore
+#' @param n_tiles `numeric`. Minimum number of tiles to write across
+#' @param tile tilework `tilePlan` (optional)
+#' @param sdimx,sdimy `character`. Names of columns containing x and y values,
+#'   respectively.
+#' @family storeWrite methods
 #' @export
 setMethod("storeWrite", signature("parquetGeomTileStore", "fileStore"),
     function(store, data,
@@ -187,6 +214,82 @@ setMethod("storeWrite", signature("parquetGeomTileStore", "fileStore"),
              ...) {
         GiottoUtils::package_check("arrow")
         a <- storeRead(data)
+        if (!inherits(a, c("FileSystemDataset", "tbl_lazy", "arrow_dplyr_query"))) {
+            stop("[storeWrite] storeRead(data) should be a `FileSystemDataset` `arrow_dplyr_query`, or `tbl_lazy`")
+        }
+        if (nrow(a) == 0L) return(NULL)
+        type <- match.arg(type, choices = c("point", "polygon"))
+        tiles <- store@tiles
+        # offsets are needed, so this can't be done by child processes
+        envelope <- switch(type,
+            "point" = FALSE,
+            "polygon" = TRUE
+        )
+        tiles <- .annotate_tileiterator(tiles,
+            data = a,
+            n_tiles = n_tiles,
+            sdimx = sdimx,
+            sdimy = sdimy,
+            poly_id = poly_id,
+            envelope = envelope
+        )
+        tile_indices <- tiles$tile[tiles$n_records > 0L]
+        vmsg(.v = verbose, sprintf("nonzero tiles: %d out of %d", length(tile_indices), n_tiles))
+
+        if (isTRUE(dry_run)) {
+            message("[storeWrite] dry run: planned tiles")
+            plot(tiles, values = "n_records", main = "geoms per planned tile")
+            return(tiles)
+        }
+        store@tiles <- tiles
+        store@extent <- .ext_to_num_vec(ext(tiles))
+
+        if (!is.null(tile)) tile_indices <- as.integer(tile) # write a specific tile
+        written_stores <- lapply_flex(tile_indices, function(tile_i) {
+            .pgts_write_tile(
+                store = store,
+                data = data,
+                tile_i = tile_i,
+                sdimx = sdimx,
+                sdimy = sdimy,
+                poly_id = poly_id,
+                type = type,
+                geom_param = geom_param
+            )
+        },
+        future.seed = TRUE,
+        # future.packages = c("terra", "arrow", "data.table"),
+        future.globals = list(
+            store = store,
+            data = data,
+            sdimx = sdimx,
+            sdimy = sdimy,
+            poly_id = poly_id,
+            type = type,
+            geom_param = geom_param
+        ))
+        written_stores <- written_stores[!vapply(written_stores, is.null, FUN.VALUE = logical(1L))]
+        store@fields <- written_stores[[1]]@fields
+        store
+})
+
+# this one cannot use data inputs other than fileStore since it is parallelized
+#' @rdname storeWrite-parquetGeomTileStore
+#' @export
+setMethod("storeWrite", signature("parquetGeomTileStore", "fileStore"),
+    function(store, data,
+             n_tiles = 100,
+             tile = NULL,
+             sdimx = "x", sdimy = "y",
+             poly_id = "id",
+             type = c("point", "polygon"),
+             dry_run = FALSE,
+             geom_param = list(verbose = FALSE),
+             verbose = NULL,
+             ...) {
+        GiottoUtils::package_check("arrow")
+        a <- storeRead(data)
+        # only permit lazy reading
         if (!inherits(a, c("FileSystemDataset", "tbl_lazy", "arrow_dplyr_query"))) {
             stop("[storeWrite] storeRead(data) should be a `FileSystemDataset` `arrow_dplyr_query`, or `tbl_lazy`")
         }

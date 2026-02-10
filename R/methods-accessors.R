@@ -47,21 +47,3 @@ setMethod("ext", signature("parquetGeomStore"), function(x, ...) {
     }
     ext(x@extent)
 })
-
-# * $ ####
-
-setMethod("$", "gDirSource", function(x, name) {
-    file.path(x@path, x@catalog$stores[[name]])
-})
-
-#' @keywords internal
-#' @export
-.DollarNames.gDirSource <- function(x, pattern) names(x@catalog$stores)
-
-# * [ ####
-
-#' @keywords internal
-#' @export
-setMethod("[", c(x = "gDirSource", i = "character", j = "missing", drop = "missing"), function(x, i, j, ..., drop) {
-    file.path(x@path, x@catalog$stores[[i]])
-})
