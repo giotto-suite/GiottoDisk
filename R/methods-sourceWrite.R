@@ -48,7 +48,7 @@ NULL
 setMethod("sourceWrite", signature("gDirSource", "memoryMatrix"),
     function(src, data, meta = NULL, ...) {
         store_type <- getOption("giotto.gdsrc_matrix_format", "h5")
-        .gdsrc_write_artifact(src,
+        .gdsrc_write_artifact(src@path,
             data = data,
             store_type = store_type,
             meta = meta,
@@ -69,7 +69,7 @@ setMethod("sourceWrite", signature("gDirSource", "memoryMatrix"),
 setMethod("sourceWrite", signature("gDirSource", "SpatVector"),
     function(src, data, meta = NULL, ...) {
         store_type <- getOption("giotto.gdsrc_spatvector_format", "parquetGeom")
-        .gdsrc_write_artifact(src,
+        .gdsrc_write_artifact(src@path,
             data = data,
             store_type = store_type,
             meta = meta,
@@ -88,7 +88,7 @@ setMethod("sourceWrite", signature("gDirSource", "SpatVector"),
 setMethod("sourceWrite", signature("gDirSource", "data.frame"),
     function(src, data, meta = NULL, ...) {
         store_type <- getOption("giotto.gdsrc_dataframe_format", "parquet")
-        .gdsrc_write_artifact(src,
+        .gdsrc_write_artifact(src@path,
             data = data,
             store_type = store_type,
             meta = meta,
@@ -99,27 +99,20 @@ setMethod("sourceWrite", signature("gDirSource", "data.frame"),
 
 # internals ####
 
-.gdsrc_write_artifact <- function(gsrc, data, store_type, meta = NULL, ...) {
-    # ensure store_type exists in catalog
-    gsrc <- .gdsrc_json_add_store(
-        gsrc = gsrc,
-        store_type = store_type,
-        path = store_type
-    )
-
+.gdsrc_write_artifact <- function(p, data, store_type, meta = NULL, ...) {
+    checkmate::assert_character(p)
     # setup save info
     uid <- .make_uid()
-    dirpath <- gsrc[store_type]
-    savepath <- file.path(dirpath, uid)
-    if (!dir.exists(dirpath)) dir.create(dirpath, recursive = TRUE)
+    savedir <- .gdsrc_artifact_dir(p, uid = uid)
+    savepath <- file.path(savedir, "data")
     # write to disk
+    if (!dir.exists(savedir)) dir.create(savedir, recursive = TRUE)
     dstore <- storeCreate(type = store_type, path = savepath)
     dstore <- storeWrite(dstore, data, ...)
     # record hash of delayed representation
     hash <- .hash(storeRead(dstore))
     # record artifact entry
-    .gdsrc_json_add_artifact(
-        gsrc = gsrc,
+    .gdsrc_json_add_artifact(p,
         store_type = store_type,
         uid = uid,
         hash = hash,

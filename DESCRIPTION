@@ -22,6 +22,7 @@ Imports:
     arrow,
     checkmate,
     data.table (>= 1.12.2),
+    digest,
     dplyr,
     GiottoClass,
     GiottoUtils,
@@ -41,6 +42,7 @@ Collate:
     'class-gsource.R'
     'methods-accessors.R'
     'methods-show.R'
+    'methods-sourcePrune.R'
     'methods-sourceWrite.R'
     'methods-storeRead.R'
     'methods-storeWrite.R'
