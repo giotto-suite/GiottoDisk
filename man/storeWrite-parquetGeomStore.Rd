@@ -2,9 +2,52 @@
 % Please edit documentation in R/methods-storeWrite.R
 \name{storeWrite-parquetGeomStore}
 \alias{storeWrite-parquetGeomStore}
+\alias{storeWrite,parquetGeomStore,data.frame-method}
 \title{Write to a Parquet Geometry Storage}
+\usage{
+\S4method{storeWrite}{parquetGeomStore,SpatVector}(store, data, row_offset = 0, ...)
+
+\S4method{storeWrite}{parquetGeomStore,data.frame}(
+  store,
+  data,
+  type = c("point", "polygon"),
+  geom_param = list(verbose = FALSE),
+  row_offset = 0,
+  ...
+)
+}
+\arguments{
+\item{store}{\code{dataStore} inheriting class}
+
+\item{data}{data to write}
+
+\item{row_offset}{\code{numeric}, will be coerced to \code{integer} (default = 0L).
+Offset to apply to row number indexing. For example \code{row_offset = 0L} means
+the first \code{row_index} value in this file will be \code{1}.}
+
+\item{...}{addtional params to pass to \code{parquetStore} method and
+\code{\link[arrow:write_dataset]{arrow::write_dataset()}}}
+
+\item{type}{\code{character}. Either \code{"point"} or \code{"polygon"}. What type of
+geometry to write. Determines whether \code{\link[GiottoClass:createGiottoPoints]{GiottoClass::createGiottoPoints()}}
+or \code{\link[GiottoClass:createGiottoPolygon]{GiottoClass::createGiottoPolygon()}} is used to parse the values.}
+
+\item{geom_param}{\code{list} (optional). Additional params to pass to
+\link[GiottoClass:createGiottoPoints]{GiottoClass::createGiottoPoints} or \link[GiottoClass:createGiottoPolygon]{GiottoClass::createGiottoPolygon},
+depending on \code{type}.}
+
+\item{`type`}{\code{character}. One of \code{point} or \code{polygon} depending on the
+geometries to create from the table data.}
+}
 \description{
-Write to a Parquet Geometry Storage
+Write geometry data to a \code{parquetGeomStore}. Each row is a single geometry.
+Enforces the presence of \code{x_index} and \code{y_index} cols which are the centroid
+(as calculated by the center of the geometry's spatial extent) and the
+\code{row_index} which preserves row ordering.
+
+May be written either directly from terra \code{SpatVector} or \code{data.frame} inputs
+that are first parsed via GiottoClass \code{createGiottoPoints} or
+\code{createGiottoPolygon}, depending on the \code{type} param.
 }
 \seealso{
 Other storeWrite methods: 

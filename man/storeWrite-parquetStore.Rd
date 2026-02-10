@@ -2,17 +2,36 @@
 % Please edit documentation in R/methods-storeWrite.R
 \name{storeWrite-parquetStore}
 \alias{storeWrite-parquetStore}
+\alias{storeWrite,parquetStore,ANY-method}
 \title{Write to a Parquet Storage Spec}
+\usage{
+\S4method{storeWrite}{parquetStore,data.frame}(store, data, callback = NULL, row_offset = 0L, ...)
+
+\S4method{storeWrite}{parquetStore,ANY}(store, data, callback = NULL, row_offset = 0L, ...)
+}
 \arguments{
+\item{store}{\code{dataStore} inheriting class}
+
+\item{data}{data to write}
+
 \item{callback}{\code{function} (optional). Function to apply to \code{data} before
 writing. The first param of this function should accept the \code{data}.}
 
 \item{row_offset}{\code{numeric}, will be coerced to \code{integer} (default = 0L).
 Offset to apply to row number indexing. For example \code{row_offset = 0L} means
 the first \code{row_index} value in this file will be \code{1}.}
+
+\item{...}{additional params to pass to \code{\link[arrow:write_dataset]{arrow::write_dataset()}}}
+}
+\value{
+A \code{parquetStore} inheriting class
 }
 \description{
-Write to a Parquet Storage Spec
+Write tabular data to a parquet. Enforces the presence of an integer
+\code{row_index} column since parquet does not intrinsically encode row order.
+
+The \code{ANY} signature method is provided for writing lazily accessed data in
+batches with possible pre-processing via \code{callback}.
 }
 \seealso{
 Other storeWrite methods: 

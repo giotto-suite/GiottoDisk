@@ -2,9 +2,63 @@
 % Please edit documentation in R/methods-storeWrite.R
 \name{storeWrite-parquetGeomTileStore}
 \alias{storeWrite-parquetGeomTileStore}
+\alias{storeWrite,parquetGeomTileStore,fileStore-method}
 \title{Write to a Parquet Geometry Tiled Storage}
+\usage{
+\S4method{storeWrite}{parquetGeomTileStore,fileStore}(
+  store,
+  data,
+  n_tiles = 100,
+  tile = NULL,
+  sdimx = "x",
+  sdimy = "y",
+  poly_id = "id",
+  type = c("point", "polygon"),
+  dry_run = FALSE,
+  geom_param = list(verbose = FALSE),
+  verbose = NULL,
+  ...
+)
+
+\S4method{storeWrite}{parquetGeomTileStore,fileStore}(
+  store,
+  data,
+  n_tiles = 100,
+  tile = NULL,
+  sdimx = "x",
+  sdimy = "y",
+  poly_id = "id",
+  type = c("point", "polygon"),
+  dry_run = FALSE,
+  geom_param = list(verbose = FALSE),
+  verbose = NULL,
+  ...
+)
+}
+\arguments{
+\item{store}{\code{dataStore} inheriting class}
+
+\item{data}{data to write}
+
+\item{n_tiles}{\code{numeric}. Minimum number of tiles to write across}
+
+\item{tile}{tilework \code{tilePlan} (optional)}
+
+\item{sdimx, sdimy}{\code{character}. Names of columns containing x and y values,
+respectively.}
+
+\item{type}{\code{character}. Either \code{"point"} or \code{"polygon"}. What type of
+geometry to write. Determines whether \code{\link[GiottoClass:createGiottoPoints]{GiottoClass::createGiottoPoints()}}
+or \code{\link[GiottoClass:createGiottoPolygon]{GiottoClass::createGiottoPolygon()}} is used to parse the values.}
+
+\item{geom_param}{\code{list} (optional). Additional params to pass to
+\link[GiottoClass:createGiottoPoints]{GiottoClass::createGiottoPoints} or \link[GiottoClass:createGiottoPolygon]{GiottoClass::createGiottoPolygon},
+depending on \code{type}.}
+
+\item{...}{additional params to pass}
+}
 \description{
-Write to a Parquet Geometry Tiled Storage
+Write geometry data in a spatially tiled manner.
 }
 \seealso{
 Other storeWrite methods: 

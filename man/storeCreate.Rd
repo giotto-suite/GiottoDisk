@@ -18,8 +18,8 @@ Hub function for creating a concrete store class.
 \seealso{
 \link{store}
 
-Other Store constructors: 
+Other store constructors: 
 \code{\link{fileStore}},
-\code{\link{parquetStore-class}}
+\code{\link{parquetStore}}
 }
-\concept{Store constructors}
+\concept{store constructors}

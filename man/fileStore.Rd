@@ -17,8 +17,8 @@ function must be provided where the first param of the function can read
 the \code{path} to load in the data in a useful format.
 }
 \seealso{
-Other Store constructors: 
-\code{\link{parquetStore-class}},
+Other store constructors: 
+\code{\link{parquetStore}},
 \code{\link{storeCreate}()}
 }
-\concept{Store constructors}
+\concept{store constructors}

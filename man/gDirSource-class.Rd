@@ -6,28 +6,40 @@
 \title{Giotto Directory Source}
 \description{
 Extends \link{gsource}. Used to designate and manage a directory as a
-giotto project directory containing on-disk data artifacts. Artifacts are
-organized by subdirectories into by specific filetype. The toplevel of a
-managed directory also contains a \code{giottodir.json} which is a catalog of the
-contained artifacts.
+giotto project directory containing on-disk data artifacts.
+Contained artifacts are tracked via a manifest with editable
+metadata.
 
-Data can be written to the backing directory using the \code{gsource} as a store
-with \code{storeWrite()}.
+Edits to the \code{gDirSource} manifest are atomic. Additionally, a WAL
+pattern is used to ensure concurrency safety.
+Edits are only made as loose files specific to single artifacts
+(and by extension usually single-process).
+Loose edits are later consolidated into the main manifest on-read
+(preferably only from the main process). {filelock} integration
+is available for extra concurrency safety to avoid edge cases
+where two processes attempt consolidation at the same time but see
+different \verb{_pending} states.
 
-Note that methods of editing \code{giottodir.json} contents are currently
-internal only. See \link{giotto_json}
+Data can be written to the backing directory using \code{sourceWrite()}.
+This serializes the data to disk using the preferred store types
+for the \code{gsource} class.
 }
 \section{Slots}{
 
 \describe{
 \item{\code{path}}{character. Directory to use}
-
-\item{\code{catalog}}{list. Structured list recording what assets are available
-within the project directory.}
-
-\item{\code{read}}{function. Read from the \code{giottodir.json} to populate the
-\code{catalog} slot. Returns a new \code{gDirSource} object.}
-
-\item{\code{write}}{function. Write the \code{catalog} slot contents to \code{giottodir.json}}
 }}
+
+\section{Directory Structure}{
+\itemize{
+\item \code{giottodir.json} - json file manifest of the contained artifacts.
+\item \code{giottodir.json.lock} - (optional) lockfile for {filelock} to control
+writes to \code{giottodir.json} for extra concurrency safety
+\item \code{artifacts} - vault directory containing the actual data artifacts
+which are within subdirectories named by their \code{uid}.
+\item \verb{_pending} - directory containing pending edits to the manifest.
+\item \code{giottosave} - directory containing .RDS of giotto projects that
+reference assets controlled by the \code{gDirSource}.
+}
+}
 

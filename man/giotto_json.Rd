@@ -2,34 +2,41 @@
 % Please edit documentation in R/class-gsource.R
 \name{giotto_json}
 \alias{giotto_json}
-\alias{.gdsrc_json_edit_content}
+\alias{.json_atomic_write}
+\alias{.json_read}
+\alias{.gdsrc_json_header}
+\alias{.gdsrc_json_write}
+\alias{.gdsrc_json_read}
+\alias{.gdsrc_json_edit}
 \alias{.gdsrc_json_add_artifact}
-\alias{.gdsrc_json_add_store}
-\alias{.gdsrc_json_add_project_version}
-\alias{.gdsrc_json_artifact_tag_version}
-\alias{.gdsrc_json_artifacts}
+\alias{.gdsrc_json_consolidate}
 \title{Giotto Directory JSON}
 \usage{
-.gdsrc_json_edit_content(gsrc, fun)
+.json_atomic_write(
+  x,
+  file,
+  temp_file = tempfile(tmpdir = dirname(file), fileext = ".tmp"),
+  cleanup = TRUE
+)
 
-.gdsrc_json_add_artifact(gsrc, store_type, uid, hash, meta = NULL)
+.json_read(file)
 
-.gdsrc_json_add_store(gsrc, store_type, path)
+.gdsrc_json_header()
 
-.gdsrc_json_add_project_version(gsrc, uid = paste0("giottosave_", .make_uid()))
+.gdsrc_json_write(p, x)
 
-.gdsrc_json_artifact_tag_version(gsrc, artifacts, version)
+.gdsrc_json_read(p, consolidate = FALSE)
 
-.gdsrc_json_artifacts(gsrc)
+.gdsrc_json_edit(p, uid, x)
+
+.gdsrc_json_add_artifact(p, store_type, uid, hash, meta = NULL)
+
+.gdsrc_json_consolidate(p)
 }
 \arguments{
-\item{gsrc}{\code{gDirSource}}
-
-\item{fun}{function. Function to edit catalog contents before writing.}
+\item{uid}{character. Unique ID for artifact tracking}
 
 \item{store_type}{character. Type of file format storage (e.g. \"h5\")}
-
-\item{uid}{character. Unique ID for asset tracking}
 
 \item{hash}{character. Hash of the in-memory store object to track changes}
 
@@ -39,28 +46,44 @@ be attached as further metadata to the particular uid}
 \description{
 Internal utilities for editing the \link{gDirSource} managed
 \code{giottodir.json}.
-These functions accept a \code{giotto} object and return a \code{giotto} object.
 }
 \section{Functions}{
 \itemize{
-\item \code{.gdsrc_json_edit_content()}: Hub function for editing the json. Business logic for
-ensuring that edits follow these steps:
-\enumerate{
-\item reading what exists on-disk into the \code{gDirSource} catalog
-\item performing the edit on the catalog using \code{fun}
-\item writing the catalog as a new version of the json
+\item \code{.json_atomic_write()}: Safe atomic writes of information to json
+files so that there is no instant at which the data does not exist
+on disk.
+
+\item \code{.json_read()}: json reading with specific params to work
+with GiottoDisk's usecase where values are generally atomic vectors
+
+\item \code{.gdsrc_json_header()}: general header to apply at top of json
+files from GiottoDisk. Stamps with information for:
+\itemize{
+\item GiottoDisk version
+\item manifest version
 }
 
-\item \code{.gdsrc_json_add_artifact()}: Add a tracked asset to the directory.
+\item \code{.gdsrc_json_write()}: Write function for the main
+\code{giottodir.json}.
 
-\item \code{.gdsrc_json_add_store()}: Add a file store_type to the directory.
+\item \code{.gdsrc_json_read()}: Read function for the main
+\code{giottodir.json}. This function does not check or consolidate
+pending edits by default.
 
-\item \code{.gdsrc_json_add_project_version()}: Establish a giotto project saved version ID.
+\item \code{.gdsrc_json_edit()}: Queue an edit to the manifest by
+generating a pending edit that is written to disk as a
+loose json. This can later be consolidated into the main
+\code{giottodir.json}.
 
-\item \code{.gdsrc_json_artifact_tag_version()}: Tag specific artifacts (based on uid) as belonging to
-a particular saved version of the giotto project
+\item \code{.gdsrc_json_add_artifact()}: Add a tracked artifact to the directory. This adds
+the tracking metadata for the object and places it in a location specified
+by \code{.gdsrc_json_pending_dir()} to await consolidation into the main
+\code{giottodir.json}.
 
-\item \code{.gdsrc_json_artifacts()}: Get table of artifacts information
+\item \code{.gdsrc_json_consolidate()}: Consolidate pending edits into central
+\code{giottodir.json} manifest. Scans for pending edits then applies
+the changes in a for loop on the manifest content before
+writing back out.
 
 }}
 \keyword{internal}

@@ -3,46 +3,11 @@
 \name{storeWrite}
 \alias{storeWrite}
 \alias{storeWrite,fileStore,fileStore-method}
-\alias{storeWrite,parquetStore,data.frame-method}
-\alias{storeWrite,parquetStore,ANY-method}
-\alias{storeWrite,parquetGeomStore,SpatVector-method}
-\alias{storeWrite,parquetGeomStore,data.frame-method}
-\alias{storeWrite,parquetGeomTileStore,fileStore-method}
 \alias{storeWrite,h5ArrayStore,memoryMatrix-method}
 \alias{storeWrite,tileDBArrayStore,memoryMatrix-method}
 \title{Write to a \code{dataStore}}
 \usage{
 \S4method{storeWrite}{fileStore,fileStore}(store, data, ...)
-
-\S4method{storeWrite}{parquetStore,data.frame}(store, data, callback = NULL, row_offset = 0L, ...)
-
-\S4method{storeWrite}{parquetStore,ANY}(store, data, callback = NULL, row_offset = 0L, ...)
-
-\S4method{storeWrite}{parquetGeomStore,SpatVector}(store, data, row_offset = 0, ...)
-
-\S4method{storeWrite}{parquetGeomStore,data.frame}(
-  store,
-  data,
-  type = c("point", "polygon"),
-  geom_param = list(verbose = FALSE),
-  row_offset = 0,
-  ...
-)
-
-\S4method{storeWrite}{parquetGeomTileStore,fileStore}(
-  store,
-  data,
-  n_tiles = 100,
-  tile = NULL,
-  sdimx = "x",
-  sdimy = "y",
-  poly_id = "id",
-  type = c("point", "polygon"),
-  dry_run = FALSE,
-  geom_param = list(verbose = FALSE),
-  verbose = NULL,
-  ...
-)
 
 \S4method{storeWrite}{h5ArrayStore,memoryMatrix}(store, data, ...)
 
@@ -54,13 +19,6 @@
 \item{data}{data to write}
 
 \item{...}{additional params to pass}
-
-\item{geom_param}{\code{list} (optional). Additional params to pass to
-\link[GiottoClass:createGiottoPoints]{GiottoClass::createGiottoPoints} or \link[GiottoClass:createGiottoPolygon]{GiottoClass::createGiottoPolygon},
-depending on \code{type}.}
-
-\item{`type`}{\code{character}. One of \code{point} or \code{polygon} depending on the
-geometries to create from the table data.}
 }
 \description{
 Write data to a \code{dataStore} inheriting class (usually a subclass of
