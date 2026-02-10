@@ -78,10 +78,10 @@ gDirSource <- function(path, ...) {
 #' @param ... additional params to pass
 #' @seealso [gDirSource()]
 #' @export
-sourceCreate <- function(type = "gsource", path, ...) {
-    type <- match.arg(type, choices = c("gsource"))
+sourceCreate <- function(path, type = "gDirSource", ...) {
+    type <- match.arg(tolower(type), choices = c("gdirsource"))
     switch(type,
-        "gsource" = gDirSource(path, ...)
+        "gdirsource" = gDirSource(path, ...)
     )
 }
 
