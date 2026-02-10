@@ -147,7 +147,22 @@ setMethod("[<-", signature("gDirSource", i = "character", j = "character", value
     checkmate::assert_atomic(value)
     entry <- list()
     entry[[j]] <- value
-    .gdsrc_json_edit(x@path, uid = i, x = entry)
+    lapply(i, function(uid) {
+        .gdsrc_json_edit(x@path, uid = uid, x = entry)
+    })
+    x
+})
+
+setMethod("[<-", signature("gDirSource", i = "missing", j = "character", value = "ANY"), function(x, i, j, ..., value) {
+    checkmate::assert_atomic(value)
+    entry <- list()
+    entry[[j]] <- value
+  
+    manifest <- .gdsrc_json_read(x@path, consolidate = TRUE)$content
+    all_uids <- names(manifest)
+    lapply(all_uids, function(uid) {
+        .gdsrc_json_edit(x@path, uid = uid, x = entry)
+    })
     x
 })
 
