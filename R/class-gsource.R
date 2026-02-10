@@ -333,7 +333,10 @@ NULL
     .gdsrc_json_edit(p = p, uid = uid, x = content)
 }
 
-# !! consolidation should only happen in single process situations
+#' @describeIn giotto_json Consolidate pending edits into central
+#' `giottodir.json` manifest. Scans for pending edits then applies
+#' the changes in a for loop on the manifest content before
+#' writing back out.
 .gdsrc_json_consolidate <- function(p) {
     pending_dir <- .gdsrc_json_pending_dir(p)
     scan_pending <- function() {

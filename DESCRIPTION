@@ -30,7 +30,8 @@ Imports:
     terra,
     tilework
 Suggests:
-    filelock
+    filelock,
+    testthat
 RoxygenNote: 7.3.3
 Collate: 
     'AllGenerics.R'
