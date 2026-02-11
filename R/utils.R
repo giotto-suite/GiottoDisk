@@ -53,9 +53,11 @@
 # make a unique identifier across nodes/process
 # randomness is enforced despite seed setting using withr-style
 # seed from the time and a worker-specific count
-.make_uid <- function(n = 8L) {
-    include_node <- getOption("giottodisk.uid_include_node", FALSE)
-    include_pid <- getOption("giottodisk.uid_include_pid", TRUE)
+.make_uid <- function(n = 8L, include_node = NULL, include_pid = NULL) {
+    include_node <- include_node %||% 
+        getOption("giottodisk.uid_include_node", FALSE)
+    include_pid <- include_pid %||% 
+        getOption("giottodisk.uid_include_pid", TRUE)
     count <- getOption("giottodisk.uid_count", 1L)
     on.exit({
         options("giottodisk.uid_count" = count + 1L)
