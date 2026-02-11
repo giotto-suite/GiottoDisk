@@ -282,7 +282,7 @@ setMethod("storeWrite", signature("h5ArrayStore", "memoryMatrix"),
         HDF5Array::writeHDF5Array(
             x = data,
             filepath = store@path,
-            name = store@name,
+            name = store@params$name,
             ...
         )
         store
@@ -302,6 +302,15 @@ setMethod("storeWrite", signature("tileDBArrayStore", "memoryMatrix"),
         store
     })
 
+# * bpcMatrixStore ####
+#' @rdname storeWrite
+#' @export
+setMethod("storeWrite", signature("bpcMatrixStore", "memoryMatrix"),
+    function(store, data, ...) {
+        p <- store@path
+        BPCells::write_matrix_dir(data, dir = p, ...)
+        store
+    })
 
 
 # internals ####

@@ -34,11 +34,11 @@ setMethod("show", signature("parquetGeomTileStore"), function(object) {
 setMethod("show", signature("h5ArrayStore"), function(object) {
     callNextMethod(object)
     if (!file.exists(object@path)) return(invisible())
-    cat(sprintf("name: \"%s\"\n", object@name))
+    cat(sprintf("name: \"%s\"\n", object@params$name))
 })
 
 setMethod("show", signature("tileDBArrayStore"), function(object) {
     callNextMethod(object)
     if (!file.exists(object@path)) return(invisible())
-    cat(sprintf("name: \"%s\"\n", object@name))
+    cat(sprintf("name: \"%s\"\n", object@params$name))
 })

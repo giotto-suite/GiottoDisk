@@ -2,6 +2,7 @@
 
 S3method(as.data.frame,gDirSource)
 S3method(as.list,gDirSource)
+export(bpcMatrixStore)
 export(fileStore)
 export(gDirSource)
 export(h5ArrayStore)

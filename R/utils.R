@@ -50,9 +50,25 @@
     x
 }
 
-# make a unique identifier across nodes/process
-# randomness is enforced despite seed setting using withr-style
-# seed from the time and a worker-specific count
+#' @name artifact_uid
+#' @aliases uid
+#' @title Artifact Unique Identifier
+#' @description
+#' Artifacts are tracked in [gDirSource-class] using an unique identifier.
+#' These are randomized alphanumeric strings of length 8 that can
+#' additionally be tagged with the process ID (pid) and node ID
+#' that generated it. Only the pid is tagged by default, but the
+#' node can also be tagged to help prevent collisions on multi-
+#' node setups by setting the appropriate option below:
+#' 
+#' * `giottodisk.uid_include_pid` (default = TRUE)
+#' * `giottodisk.uid_include_node` (default = FALSE)
+#' 
+#' These uids are not affected by user seed setting and instead use
+#' a temporary random seed based on the time and a process-specific
+#' counter.
+NULL
+
 .make_uid <- function(n = 8L, include_node = NULL, include_pid = NULL) {
     include_node <- include_node %||% 
         getOption("giottodisk.uid_include_node", FALSE)

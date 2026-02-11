@@ -9,7 +9,6 @@ NULL
 #' @title Data Storage
 #' @description
 #' S4 class define a storage of data. The base class `dataStore` is VIRTUAL
-#' @slot name description
 #' @family store types
 NULL
 
@@ -47,6 +46,9 @@ NULL
 #' but can be overridden for edge cases if needed.
 #'
 #' @slot path `character`. File system path (local or remote URI)
+#' @slot uid `character` (optional). unique ID for artifact tracking
+#' @slot params `list` Additional params such as remote names that are 
+#' relevant to the store type may be stored here as a named list.
 #' @slot read_fun `function`. Function to access data where `read_fun(path)`
 #'   returns the data in a useful format. Can be customized for
 #'   compression or other access requirements. Do not embed credentials in
@@ -102,7 +104,9 @@ setClass("fileStore",
     contains = "dataStore",
     slots = list(
         path = "character",
-        read_fun = "function"
+        uid = "character",
+        read_fun = "function",
+        params = "list"
     )
 )
 
@@ -136,17 +140,15 @@ setClass("parquetGeomTileStore",
 # * delayed ####
 
 setClass("h5ArrayStore",
-    contains = "fileStore",
-    slots = list(
-        name = "character"
-    )
+    contains = "fileStore"
 )
 
 setClass("tileDBArrayStore",
-    contains = "fileStore",
-    slots = list(
-        name = "character"
-    )
+    contains = "fileStore"
+)
+
+setClass("bpcMatrixStore",
+    contains = "fileStore"
 )
 
 # constructors ####
@@ -200,11 +202,18 @@ parquetGeomTileStore <- function(path = tempfile(), ...) {
 
 #' @name arrayStore
 #' @title Array Storage
+#' @param path storage directory
+#' @param name `character` Remote naming used by some storage types,
+#'   for example HDF5Array and TileDB.
 #' @export
 h5ArrayStore <- function(
     path = tempfile(), name = HDF5Array::getHDF5DumpName(), ...) {
     package_check("HDF5Array", repository = "Bioc")
-    new("h5ArrayStore", path = path, name = name, ...)
+    new("h5ArrayStore",
+        path = path, 
+        params = list("name" = name), 
+        ...
+    )
 }
 
 #' @rdname arrayStore
@@ -215,9 +224,28 @@ tileDBArrayStore <- function(
         ...
     ) {
     package_check("TileDBArray", repository = "Bioc")
-    new("tileDBArrayStore", path = path, name = name, ...)
+    new("tileDBArrayStore", 
+        path = path,
+        params = list("name" = name),
+        ...
+    )
 }
 
+#' @rdname arrayStore
+#' @export
+bpcMatrixStore <- function(
+    path = file.path(tempdir(), .make_uid()),
+    ...
+) {
+    package_check(
+        pkg_name = "BPCells", 
+        repository = "github:bnprks/BPCells/r"
+    )
+    new("bpcMatrixStore",
+        path = path, 
+        ...
+    )
+}
 
 #' @name storeCreate
 #' @title Create a Store

@@ -146,13 +146,21 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
 setMethod("storeRead", signature("h5ArrayStore"), function(store, ...) {
     HDF5Array::HDF5Array(
         filepath = store@path,
-        name = store@name,
+        name = store@params$name,
         ...
     )
 })
 
 setMethod("storeRead", signature("tileDBArrayStore"), function(store, ...) {
-   TileDBArray::TileDBArray(path = store@path, attr = store@name)
+    TileDBArray::TileDBArray(
+        path = store@path,
+        attr = store@params$name,
+        ...
+    )
+})
+
+setMethod("storeRead", signature("bpcMatrixStore"), function(store, ...) {
+    BPCells::open_matrix_dir(store@path, ...)
 })
 
 

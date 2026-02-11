@@ -37,9 +37,12 @@ setClass("gsource",
 #' where two processes attempt consolidation at the same time but see
 #' different `_pending` states.
 #' 
+#' # Artifact tracking
+#' 
 #' Data can be written to the backing directory using `sourceWrite()`.
 #' This serializes the data to disk using the preferred store types
-#' for the `gsource` class.
+#' for the `gsource` class. The artifact is also assigned an
+#' [artifact_uid] at this point.
 #' 
 #' # Directory Structure
 #' 
