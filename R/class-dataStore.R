@@ -210,7 +210,7 @@ h5ArrayStore <- function(
 #' @rdname arrayStore
 #' @export
 tileDBArrayStore <- function(
-        path = file.path(tempdir(), .random_id()),
+        path = file.path(tempdir(), .make_uid()),
         name = TileDBArray::getTileDBAttr(),
         ...
     ) {

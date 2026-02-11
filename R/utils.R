@@ -12,12 +12,6 @@
                identical(body_code, "{\n    NULL\n}"))
 }
 
-# generate a random identifier from upper/lower alphanumerics
-.random_id <- function(len = 8L) {
-    sampleset <- c(LETTERS, letters, seq(from = 0, to = 9))
-    paste0(sample(sampleset, size = len, replace = TRUE), collapse = "")
-}
-
 #' @name .dt_set_row_index
 #' @title data.table Utility: Add row index
 #' @description
@@ -57,6 +51,8 @@
 }
 
 # make a unique identifier across nodes/process
+# randomness is enforced despite seed setting using withr-style
+# seed from the time and a worker-specific count
 .make_uid <- function(n = 8L) {
     include_node <- getOption("giottodisk.uid_include_node", FALSE)
     include_pid <- getOption("giottodisk.uid_include_pid", TRUE)
@@ -65,11 +61,11 @@
         options("giottodisk.uid_count" = count + 1L)
     })
     GiottoUtils::gwith_seed(seed = Sys.time() + count, {
-        # enforce randomness
-        rand <- paste(
-            sample(c(letters, LETTERS, as.character(0:9)), n), 
-            collapse = ""
+        sampleset <- sample(c(letters, LETTERS, as.character(0:9)), 
+            size = n,
+            replace = TRUE
         )
+        rand <- paste(sampleset, collapse = "")
     })
 
     parts <- rand
