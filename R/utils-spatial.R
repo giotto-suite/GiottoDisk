@@ -52,7 +52,7 @@
         sdimy = "y_index",
         inclusive = c(FALSE, TRUE, TRUE, FALSE)
     ) {
-    if (length(inclusive == 1)) inclusive <- rep(inclusive, 4)
+    if (length(inclusive) == 1L) inclusive <- rep(inclusive, 4)
     e <- .ext_to_num_vec(ext(extent))
     if (inclusive[[1]]) {
         data <- dplyr::filter(data, !!as.name(sdimy) >= e[3])
