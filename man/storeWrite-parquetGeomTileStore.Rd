@@ -2,24 +2,8 @@
 % Please edit documentation in R/methods-storeWrite.R
 \name{storeWrite-parquetGeomTileStore}
 \alias{storeWrite-parquetGeomTileStore}
-\alias{storeWrite,parquetGeomTileStore,fileStore-method}
 \title{Write to a Parquet Geometry Tiled Storage}
 \usage{
-\S4method{storeWrite}{parquetGeomTileStore,fileStore}(
-  store,
-  data,
-  n_tiles = 100,
-  tile = NULL,
-  sdimx = "x",
-  sdimy = "y",
-  poly_id = "id",
-  type = c("point", "polygon"),
-  dry_run = FALSE,
-  geom_param = list(verbose = FALSE),
-  verbose = NULL,
-  ...
-)
-
 \S4method{storeWrite}{parquetGeomTileStore,fileStore}(
   store,
   data,

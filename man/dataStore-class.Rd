@@ -8,12 +8,6 @@
 \description{
 S4 class define a storage of data. The base class \code{dataStore} is VIRTUAL
 }
-\section{Slots}{
-
-\describe{
-\item{\code{name}}{description}
-}}
-
 \seealso{
 Other store types: 
 \code{\link{fileStore-class}},

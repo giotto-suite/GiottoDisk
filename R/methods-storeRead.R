@@ -30,14 +30,17 @@ setMethod("storeRead", signature("parquetStore"), function(store, fields = NULL,
     checkmate::assert_character(fields, null.ok = TRUE)
     output <- match.arg(output, choices = c("query", "tibble"))
     atab <- callNextMethod(store = store, ...)
-    res <- dplyr::arrange(atab, row_index)
     if (!is.null(fields)) {
         getcols <- unique(c("row_index", fields))
         atab <- dplyr::select(atab, arrow::all_of(getcols))
     }
     switch(output,
         "query" = atab,
-        "tibble" = dplyr::collect(atab)
+        "tibble" = {
+            atab |>
+                dplyr::arrange(row_index) |>
+                dplyr::collect()
+        }
     )
 })
 

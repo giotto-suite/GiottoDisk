@@ -28,7 +28,7 @@ setMethod("ncol", signature("fileStore"), function(x) {
 # * colnames ####
 setMethod("colnames", signature("parquetStore"), function(x) {
     atab <- storeRead(x)
-    colnames(atab)
+    names(atab)
 })
 
 # * crop ####

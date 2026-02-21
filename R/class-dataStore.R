@@ -110,12 +110,23 @@ setClass("fileStore",
     )
 )
 
+#' @rdname fileStore-class
+#' @section `queryableStore`:
+#' Subclass of `fileStore` that is accessible via dplyr query semantics.
+#' Flag that the `fileStore` is queryable by coercing to this class
+#' ```r
+#' as(x, "queryableStore")
+#' ```
+setClass("queryableStore",
+    contains = "fileStore"
+)
+
 # * parquet ####
 
 # cols: row_index, id, ...
 #' @rdname parquetStore-class
 setClass("parquetStore",
-    contains = "fileStore",
+    contains = "queryableStore",
     slots = list(
         path = "character",
         fields = "character"
@@ -133,9 +144,25 @@ setClass("parquetGeomStore",
 #' @rdname parquetStore-class
 setClass("parquetGeomTileStore",
     contains = "parquetGeomStore",
-    slots = list(tiles = "tileIterator")
+    slots = list(tiles = "tilePlan"),
+    prototype = list(
+        tiles = tilework::tilePlan("spatial")
+    )
 )
 
+# * coercion ####
+
+setAs("fileStore", "queryableStore", function(from) {
+    qs <- new("queryableStore",
+        path = from@path,
+        uid = from@uid,
+        read_fun = from@read_fun,
+        params = from@params
+    )
+    access <- storeRead(qs)
+    .guard_lazy_access(access)
+    qs
+})
 
 # * delayed ####
 
@@ -283,21 +310,24 @@ storeCreate <- function(path = tempfile(), type = "parquet", ...) {
     colnames(x)
 }
 
+# test if a store has been written and 'exists'
 .store_exists <- function(x) {
     # no path provided
     if (length(x@path) == 0L || is.na(x@path) || x@path == "") {
         return(FALSE)
     }
 
+    # test if path is remote URI
     if (grepl("^[a-zA-Z][a-zA-Z0-9+.-]*://", x@path)) {
         # Expensive: actually try to open it
         if (is.null(x@read_fun)) return(TRUE)
-        tryCatch({
+        remote_status <- tryCatch({
             dataset <- x@read_fun(x@path)
             !is.null(dataset)
         }, error = function(e) {
             FALSE  # Could be auth error OR missing file
         })
+        return(remote_status)
     }
 
     file.exists(x@path)
@@ -310,8 +340,7 @@ setMethod("initialize", signature("parquetStore"), function(.Object, ...) {
     if (!.store_exists(.Object)) return(.Object) # skip if not ready to read
     .Object@fields <- .get_fields(.Object) # cache colnames
     if (!"row_index" %in% .Object@fields) {
-        warning("[initialize] 'row_index' column should be present",
-                call. = FALSE)
+        stop("[initialize] no 'row_index' column", call. = FALSE)
     }
     .Object
 })

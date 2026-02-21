@@ -19,12 +19,11 @@
 #' @family storeWrite methods
 NULL
 
-
-
+.lazy_classes <- c("FileSystemDataset", "tbl_lazy", "arrow_dplyr_query")
 
 .guard_lazy_access <- function(x) {
-    if (!inherits(x, c("FileSystemDataset", "tbl_lazy", "arrow_dplyr_query"))) {
-        stop("[storeWrite] 'data' should be a `FileSystemDataset`, `arrow_dplyr_query`, or `tbl_lazy`")
+    if (!inherits(x, .lazy_classes)) {
+        stop("[storeWrite] 'data' should be one of: ", .lazy_classes)
     }
 }
 
@@ -114,7 +113,9 @@ setMethod("storeWrite", signature("parquetStore", "ANY"), function(store, data,
 
     # else, if there is something to be batch processed...
     # perform any callbacks and add a row_index if needed
-    data <- .arrow_map_batches(data, FUN = callback)
+    if (!is.null(callback)) {
+        data <- .arrow_map_batches(data, FUN = callback)
+    }
     # if row_index still missing...
     if (!"row_index" %in% colnames(data)) {
         data <- .arrow_add_row_index(data,
@@ -186,6 +187,13 @@ setMethod("storeWrite", signature("parquetGeomStore", "data.frame"),
     store
 })
 
+#' @describeIn storeWrite-parquetGeomStore reads in as `tibble`, then passes
+#' to `data.frame` method.
+#' @export
+setMethod("storeWrite", signature("parquetGeomStore", "parquetStore"), function(store, data, ...) {
+    storeWrite(store, storeRead(data, output = "tibble"), ...)
+})
+
 # * parquetGeomTileStore ####
 # this one cannot use data inputs other than fileStore since it is parallelized
 #' @name storeWrite-parquetGeomTileStore
@@ -196,37 +204,56 @@ setMethod("storeWrite", signature("parquetGeomStore", "data.frame"),
 #' @inheritParams storeWrite-parquetStore
 #' @inheritParams storeWrite-parquetGeomStore
 #' @param n_tiles `numeric`. Minimum number of tiles to write across
-#' @param tile tilework `tilePlan` (optional)
+#' @param i `integerlike` specific tile(s) to write. Leave as NULL (default)
+#'   to write all.
 #' @param sdimx,sdimy `character`. Names of columns containing x and y values,
 #'   respectively.
+#' @param poly_id `character`. If `type = "polygon"`, name of column containing
+#'   IDs that group vertices
+#' @param contiguous `logical` (default = TRUE) When `TRUE`, tile inclusivity
+#' rules (see [getBoundedData]) prevent duplication of data at tile boundaries
+#' (assuming no padding).
+#' @param dry_run `logical` (default = FALSE). When `TRUE`, stops after planning
+#' the tiles to write and plots the tiles to write.
+#' @param write_param named `list` (optional). Additional params to pass to the
+#' writing function.
+#' @param ... additional params to pass to `tileApply`
 #' @family storeWrite methods
 #' @export
-setMethod("storeWrite", signature("parquetGeomTileStore", "fileStore"),
+setMethod("storeWrite", signature("parquetGeomTileStore", "queryableStore"),
     function(store, data,
              n_tiles = 100,
-             tile = NULL,
-             sdimx = "x", sdimy = "y",
-             poly_id = "id",
+             i = NULL,
+             sdimx, sdimy, poly_id,
              type = c("point", "polygon"),
+             contiguous = TRUE,
              dry_run = FALSE,
              geom_param = list(verbose = FALSE),
+             write_param = list(),
              verbose = NULL,
              ...) {
+        type <- match.arg(type, choices = c("point", "polygon"))
+        poly_stores <- c("parquetStore")
+        if (type == "polygon" && !inherits(data, poly_stores)) {
+            msg <- c("[storeWrite] not a recognized type to write to 'parquetGeomTileStore'.\n",
+                " Consider writing to 'parquetStore' inheriting class first.")
+            stop(msg, call. = FALSE)
+        }
         GiottoUtils::package_check("arrow")
         a <- storeRead(data)
         # only permit lazy reading
-        if (!inherits(a, c("FileSystemDataset", "tbl_lazy", "arrow_dplyr_query"))) {
-            stop("[storeWrite] storeRead(data) should be a `FileSystemDataset` `arrow_dplyr_query`, or `tbl_lazy`")
-        }
+        .guard_lazy_access(a)
         if (nrow(a) == 0L) return(NULL)
-        type <- match.arg(type, choices = c("point", "polygon"))
         tiles <- store@tiles
-        # offsets are needed, so this can't be done by child processes
+        # row offsets are needed -- can't be calculated by child processes
         envelope <- switch(type,
             "point" = FALSE,
             "polygon" = TRUE
         )
-        tiles <- .annotate_tileiterator(tiles,
+
+        # 1. setup tiles with requested n
+        # 2. add $n_records and $row_offsets metadata/tile
+        tiles <- .tile_annotate(tiles,
             data = a,
             n_tiles = n_tiles,
             sdimx = sdimx,
@@ -234,45 +261,64 @@ setMethod("storeWrite", signature("parquetGeomTileStore", "fileStore"),
             poly_id = poly_id,
             envelope = envelope
         )
+        # get tile indices with non-zero counts
         tile_indices <- tiles$tile[tiles$n_records > 0L]
         vmsg(.v = verbose, sprintf("nonzero tiles: %d out of %d", length(tile_indices), n_tiles))
-
+        # select non-zero + requested tiles
+        # coerces to tiles to `tileSelection`
+        if (!is.null(i)) {
+            tile_sel <- tiles[i = intersect(tile_indices, as.integer(i)), drop = FALSE]
+        } else {
+            tile_sel <- tiles[i = tile_indices, drop = FALSE]
+        }
+        # 'dry_run' stops here. Show planning with a plot
         if (isTRUE(dry_run)) {
             message("[storeWrite] dry run: planned tiles")
-            plot(tiles, values = "n_records", main = "geoms per planned tile")
-            return(tiles)
+            plot(tile_sel, values = "n_records", main = "geoms per planned tile")
+            return(tile_sel)
         }
-        store@tiles <- tiles
-        store@extent <- .ext_to_num_vec(ext(tiles))
+        # update store slots
+        store@tiles <- tile_sel@tp
+        store@extent <- .ext_to_num_vec(ext(tile_sel@tp))
 
-        if (!is.null(tile)) tile_indices <- as.integer(tile) # write a specific tile
-        written_stores <- lapply_flex(tile_indices, function(tile_i) {
-            .pgts_write_tile(
-                store = store,
-                data = data,
-                tile_i = tile_i,
+        # write tile stores
+        written_stores <- tileApply(
+            x = data,
+            tiles = tile_sel,
+            contiguous = contiguous, # passes to getTile via ...
+            get_params_x = list( # passes to getBoundedData
                 sdimx = sdimx,
                 sdimy = sdimy,
-                poly_id = poly_id,
-                type = type,
-                geom_param = geom_param
-            )
-        },
-        future.seed = TRUE,
-        # future.packages = c("terra", "arrow", "data.table"),
-        future.globals = list(
-            store = store,
-            data = data,
-            sdimx = sdimx,
-            sdimy = sdimy,
-            poly_id = poly_id,
-            type = type,
-            geom_param = geom_param
-        ))
+                group_col = poly_id,
+                envelope = envelope
+            ),
+            FUN = function(tile_atab, .I, .TILE) {
+                # pull into memory
+                mem_data <- tile_atab |>
+                    dplyr::arrange(row_index) |>
+                    dplyr::collect() |>
+                    dplyr::select(-row_index)
+                tile_store <- storeCreate(
+                    path = .tilepath(store@path, idx = .I),
+                    type = "parquetGeom"
+                )
+                # pass to parquetGeomStore, data.frame
+                sw_args <- c(
+                    list(tile_store, mem_data, 
+                        type = type,
+                        geom_param = geom_param,
+                        row_offset = attr(.TILE, "row_offset")
+                    ), 
+                    write_param
+                )
+                do.call(storeWrite, sw_args)
+            },
+            ...
+        )
         written_stores <- written_stores[!vapply(written_stores, is.null, FUN.VALUE = logical(1L))]
         store@fields <- written_stores[[1]]@fields
         store
-})
+    })
 
 # * h5ArrayStore ####
 #' @rdname storeWrite

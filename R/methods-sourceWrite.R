@@ -13,6 +13,8 @@
 #' and save formats for a managed Giotto backend.
 #' @param data data to write
 #' @param meta `list`. Additional metadata to attach to this Giotto backend
+#' @param store_type `character`. Store type to write as
+#' @param ... additional params passed to `storeWrite` method
 #' managed artifact.
 #' @returns written `store` object
 #' @family sourceWrite methods
@@ -46,8 +48,7 @@ NULL
 #' storeRead(m_written)
 #' @export
 setMethod("sourceWrite", signature("gDirSource", "memoryMatrix"),
-    function(src, data, meta = NULL, ...) {
-        store_type <- getOption("giotto.gdsrc_matrix_format", "h5")
+    function(src, data, meta = NULL, store_type = getOption("giotto.gdsrc_matrix_format", "h5"), ...) {
         .gdsrc_write_artifact(src@path,
             data = data,
             store_type = store_type,
@@ -67,8 +68,7 @@ setMethod("sourceWrite", signature("gDirSource", "memoryMatrix"),
 #' storeRead(sv_written, output = "tibble")
 #' @export
 setMethod("sourceWrite", signature("gDirSource", "SpatVector"),
-    function(src, data, meta = NULL, ...) {
-        store_type <- getOption("giotto.gdsrc_spatvector_format", "parquetGeom")
+    function(src, data, meta = NULL, store_type = getOption("giotto.gdsrc_spatvector_format", "parquetGeom"), ...) {
         .gdsrc_write_artifact(src@path,
             data = data,
             store_type = store_type,
@@ -86,8 +86,17 @@ setMethod("sourceWrite", signature("gDirSource", "SpatVector"),
 #' storeRead(store, output = "tibble") # pull into memory as tibble
 #' @export
 setMethod("sourceWrite", signature("gDirSource", "data.frame"),
-    function(src, data, meta = NULL, ...) {
-        store_type <- getOption("giotto.gdsrc_dataframe_format", "parquet")
+    function(src, data, meta = NULL, store_type = getOption("giotto.gdsrc_dataframe_format", "parquet"), ...) {
+        .gdsrc_write_artifact(src@path,
+            data = data,
+            store_type = store_type,
+            meta = meta,
+            ...
+        )
+    })
+
+setMethod("sourceWrite", signature("gDirSource", "fileStore"),
+    function(src, data, meta = NULL, store_type, ...) {
         .gdsrc_write_artifact(src@path,
             data = data,
             store_type = store_type,

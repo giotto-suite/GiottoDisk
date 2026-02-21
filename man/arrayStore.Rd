@@ -4,15 +4,24 @@
 \alias{arrayStore}
 \alias{h5ArrayStore}
 \alias{tileDBArrayStore}
+\alias{bpcMatrixStore}
 \title{Array Storage}
 \usage{
 h5ArrayStore(path = tempfile(), name = HDF5Array::getHDF5DumpName(), ...)
 
 tileDBArrayStore(
-  path = file.path(tempdir(), .random_id()),
+  path = file.path(tempdir(), .make_uid()),
   name = TileDBArray::getTileDBAttr(),
   ...
 )
+
+bpcMatrixStore(path = file.path(tempdir(), .make_uid()), ...)
+}
+\arguments{
+\item{path}{storage directory}
+
+\item{name}{\code{character} Remote naming used by some storage types,
+for example HDF5Array and TileDB.}
 }
 \description{
 Array Storage

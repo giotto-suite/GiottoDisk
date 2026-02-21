@@ -19,16 +19,19 @@ Loose edits are later consolidated into the main manifest on-read
 is available for extra concurrency safety to avoid edge cases
 where two processes attempt consolidation at the same time but see
 different \verb{_pending} states.
-
-Data can be written to the backing directory using \code{sourceWrite()}.
-This serializes the data to disk using the preferred store types
-for the \code{gsource} class.
 }
 \section{Slots}{
 
 \describe{
 \item{\code{path}}{character. Directory to use}
 }}
+
+\section{Artifact tracking}{
+Data can be written to the backing directory using \code{sourceWrite()}.
+This serializes the data to disk using the preferred store types
+for the \code{gsource} class. The artifact is also assigned an
+\link{artifact_uid} at this point.
+}
 
 \section{Directory Structure}{
 \itemize{

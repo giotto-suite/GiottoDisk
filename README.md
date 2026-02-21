@@ -1,6 +1,6 @@
 # GiottoDisk
 
-Memory-efficient storage and processing framework for large-scale spatial
+On-disk processing framework for large-scale spatial
 genomics data.
 
 ## Overview

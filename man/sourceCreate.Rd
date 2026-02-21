@@ -4,7 +4,7 @@
 \alias{sourceCreate}
 \title{Create a Giotto Source}
 \usage{
-sourceCreate(type = "gsource", path, ...)
+sourceCreate(path, type = "gDirSource", ...)
 }
 \arguments{
 \item{path}{character. Directory to use}
