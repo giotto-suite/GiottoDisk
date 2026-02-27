@@ -5,6 +5,7 @@
 \alias{storeWrite,fileStore,fileStore-method}
 \alias{storeWrite,h5ArrayStore,memoryMatrix-method}
 \alias{storeWrite,tileDBArrayStore,memoryMatrix-method}
+\alias{storeWrite,bpcMatrixStore,memoryMatrix-method}
 \title{Write to a \code{dataStore}}
 \usage{
 \S4method{storeWrite}{fileStore,fileStore}(store, data, ...)
@@ -12,6 +13,8 @@
 \S4method{storeWrite}{h5ArrayStore,memoryMatrix}(store, data, ...)
 
 \S4method{storeWrite}{tileDBArrayStore,memoryMatrix}(store, data, ...)
+
+\S4method{storeWrite}{bpcMatrixStore,memoryMatrix}(store, data, ...)
 }
 \arguments{
 \item{store}{\code{dataStore} inheriting class}

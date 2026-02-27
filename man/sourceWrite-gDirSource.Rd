@@ -7,11 +7,29 @@
 \alias{sourceWrite,gDirSource,data.frame-method}
 \title{Write Data to a \code{gDirSource}}
 \usage{
-\S4method{sourceWrite}{gDirSource,memoryMatrix}(src, data, meta = NULL, ...)
+\S4method{sourceWrite}{gDirSource,memoryMatrix}(
+  src,
+  data,
+  meta = NULL,
+  store_type = getOption("giotto.gdsrc_matrix_format", "h5"),
+  ...
+)
 
-\S4method{sourceWrite}{gDirSource,SpatVector}(src, data, meta = NULL, ...)
+\S4method{sourceWrite}{gDirSource,SpatVector}(
+  src,
+  data,
+  meta = NULL,
+  store_type = getOption("giotto.gdsrc_spatvector_format", "parquetGeom"),
+  ...
+)
 
-\S4method{sourceWrite}{gDirSource,data.frame}(src, data, meta = NULL, ...)
+\S4method{sourceWrite}{gDirSource,data.frame}(
+  src,
+  data,
+  meta = NULL,
+  store_type = getOption("giotto.gdsrc_dataframe_format", "parquet"),
+  ...
+)
 }
 \arguments{
 \item{src}{\code{gsource} object. Used to provide default save locations
@@ -19,7 +37,11 @@ and save formats for a managed Giotto backend.}
 
 \item{data}{data to write}
 
-\item{meta}{\code{list}. Additional metadata to attach to this Giotto backend
+\item{meta}{\code{list}. Additional metadata to attach to this Giotto backend}
+
+\item{store_type}{\code{character}. Store type to write as}
+
+\item{...}{additional params passed to \code{storeWrite} method
 managed artifact.}
 }
 \value{

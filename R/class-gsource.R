@@ -109,8 +109,8 @@ setMethod("initialize", signature("gDirSource"), function(.Object, ...) {
 setMethod("show", signature("gDirSource"), function(object) {
     cat(sprintf("<%s>\n", class(object)))
 
-    gsave_ids <- list.files(.gdsrc_giottosave_dir(object@path),
-        full.names = FALSE, recursive = FALSE, pattern = "\\.rds"
+    gsave_ids <- .gdsrc_detect_gsavename(
+        .gdsrc_giottosave_dir(object@path)
     )
     cat("giottosaves:", length(gsave_ids), "\n")
     cat("artifacts:", length(object), "\n")
@@ -168,6 +168,27 @@ setMethod("[<-", signature("gDirSource", i = "missing", j = "character", value =
     })
     x
 })
+
+# source check ####
+
+#' @name resolveSource
+#' @title Source Detection and Regeneration
+#' @description
+#' Detect if an input path is to a known [gsource] type.
+#' If so, regenerate the source object. Otherwise, return
+#' FALSE.
+#' @param path `character` filepath to managed directory
+#' @returns `gsource` inheriting object if recognized source type,
+#' `FALSE` if not.
+#' @export
+resolveSource <- function(path) {
+    if (!dir.exists(path)) return(FALSE)
+    toplevel <- list.files(path, recursive = FALSE, full.names = FALSE)
+    if ("giottodir.json" %in% toplevel) {
+        return(sourceCreate(path, type = "gDirSource"))
+    }
+    FALSE
+}
 
 # json internal tools ####
 
@@ -335,31 +356,23 @@ NULL
 #' @param uid character. Unique ID for artifact tracking
 #' @param hash character. Hash of the in-memory store object to track changes
 #' @param meta list (optional). Additional list of atomic object(s) that can
+#' @param giottosave `character` tagged giotto save(s) if any.
 #' be attached as further metadata to the particular uid
 #' @keywords internal
-.gdsrc_json_add_artifact <- function(p, store_type, uid, hash, meta = NULL) {
+.gdsrc_json_add_artifact <- function(p, store_type, uid, hash, meta = NULL, giottosave = NA_character_) {
     checkmate::assert_character(store_type)
     checkmate::assert_character(uid)
     checkmate::assert_character(hash)
     checkmate::assert_list(meta, null.ok = TRUE)
+    checkmate::assert_character(giottosave)
 
     content <- list(
         "time" = .timestamp(),
         "store" = store_type,
-        "giottosave" = NA_character_, # tagged giotto save(s)
+        "giottosave" = giottosave,
         "hash" = hash
     )
     content <- c(content, meta)
-    .gdsrc_json_edit(p = p, uid = uid, x = content)
-}
-
-.gdsrc_json_tag_giottosave <- function(p, uid, giottosave) {
-    checkmate::assert_character(p)
-    checkmate::assert_character(uid)
-    checkmate::assert_character(giottosave)
-    content <- list(
-        "giottosave" = giottosave
-    )
     .gdsrc_json_edit(p = p, uid = uid, x = content)
 }
 
@@ -429,6 +442,17 @@ NULL
     invisible(TRUE)
 }
 
+# find existing gsave names (tags)
+# file extensions are stripped
+.gdsrc_detect_gsavename <- function(p) {
+    fnames <- list.files(p, 
+        pattern = "\\.rds|\\.qs",
+        recursive = FALSE,
+        full.names = FALSE
+    )
+    gsub("\\.rds$|\\.qs$", "", fnames)
+}
+
 #' @title Coerce gDirSource
 #' @name coerce_gdsrc
 #' @description
@@ -457,10 +481,7 @@ as.data.frame.gDirSource <- function(x, ...) {
 # - depends
 .gdsrc_artifact_prune <- function(p) {
     gsave_dir <- .gdsrc_giottosave_dir(p)
-    gsave_ids <- list.files(gsave_dir,
-        pattern = "\\.rds", recursive = FALSE, full.names = FALSE
-    )
-    gsave_ids <- gsub("\\.rds$", "", gsave_ids) # strip extension
+    gsave_ids <- .gdsrc_detect_gsavename(gsave_dir)
   
     manifest <- .gdsrc_json_read(p, consolidate = TRUE)$content
     art_ids <- names(manifest)
@@ -494,7 +515,9 @@ as.data.frame.gDirSource <- function(x, ...) {
     protected <- visited
   
     # prune unprotected artifacts
-    to_prune <- setdiff(art_ids, protected)
+    vdir <- .gdsrc_vault_dir(p)
+    all_ids <- list.files(vdir, recursive = FALSE, full.names = FALSE)
+    to_prune <- setdiff(all_ids, protected)
     
     for (uid in to_prune) {
         art_dir <- .gdsrc_artifact_dir(p, uid)

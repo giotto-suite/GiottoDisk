@@ -27,12 +27,12 @@ Imports:
     GiottoClass,
     GiottoUtils,
     methods,
-    mirai,
     terra,
     tilework
 Suggests:
     BPCells,
     filelock (>= 1.0.2),
+    qs,
     testthat
 RoxygenNote: 7.3.3
 Collate: 
@@ -42,8 +42,11 @@ Collate:
     'class-dataStore.R'
     'class-gsource.R'
     'methods-accessors.R'
+    'methods-aggregate.R'
     'methods-show.R'
+    'methods-sourceLoad.R'
     'methods-sourcePrune.R'
+    'methods-sourceSave.R'
     'methods-sourceWrite.R'
     'methods-storeRead.R'
     'methods-storeWrite.R'

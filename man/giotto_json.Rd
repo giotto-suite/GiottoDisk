@@ -29,7 +29,14 @@
 
 .gdsrc_json_edit(p, uid, x)
 
-.gdsrc_json_add_artifact(p, store_type, uid, hash, meta = NULL)
+.gdsrc_json_add_artifact(
+  p,
+  store_type,
+  uid,
+  hash,
+  meta = NULL,
+  giottosave = NA_character_
+)
 
 .gdsrc_json_consolidate(p)
 }
@@ -40,7 +47,9 @@
 
 \item{hash}{character. Hash of the in-memory store object to track changes}
 
-\item{meta}{list (optional). Additional list of atomic object(s) that can
+\item{meta}{list (optional). Additional list of atomic object(s) that can}
+
+\item{giottosave}{\code{character} tagged giotto save(s) if any.
 be attached as further metadata to the particular uid}
 }
 \description{

@@ -9,7 +9,11 @@ and save formats for a managed Giotto backend.}
 
 \item{data}{data to write}
 
-\item{meta}{\code{list}. Additional metadata to attach to this Giotto backend
+\item{meta}{\code{list}. Additional metadata to attach to this Giotto backend}
+
+\item{store_type}{\code{character}. Store type to write as}
+
+\item{...}{additional params passed to \code{storeWrite} method
 managed artifact.}
 }
 \value{

@@ -5,6 +5,15 @@
 #' Read from a `dataStore` inheriting object. The output should be a useful
 #' representation of the contained data.
 #' @param store `dataStore` inheriting object
+#' @param extent `SpatExtent` to filter on (optional)
+#' @param tile `integerlike` (optional) specific tile number(s) to read
+#' @param fields `character` (optional) specific fields/columns to read
+#' @param output `character` (default = "query"). Format to get values in:
+#' 
+#'   * "query" - produces an arrow lazy query
+#'   * "tibble" - materialized dplyr tibble
+#'   * "terra" - materialized `SpatVector`
+#'   * "sf" - materialized `SpatialDataFrame`
 #' @param ... additional params to pass (if any implemented)
 NULL
 
@@ -14,6 +23,8 @@ setMethod("storeRead", signature("ANY"), function(store, ...) {
     stop(sprintf("Reading not implemented for store type %s\n", class(store)))
 })
 
+#' @rdname storeRead
+#' @export
 setMethod("storeRead", signature("fileStore"), function(store, ...) {
     if (.is_empty_fun(store@read_fun)) {
         stop("[storeRead] a specific 'read_fun' must be provided for `fileStore`\n",
@@ -25,6 +36,8 @@ setMethod("storeRead", signature("fileStore"), function(store, ...) {
     store@read_fun(store@path)
 })
 
+#' @rdname storeRead
+#' @export
 setMethod("storeRead", signature("parquetStore"), function(store, fields = NULL, output = c("query", "tibble"), ...) {
     GiottoUtils::package_check("arrow")
     checkmate::assert_character(fields, null.ok = TRUE)
@@ -44,6 +57,8 @@ setMethod("storeRead", signature("parquetStore"), function(store, fields = NULL,
     )
 })
 
+#' @rdname storeRead
+#' @export
 setMethod("storeRead", signature("parquetGeomStore"), function(store,
     extent = NULL, fields = NULL,
     output = c("query", "tibble", "terra", "sf"), ...) {
@@ -90,6 +105,8 @@ setMethod("storeRead", signature("parquetGeomStore"), function(store,
     )
 })
 
+#' @rdname storeRead
+#' @export
 setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
     extent = NULL, tile = NULL, fields = NULL,
     output = c("query", "tibble", "terra", "sf"), ...) {
@@ -146,6 +163,8 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
     )
 })
 
+#' @rdname storeRead
+#' @export
 setMethod("storeRead", signature("h5ArrayStore"), function(store, ...) {
     HDF5Array::HDF5Array(
         filepath = store@path,
@@ -154,6 +173,8 @@ setMethod("storeRead", signature("h5ArrayStore"), function(store, ...) {
     )
 })
 
+#' @rdname storeRead
+#' @export
 setMethod("storeRead", signature("tileDBArrayStore"), function(store, ...) {
     TileDBArray::TileDBArray(
         path = store@path,
@@ -162,6 +183,8 @@ setMethod("storeRead", signature("tileDBArrayStore"), function(store, ...) {
     )
 })
 
+#' @rdname storeRead
+#' @export
 setMethod("storeRead", signature("bpcMatrixStore"), function(store, ...) {
     BPCells::open_matrix_dir(store@path, ...)
 })

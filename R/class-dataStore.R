@@ -279,21 +279,30 @@ bpcMatrixStore <- function(
 #' @description
 #' Hub function for creating a concrete store class.
 #' @param path `character`. Disk path to file or hive storage directory
-#' @param type `character`. Type of store to create. Currently one of
-#' `"parquet"`, `"parquetGeom"`, `"parquetGeomTile"`, or `"file"`.
+#' @param type `character`. Type of store to create. Currently one of:
+#' 
+#' * `"file"`
+#' * `"parquet"`
+#' * `"parquetGeom"`
+#' * `"parquetGeomTile"`
+#' * `"h5"`
+#' * `"bpcells"`
+#' * `"tiledb"`
 #' @family store constructors
 #' @seealso [store]
 #' @export
 storeCreate <- function(path = tempfile(), type = "parquet", ...) {
-    type <- match.arg(type,
-        choices = c("parquet", "parquetGeom", "parquetGeomTile", "file", "h5")
+    type <- match.arg(tolower(type),
+        choices = c("parquet", "parquetgeom", "parquetgeomtile", "file", "h5", "bpcells", "tiledb")
     )
     store <- switch(type,
         "parquet" = parquetStore(path = path, ...),
-        "parquetGeom" = parquetGeomStore(path = path, ...),
-        "parquetGeomTile" = parquetGeomTileStore(path = path, ...),
+        "parquetgeom" = parquetGeomStore(path = path, ...),
+        "parquetgeomtile" = parquetGeomTileStore(path = path, ...),
         "file" = fileStore(path = path, ...),
-        "h5" = h5ArrayStore(path = path, ...)
+        "h5" = h5ArrayStore(path = path, ...),
+        "bpcells" = bpcMatrixStore(path = path, ...),
+        "tiledb" = tileDBArrayStore(path = path, ...)
     )
     store
 }

@@ -13,3 +13,10 @@ setMethod("sourcePrune", signature("gDirSource"),
     function(src, ...) {
         .gdsrc_artifact_prune(src@path)
     })
+
+#' @rdname sourcePrune
+#' @export
+setMethod("sourcePrune", signature("giotto"), function(src, ...) {
+    if (is.null(src@source)) return(invisible())
+    sourcePrune(src@source)
+})

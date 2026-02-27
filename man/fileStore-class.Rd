@@ -3,6 +3,7 @@
 \docType{class}
 \name{fileStore-class}
 \alias{fileStore-class}
+\alias{queryableStore-class}
 \title{File Store}
 \description{
 S4 class for disk-backed data storage. Defines a file system \code{path} and
@@ -20,7 +21,7 @@ a \code{read_fun} method for accessing the data. Create with \code{\link[=fileSt
 \describe{
 \item{\code{path}}{\code{character}. File system path (local or remote URI)}
 
-\item{\code{uid}}{\code{character} unique ID for artifact tracking}
+\item{\code{uid}}{\code{character} (optional). unique ID for artifact tracking}
 
 \item{\code{params}}{\code{list} Additional params such as remote names that are
 relevant to the store type may be stored here as a named list.}
@@ -54,6 +55,15 @@ fst_store <- fileStore(path = "data.fst", read_fun = fst::read_fst)
 
 Specialized stores (parquetStore, h5ArrayStore, etc.) have preset readers
 but can be overridden for edge cases if needed.
+}
+
+\section{\code{queryableStore}}{
+
+Subclass of \code{fileStore} that is accessible via dplyr query semantics.
+Flag that the \code{fileStore} is queryable by coercing to this class
+
+\if{html}{\out{<div class="sourceCode r">}}\preformatted{as(x, "queryableStore")
+}\if{html}{\out{</div>}}
 }
 
 \seealso{

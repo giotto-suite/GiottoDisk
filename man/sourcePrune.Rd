@@ -2,9 +2,12 @@
 % Please edit documentation in R/methods-sourcePrune.R
 \name{sourcePrune}
 \alias{sourcePrune}
+\alias{sourcePrune,giotto-method}
 \title{Prune a project source}
 \usage{
 \S4method{sourcePrune}{gDirSource}(src, ...)
+
+\S4method{sourcePrune}{giotto}(src, ...)
 }
 \arguments{
 \item{src}{\code{gsource} object. Used to provide default save locations

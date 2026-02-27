@@ -4,17 +4,19 @@
 \alias{storeWrite-parquetGeomTileStore}
 \title{Write to a Parquet Geometry Tiled Storage}
 \usage{
-\S4method{storeWrite}{parquetGeomTileStore,fileStore}(
+\S4method{storeWrite}{parquetGeomTileStore,queryableStore}(
   store,
   data,
   n_tiles = 100,
-  tile = NULL,
-  sdimx = "x",
-  sdimy = "y",
-  poly_id = "id",
+  i = NULL,
+  sdimx,
+  sdimy,
+  poly_id,
   type = c("point", "polygon"),
+  contiguous = TRUE,
   dry_run = FALSE,
   geom_param = list(verbose = FALSE),
+  write_param = list(),
   verbose = NULL,
   ...
 )
@@ -26,20 +28,34 @@
 
 \item{n_tiles}{\code{numeric}. Minimum number of tiles to write across}
 
-\item{tile}{tilework \code{tilePlan} (optional)}
+\item{i}{\code{integerlike} specific tile(s) to write. Leave as NULL (default)
+to write all.}
 
 \item{sdimx, sdimy}{\code{character}. Names of columns containing x and y values,
 respectively.}
+
+\item{poly_id}{\code{character}. If \code{type = "polygon"}, name of column containing
+IDs that group vertices}
 
 \item{type}{\code{character}. Either \code{"point"} or \code{"polygon"}. What type of
 geometry to write. Determines whether \code{\link[GiottoClass:createGiottoPoints]{GiottoClass::createGiottoPoints()}}
 or \code{\link[GiottoClass:createGiottoPolygon]{GiottoClass::createGiottoPolygon()}} is used to parse the values.}
 
+\item{contiguous}{\code{logical} (default = TRUE) When \code{TRUE}, tile inclusivity
+rules (see \link{getBoundedData}) prevent duplication of data at tile boundaries
+(assuming no padding).}
+
+\item{dry_run}{\code{logical} (default = FALSE). When \code{TRUE}, stops after planning
+the tiles to write and plots the tiles to write.}
+
 \item{geom_param}{\code{list} (optional). Additional params to pass to
 \link[GiottoClass:createGiottoPoints]{GiottoClass::createGiottoPoints} or \link[GiottoClass:createGiottoPolygon]{GiottoClass::createGiottoPolygon},
 depending on \code{type}.}
 
-\item{...}{additional params to pass}
+\item{write_param}{named \code{list} (optional). Additional params to pass to the
+writing function.}
+
+\item{...}{additional params to pass to \code{tileApply}}
 }
 \description{
 Write geometry data in a spatially tiled manner.

@@ -2,11 +2,60 @@
 % Please edit documentation in R/methods-storeRead.R
 \name{storeRead}
 \alias{storeRead}
+\alias{storeRead,fileStore-method}
+\alias{storeRead,parquetStore-method}
+\alias{storeRead,parquetGeomStore-method}
+\alias{storeRead,parquetGeomTileStore-method}
+\alias{storeRead,h5ArrayStore-method}
+\alias{storeRead,tileDBArrayStore-method}
+\alias{storeRead,bpcMatrixStore-method}
 \title{Read a \code{dataStore}}
+\usage{
+\S4method{storeRead}{fileStore}(store, ...)
+
+\S4method{storeRead}{parquetStore}(store, fields = NULL, output = c("query", "tibble"), ...)
+
+\S4method{storeRead}{parquetGeomStore}(
+  store,
+  extent = NULL,
+  fields = NULL,
+  output = c("query", "tibble", "terra", "sf"),
+  ...
+)
+
+\S4method{storeRead}{parquetGeomTileStore}(
+  store,
+  extent = NULL,
+  tile = NULL,
+  fields = NULL,
+  output = c("query", "tibble", "terra", "sf"),
+  ...
+)
+
+\S4method{storeRead}{h5ArrayStore}(store, ...)
+
+\S4method{storeRead}{tileDBArrayStore}(store, ...)
+
+\S4method{storeRead}{bpcMatrixStore}(store, ...)
+}
 \arguments{
 \item{store}{\code{dataStore} inheriting object}
 
 \item{...}{additional params to pass (if any implemented)}
+
+\item{fields}{\code{character} (optional) specific fields/columns to read}
+
+\item{output}{\code{character} (default = "query"). Format to get values in:
+\itemize{
+\item "query" - produces an arrow lazy query
+\item "tibble" - materialized dplyr tibble
+\item "terra" - materialized \code{SpatVector}
+\item "sf" - materialized \code{SpatialDataFrame}
+}}
+
+\item{extent}{\code{SpatExtent} to filter on (optional)}
+
+\item{tile}{\code{integerlike} (optional) specific tile number(s) to read}
 }
 \description{
 Read from a \code{dataStore} inheriting object. The output should be a useful

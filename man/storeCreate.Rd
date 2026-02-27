@@ -9,8 +9,16 @@ storeCreate(path = tempfile(), type = "parquet", ...)
 \arguments{
 \item{path}{\code{character}. Disk path to file or hive storage directory}
 
-\item{type}{\code{character}. Type of store to create. Currently one of
-\code{"parquet"}, \code{"parquetGeom"}, \code{"parquetGeomTile"}, or \code{"file"}.}
+\item{type}{\code{character}. Type of store to create. Currently one of:
+\itemize{
+\item \code{"file"}
+\item \code{"parquet"}
+\item \code{"parquetGeom"}
+\item \code{"parquetGeomTile"}
+\item \code{"h5"}
+\item \code{"bpcells"}
+\item \code{"tiledb"}
+}}
 }
 \description{
 Hub function for creating a concrete store class.

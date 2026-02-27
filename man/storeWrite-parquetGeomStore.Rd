@@ -3,6 +3,7 @@
 \name{storeWrite-parquetGeomStore}
 \alias{storeWrite-parquetGeomStore}
 \alias{storeWrite,parquetGeomStore,data.frame-method}
+\alias{storeWrite,parquetGeomStore,parquetStore-method}
 \title{Write to a Parquet Geometry Storage}
 \usage{
 \S4method{storeWrite}{parquetGeomStore,SpatVector}(store, data, row_offset = 0, ...)
@@ -15,6 +16,8 @@
   row_offset = 0,
   ...
 )
+
+\S4method{storeWrite}{parquetGeomStore,parquetStore}(store, data, ...)
 }
 \arguments{
 \item{store}{\code{dataStore} inheriting class}
@@ -49,6 +52,12 @@ May be written either directly from terra \code{SpatVector} or \code{data.frame}
 that are first parsed via GiottoClass \code{createGiottoPoints} or
 \code{createGiottoPolygon}, depending on the \code{type} param.
 }
+\section{Functions}{
+\itemize{
+\item \code{storeWrite(store = parquetGeomStore, data = parquetStore)}: reads in as \code{tibble}, then passes
+to \code{data.frame} method.
+
+}}
 \seealso{
 Other storeWrite methods: 
 \code{\link{storeWrite}()},
