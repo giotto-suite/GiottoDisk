@@ -10,3 +10,5 @@ docs
 codecov.yml
 pkgdown
 cell_rna*
+README_files
+README.html

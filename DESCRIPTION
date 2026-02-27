@@ -26,14 +26,17 @@ Imports:
     dplyr,
     GiottoClass,
     GiottoUtils,
+    jsonlite,
     methods,
     terra,
     tilework
 Suggests:
     BPCells,
     filelock (>= 1.0.2),
+    HDF5Array
     qs,
-    testthat
+    testthat,
+    TileDBArray
 RoxygenNote: 7.3.3
 Collate: 
     'AllGenerics.R'
