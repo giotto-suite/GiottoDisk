@@ -75,8 +75,10 @@ NULL
 #' @slot fields character. Cached column names from the parquet dataset.
 #' @slot read_fun function. Preset to `arrow::open_dataset()` for standard
 #'   parquet access. Can be customized for edge cases (see [fileStore-class]).
-#' @slot extent numeric(4). (parquetGeomStore only) Spatial extent as
+#' @slot extent numeric(4). (`parquetGeomStore`-inheriting) Spatial extent as
 #'   xmin, xmax, ymin, ymax of contained geometries.
+#' @slot geomtype `character` (`parquetGeomStore`-inheriting) Type of geometry
+#'   contained (i.e. polygons/points)
 #' @slot tiles tileIterator. (parquetGeomTileStore only) \{tilework\} object
 #'   defining which tile(s) in a tile plan this store is responsible for.
 #'
@@ -137,7 +139,10 @@ setClass("parquetStore",
 #' @rdname parquetStore-class
 setClass("parquetGeomStore",
     contains = "parquetStore",
-    slots = list(extent = "numeric")
+    slots = list(
+        extent = "numeric",
+        geomtype = "character"  
+    )
 )
 
 # cols: row_index, x_index, y_index, tile_index, geom, id, ...

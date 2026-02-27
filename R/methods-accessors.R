@@ -47,3 +47,7 @@ setMethod("ext", signature("parquetGeomStore"), function(x, ...) {
     }
     ext(x@extent)
 })
+
+setMethod("geomtype", signature("parquetGeomStore"), function(x) {
+    x@geomtype
+})

@@ -12,7 +12,7 @@
   sdimx,
   sdimy,
   poly_id,
-  type = c("point", "polygon"),
+  type = c("points", "polygons"),
   contiguous = TRUE,
   dry_run = FALSE,
   geom_param = list(verbose = FALSE),
@@ -34,10 +34,10 @@ to write all.}
 \item{sdimx, sdimy}{\code{character}. Names of columns containing x and y values,
 respectively.}
 
-\item{poly_id}{\code{character}. If \code{type = "polygon"}, name of column containing
+\item{poly_id}{\code{character}. If \code{type = "polygons"}, name of column containing
 IDs that group vertices}
 
-\item{type}{\code{character}. Either \code{"point"} or \code{"polygon"}. What type of
+\item{type}{\code{character}. Either \code{"points"} or \code{"polygons"}. What type of
 geometry to write. Determines whether \code{\link[GiottoClass:createGiottoPoints]{GiottoClass::createGiottoPoints()}}
 or \code{\link[GiottoClass:createGiottoPolygon]{GiottoClass::createGiottoPolygon()}} is used to parse the values.}
 

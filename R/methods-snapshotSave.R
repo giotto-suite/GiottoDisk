@@ -1,4 +1,4 @@
-#' @name sourceSave
+#' @name snapshotSave
 #' @title Write Giotto Snapshot
 #' @description
 #' Register a gobject snapshot into the source
@@ -15,11 +15,11 @@
 #' @returns TRUE if save completed
 NULL
 
-#' @rdname sourceSave
+#' @rdname snapshotSave
 #' @param export_image `logical` (default = TRUE) Whether to make a copy of
 #'   external images in the project directory
 #' @export
-setMethod("sourceSave", signature("gDirSource", "giotto"), function(src, x,
+setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     name = format(Sys.time(), "%Y%m%d_giottosave"),
     method = c("rds", "qs"),
     method_params = list(),
@@ -43,7 +43,7 @@ setMethod("sourceSave", signature("gDirSource", "giotto"), function(src, x,
         name <- .ss_gdsrc_find_autoname(gsdir, name)
     }
     if (name %in% .gdsrc_detect_gsavename(gsdir) && !overwrite) {
-       stop("[sourceSave] giotto snapshot of this name already exists.\n",
+       stop("[snapshotSave] giotto snapshot of this name already exists.\n",
           "Change 'name' or set 'overwrite = TRUE'", call. = FALSE)
     }
   
@@ -72,12 +72,12 @@ setMethod("sourceSave", signature("gDirSource", "giotto"), function(src, x,
     )
     
     res <- file.rename(from = temp, to = fullpath)
-    if (!res) stop("[sourceSave] save failed\n", call. = FALSE)
+    if (!res) stop("[snapshotSave] save failed\n", call. = FALSE)
   
     # tagging --------------------------------------------------- #
     vmsg(.v = verbose, "[GiottoDisk] tagging snapshot artifacts...")
     uids <- .ss_gdsrc_detect_uid(x)
-    if (length(uids) == 0L) return(TRUE)
+    if (length(uids) == 0L) return(invisible(TRUE))
     
     manifest <- as.data.frame(src)
     for (uid_to_tag in uids) {
@@ -88,7 +88,7 @@ setMethod("sourceSave", signature("gDirSource", "giotto"), function(src, x,
     }
   
     vmsg(.v = verbose, "[GiottoDisk] done")
-    TRUE
+    invisible(TRUE)
 })
 
 # internals ####
@@ -236,7 +236,7 @@ setMethod("sourceSave", signature("gDirSource", "giotto"), function(src, x,
         ntest <- sprintf("%s_%02d", name, counter)
         counter <- counter + 1L
         if (counter > 100L) {
-            stop("[sourceSave] automatic 'name' setting failed\n", call. = FALSE)
+            stop("[snapshotSave] automatic 'name' setting failed\n", call. = FALSE)
         }
     }
     ntest

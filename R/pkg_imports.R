@@ -1,7 +1,7 @@
 #' @import GiottoUtils
 #' @import tilework
 #' @import methods
-#' @importFrom terra crop ext
+#' @importFrom terra crop ext geomtype
 #' @importFrom GiottoClass XY calculateOverlap overlapToMatrix setGiotto
 #' @importClassesFrom GiottoClass giotto
 #' @importClassesFrom terra SpatVector

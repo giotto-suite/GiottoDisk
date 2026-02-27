@@ -140,7 +140,7 @@ setMethod("storeWrite", signature("parquetStore", "ANY"), function(store, data,
 #' `createGiottoPolygon`, depending on the `type` param.
 #' @inheritParams storeWrite
 #' @inheritParams storeWrite-parquetStore
-#' @param `type` `character`. One of `point` or `polygon` depending on the
+#' @param `type` `character`. One of `"points"` or `"polygons"` depending on the
 #' geometries to create from the table data.
 #' @param geom_param `list` (optional). Additional params to pass to
 #' [GiottoClass::createGiottoPoints] or [GiottoClass::createGiottoPolygon],
@@ -153,6 +153,7 @@ setMethod("storeWrite", signature("parquetGeomStore", "SpatVector"), function(st
     if (nrow(data) == 0L) return(NULL)
     GiottoUtils::package_check("arrow")
     store@extent <- .ext_to_num_vec(ext(data))
+    store@geomtype <- terra::geomtype(data)
     data <- .terra_to_parquet_format(data, row_offset = row_offset)
     store_write_next <- methods::getMethod("storeWrite",
         signature("parquetStore", "data.frame")
@@ -163,23 +164,23 @@ setMethod("storeWrite", signature("parquetGeomStore", "SpatVector"), function(st
 
 # parse geometries via {GiottoClass} then pass to further conversion and writes
 #' @rdname storeWrite-parquetGeomStore
-#' @param type `character`. Either `"point"` or `"polygon"`. What type of
+#' @param type `character`. Either `"points"` or `"polygons"`. What type of
 #'   geometry to write. Determines whether [GiottoClass::createGiottoPoints()]
 #'   or [GiottoClass::createGiottoPolygon()] is used to parse the values.
 #' @export
 setMethod("storeWrite", signature("parquetGeomStore", "data.frame"),
     function(store, data,
-        type = c("point", "polygon"),
+        type = c("points", "polygons"),
         geom_param = list(verbose = FALSE),
         row_offset = 0,
         ...) {
     if (nrow(data) == 0L) return(NULL)
     GiottoUtils::package_check("arrow")
     checkmate::assert_list(geom_param)
-    type <- match.arg(type, choices = c("point", "polygon"))
+    type <- match.arg(type, choices = c("points", "polygons"))
     fun <- switch(type,
-        "point" = GiottoClass::createGiottoPoints,
-        "polygon" = GiottoClass::createGiottoPolygon
+        "points" = GiottoClass::createGiottoPoints,
+        "polygons" = GiottoClass::createGiottoPolygon
     )
     # coerce to giotto representation -> SpatVector
     data <- do.call(fun, args = c(list(data), geom_param))
@@ -208,7 +209,7 @@ setMethod("storeWrite", signature("parquetGeomStore", "parquetStore"), function(
 #'   to write all.
 #' @param sdimx,sdimy `character`. Names of columns containing x and y values,
 #'   respectively.
-#' @param poly_id `character`. If `type = "polygon"`, name of column containing
+#' @param poly_id `character`. If `type = "polygons"`, name of column containing
 #'   IDs that group vertices
 #' @param contiguous `logical` (default = TRUE) When `TRUE`, tile inclusivity
 #' rules (see [getBoundedData]) prevent duplication of data at tile boundaries
@@ -225,16 +226,16 @@ setMethod("storeWrite", signature("parquetGeomTileStore", "queryableStore"),
              n_tiles = 100,
              i = NULL,
              sdimx, sdimy, poly_id,
-             type = c("point", "polygon"),
+             type = c("points", "polygons"),
              contiguous = TRUE,
              dry_run = FALSE,
              geom_param = list(verbose = FALSE),
              write_param = list(),
              verbose = NULL,
              ...) {
-        type <- match.arg(type, choices = c("point", "polygon"))
+        type <- match.arg(type, choices = c("points", "polygons"))
         poly_stores <- c("parquetStore")
-        if (type == "polygon" && !inherits(data, poly_stores)) {
+        if (type == "polygons" && !inherits(data, poly_stores)) {
             msg <- c("[storeWrite] not a recognized type to write to 'parquetGeomTileStore'.\n",
                 " Consider writing to 'parquetStore' inheriting class first.")
             stop(msg, call. = FALSE)
@@ -247,8 +248,8 @@ setMethod("storeWrite", signature("parquetGeomTileStore", "queryableStore"),
         tiles <- store@tiles
         # row offsets are needed -- can't be calculated by child processes
         envelope <- switch(type,
-            "point" = FALSE,
-            "polygon" = TRUE
+            "points" = FALSE,
+            "polygons" = TRUE
         )
 
         # 1. setup tiles with requested n
@@ -362,16 +363,16 @@ setMethod("storeWrite", signature("bpcMatrixStore", "memoryMatrix"),
 # internals ####
 
 .pgts_write_tile <- function(store, data, tile_i,
-    sdimx = "x", sdimy = "y", poly_id = "id", type = c("point", "polygon"),
+    sdimx = "x", sdimy = "y", poly_id = "id", type = c("points", "polygons"),
     geom_param = list(verbose = FALSE), ...) {
     if (!inherits(data, "fileStore")) {
         stop("'data' must inherit from `fileStore`\n", call. = FALSE)
     }
-    type <- match.arg(type, choices = c("point", "polygon"))
+    type <- match.arg(type, choices = c("points", "polygons"))
     tile_i = as.integer(tile_i)
     envelope <- switch(type,
-        "point" = FALSE,
-        "polygon" = TRUE
+        "points" = FALSE,
+        "polygons" = TRUE
     )
 
     # generate arrow file pointer
@@ -386,7 +387,7 @@ setMethod("storeWrite", signature("bpcMatrixStore", "memoryMatrix"),
         group_col = poly_id,
         envelope = envelope
     )
-    if (type == "polygon") {
+    if (type == "polygons") {
         tile_data <- dplyr::arrange(tile_data, !!as.name(poly_id))
     }
     # pull into memory

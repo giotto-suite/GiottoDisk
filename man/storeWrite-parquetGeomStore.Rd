@@ -11,7 +11,7 @@
 \S4method{storeWrite}{parquetGeomStore,data.frame}(
   store,
   data,
-  type = c("point", "polygon"),
+  type = c("points", "polygons"),
   geom_param = list(verbose = FALSE),
   row_offset = 0,
   ...
@@ -31,7 +31,7 @@ the first \code{row_index} value in this file will be \code{1}.}
 \item{...}{addtional params to pass to \code{parquetStore} method and
 \code{\link[arrow:write_dataset]{arrow::write_dataset()}}}
 
-\item{type}{\code{character}. Either \code{"point"} or \code{"polygon"}. What type of
+\item{type}{\code{character}. Either \code{"points"} or \code{"polygons"}. What type of
 geometry to write. Determines whether \code{\link[GiottoClass:createGiottoPoints]{GiottoClass::createGiottoPoints()}}
 or \code{\link[GiottoClass:createGiottoPolygon]{GiottoClass::createGiottoPolygon()}} is used to parse the values.}
 
@@ -39,7 +39,7 @@ or \code{\link[GiottoClass:createGiottoPolygon]{GiottoClass::createGiottoPolygon
 \link[GiottoClass:createGiottoPoints]{GiottoClass::createGiottoPoints} or \link[GiottoClass:createGiottoPolygon]{GiottoClass::createGiottoPolygon},
 depending on \code{type}.}
 
-\item{`type`}{\code{character}. One of \code{point} or \code{polygon} depending on the
+\item{`type`}{\code{character}. One of \code{"points"} or \code{"polygons"} depending on the
 geometries to create from the table data.}
 }
 \description{

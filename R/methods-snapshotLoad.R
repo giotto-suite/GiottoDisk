@@ -1,4 +1,4 @@
-#' @name sourceLoad
+#' @name snapshotLoad
 #' @title Load Giotto Snapshot
 #' @description
 #' Load a gobject snapshot. If no name is provided, the most recent
@@ -15,19 +15,19 @@
 #'   steps needed)
 NULL
 
-#' @rdname sourceLoad
+#' @rdname snapshotLoad
 #' @export
-setMethod("sourceLoad", signature("character"), function(src, ...) {
+setMethod("snapshotLoad", signature("character"), function(src, ...) {
     if (!dir.exists(src)) {
-        stop("[GiottoDisk] not an existing project directory\n", call. = FALSE)
+        stop("[snapshotLoad] not an existing project directory\n", call. = FALSE)
     }
     gsrc <- sourceCreate(src, type = "gDirSource")
-    sourceLoad(gsrc, ...)
+    snapshotLoad(gsrc, ...)
 })
 
-#' @rdname sourceLoad
+#' @rdname snapshotLoad
 #' @export
-setMethod("sourceLoad", signature("gDirSource"), function(src,
+setMethod("snapshotLoad", signature("gDirSource"), function(src,
     name = NULL,
     load_params = list(),
     verbose = NULL,
@@ -48,7 +48,7 @@ setMethod("sourceLoad", signature("gDirSource"), function(src,
         snap_path <- existing_snaps[which(modtimes == max(modtimes))][1L]
     } else {
         snap_path <- list.files(snaps_dir,
-            pattern = paste0(name, "\\."),
+            pattern = paste0("^", name, "\\."),
             full.names = TRUE,
             recursive = FALSE
         )[1L]

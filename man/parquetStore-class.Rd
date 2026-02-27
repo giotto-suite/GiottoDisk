@@ -29,8 +29,11 @@ partitioning.}
 \item{\code{read_fun}}{function. Preset to \code{arrow::open_dataset()} for standard
 parquet access. Can be customized for edge cases (see \linkS4class{fileStore}).}
 
-\item{\code{extent}}{numeric(4). (parquetGeomStore only) Spatial extent as
+\item{\code{extent}}{numeric(4). (\code{parquetGeomStore}-inheriting) Spatial extent as
 xmin, xmax, ymin, ymax of contained geometries.}
+
+\item{\code{geomtype}}{\code{character} (\code{parquetGeomStore}-inheriting) Type of geometry
+contained (i.e. polygons/points)}
 
 \item{\code{tiles}}{tileIterator. (parquetGeomTileStore only) \{tilework\} object
 defining which tile(s) in a tile plan this store is responsible for.}
