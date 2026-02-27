@@ -37,8 +37,18 @@ setMethod("storeRead", signature("fileStore"), function(store, ...) {
 })
 
 #' @rdname storeRead
+#' @param callback (optional) `function` where the first param
+#'   should accept the {arrow} query. A function to apply to the
+#'   query prior to output and after fields or other filters are
+#'   applied.
+#' 
+#'   Mostly useful for outputs that require materialization.
 #' @export
-setMethod("storeRead", signature("parquetStore"), function(store, fields = NULL, output = c("query", "tibble"), ...) {
+setMethod("storeRead", signature("parquetStore"), function(store,
+    fields = NULL, 
+    output = c("query", "tibble"), 
+    callback = NULL,
+    ...) {
     GiottoUtils::package_check("arrow")
     checkmate::assert_character(fields, null.ok = TRUE)
     output <- match.arg(output, choices = c("query", "tibble"))
@@ -47,6 +57,7 @@ setMethod("storeRead", signature("parquetStore"), function(store, fields = NULL,
         getcols <- unique(c("row_index", fields))
         atab <- dplyr::select(atab, arrow::all_of(getcols))
     }
+    if (!is.null(callback)) atab <- callback(atab)
     switch(output,
         "query" = atab,
         "tibble" = {
@@ -60,8 +71,11 @@ setMethod("storeRead", signature("parquetStore"), function(store, fields = NULL,
 #' @rdname storeRead
 #' @export
 setMethod("storeRead", signature("parquetGeomStore"), function(store,
-    extent = NULL, fields = NULL,
-    output = c("query", "tibble", "terra", "sf"), ...) {
+    extent = NULL,
+    fields = NULL,
+    output = c("query", "tibble", "terra", "sf"), 
+    callback = NULL,
+    ...) {
     GiottoUtils::package_check("arrow")
     checkmate::assert_character(fields, null.ok = TRUE)
     output <- match.arg(output, choices = c("query", "tibble", "terra", "sf"))
@@ -93,6 +107,7 @@ setMethod("storeRead", signature("parquetGeomStore"), function(store,
         if (output %in% c("terra", "sf")) getcols <- unique(c("geom", getcols))
         atab <- dplyr::select(atab, arrow::all_of(getcols))
     }
+    if (!is.null(callback)) atab <- callback(atab)
     switch(output,
         "query" = atab,
         "tibble" = {
@@ -108,8 +123,12 @@ setMethod("storeRead", signature("parquetGeomStore"), function(store,
 #' @rdname storeRead
 #' @export
 setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
-    extent = NULL, tile = NULL, fields = NULL,
-    output = c("query", "tibble", "terra", "sf"), ...) {
+    extent = NULL, 
+    tile = NULL,
+    fields = NULL,
+    output = c("query", "tibble", "terra", "sf"),
+    callback = NULL,
+    ...) {
     GiottoUtils::package_check("arrow")
     checkmate::assert_character(fields, null.ok = TRUE)
     output <- match.arg(output, choices = c("query", "tibble", "terra", "sf"))
@@ -146,11 +165,7 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
         if (output %in% c("terra", "sf")) getcols <- unique(c("geom", getcols))
         atab <- dplyr::select(atab, arrow::all_of(getcols))
     }
-
-    # spatial class coercion
-    if (output %in% c("terra", "sf")) {
-
-    }
+    if (!is.null(callback)) atab <- callback(atab)
     switch(output,
         "query" = atab,
         "tibble" = {

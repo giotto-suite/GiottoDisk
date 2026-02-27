@@ -13,13 +13,20 @@
 \usage{
 \S4method{storeRead}{fileStore}(store, ...)
 
-\S4method{storeRead}{parquetStore}(store, fields = NULL, output = c("query", "tibble"), ...)
+\S4method{storeRead}{parquetStore}(
+  store,
+  fields = NULL,
+  output = c("query", "tibble"),
+  callback = NULL,
+  ...
+)
 
 \S4method{storeRead}{parquetGeomStore}(
   store,
   extent = NULL,
   fields = NULL,
   output = c("query", "tibble", "terra", "sf"),
+  callback = NULL,
   ...
 )
 
@@ -29,6 +36,7 @@
   tile = NULL,
   fields = NULL,
   output = c("query", "tibble", "terra", "sf"),
+  callback = NULL,
   ...
 )
 
@@ -52,6 +60,13 @@
 \item "terra" - materialized \code{SpatVector}
 \item "sf" - materialized \code{SpatialDataFrame}
 }}
+
+\item{callback}{(optional) \code{function} where the first param
+should accept the {arrow} query. A function to apply to the
+query prior to output and after fields or other filters are
+applied.
+
+Mostly useful for outputs that require materialization.}
 
 \item{extent}{\code{SpatExtent} to filter on (optional)}
 
