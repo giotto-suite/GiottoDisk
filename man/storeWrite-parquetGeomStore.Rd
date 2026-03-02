@@ -38,9 +38,6 @@ or \code{\link[GiottoClass:createGiottoPolygon]{GiottoClass::createGiottoPolygon
 \item{geom_param}{\code{list} (optional). Additional params to pass to
 \link[GiottoClass:createGiottoPoints]{GiottoClass::createGiottoPoints} or \link[GiottoClass:createGiottoPolygon]{GiottoClass::createGiottoPolygon},
 depending on \code{type}.}
-
-\item{`type`}{\code{character}. One of \code{"points"} or \code{"polygons"} depending on the
-geometries to create from the table data.}
 }
 \description{
 Write geometry data to a \code{parquetGeomStore}. Each row is a single geometry.

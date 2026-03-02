@@ -33,7 +33,7 @@ Imports:
 Suggests:
     BPCells,
     filelock (>= 1.0.2),
-    HDF5Array
+    HDF5Array,
     qs,
     testthat,
     TileDBArray

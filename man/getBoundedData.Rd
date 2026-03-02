@@ -13,6 +13,7 @@
   inclusive = TRUE,
   group_col = "id",
   envelope = FALSE,
+  output = "query",
   ...
 )
 
@@ -48,10 +49,12 @@ This is generally not needed for \code{parquetGeomStore} inheriting
 objects since each row is its own geometry (point or polygon, etc)
 and xy filtering is performed on the point or the centroid.}
 
-\item{...}{additional params to pass}
+\item{output}{\code{character}. Output format passed to \code{\link[=storeRead]{storeRead()}}.}
+
+\item{...}{additional params to pass to \code{\link[=storeRead]{storeRead()}}}
 }
 \value{
-a lazy arrow/dplyr query
+output as determined by \code{output} param — see \code{\link[=storeRead]{storeRead()}}
 }
 \description{
 Get the region of the data defined by a bounding \code{SpatExtent}.

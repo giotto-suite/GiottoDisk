@@ -3,6 +3,7 @@
 \name{storeRead}
 \alias{storeRead}
 \alias{storeRead,fileStore-method}
+\alias{storeRead,queryableStore-method}
 \alias{storeRead,parquetStore-method}
 \alias{storeRead,parquetGeomStore-method}
 \alias{storeRead,parquetGeomTileStore-method}
@@ -13,11 +14,21 @@
 \usage{
 \S4method{storeRead}{fileStore}(store, ...)
 
+\S4method{storeRead}{queryableStore}(
+  store,
+  fields = NULL,
+  output = c("query", "tibble", "duckdb"),
+  callback = NULL,
+  duckdb_params = list(),
+  ...
+)
+
 \S4method{storeRead}{parquetStore}(
   store,
   fields = NULL,
-  output = c("query", "tibble"),
+  output = c("query", "tibble", "duckdb"),
   callback = NULL,
+  duckdb_params = list(),
   ...
 )
 
@@ -25,8 +36,9 @@
   store,
   extent = NULL,
   fields = NULL,
-  output = c("query", "tibble", "terra", "sf"),
+  output = c("query", "tibble", "terra", "sf", "duckdb"),
   callback = NULL,
+  duckdb_params = list(),
   ...
 )
 
@@ -35,8 +47,9 @@
   extent = NULL,
   tile = NULL,
   fields = NULL,
-  output = c("query", "tibble", "terra", "sf"),
+  output = c("query", "tibble", "terra", "sf", "duckdb"),
   callback = NULL,
+  duckdb_params = list(),
   ...
 )
 
@@ -58,7 +71,10 @@
 \item "query" - produces an arrow lazy query
 \item "tibble" - materialized dplyr tibble
 \item "terra" - materialized \code{SpatVector}
-\item "sf" - materialized \code{SpatialDataFrame}
+\item "sf" - materialized \code{sf} object
+\item "duckdb" - (requires {duckdb} and {dbplyr}) produces a \code{tbl_dbi}
+lazy query. \strong{Note:} should not be used in a parallelized
+context as duckdb handles parallelization internally.
 }}
 
 \item{callback}{(optional) \code{function} where the first param
@@ -67,6 +83,15 @@ query prior to output and after fields or other filters are
 applied.
 
 Mostly useful for outputs that require materialization.}
+
+\item{duckdb_params}{named \code{list}. Params to pass
+to \code{\link[duckdb:duckdb_register_arrow]{duckdb::duckdb_register_arrow()}} if \code{output = "duckdb"}.
+Key params:
+\itemize{
+\item \code{conn} - DBI connection to a duckdb instance.
+\item \code{name} - \code{character} (optional) If not provided, a random ID
+for the registered table will be generated
+}}
 
 \item{extent}{\code{SpatExtent} to filter on (optional)}
 
