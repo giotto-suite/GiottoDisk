@@ -32,9 +32,10 @@ NULL
 #' Ordering of inputs is bottom, left, top, right. If a single logical
 #' is provided, it will be replicated and used for all 4 bounds.
 #' Default is fully inclusive.
-#' @param ... additional params to pass
+#' @param output `character`. Output format passed to [storeRead()].
+#' @param ... additional params to pass to [storeRead()]
 #' @family tile methods
-#' @returns a lazy arrow/dplyr query
+#' @returns output as determined by `output` param — see [storeRead()]
 #' @export
 setMethod("getBoundedData", signature("queryableStore", "SpatExtent"),
     function(x, bound, 
@@ -43,36 +44,46 @@ setMethod("getBoundedData", signature("queryableStore", "SpatExtent"),
         inclusive = TRUE,
         group_col = "id",
         envelope = FALSE,
+        output = "query",
         ...) {
-    atab <- storeRead(x, output = "query")
-    if (!all(c(sdimx, sdimy) %in% names(atab))) {
-        stop("[GiottoDisk][getBoundedData] ",
-            "sdimx and sdimy cols not found in data\n", 
-            call. = FALSE)
-    }
-    
-    if (isTRUE(envelope)) {
-        checkmate::assert_character(group_col)
-        use_data <- .dplyr_xy_envelopes(atab,
-            sdimx = sdimx,
-            sdimy = sdimy,
-            group_col = group_col
-        )
-        sdimx = "ecentroid_x"
-        sdimy = "ecentroid_y"
-    } else {
-        use_data <- atab
-    }
-    
-    res <- .dplyr_crop(use_data,
-        sdimx = sdimx,
-        sdimy = sdimy,
-        extent = bound,
-        inclusive = inclusive # bottom, left, top, right
+    crop_callback <- function(atab) {
+        if (!all(c(sdimx, sdimy) %in% names(atab))) {
+            stop("[GiottoDisk][getBoundedData] ",
+                "sdimx and sdimy cols not found in data\n", 
+                call. = FALSE)
+        }
+      
+        if (isTRUE(envelope)) {
+            checkmate::assert_character(group_col)
+            use_data <- .dplyr_xy_envelopes(atab,
+                sdimx = sdimx,
+                sdimy = sdimy,
+                group_col = group_col
+            )
+            res <- .dplyr_crop(use_data,
+                sdimx = "ecentroid_x",
+                sdimy = "ecentroid_y",
+                extent = bound,
+                inclusive = inclusive
+            )
+            dplyr::semi_join(atab, res,
+                by = stats::setNames("id", group_col)
+            )
+        } else {
+            .dplyr_crop(atab,
+                sdimx = sdimx,
+                sdimy = sdimy,
+                extent = bound,
+                inclusive = inclusive
+            )
+        }
+    }  
+      
+    storeRead(x, 
+        output = output, 
+        callback = crop_callback, 
+        ...
     )
-    if (!isTRUE(envelope)) return(res)
-
-    dplyr::semi_join(atab, res, by = stats::setNames("id", group_col))
 })
 
 #' @rdname getBoundedData
