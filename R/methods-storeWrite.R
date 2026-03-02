@@ -362,50 +362,6 @@ setMethod("storeWrite", signature("bpcMatrixStore", "memoryMatrix"),
 
 # internals ####
 
-.pgts_write_tile <- function(store, data, tile_i,
-    sdimx = "x", sdimy = "y", poly_id = "id", type = c("points", "polygons"),
-    geom_param = list(verbose = FALSE), ...) {
-    if (!inherits(data, "fileStore")) {
-        stop("'data' must inherit from `fileStore`\n", call. = FALSE)
-    }
-    type <- match.arg(type, choices = c("points", "polygons"))
-    tile_i = as.integer(tile_i)
-    envelope <- switch(type,
-        "points" = FALSE,
-        "polygons" = TRUE
-    )
-
-    # generate arrow file pointer
-    a <- storeRead(data)
-    # filter down to tile and arrange by id if needed
-    tile_data <- .tile_crop(
-        tiles = store@tiles,
-        data = a,
-        i = tile_i,
-        sdimx = sdimx,
-        sdimy = sdimy,
-        group_col = poly_id,
-        envelope = envelope
-    )
-    if (type == "polygons") {
-        tile_data <- dplyr::arrange(tile_data, !!as.name(poly_id))
-    }
-    # pull into memory
-    mem_data <- tile_data %>% dplyr::collect()
-    tile_store <- storeCreate(
-        path = .tilepath(store@path, idx = tile_i),
-        type = "parquetGeom"
-    )
-    # pass to parquetGeomStore, data.frame
-    written_store <- storeWrite(tile_store, mem_data,
-        type = type,
-        geom_param = geom_param,
-        row_offset = tiles$row_offset[tile_i],
-        ...
-    )
-    written_store
-}
-
 .terra_to_parquet_format <- function(x, row_offset = 0) {
     checkmate::assert_class(x, "SpatVector")
     wkb <- terra::geom(x, wkb = TRUE)
