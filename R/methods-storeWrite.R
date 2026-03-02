@@ -140,7 +140,7 @@ setMethod("storeWrite", signature("parquetStore", "ANY"), function(store, data,
 #' `createGiottoPolygon`, depending on the `type` param.
 #' @inheritParams storeWrite
 #' @inheritParams storeWrite-parquetStore
-#' @param `type` `character`. One of `"points"` or `"polygons"` depending on the
+#' @param type `character`. One of `"points"` or `"polygons"` depending on the
 #' geometries to create from the table data.
 #' @param geom_param `list` (optional). Additional params to pass to
 #' [GiottoClass::createGiottoPoints] or [GiottoClass::createGiottoPolygon],
