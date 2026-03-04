@@ -209,13 +209,13 @@ options. These can be set to change the default backend for each data type:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `giotto.gdsrc_matrix_format` | `"h5"` | Store type for matrices. Alternatives: `"tiledb"`, `"bpc"` |
+| `giotto.gdsrc_matrix_format` | `"h5"` | Store type for matrices. Alternatives: `"tiledb"`, `"bpcells"` |
 | `giotto.gdsrc_spatvector_format` | `"parquetGeom"` | Store type for spatial vectors |
 | `giotto.gdsrc_dataframe_format` | `"parquet"` | Store type for tabular data |
 
 ```r
 # Use BPCells for matrix storage instead of HDF5
-options(giotto.gdsrc_matrix_format = "bpc")
+options(giotto.gdsrc_matrix_format = "bpcells")
 
 # All subsequent sourceWrite() calls for matrices will use BPCells
 sourceWrite(src, my_matrix)
