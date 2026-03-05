@@ -52,6 +52,7 @@ Collate:
     'methods-snapshotSave.R'
     'methods-sourcePrune.R'
     'methods-sourceWrite.R'
+    'methods-specialCols.R'
     'methods-storeRead.R'
     'methods-storeWrite.R'
     'utils-spatial.R'
