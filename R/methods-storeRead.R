@@ -33,9 +33,8 @@ setMethod("storeRead", signature("fileStore"), function(store, ...) {
         stop("[storeRead] a specific 'read_fun' must be provided for `fileStore`\n",
              call. = FALSE)
     }
-    if (!file.exists(store@path)) {
-        stop("[storeRead] file does not exist\n", call. = FALSE)
-    }
+    
+    .guard_store_written(store@path)
     store@read_fun(store@path)
 })
 
@@ -89,7 +88,7 @@ setMethod("storeRead", signature("parquetStore"), function(store,
     lazy_fields <- fields
     if (output == "tibble" && !is.null(fields)) {
         # special inject row_index col for row ordering
-        lazy_fields <- unique(c("row_index", lazy_fields))
+        lazy_fields <- unique(c("source_id", "row_index", lazy_fields))
     }
     atab <- callNextMethod(store, # queryableStore
         fields = lazy_fields,
@@ -141,7 +140,7 @@ setMethod("storeRead", signature("parquetGeomStore"), function(store,
         # needed for extent filtering in upstream_callback
         lazy_fields <- unique(c("x_index", "y_index", lazy_fields))
         if (!output %in% c("query", "duckdb")) { # row ordering
-            lazy_fields <- unique(c("row_index", lazy_fields))
+            lazy_fields <- unique(c("source_id", "row_index", lazy_fields))
         }
         if (output %in% c("terra", "sf")) {
             # needed for geometries
@@ -194,12 +193,10 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
   
     lazy_fields <- fields
     upstream_callback <- NULL
+    if (!is.null(fields)) { # inject special cols if needed
+        lazy_fields <- unique(c("source_id", "tile_index", lazy_fields))
+    }
     if (!is.null(tile)) {
-        if (!is.null(fields)) { # inject special cols if needed
-            # needed for tile filtering in upstream_callback
-            lazy_fields <- unique(c("tile_index", lazy_fields))
-        }
-
         # this callback is conditional
         tile <- as.integer(tile)
         upstream_callback <- function(atab) {
@@ -216,7 +213,7 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
         ...
     )
   
-    dropcols <- character(0L)
+    dropcols <- c("tile_index", "source_id")
     if (!is.null(fields)) { # handle upstream special col injections
         dropcols <- setdiff(specialCols(store), fields)
     }
@@ -224,9 +221,15 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
     if (!is.null(callback)) atab <- callback(atab)
     switch(output,
         "query" = atab,
-        "tibble" = .pstore_to_tibble(atab, dropcols = dropcols),
-        "duckdb" = .arrow_to_duckdb(atab, duckdb_params = duckdb_params),
-        .pgstore_to_spatial(atab, output = output, dropcols = dropcols)
+        "tibble" = .pstore_to_tibble(atab, 
+            dropcols = dropcols, 
+            arrangecols = c("source_id", "tile_index", "row_index")),
+        "duckdb" = .arrow_to_duckdb(atab, 
+            duckdb_params = duckdb_params),
+        .pgstore_to_spatial(atab, 
+            output = output,
+            dropcols = dropcols,
+            arrangecols = c("source_id", "tile_index", "row_index"))
     )
 })
 
@@ -259,17 +262,34 @@ setMethod("storeRead", signature("bpcMatrixStore"), function(store, ...) {
 
 # internals ####
 
+.test_store_written <- function(path) {
+    all(file.exists(path))
+}
+
+.guard_store_written <- function(path) {
+    bool <- file.exists(path) # may be more than one
+    if (any(!bool)) {
+        unwritten <- path[!bool]
+        stop("[storeRead] file does not exist:\n  ", 
+            paste(unwritten, collapse = "\n  "), call. = FALSE)
+    }
+}
+
 # `atab` - lazy arrow query table
 # `dropcols` - character vector of cols to drop after materialization (if present)
-.pstore_to_tibble <- function(atab, dropcols = character(0L)) {
+# `arrangecols` - character vector of cols to arrange on. Order matters.
+.pstore_to_tibble <- function(atab,
+    dropcols = character(0L),
+    arrangecols = c("source_id", "row_index")) {
     # enforced drops
-    dropcols <- unique(c("row_index", dropcols))
+    dropcols <- unique(c("row_index", "source_id", dropcols))
   
     if (!"row_index" %in% names(atab)) {
         warning("[storeRead][parquet->tibble] row_index missing\n",
             "  Materialized row order is indeterminate", call. = FALSE)
     } else {
-        atab <- dplyr::arrange(atab, row_index)
+        atab <- dplyr::arrange(atab, 
+            dplyr::across(dplyr::any_of(arrangecols)))
     }
     atab |>
         dplyr::collect() |>
@@ -298,7 +318,8 @@ setMethod("storeRead", signature("bpcMatrixStore"), function(store, ...) {
 # should not be performed on the whole, only in chunks or tiles
 .pgstore_to_spatial <- function(atab, 
     output = c("terra", "sf"), 
-    dropcols = character(0L)) {
+    dropcols = character(0L),
+    arrangecols = c("source_id", "row_index")) {
     output <- match.arg(output, choices = c("terra", "sf"))
     # enforced drops (never drop geom)
     dropcols <- setdiff(
@@ -311,7 +332,9 @@ setMethod("storeRead", signature("bpcMatrixStore"), function(store, ...) {
     }
   
     # collect + consume indices -> sf readin
-    sfdata <- .pstore_to_tibble(atab, dropcols = dropcols) |>
+    sfdata <- .pstore_to_tibble(atab, 
+        dropcols = dropcols,
+        arrangecols = arrangecols) |>
         sf::st_as_sf(sf_column_name = "geom")
     switch(output,
         "sf" = sfdata,

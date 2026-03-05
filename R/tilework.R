@@ -263,7 +263,6 @@ setMethod("getTile", signature("queryableStore", "spatialTilePlan"),
 
 # setup a tilePlan and annotate with tile metadata
 # `$n_records` - count of items per tile
-# `$row_offset` - offset to use if building a row index
 .tile_annotate <- function(tiles, data,
         n_tiles = 100,
         sdimx,
@@ -278,8 +277,6 @@ setMethod("getTile", signature("queryableStore", "spatialTilePlan"),
     length(tiles) <- n_tiles
     n_tiles <- length(tiles) # actual length may be different
     tiles$n_records <- NA_integer_
-    tiles$row_offset <- NA_integer_
-    tiles$row_offset[1] <- 0L
 
     # get spatial envelope centroids
     if (isTRUE(envelope)) {
@@ -302,8 +299,6 @@ setMethod("getTile", signature("queryableStore", "spatialTilePlan"),
         )
         .dplyr_nrow(tile_data)
     }, FUN.VALUE = integer(1L))
-    row_offset <- c(0L, cumsum(count[-length(count)]))
     tiles$n_records <- count
-    tiles$row_offset <- row_offset
     tiles
 }

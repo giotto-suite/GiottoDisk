@@ -140,3 +140,17 @@
     }
     reader_out
 }
+
+ .arrow_sample_max_rows <- function(atab, nmax) {                        
+      nmax <- as.integer(nmax)                                            
+                                                                          
+      total <- atab |>
+          dplyr::count() |>
+          dplyr::collect() |>
+          dplyr::pull(n)
+
+      if (total <= nmax) return(atab)
+
+      k <- as.integer(ceiling(total / nmax))
+      dplyr::filter(atab, (row_index - 1L) %% k == 0L)
+  }

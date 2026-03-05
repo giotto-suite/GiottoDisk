@@ -46,7 +46,8 @@ NULL
 #' but can be overridden for edge cases if needed.
 #'
 #' @slot path `character`. File system path (local or remote URI)
-#' @slot uid `character` (optional). unique ID for artifact tracking
+#' @slot uid `character` automatically generated unique ID for artifact
+#'   tracking. See [artifact_uid]
 #' @slot params `list` Additional params such as remote names that are 
 #' relevant to the store type may be stored here as a named list.
 #' @slot read_fun `function`. Function to access data where `read_fun(path)`
@@ -135,7 +136,7 @@ setClass("parquetStore",
     )
 )
 
-# cols: row_index, x_index, y_index, geom, id, ...
+# cols: row_index, x_index, y_index, geom, ...
 #' @rdname parquetStore-class
 setClass("parquetGeomStore",
     contains = "parquetStore",
@@ -145,7 +146,7 @@ setClass("parquetGeomStore",
     )
 )
 
-# cols: row_index, x_index, y_index, tile_index, geom, id, ...
+# cols: row_index, x_index, y_index, tile_index, geom, ...
 #' @rdname parquetStore-class
 setClass("parquetGeomTileStore",
     contains = "parquetGeomStore",
@@ -347,10 +348,22 @@ storeCreate <- function(path = tempfile(), type = "parquet", ...) {
     file.exists(x@path)
 }
 
+setMethod("initialize", signature("fileStore"), function(.Object, ...) {
+    .Object <- callNextMethod(.Object, ...)
+    if (length(.Object@uid) == 0L) .Object@uid <- .make_uid()
+    .Object
+})
+
 setMethod("initialize", signature("parquetStore"), function(.Object, ...) {
     .Object <- callNextMethod(.Object, ...)
     # register default read_fun
-    .Object@read_fun <- function(x) arrow::open_dataset(sources = x)
+    .Object@read_fun <- function(x) {                                       
+        if (length(x) == 1L) {
+            arrow::open_dataset(sources = x)
+        } else {
+            arrow::open_dataset(sources = lapply(x, arrow::open_dataset))
+        }
+    }
     if (!.store_exists(.Object)) return(.Object) # skip if not ready to read
     .Object@fields <- .get_fields(.Object) # cache colnames
     if (!"row_index" %in% .Object@fields) {
@@ -378,36 +391,4 @@ setMethod("initialize", signature("parquetGeomStore"), function(.Object, ...) {
         ))
     }
     .Object
-})
-
-# specialCols
-
-#' @name specialCols
-#' @title Special Store Columns
-#' @description
-#' Documents columns that are special to particular store implementations.
-#' These columns are enforced on disk and available when accessing the
-#' data as a query. These columns may be automatically consumed depending on
-#' the materialization format.
-#' @param store `dataStore`-inheriting class
-#' @returns `character`
-NULL
-
-#' @rdname specialCols
-#' @export
-setMethod("specialCols", signature("dataStore"), function(store) character(0L))
-#' @rdname specialCols
-#' @export
-setMethod("specialCols", signature("parquetStore"), function(store) {
-    c(callNextMethod(store), "row_index")
-})
-#' @rdname specialCols
-#' @export
-setMethod("specialCols", signature("parquetGeomStore"), function(store) {
-    c(callNextMethod(store), "x_index", "y_index", "geom")
-})
-#' @rdname specialCols
-#' @export
-setMethod("specialCols", signature("parquetGeomTileStore"), function(store) {
-    c(callNextMethod(store), "tile_index")
 })

@@ -110,24 +110,25 @@ setMethod("sourceWrite", signature("gDirSource", "fileStore"),
 
 # return allocated artifact save path.
 # value is named with the uid
-.gdsrc_allocate_artifact_dir <- function(p, basename = "data", create = TRUE) {
+.gdsrc_allocate_artifact_dir <- function(p, uid = NULL, basename = "data", create = TRUE) {
     checkmate::assert_character(p)
+    checkmate::assert_character(uid, null.ok = TRUE)
     # setup save info
-    uid <- .make_uid()
+    if (is.null(uid)) {
+        uid <- .make_uid()
+    }
     savedir <- .gdsrc_artifact_dir(p, uid = uid)
     if (create && !dir.exists(savedir)) dir.create(savedir, recursive = TRUE)
     savepath <- normalizePath(file.path(savedir, basename), mustWork = FALSE)
-    names(savepath) <- uid
     savepath
 }
 
 .gdsrc_write_artifact <- function(p, data, store_type, meta = NULL, ...) {
-    savepath <- .gdsrc_allocate_artifact_dir(p)
-    uid <- names(savepath)
-    names(savepath) <- NULL
-    dstore <- storeCreate(type = store_type, path = savepath)
+    dstore <- storeCreate(type = store_type)
+    uid <- dstore@uid
+    savepath <- .gdsrc_allocate_artifact_dir(p, uid = uid, create = TRUE)
+    dstore@path <- savepath # update save path
     dstore <- storeWrite(dstore, data, ...)
-    dstore@uid <- uid
     # record hash of delayed representation
     hash <- .hash(storeRead(dstore))
     # record artifact entry

@@ -79,3 +79,54 @@
     }
     data
 }
+                                                                
+.geoparquet_metadata <- function(geom_col = "geom",                  
+    geomtype = NULL,                                                 
+    crs = NULL,                                                      
+    extent = NULL) {
+                                                                      
+    # terra geomtype -> GeoParquet OGC geometry type string
+    .geomtype_map <- c(                                              
+        "points"       = "Point",
+        "lines"        = "LineString",
+        "polygons"     = "Polygon",
+        "multipoints"  = "MultiPoint",
+        "multilines"   = "MultiLineString",
+        "multipolygons" = "MultiPolygon"
+    )
+
+    col_meta <- list(encoding = "WKB")
+
+    # empty list [] = unknown/mixed, which is valid per spec
+    if (!is.null(geomtype) && nzchar(geomtype)) {
+        mapped <- .geomtype_map[tolower(geomtype)]
+        col_meta$geometry_types <- if (!is.na(mapped)) {
+            list(unname(mapped)) 
+        } else {
+            list()
+        }
+        
+    } else {
+        col_meta$geometry_types <- list()
+    }
+
+    # omit crs field entirely if not set (valid per spec)
+    if (!is.null(crs) && nzchar(crs)) {
+        col_meta$crs <- crs
+    }
+
+    # terra/store@extent order: xmin, xmax, ymin, ymax
+    # GeoParquet bbox order: [xmin, ymin, xmax, ymax]
+    if (!is.null(extent) && length(extent) == 4L) {
+        bbox <- c(extent[[1L]], extent[[3L]], extent[[2L]], extent[[4L]])
+        col_meta$bbox <- bbox
+    }
+
+    geo_meta <- list(
+        version = "1.0.0",
+        primary_column = geom_col,
+        columns = stats::setNames(list(col_meta), geom_col)
+    )
+
+    as.character(jsonlite::toJSON(geo_meta, auto_unbox = TRUE))
+}

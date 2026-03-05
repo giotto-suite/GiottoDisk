@@ -60,10 +60,14 @@ setMethod("storeWrite", signature("fileStore", "fileStore"), function(store, dat
 #' batches with possible pre-processing via `callback`.
 #' @inheritParams storeWrite
 #' @param callback `function` (optional). Function to apply to `data` before
-#' writing. The first param of this function should accept the `data`.
+#'   writing. The first param of this function should accept the `data`.
 #' @param row_offset `numeric`, will be coerced to `integer` (default = 0L).
-#' Offset to apply to row number indexing. For example `row_offset = 0L` means
-#' the first `row_index` value in this file will be `1`.
+#'   Offset to apply to row number indexing. For example `row_offset = 0L` means
+#'   the first `row_index` value in this file will be `1`.
+#' @param uid_partition `logical` When `TRUE`, tags the store uid as a column
+#'   called `"source_id"` using filepath hive partitioning rules.
+#' @param .arrow_meta `named list` of `character` strings to add as parquet
+#'   metadata
 #' @param ... additional params to pass to [arrow::write_dataset()]
 #' @family storeWrite methods
 #' @returns A `parquetStore` inheriting class
@@ -72,6 +76,8 @@ setMethod("storeWrite", signature("parquetStore", "data.frame"),
     function(store, data,
         callback = NULL,
         row_offset = 0L,
+        uid_partition = TRUE,
+        .arrow_meta = NULL,
         ...) {
     GiottoUtils::package_check("arrow")
     .guard_no_data_rows(data)
@@ -85,13 +91,29 @@ setMethod("storeWrite", signature("parquetStore", "data.frame"),
         data <- .dt_set_row_index(data, offset = row_offset, col = "row_index")
     }
     store@fields <- colnames(data) # record fields info
-    arrow::write_dataset(dataset = data, path = store@path, format = "parquet", ...)
+    # never include source_id col in write
+    data <- dplyr::select(data, -dplyr::any_of("source_id"))
+    
+    # apply any parquet metadata
+    if (!is.null(.arrow_meta)) {
+        checkmate::assert_list(.arrow_meta)
+        data <- arrow::arrow_table(data)
+        data$metadata <- c(data$metadata, .arrow_meta)
+    }
+      
+    # apply uid partitioning
+    if (isTRUE(uid_partition)) {
+        path <- .idpath(store@path, store@uid)
+    } else {
+        path <- store@path
+    }
+    arrow::write_dataset(dataset = data, path = path, format = "parquet", ...)
     store
-})
+    })
 
 # batched writes
 
-
+# ANY signature intended for writing lazy queries
 #' @rdname storeWrite-parquetStore
 #' @export
 setMethod("storeWrite", signature("parquetStore", "ANY"), function(store, data,
@@ -107,7 +129,10 @@ setMethod("storeWrite", signature("parquetStore", "ANY"), function(store, data,
     # if no callback fun, and row_index exists, directly write out
     if (is.null(callback) && "row_index" %in% colnames(data)) {
         store@fields <- colnames(data)
-        arrow::write_dataset(dataset = data, path = store@path, format = "parquet", ...)
+        # never include source_id col in write
+        data <- dplyr::select(data, -dplyr::any_of("source_id"))
+        path <- .idpath(store@path, store@uid)
+        arrow::write_dataset(dataset = data, path = path, format = "parquet", ...)
         return(store)
     }
 
@@ -122,7 +147,10 @@ setMethod("storeWrite", signature("parquetStore", "ANY"), function(store, data,
             col = "row_index", offset = row_offset
         )
     }
-    arrow::write_dataset(dataset = data, path = store@path, format = "parquet", ...)
+    # never include source_id col in write
+    data <- dplyr::select(data, -dplyr::any_of("source_id"))
+    path <- .idpath(store@path, store@uid)
+    arrow::write_dataset(dataset = data, path = path, format = "parquet", ...)
     store
 })
 
@@ -154,11 +182,20 @@ setMethod("storeWrite", signature("parquetGeomStore", "SpatVector"), function(st
     GiottoUtils::package_check("arrow")
     store@extent <- .ext_to_num_vec(ext(data))
     store@geomtype <- terra::geomtype(data)
+    store@params$crs <- terra::crs(data)
+    # convert to data.frame with column 'geom' as WKB
     data <- .terra_to_parquet_format(data, row_offset = row_offset)
+    # get schema to apply metadata, append metadata for geom col
+    geo_meta <- list(geo = .geoparquet_metadata(
+            geom_col = "geom",
+            geomtype = store@geomtype,
+            crs = store@params$crs,
+            extent = store@extent
+    ))
     store_write_next <- methods::getMethod("storeWrite",
         signature("parquetStore", "data.frame")
     )
-    store <- store_write_next(store, data, ...) # call a lower method
+    store <- store_write_next(store, data, .arrow_meta = geo_meta, ...) # call a lower method
     store
 })
 
@@ -253,7 +290,7 @@ setMethod("storeWrite", signature("parquetGeomTileStore", "queryableStore"),
         )
 
         # 1. setup tiles with requested n
-        # 2. add $n_records and $row_offsets metadata/tile
+        # 2. add $n_records metadata/tile
         tiles <- .tile_annotate(tiles,
             data = a,
             n_tiles = n_tiles,
@@ -293,22 +330,23 @@ setMethod("storeWrite", signature("parquetGeomTileStore", "queryableStore"),
                 group_col = poly_id,
                 envelope = envelope
             ),
-            FUN = function(tile_atab, .I, .TILE) {
+            FUN = function(tile_atab, .I) {
                 # pull into memory
                 mem_data <- tile_atab |>
-                    dplyr::arrange(row_index) |>
+                    dplyr::arrange(source_id, row_index) |>
                     dplyr::collect() |>
-                    dplyr::select(-row_index)
+                    dplyr::select(-dplyr::any_of(c("row_index", "source_id")))
                 tile_store <- storeCreate(
-                    path = .tilepath(store@path, idx = .I),
-                    type = "parquetGeom"
+                    path = .tilepath(.idpath(store@path, store@uid), idx = .I),
+                    type = "parquetGeom",
+                    uid = store@uid # inherit parent uid
                 )
                 # pass to parquetGeomStore, data.frame
                 sw_args <- c(
                     list(tile_store, mem_data, 
                         type = type,
                         geom_param = geom_param,
-                        row_offset = attr(.TILE, "row_offset")
+                        uid_partition = FALSE # would double tag otherwise
                     ), 
                     write_param
                 )
@@ -390,6 +428,10 @@ setMethod("storeWrite", signature("bpcMatrixStore", "memoryMatrix"),
         dir <- file.path(dir, .hive_part_col(cols[[i]], indices[[i]]))
     }
     dir
+}
+
+.idpath <- function(dir, uid) {
+    file.path(dir, paste0("source_id=", uid))
 }
 
 .tilepath <- function(dir, idx) {
