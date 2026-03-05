@@ -21,7 +21,8 @@ a \code{read_fun} method for accessing the data. Create with \code{\link[=fileSt
 \describe{
 \item{\code{path}}{\code{character}. File system path (local or remote URI)}
 
-\item{\code{uid}}{\code{character} (optional). unique ID for artifact tracking}
+\item{\code{uid}}{\code{character} automatically generated unique ID for artifact
+tracking. See \link{artifact_uid}}
 
 \item{\code{params}}{\code{list} Additional params such as remote names that are
 relevant to the store type may be stored here as a named list.}

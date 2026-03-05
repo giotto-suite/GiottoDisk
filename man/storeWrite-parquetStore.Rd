@@ -5,7 +5,15 @@
 \alias{storeWrite,parquetStore,ANY-method}
 \title{Write to a Parquet Storage Spec}
 \usage{
-\S4method{storeWrite}{parquetStore,data.frame}(store, data, callback = NULL, row_offset = 0L, ...)
+\S4method{storeWrite}{parquetStore,data.frame}(
+  store,
+  data,
+  callback = NULL,
+  row_offset = 0L,
+  uid_partition = TRUE,
+  .arrow_meta = NULL,
+  ...
+)
 
 \S4method{storeWrite}{parquetStore,ANY}(store, data, callback = NULL, row_offset = 0L, ...)
 }
@@ -20,6 +28,12 @@ writing. The first param of this function should accept the \code{data}.}
 \item{row_offset}{\code{numeric}, will be coerced to \code{integer} (default = 0L).
 Offset to apply to row number indexing. For example \code{row_offset = 0L} means
 the first \code{row_index} value in this file will be \code{1}.}
+
+\item{uid_partition}{\code{logical} When \code{TRUE}, tags the store uid as a column
+called \code{"source_id"} using filepath hive partitioning rules.}
+
+\item{.arrow_meta}{\verb{named list} of \code{character} strings to add as parquet
+metadata}
 
 \item{...}{additional params to pass to \code{\link[arrow:write_dataset]{arrow::write_dataset()}}}
 }
