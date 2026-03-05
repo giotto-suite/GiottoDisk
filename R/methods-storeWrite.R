@@ -356,6 +356,7 @@ setMethod("storeWrite", signature("parquetGeomTileStore", "queryableStore"),
         )
         written_stores <- written_stores[!vapply(written_stores, is.null, FUN.VALUE = logical(1L))]
         store@fields <- written_stores[[1]]@fields
+        store@params$crs <- written_stores[[1]]@params$crs
         store
     })
 

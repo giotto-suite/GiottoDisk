@@ -175,7 +175,11 @@ setMethod("storeRead", signature("parquetGeomStore"), function(store,
         "query" = atab,
         "tibble" = .pstore_to_tibble(atab, dropcols = dropcols),
         "duckdb" = .arrow_to_duckdb(atab, duckdb_params = duckdb_params),
-        .pgstore_to_spatial(atab, output = output, dropcols = dropcols)
+        .pgstore_to_spatial(atab, 
+            output = output, 
+            dropcols = dropcols,
+            crs = store@params$crs
+        )
     )
 })
 
@@ -229,7 +233,9 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
         .pgstore_to_spatial(atab, 
             output = output,
             dropcols = dropcols,
-            arrangecols = c("source_id", "tile_index", "row_index"))
+            arrangecols = c("source_id", "tile_index", "row_index"),
+            crs = store@params$crs
+        )
     )
 })
 
@@ -319,7 +325,8 @@ setMethod("storeRead", signature("bpcMatrixStore"), function(store, ...) {
 .pgstore_to_spatial <- function(atab, 
     output = c("terra", "sf"), 
     dropcols = character(0L),
-    arrangecols = c("source_id", "row_index")) {
+    arrangecols = c("source_id", "row_index"),
+    crs = NULL) {
     output <- match.arg(output, choices = c("terra", "sf"))
     # enforced drops (never drop geom)
     dropcols <- setdiff(
@@ -335,7 +342,11 @@ setMethod("storeRead", signature("bpcMatrixStore"), function(store, ...) {
     sfdata <- .pstore_to_tibble(atab, 
         dropcols = dropcols,
         arrangecols = arrangecols) |>
-        sf::st_as_sf(sf_column_name = "geom")
+        sf::st_as_sf(sf_column_name = "geom"
+    )
+    if (!is.null(crs) && nzchar(crs)) {
+        sfdata <- sf::st_set_crs(sfdata, crs)
+    }
     switch(output,
         "sf" = sfdata,
         "terra" = terra::vect(sfdata)
