@@ -225,6 +225,24 @@ setMethod("storeWrite", signature("parquetGeomStore", "data.frame"),
     store
 })
 
+setMethod("storeWrite", signature("parquetGeomStore", "parquetGeomStore"), 
+    function(store, data,
+    ...) {
+        # carry spatial metadata from source
+        store@extent <- data@extent
+        store@geomtype <- data@geomtype
+        store@params <- data@params
+      
+        arrange_cols <- c("source_id", "tile_index", "row_index")
+        drop_cols <- c("source_id", "tile_index", "row_index")
+
+        atab <- storeRead(data, output = "query") |>
+            dplyr::arrange(dplyr::across(dplyr::any_of(arrange_cols))) |>
+            dplyr::select(-dplyr::any_of(drop_cols))
+        # dispatch to parquetStore/ANY which regenerates the row_index
+        storeWrite(store, atab, ...)
+    })
+
 #' @describeIn storeWrite-parquetGeomStore reads in as `tibble`, then passes
 #' to `data.frame` method.
 #' @export
