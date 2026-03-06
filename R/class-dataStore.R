@@ -298,17 +298,37 @@ bpcMatrixStore <- function(
 #' @seealso [store]
 #' @export
 storeCreate <- function(path = tempfile(), type = "parquet", ...) {
-    type <- match.arg(tolower(type),
-        choices = c("parquet", "parquetgeom", "parquetgeomtile", "file", "h5", "bpcells", "tiledb")
+  .store_type_aliases <- c(
+      "parquet"       = "parquetstore",
+      "parquetgeom"   = "parquetgeomstore",
+      "parquetgeomtile" = "parquetgeomtilestore",
+      "file"          = "filestore",
+      "h5"            = "h5arraystore",
+      "bpcells"       = "bpcmatrixstore",
+      "tiledb"        = "tiledbarraystore"
+  )
+  type <- tolower(type)
+  type <- .store_type_aliases[type] %na% type
+
+    type <- match.arg(type,
+        choices = c(
+            "parquetstore", 
+            "parquetgeomstore",
+            "parquetgeomtilestore",
+            "filestore",
+            "h5arraystore",
+            "bpcmatrixstore",
+            "tiledbarraystore"
+        )
     )
     store <- switch(type,
-        "parquet" = parquetStore(path = path, ...),
-        "parquetgeom" = parquetGeomStore(path = path, ...),
-        "parquetgeomtile" = parquetGeomTileStore(path = path, ...),
-        "file" = fileStore(path = path, ...),
-        "h5" = h5ArrayStore(path = path, ...),
-        "bpcells" = bpcMatrixStore(path = path, ...),
-        "tiledb" = tileDBArrayStore(path = path, ...)
+        "parquetstore" = parquetStore(path = path, ...),
+        "parquetgeomstore" = parquetGeomStore(path = path, ...),
+        "parquetgeomtilestore" = parquetGeomTileStore(path = path, ...),
+        "filestore" = fileStore(path = path, ...),
+        "h5arraystore" = h5ArrayStore(path = path, ...),
+        "bpcmatrixstore" = bpcMatrixStore(path = path, ...),
+        "tiledbarraystore" = tileDBArrayStore(path = path, ...)
     )
     store
 }
