@@ -43,10 +43,10 @@
 #' # Custom column name
 #' .dt_set_row_index(df, col = "id")
 #' }
-.dt_set_row_index <- function(x, offset = 1, col = "row_index") {
+.dt_set_row_index <- function(x, offset = 1L, col = "row_index") {
     checkmate::assert_data_frame(x)
     x <- data.table::setDT(x)
-    x[, (col) := .I + offset]
+    x[, (col) := as.integer(.I + offset)]
     x
 }
 

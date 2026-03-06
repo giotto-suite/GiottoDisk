@@ -33,7 +33,7 @@
 #' # Custom column name
 #' indexed_ds <- .arrow_add_row_index(ds, col = "id")
 #' }
-.arrow_add_row_index <- function(data, col = "row_index", offset = 0) {
+.arrow_add_row_index <- function(data, col = "row_index", offset = 0L) {
     counter <- offset
     # function to apply to each batch
     add_idx <- function(batch) {
@@ -41,7 +41,7 @@
         idx <- seq(from = counter + 1L, length.out = n_rows)
         # update counter for next batch
         counter <<- counter + n_rows
-        batch[[col]] <- idx
+        batch[[col]] <- as.integer(idx)
         batch
     }
 

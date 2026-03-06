@@ -401,14 +401,14 @@ setMethod("storeWrite", signature("bpcMatrixStore", "memoryMatrix"),
 
 # internals ####
 
-.terra_to_parquet_format <- function(x, row_offset = 0) {
+.terra_to_parquet_format <- function(x, row_offset = 0L) {
     checkmate::assert_class(x, "SpatVector")
     wkb <- terra::geom(x, wkb = TRUE)
     ctrs <- XY(centroids(x))
     if (!is.matrix(ctrs)) ctrs <- t(as.matrix(ctrs))
 
     data <- data.frame(
-        row_index = seq_len(nrow(ctrs)) + row_offset,
+        row_index = as.integer(seq_len(nrow(ctrs)) + row_offset),
         x_index = ctrs[,1],
         y_index = ctrs[,2]
     )
