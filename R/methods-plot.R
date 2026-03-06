@@ -1,4 +1,8 @@
 #' @name plot
+#' @title Visualize a Store
+#' @description
+#' Plot a store's contents. Currently only for geometry
+#' stores.
 #' @param sample_max `integer`-like (default = 1e4). Maximum
 #'   number of geometries to plot (regularly sampled). If
 #'   `NULL`, no sampling is performed.

@@ -4,7 +4,7 @@
 \alias{.arrow_add_row_index}
 \title{arrow Utility: Add row index}
 \usage{
-.arrow_add_row_index(data, col = "row_index", offset = 0)
+.arrow_add_row_index(data, col = "row_index", offset = 0L)
 }
 \arguments{
 \item{data}{An object coercible to \link[arrow:RecordBatchReader]{arrow::RecordBatchReader}. Common inputs

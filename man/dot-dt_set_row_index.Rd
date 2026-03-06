@@ -4,7 +4,7 @@
 \alias{.dt_set_row_index}
 \title{data.table Utility: Add row index}
 \usage{
-.dt_set_row_index(x, offset = 1, col = "row_index")
+.dt_set_row_index(x, offset = 1L, col = "row_index")
 }
 \arguments{
 \item{x}{\code{data.frame} or \code{data.table}. Will be converted to data.table if
