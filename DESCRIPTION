@@ -44,6 +44,7 @@ Collate:
     'utils.R'
     'class-dataStore.R'
     'class-gsource.R'
+    'class-parquetStore.R'
     'methods-accessors.R'
     'methods-aggregate.R'
     'methods-plot.R'
