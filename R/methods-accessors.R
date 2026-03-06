@@ -53,12 +53,17 @@ setMethod("geomtype", signature("parquetGeomStore"), function(x) {
 })
 
 # * rbind ####
-setMethod("rbind2", signature("parquetStore", "parquetStore"), function(x, y, ...) {
+setMethod("rbind2", signature("parquetStore", "parquetStore"), function(x, y, src = NULL, ...) {
+    if (anyDuplicated(c(x@uid, y@uid))) {
+        if (!is.null(src)) y <- sourceWrite(src, y)
+        else {
+            if (inherits(y, "parquetGeomStore")) storetype <- "parquetGeomStore"
+            else storetype <- "parquetStore"
+            y <- storeWrite(store = storeCreate(type = storetype), data = y)
+        }
+    }
     x@uid <- c(x@uid, y@uid)
     x@path <- c(x@path, y@path)
-    if (anyDuplicated(x@path)) {                                 
-        warning("[rbind] duplicate store paths detected — same data will be interleaved")             
-  }
     x
 })
 
@@ -68,7 +73,8 @@ setMethod("rbind2", signature("parquetStore", "parquetGeomStore"), function(x, y
 
 setMethod("rbind2", signature("parquetGeomStore", "parquetStore"), function(x, y, ...) {
     if (!inherits(y, "parquetGeomStore")) {
-        stop("[rbind] parquetGeomStore can only be rbinded to other parquetGeomStore-inheriting")
+        stop("[rbind] parquetGeomStore can only be rbinded to other parquetGeomStore-inheriting",
+            call. = FALSE)
     }
     x <- callNextMethod(x, y, ...)
     x@extent <- .ext_to_num_vec(terra::union(ext(x@extent), ext(y@extent)))
