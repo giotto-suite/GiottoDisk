@@ -6,11 +6,11 @@
 \alias{parquetGeomTileStore}
 \title{Create a Parquet Store}
 \usage{
-parquetStore(path = tempfile(), ...)
+parquetStore(path = .dump_tempfile(), ...)
 
-parquetGeomStore(path = tempfile(), ...)
+parquetGeomStore(path = .dump_tempfile(), ...)
 
-parquetGeomTileStore(path = tempfile(), ...)
+parquetGeomTileStore(path = .dump_tempfile(), ...)
 }
 \arguments{
 \item{path}{\code{character}. Disk path to file or hive storage directory}

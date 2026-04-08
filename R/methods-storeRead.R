@@ -35,7 +35,7 @@ setMethod("storeRead", signature("fileStore"), function(store, ...) {
     }
     
     .guard_store_written(store@path)
-    store@read_fun(store@path)
+    .store_simple_read(store, ...)
 })
 
 #' @rdname storeRead
@@ -65,7 +65,7 @@ setMethod("storeRead", signature("queryableStore"), function(store,
     output <- match.arg(output, choices = c("query", "tibble", "duckdb"))
     atab <- callNextMethod(store = store, ...)
     if (!is.null(fields)) {
-        atab <- dplyr::select(atab, arrow::all_of(fields))
+        atab <- dplyr::select(atab, dplyr::all_of(fields))
     }
     if (!is.null(callback)) atab <- callback(atab)
     switch(output,
@@ -83,32 +83,175 @@ setMethod("storeRead", signature("parquetStore"), function(store,
     callback = NULL,
     duckdb_params = list(),
     ...) {
+    checkmate::assert_character(fields, null.ok = TRUE)
     output <- match.arg(output, choices = c("query", "tibble", "duckdb"))
-  
-    lazy_fields <- fields
-    if (output == "tibble" && !is.null(fields)) {
-        # special inject row_index col for row ordering
-        lazy_fields <- unique(c("source_id", "row_index", lazy_fields))
+    fields <- .pstore_fields_requested(store, fields)
+    lazy_fields <- .pstore_lazy_fields(store, fields, output)
+
+    # custom schema handling
+    if (length(store@datatype) > 0L) {
+        default_types <- as.list(.pstore_arrow_types(store))
+        typelist <- lapply(default_types, .arrow_type_from_string)
+        customlist <- lapply(store@datatype, .arrow_r_type_map)
+        typelist <- modifyList(typelist, customlist)
+        sc <- arrow::schema(typelist)
+
+        formals(store@read_fun)$schema <- sc
     }
+
     atab <- callNextMethod(store, # queryableStore
         fields = lazy_fields,
         output = "query",
         callback = callback,
         ...
     )
-    
+  
+    .pbase_storeread_processing(atab,
+        store = store,
+        fields = fields,
+        output = output,
+        duckdb_params = duckdb_params,
+        ...
+    )
+})
+
+#' @rdname storeRead
+#' @export
+setMethod("storeRead", signature("unionParquetStore"), function(store,
+    fields = NULL, 
+    output = c("query", "tibble", "duckdb"), 
+    callback = NULL,
+    duckdb_params = list(),
+    ...) {
+    checkmate::assert_character(fields, null.ok = TRUE)
+    output <- match.arg(output, choices = c("query", "tibble", "duckdb"))
+    fields <- .pstore_fields_requested(store, fields)
+    lazy_fields <- .pstore_lazy_fields(store, fields, output)
+
+    # custom schema handling
+    if (length(store@datatype) > 0L) {
+        default_types <- as.list(store@params$arrow_types)
+        typelist <- lapply(default_types, .arrow_type_from_string)
+        customlist <- lapply(store@datatype, .arrow_r_type_map)
+        typelist <- modifyList(typelist, customlist)
+        sc <- arrow::schema(typelist)
+
+        store@stores <- lapply(store@stores, function(substore) {
+            formals(substore@read_fun)$schema <- sc
+            substore
+        })
+    }
+
+    atab <- arrow::open_dataset(lapply(store@stores, .store_simple_read))
+    source_order <- vapply(store@stores, function(s) s@uid, FUN.VALUE = character(1L))
+
+    if (!is.null(lazy_fields)) {
+        atab <- dplyr::select(atab, dplyr::any_of(lazy_fields))
+    }
+    if (!is.null(callback)) atab <- callback(atab)
+
+    .pbase_storeread_processing(atab,
+        store = store,
+        fields = fields,
+        output = output,
+        source_order = source_order,
+        duckdb_params = duckdb_params,
+        ...
+    )
+})
+
+#' @rdname storeRead
+#' @export
+setMethod("storeRead", signature("unionParquetGeomStore"), function(store,
+    extent = NULL,
+    fields = NULL,
+    output = c("query", "tibble", "terra", "sf", "duckdb"),
+    callback = NULL,
+    duckdb_params = list(),
+    ...) {
+    output <- match.arg(output, choices = c("query", "tibble", "terra", "sf", "duckdb"))
+    fields <- .pstore_fields_requested(store, fields)
+    lazy_fields <- .pstore_lazy_fields(store, fields, output)
+
+    # extent checking
+    e <- .pstore_active_extent(store) # either NULL or SpatExtent
+    if (!is.null(extent)) {
+        if (!is.null(e)) {
+            e <- terra::intersect(e, ext(extent))
+        } else {
+            e <- ext(extent)
+        }
+    }
+
+    upstream_callback <- NULL
+    if (!is.null(e)) {
+        upstream_callback <- function(atab) {
+            .dplyr_crop(atab,
+                sdimx = "x_index",
+                sdimy = "y_index",
+                extent = e,
+                inclusive = TRUE
+            )
+        }
+    }
+
+    source_order <- vapply(store@stores, function(s) s@uid, FUN.VALUE = character(1L))
+
+    atab <- callNextMethod(store, # unionParquetStore
+        fields = lazy_fields,
+        output = "query",
+        callback = upstream_callback,
+        ...
+    )
+
+    dropcols <- character(0L)
+    if (!is.null(fields)) { # handle upstream special col injections
+        dropcols <- setdiff(specialCols(store), fields)
+    }
+
+    if (!is.null(callback)) atab <- callback(atab)
+    switch(output,
+        "query" = atab,
+        "tibble" = .pstore_to_tibble(atab,
+            dropcols = dropcols,
+            arrangecols = c("source_id", "tile_index", "row_index"),
+            source_order = source_order),
+        "duckdb" = .arrow_to_duckdb(atab, duckdb_params = duckdb_params),
+        .pgstore_to_spatial(atab,
+            output = output,
+            dropcols = dropcols,
+            arrangecols = c("source_id", "tile_index", "row_index"),
+            source_order = source_order,
+            crs = store@params$crs
+        )
+    )
+})
+
+.pbase_storeread_processing <- function(atab, store,
+    fields = NULL,
+    output,
+    source_order = NULL,
+    duckdb_params = list(),
+    ...) {
+
+    for (op in store@ops) {
+        atab <- .do_op(atab, op)
+    }
+
     dropcols <- character(0L)
     if (!is.null(fields)) {
         # remove undesired special inject cols
         dropcols <- c(dropcols, setdiff(specialCols(store), fields))
     }
-  
+
     switch(output,
         "query" = atab,
-        "tibble" = .pstore_to_tibble(atab, dropcols = dropcols),
+        "tibble" = .pstore_to_tibble(atab,
+            dropcols = dropcols,
+            source_order = source_order),
         "duckdb" = .arrow_to_duckdb(atab, duckdb_params = duckdb_params)
     )
-})
+}
 
 #' @rdname storeRead
 #' @export
@@ -120,51 +263,39 @@ setMethod("storeRead", signature("parquetGeomStore"), function(store,
     duckdb_params = list(),
     ...) {
     output <- match.arg(output, choices = c("query", "tibble", "terra", "sf", "duckdb"))
-    
+    fields <- .pstore_fields_requested(store, fields)
+    lazy_fields <- .pstore_lazy_fields(store, fields, output)
+
     # extent checking
-    if (length(store@extent) == 0L) {
-        stop("[storeRead] extent info not found\n", call. = FALSE)
-    }
-    e <- ext(store@extent)
+    e <- .pstore_active_extent(store) # either NULL or SpatExtent
     if (!is.null(extent)) {
-        e <- terra::intersect(e, ext(extent))
-    }
-    if (is.null(e)) {
-        stop("[storeRead] No geometries within requested extent\n",
-             call. = FALSE)
+        if (!is.null(e)) {
+            e <- terra::intersect(e, ext(extent))
+        } else {
+            e <- ext(extent)
+        }
     }
 
-    # inject special cols if needed
-    lazy_fields <- fields
-    if (!is.null(fields)) {
-        # needed for extent filtering in upstream_callback
-        lazy_fields <- unique(c("x_index", "y_index", lazy_fields))
-        if (!output %in% c("query", "duckdb")) { # row ordering
-            lazy_fields <- unique(c("source_id", "row_index", lazy_fields))
-        }
-        if (output %in% c("terra", "sf")) {
-            # needed for geometries
-            lazy_fields <- unique(c("geom", lazy_fields))
+    upstream_callback <- NULL
+    if (!is.null(e)) {
+        upstream_callback <- function(atab) {
+            # extent filtering
+            .dplyr_crop(atab,
+                sdimx = "x_index",
+                sdimy = "y_index",
+                extent = e,
+                inclusive = TRUE
+            )
         }
     }
-  
-    upstream_callback <- function(atab) {
-        # extent filtering
-        atab <- .dplyr_crop(atab,
-            sdimx = "x_index",
-            sdimy = "y_index",
-            extent = e,
-            inclusive = TRUE
-        )
-    }
-    
+
     atab <- callNextMethod(store, # parquetStore
         fields = lazy_fields,
         output = "query",
         callback = upstream_callback,
         ...
     )
-  
+
     dropcols <- character(0L)
     if (!is.null(fields)) { # handle upstream special col injections
         dropcols <- setdiff(specialCols(store), fields)
@@ -173,7 +304,8 @@ setMethod("storeRead", signature("parquetGeomStore"), function(store,
     if (!is.null(callback)) atab <- callback(atab)
     switch(output,
         "query" = atab,
-        "tibble" = .pstore_to_tibble(atab, dropcols = dropcols),
+        "tibble" = .pstore_to_tibble(atab,
+            dropcols = dropcols),
         "duckdb" = .arrow_to_duckdb(atab, duckdb_params = duckdb_params),
         .pgstore_to_spatial(atab, 
             output = output, 
@@ -194,12 +326,10 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
     duckdb_params = list(),
     ...) {
     output <- match.arg(output, choices = c("query", "tibble", "terra", "sf", "duckdb"))
-  
-    lazy_fields <- fields
+    fields <- .pstore_fields_requested(store, fields)
+    lazy_fields <- .pstore_lazy_fields(store, fields, output)
+
     upstream_callback <- NULL
-    if (!is.null(fields)) { # inject special cols if needed
-        lazy_fields <- unique(c("source_id", "tile_index", lazy_fields))
-    }
     if (!is.null(tile)) {
         # this callback is conditional
         tile <- as.integer(tile)
@@ -216,7 +346,7 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
         callback = upstream_callback,
         ...
     )
-  
+
     dropcols <- c("tile_index", "source_id")
     if (!is.null(fields)) { # handle upstream special col injections
         dropcols <- setdiff(specialCols(store), fields)
@@ -268,10 +398,6 @@ setMethod("storeRead", signature("bpcMatrixStore"), function(store, ...) {
 
 # internals ####
 
-.test_store_written <- function(path) {
-    all(file.exists(path))
-}
-
 .guard_store_written <- function(path) {
     bool <- file.exists(path) # may be more than one
     if (any(!bool)) {
@@ -286,7 +412,9 @@ setMethod("storeRead", signature("bpcMatrixStore"), function(store, ...) {
 # `arrangecols` - character vector of cols to arrange on. Order matters.
 .pstore_to_tibble <- function(atab,
     dropcols = character(0L),
-    arrangecols = c("source_id", "row_index")) {
+    arrangecols = c("source_id", "row_index"),
+    source_order = NULL,
+    selection = integer(0L)) {
     # enforced drops
     dropcols <- unique(c("row_index", "source_id", dropcols))
   
@@ -297,9 +425,20 @@ setMethod("storeRead", signature("bpcMatrixStore"), function(store, ...) {
         atab <- dplyr::arrange(atab, 
             dplyr::across(dplyr::any_of(arrangecols)))
     }
-    atab |>
-        dplyr::collect() |>
-        dplyr::select(-dplyr::any_of(dropcols))
+    data <- dplyr::collect(atab)
+    
+    # align materialized with expected ordering
+    if (!is.null(source_order) && "source_id" %in% names(data)) {
+        data$source_id <- factor(data$source_id, levels = source_order)
+        data <- dplyr::arrange(data, dplyr::across(dplyr::any_of(arrangecols)))
+    }
+    # align materialized with user-specified ordering
+    if (length(selection) > 0L && is.unsorted(selection, na.rm = TRUE)) {
+        sel_order <- rank(selection, ties.method = "first")
+        data <- data[sel_order, , drop = FALSE]
+    }
+  
+    dplyr::select(data, -dplyr::any_of(dropcols))
 }
 
 .arrow_to_duckdb <- function(atab, 
@@ -325,8 +464,8 @@ setMethod("storeRead", signature("bpcMatrixStore"), function(store, ...) {
 .pgstore_to_spatial <- function(atab, 
     output = c("terra", "sf"), 
     dropcols = character(0L),
-    arrangecols = c("source_id", "row_index"),
-    crs = NULL) {
+    crs = NULL,
+    ...) { # passthrough to .pstore_to_tibble()
     output <- match.arg(output, choices = c("terra", "sf"))
     # enforced drops (never drop geom)
     dropcols <- setdiff(
@@ -339,11 +478,8 @@ setMethod("storeRead", signature("bpcMatrixStore"), function(store, ...) {
     }
   
     # collect + consume indices -> sf readin
-    sfdata <- .pstore_to_tibble(atab, 
-        dropcols = dropcols,
-        arrangecols = arrangecols) |>
-        sf::st_as_sf(sf_column_name = "geom"
-    )
+    sfdata <- .pstore_to_tibble(atab, dropcols = dropcols, ...) |>
+        sf::st_as_sf(sf_column_name = "geom")
     if (!is.null(crs) && nzchar(crs)) {
         sfdata <- sf::st_set_crs(sfdata, crs)
     }
@@ -351,4 +487,37 @@ setMethod("storeRead", signature("bpcMatrixStore"), function(store, ...) {
         "sf" = sfdata,
         "terra" = terra::vect(sfdata)
     )
+}
+
+.pstore_fields_requested <- function(store, fields = NULL) {
+    if (isTRUE(attr(fields, "lazy"))) return(fields) # already expanded, pass through
+    if (is.null(fields) && is.null(store@fields)) return(NULL)
+    if (!is.null(fields) && !is.null(store@fields)) {
+        return(intersect(fields, store@fields))
+    }
+    fields %||% store@fields
+}
+
+.pstore_lazy_fields <- function(store, fields, output) {
+    if (is.null(fields)) return(NULL)
+    if (isTRUE(attr(fields, "lazy"))) return(fields)
+    lazy <- fields
+
+    # store requirements
+    if (inherits(store, "parquetGeomBase")) {
+        lazy <- unique(c("x_index", "y_index", lazy))
+    }
+    if (inherits(store, "parquetGeomTileStore")) {
+        lazy <- unique(c("tile_index", lazy))
+    }
+  
+    # output requirements
+    if (!output %in% c("query", "duckdb")) { # if a materialized format...
+        lazy <- unique(c("source_id", "row_index", lazy))
+    }
+    if (output %in% c("terra", "sf")) {
+        lazy <- unique(c("geom", lazy))
+    }
+    attr(lazy, "lazy") <- TRUE
+    lazy
 }

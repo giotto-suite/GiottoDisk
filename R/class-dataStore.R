@@ -131,7 +131,7 @@ setClass("bpcMatrixStore",
 #' @param read_fun `function`. Used to read in the data based on the path.
 #' @family store constructors
 #' @export
-fileStore <- function(path = tempfile(), read_fun, ...) {
+fileStore <- function(path = .dump_tempfile(), read_fun, ...) {
     if (missing(read_fun)) stop(call. = FALSE,
         "[fileStore] `read_fun` must be provided.\n"
     )
@@ -151,7 +151,7 @@ fileStore <- function(path = tempfile(), read_fun, ...) {
 #'   for example HDF5Array and TileDB.
 #' @export
 h5ArrayStore <- function(
-    path = tempfile(), name = HDF5Array::getHDF5DumpName(), ...) {
+    path = .dump_tempfile(), name = HDF5Array::getHDF5DumpName(), ...) {
     package_check("HDF5Array", repository = "Bioc")
     new("h5ArrayStore",
         path = path, 
@@ -208,7 +208,7 @@ bpcMatrixStore <- function(
 #' @family store constructors
 #' @seealso [store]
 #' @export
-storeCreate <- function(path = tempfile(), type = "parquet", ...) {
+storeCreate <- function(path = .dump_tempfile(), type = "parquet", ...) {
   .store_type_aliases <- c(
       "parquet"       = "parquetstore",
       "parquetgeom"   = "parquetgeomstore",
@@ -254,25 +254,9 @@ setMethod("initialize", signature("fileStore"), function(.Object, ...) {
 
 # internals ####
 
-# test if a store has been written and 'exists'
-.store_exists <- function(x) {
-    # no path provided
-    if (length(x@path) == 0L || is.na(x@path) || x@path == "") {
-        return(FALSE)
-    }
-
-    # test if path is remote URI
-    if (grepl("^[a-zA-Z][a-zA-Z0-9+.-]*://", x@path)) {
-        # Expensive: actually try to open it
-        if (is.null(x@read_fun)) return(TRUE)
-        remote_status <- tryCatch({
-            dataset <- x@read_fun(x@path)
-            !is.null(dataset)
-        }, error = function(e) {
-            FALSE  # Could be auth error OR missing file
-        })
-        return(remote_status)
-    }
-
-    file.exists(x@path)
+# simple store read without additional processing
+# useful for determining on-disk state.
+.store_simple_read <- function(x, ...) {  
+    x@read_fun(x@path, ...)
 }
+  

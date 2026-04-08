@@ -7,14 +7,13 @@
 }
 
 .dplyr_ext <- function(data, sdimx = "x_index", sdimy = "y_index") {
-    ranges <- data %>%
-        dplyr::select(dplyr::all_of(c(sdimx, sdimy))) %>%
+    ranges <- data |>
         dplyr::summarize(
             x_min = min(!!as.name(sdimx), na.rm = TRUE),
             x_max = max(!!as.name(sdimx), na.rm = TRUE),
             y_min = min(!!as.name(sdimy), na.rm = TRUE),
             y_max = max(!!as.name(sdimy), na.rm = TRUE)
-        ) %>%
+        ) |>
         dplyr::collect()
 
     # Create the extent object
@@ -27,20 +26,20 @@
         sdimy = "y_index",
         group_col = "poly_ID"
     ) {
-    centroids <- data %>%
-        dplyr::group_by(!!as.name(group_col)) %>%
+    centroids <- data |>
+        dplyr::group_by(!!as.name(group_col)) |>
         dplyr::summarize(
             xmin = min(!!as.name(sdimx), na.rm = TRUE),
             xmax = max(!!as.name(sdimx), na.rm = TRUE),
             ymin = min(!!as.name(sdimy), na.rm = TRUE),
             ymax = max(!!as.name(sdimy), na.rm = TRUE),
             .groups = "drop"
-        ) %>%
+        ) |>
         # Calculate envelope centroids
         dplyr::mutate(
             ecentroid_x = (xmin + xmax) / 2,
             ecentroid_y = (ymin + ymax) / 2
-        ) %>%
+        ) |>
         dplyr::rename(id = !!as.name(group_col))
 
     return(centroids)
@@ -79,7 +78,8 @@
     }
     data
 }
-                                                                
+
+# create the geoparquet json metadata
 .geoparquet_metadata <- function(geom_col = "geom",                  
     geomtype = NULL,                                                 
     crs = NULL,                                                      

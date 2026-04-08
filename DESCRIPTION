@@ -28,6 +28,7 @@ Imports:
     GiottoUtils,
     jsonlite,
     methods,
+    rlang,
     terra,
     tilework
 Suggests:
@@ -47,6 +48,8 @@ Collate:
     'class-parquetStore.R'
     'methods-accessors.R'
     'methods-aggregate.R'
+    'methods-combine.R'
+    'methods-ops.R'
     'methods-plot.R'
     'methods-show.R'
     'methods-snapshotDelete.R'
@@ -55,6 +58,7 @@ Collate:
     'methods-sourcePrune.R'
     'methods-sourceWrite.R'
     'methods-specialCols.R'
+    'methods-storeExists.R'
     'methods-storeRead.R'
     'methods-storeWrite.R'
     'utils-spatial.R'

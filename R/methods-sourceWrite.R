@@ -26,8 +26,9 @@ NULL
 #' @description
 #' Write data to a [gDirSource] managed project directory. Defaults for
 #' different data types are settable via global options:
-#'
-#' * *matrices:* `"giotto.gdsrc_matrix_format"` (default = "h5")
+#' 
+#' * *sparse matrices:* `giotto.gdsrc_sparsematrix_format` (default = "bpcells")
+#' * *dense matrices:* `"giotto.gdsrc_densematrix_format"` (default = "h5")
 #' * *dataframes:* `"giotto.gdsrc_dataframe_format"` (default = "parquet")
 #' * *spatvector:* `"giotto.gdsrc_spatvector_format"` (default = "parquetGeom")
 #'
@@ -48,7 +49,15 @@ NULL
 #' storeRead(m_written)
 #' @export
 setMethod("sourceWrite", signature("gDirSource", "memoryMatrix"),
-    function(src, data, meta = NULL, store_type = getOption("giotto.gdsrc_matrix_format", "h5"), ...) {
+    function(src, data, meta = NULL, store_type = NULL, ...) {
+        if (is.null(store_type)) {
+            store_type <- if (.is_sparse_matrix(data)) {
+                getOption("giotto.gdsrc_sparsematrix_format", "bpcells")
+            } else {
+                getOption("giotto.gdsrc_densematrix_format", "h5")
+            }
+        }
+
         .gdsrc_write_artifact(src@path,
             data = data,
             store_type = store_type,
@@ -56,6 +65,12 @@ setMethod("sourceWrite", signature("gDirSource", "memoryMatrix"),
             ...
         )
     })
+
+.is_sparse_matrix <- function(mat) {
+    if (inherits(mat, "sparseMatrix")) return(TRUE)
+    if (inherits(mat, "matrix")) return(sum(mat != 0) / length(mat) < 0.1)
+    FALSE
+}
 
 #' @rdname sourceWrite-gDirSource
 #' @examples

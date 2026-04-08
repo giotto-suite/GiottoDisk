@@ -1,8 +1,51 @@
+#' @name artifact_dump
+#' @title GiottoDisk artifact dump management
+#' @description
+#' Utilities to control the location of automatically created
+#' GiottoDisk artifacts. Some GiottoDisk processes perform operation
+#' that materialize to disk. The dump is used as the default location
+#' artifacts will be written to. When setting objects into the
+#' Giotto object, these objects may be reclaimed from the dump and
+#' placed under control of the `gsource` managing the object.
+#' @param dir `character` path to directory to use as dump directory
+#' @param verbose verbosity
+#' @returns artifact dump directory path
+NULL
+
+#' @rdname artifact_dump
+#' @export
+setArtifactDumpDir <- function(dir, verbose = NULL) {
+    if (missing(dir)) {
+        dir <- file.path(tempdir(), "gdisk_dump")
+    }
+    vmsg(.v = verbose, "[GiottoDisk] Setting artifact dump:\n", dir)
+    if (!dir.exists(dir)) {
+      dir.create(dir, recursive = TRUE)
+    }
+    options("giottodisk.artifact_dump" = dir)
+    invisible(dir)
+}
+
+#' @rdname artifact_dump
+#' @export
+getArtifactDumpDir <- function() {
+    getOption("giottodisk.artifact_dump", file.path(tempdir(), "gdisk_dump"))
+}
+
+.dump_tempfile <- function() {
+    tempfile(tmpdir = getArtifactDumpDir())
+}
+
 # get number of rows in data
+# as.numeric is enforced for uniform output
 .dplyr_nrow <- function(data) {
-    data %>%
-        dplyr::summarize(n = n()) %>%
-        dplyr::pull(n, as_vector = TRUE)
+    nr <- nrow(data)
+    if (!is.na(nr) && !is.null(nr)) return(as.numeric(nr))
+    # fallback
+    data |>
+        dplyr::summarize(n = n()) |>
+        dplyr::pull(n, as_vector = TRUE) |>
+        as.numeric()
 }
 
 # determine if a function has no content
@@ -96,6 +139,12 @@ NULL
         parts <- c(host, parts)
     }
     paste0(parts, collapse = "_")
+}
+
+# generate geom_id from available special cols (source_id, tile_index, row_index).
+# called at write time before special cols are dropped, so all components are present.
+.auto_geom_id <- function(data, prefix) {
+    paste(prefix, data$row_index, sep = "_")
 }
 
 # generate a character timestamp

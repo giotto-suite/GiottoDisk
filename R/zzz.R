@@ -9,8 +9,11 @@
     # }
 
     # initialize options
+    # -- file testing
+    init_option("giottodisk.uri_test_exists", FALSE)
     # -- default formats
-    init_option("giotto.gdsrc_matrix_format", "h5")
+    init_option("giotto.gdsrc_sparsematrix_format", "bpcells")
+    init_option("giotto.gdsrc_densematrix_format", "h5")
     init_option("giotto.gdsrc_spatvector_format", "parquetGeom")
     init_option("giotto.gdsrc_dataframe_format", "parquet")
     # -- random IDs
@@ -18,4 +21,8 @@
     init_option("giottodisk.uid_include_pid", TRUE)
     # -- gDirSource
     init_option("giottodisk.use_locking", TRUE)
+    # -- arrow schema
+    init_option("giottodisk.arrow_timestamp_locale", "us")
+    # -- dump management
+    init_option("giottodisk.artifact_dump", file.path(tempdir(), "gdisk_dump"))
 }

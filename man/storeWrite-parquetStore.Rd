@@ -15,7 +15,14 @@
   ...
 )
 
-\S4method{storeWrite}{parquetStore,ANY}(store, data, callback = NULL, row_offset = 0L, ...)
+\S4method{storeWrite}{parquetStore,ANY}(
+  store,
+  data,
+  callback = NULL,
+  row_offset = 0L,
+  uid_partition = TRUE,
+  ...
+)
 }
 \arguments{
 \item{store}{\code{dataStore} inheriting class}

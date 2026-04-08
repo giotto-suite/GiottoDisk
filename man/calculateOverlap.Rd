@@ -12,6 +12,8 @@
   n_tiles = 100,
   pad_y = 500,
   engine = c("terra", "duckdb"),
+  path = .dump_tempfile(),
+  poly_id_col = "poly_ID",
   ...
 )
 }
@@ -29,9 +31,11 @@ has full spatial context of \code{y}.}
 \item{engine}{\code{character} one of \code{"terra"} or \code{"duckdb"} (default = \code{"terra"})
 spatial querying engine to use.}
 
-\item{...}{additional params to pass}
+\item{path}{\code{character} filepath for the result store}
 
-\item{path}{\code{character} filepath}
+\item{poly_id_col}{\code{character} name of the polygon ID column in \code{x} (default = \code{"poly_ID"})}
+
+\item{...}{additional params to pass}
 }
 \description{
 Calculate features \code{y} that are overlapped by polygons \code{x}. GiottoDisk

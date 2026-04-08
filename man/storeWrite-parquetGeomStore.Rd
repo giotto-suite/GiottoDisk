@@ -3,10 +3,9 @@
 \name{storeWrite-parquetGeomStore}
 \alias{storeWrite-parquetGeomStore}
 \alias{storeWrite,parquetGeomStore,data.frame-method}
-\alias{storeWrite,parquetGeomStore,parquetStore-method}
 \title{Write to a Parquet Geometry Storage}
 \usage{
-\S4method{storeWrite}{parquetGeomStore,SpatVector}(store, data, row_offset = 0, ...)
+\S4method{storeWrite}{parquetGeomStore,SpatVector}(store, data, row_offset = 0, .arrow_meta = NULL, ...)
 
 \S4method{storeWrite}{parquetGeomStore,data.frame}(
   store,
@@ -16,8 +15,6 @@
   row_offset = 0,
   ...
 )
-
-\S4method{storeWrite}{parquetGeomStore,parquetStore}(store, data, ...)
 }
 \arguments{
 \item{store}{\code{dataStore} inheriting class}
@@ -27,6 +24,9 @@
 \item{row_offset}{\code{numeric}, will be coerced to \code{integer} (default = 0L).
 Offset to apply to row number indexing. For example \code{row_offset = 0L} means
 the first \code{row_index} value in this file will be \code{1}.}
+
+\item{.arrow_meta}{\verb{named list} of \code{character} strings to add as parquet
+metadata}
 
 \item{...}{addtional params to pass to \code{parquetStore} method and
 \code{\link[arrow:write_dataset]{arrow::write_dataset()}}}
@@ -49,12 +49,6 @@ May be written either directly from terra \code{SpatVector} or \code{data.frame}
 that are first parsed via GiottoClass \code{createGiottoPoints} or
 \code{createGiottoPolygon}, depending on the \code{type} param.
 }
-\section{Functions}{
-\itemize{
-\item \code{storeWrite(store = parquetGeomStore, data = parquetStore)}: reads in as \code{tibble}, then passes
-to \code{data.frame} method.
-
-}}
 \seealso{
 Other storeWrite methods: 
 \code{\link{storeWrite}()},

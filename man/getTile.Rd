@@ -4,16 +4,7 @@
 \alias{getTile}
 \title{Get Tile Data}
 \usage{
-\S4method{getTile}{queryableStore,spatialTilePlan}(
-  x,
-  tiles,
-  i = NULL,
-  j,
-  contiguous = FALSE,
-  pad = NULL,
-  get_params = list(),
-  ...
-)
+\S4method{getTile}{queryableStore,spatialTilePlan}(x, tiles, i = NULL, j, contiguous = FALSE, pad = NULL, ...)
 }
 \arguments{
 \item{x}{\code{fileStore} object (currently \code{parquetStore} inheriting
@@ -40,10 +31,8 @@ defined in the \code{tilePlan}.}
 \item{pad}{\code{numeric} (optional) additional padding to apply before tile retrieval.
 Useful for temporarily increasing padding without affecting \verb{tile*} object.}
 
-\item{get_params}{\code{list} (optional). Additional named params to pass to the
-underlying \code{getBoundedData()} call.}
-
-\item{...}{see additional params section}
+\item{...}{additional named params passed through to \code{\link[=getBoundedData]{getBoundedData()}}
+(e.g. \code{sdimx}, \code{sdimy}, \code{inclusive}, \code{envelope}, \code{output}).}
 }
 \value{
 a lazy arrow/dplyr query

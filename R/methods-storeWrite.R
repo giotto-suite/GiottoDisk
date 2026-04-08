@@ -1,4 +1,3 @@
-
 # docs ####
 
 #' @name storeWrite
@@ -32,21 +31,27 @@ NULL
 }
 
 
-
 # * general ####
 
 setMethod("storeWrite", signature("ANY", "ANY"), function(store, data, ...) {
-    stop(sprintf("Writing not implemented for store type %s\n", class(store)),
-         call. = FALSE)
+    stop(
+        sprintf("Writing not implemented for store type %s\n", class(store)),
+        call. = FALSE
+    )
 })
 
 # from fileStore ETL chaining
 # e.g. data coercible to arrow FileSystemDataset -> <fileStore> -> read to FSD -> <parquetStore> write
 #' @rdname storeWrite
 #' @export
-setMethod("storeWrite", signature("fileStore", "fileStore"), function(store, data, ...) {
-    storeWrite(store, storeRead(data))
-})
+setMethod(
+    "storeWrite",
+    signature("fileStore", "fileStore"),
+    function(store, data, ...) {
+        vmsg(.is_debug = TRUE, "[storeWrite] fileStore,fileStore")
+        storeWrite(store, storeRead(data))
+    }
+)
 
 # * parquetStore ####
 # in-memory writes
@@ -72,87 +77,97 @@ setMethod("storeWrite", signature("fileStore", "fileStore"), function(store, dat
 #' @family storeWrite methods
 #' @returns A `parquetStore` inheriting class
 #' @export
-setMethod("storeWrite", signature("parquetStore", "data.frame"),
-    function(store, data,
+setMethod(
+    "storeWrite",
+    signature("parquetStore", "data.frame"),
+    function(
+        store,
+        data,
         callback = NULL,
         row_offset = 0L,
         uid_partition = TRUE,
         .arrow_meta = NULL,
-        ...) {
-    GiottoUtils::package_check("arrow")
-    .guard_no_data_rows(data)
-    checkmate::assert_function(callback, null.ok = TRUE)
-    row_offset <- as.integer(row_offset)
-    if (!is.null(callback)) {
-        data <- callback(data)
-    }
-    has_row_index <- "row_index" %in% colnames(data)
-    if (!has_row_index) {
-        data <- .dt_set_row_index(data, offset = row_offset, col = "row_index")
-    }
-    store@fields <- colnames(data) # record fields info
-    # never include source_id col in write
-    data <- dplyr::select(data, -dplyr::any_of("source_id"))
-    
-    # apply any parquet metadata
-    if (!is.null(.arrow_meta)) {
-        checkmate::assert_list(.arrow_meta)
-        data <- arrow::arrow_table(data)
-        data$metadata <- c(data$metadata, .arrow_meta)
-    }
+        ...
+    ) {
+        vmsg(.is_debug = TRUE, "[storeWrite] parquetStore,data.frame")
+        GiottoUtils::package_check("arrow")
+        .guard_no_data_rows(data)
+        checkmate::assert_function(callback, null.ok = TRUE)
+        row_offset <- as.integer(row_offset)
+        if (!is.null(callback)) {
+            data <- callback(data)
+        }
+        has_row_index <- "row_index" %in% colnames(data)
+        if (!has_row_index) {
+            data <- .dt_set_row_index(
+                data,
+                offset = row_offset,
+                col = "row_index"
+            )
+        }
+        # never include source_id col in write
+        data <- dplyr::select(data, -dplyr::any_of("source_id"))
+
+        # apply any parquet metadata
+        if (!is.null(.arrow_meta)) {
+            checkmate::assert_list(.arrow_meta)
+            data <- arrow::arrow_table(data)
+            data$metadata <- c(data$metadata, .arrow_meta)
+        }
       
-    # apply uid partitioning
-    if (isTRUE(uid_partition)) {
-        path <- .idpath(store@path, store@uid)
-    } else {
-        path <- store@path
+        .write_parquet(store, data, uid_partition = uid_partition, ...)
+        initialize(store)
     }
-    arrow::write_dataset(dataset = data, path = path, format = "parquet", ...)
-    store
-    })
+)
 
 # batched writes
 
 # ANY signature intended for writing lazy queries
 #' @rdname storeWrite-parquetStore
 #' @export
-setMethod("storeWrite", signature("parquetStore", "ANY"), function(store, data,
-    callback = NULL,
-    row_offset = 0L,
-    ...) {
-    GiottoUtils::package_check("arrow")
-    checkmate::assert_function(callback, null.ok = TRUE)
-    row_offset <- as.integer(row_offset)
-    .guard_lazy_access(data)
-    .guard_no_data_rows(data)
+setMethod(
+    "storeWrite",
+    signature("parquetStore", "ANY"),
+    function(store, data, 
+        callback = NULL,
+        row_offset = 0L,
+        uid_partition = TRUE,
+        ...) {
+        vmsg(.is_debug = TRUE, "[storeWrite] parquetStore,ANY")
+        GiottoUtils::package_check("arrow")
+        checkmate::assert_function(callback, null.ok = TRUE)
+        row_offset <- as.integer(row_offset)
+        .guard_lazy_access(data)
+        .guard_no_data_rows(data)
+      
+        # if no callback fun, and row_index exists, directly write out
+        if (is.null(callback) && "row_index" %in% colnames(data)) {
+            # never include source_id col in write
+            data <- dplyr::select(data, -dplyr::any_of("source_id"))
+            .write_parquet(store, data, uid_partition = uid_partition, ...)
+            return(initialize(store))
+        }
 
-    # if no callback fun, and row_index exists, directly write out
-    if (is.null(callback) && "row_index" %in% colnames(data)) {
-        store@fields <- colnames(data)
+        # else, if there is something to be batch processed...
+        # perform any callbacks and add a row_index if needed
+        if (!is.null(callback)) {
+            data <- .arrow_map_batches(data, FUN = callback)
+        }
+        # if row_index still missing...
+        if (!"row_index" %in% colnames(data)) {
+            data <- .arrow_add_row_index(
+                data,
+                col = "row_index",
+                offset = row_offset
+            )
+        }
+
         # never include source_id col in write
         data <- dplyr::select(data, -dplyr::any_of("source_id"))
-        path <- .idpath(store@path, store@uid)
-        arrow::write_dataset(dataset = data, path = path, format = "parquet", ...)
-        return(store)
+        .write_parquet(store, data, uid_partition = uid_partition, ...)
+        initialize(store)
     }
-
-    # else, if there is something to be batch processed...
-    # perform any callbacks and add a row_index if needed
-    if (!is.null(callback)) {
-        data <- .arrow_map_batches(data, FUN = callback)
-    }
-    # if row_index still missing...
-    if (!"row_index" %in% colnames(data)) {
-        data <- .arrow_add_row_index(data,
-            col = "row_index", offset = row_offset
-        )
-    }
-    # never include source_id col in write
-    data <- dplyr::select(data, -dplyr::any_of("source_id"))
-    path <- .idpath(store@path, store@uid)
-    arrow::write_dataset(dataset = data, path = path, format = "parquet", ...)
-    store
-})
+)
 
 # * parquetGeomStore ####
 #' @name storeWrite-parquetGeomStore
@@ -177,27 +192,36 @@ setMethod("storeWrite", signature("parquetStore", "ANY"), function(store, data,
 #' [arrow::write_dataset()]
 #' @family storeWrite methods
 #' @export
-setMethod("storeWrite", signature("parquetGeomStore", "SpatVector"), function(store, data, row_offset = 0, ...) {
-    if (nrow(data) == 0L) return(NULL)
-    GiottoUtils::package_check("arrow")
-    store@extent <- .ext_to_num_vec(ext(data))
-    store@geomtype <- terra::geomtype(data)
-    store@params$crs <- terra::crs(data)
-    # convert to data.frame with column 'geom' as WKB
-    data <- .terra_to_parquet_format(data, row_offset = row_offset)
-    # get schema to apply metadata, append metadata for geom col
-    geo_meta <- list(geo = .geoparquet_metadata(
-            geom_col = "geom",
-            geomtype = store@geomtype,
-            crs = store@params$crs,
-            extent = store@extent
-    ))
-    store_write_next <- methods::getMethod("storeWrite",
-        signature("parquetStore", "data.frame")
-    )
-    store <- store_write_next(store, data, .arrow_meta = geo_meta, ...) # call a lower method
-    store
-})
+setMethod(
+    "storeWrite",
+    signature("parquetGeomStore", "SpatVector"),
+    function(store, data, row_offset = 0, .arrow_meta = NULL, ...) {
+        if (nrow(data) == 0L) {
+            return(NULL)
+        }
+        vmsg(.is_debug = TRUE, "[storeWrite] parquetGeomStore,SpatVector")
+        GiottoUtils::package_check("arrow")
+        store@params$disk_extent <- .ext_to_num_vec(ext(data))
+        store@geomtype <- terra::geomtype(data)
+        store@params$crs <- terra::crs(data)
+        if (store@geomtype == "polygons") {
+            store@params$max_poly_radius <- sqrt(
+                max(terra::expanse(data)) / pi
+            )
+        }
+        # convert to data.frame with column 'geom' as WKB
+        data <- .terra_to_parquet_format(data, row_offset = row_offset)
+        # add geoparquet metadata if needed
+        .arrow_meta <- .arrow_meta_add_geoparquet(store, .arrow_meta)
+
+        store_write_next <- methods::getMethod(
+            "storeWrite",
+            signature("parquetStore", "data.frame")
+        )
+        store <- store_write_next(store, data, .arrow_meta = .arrow_meta, ...) # call a lower method
+        store
+    }
+)
 
 # parse geometries via {GiottoClass} then pass to further conversion and writes
 #' @rdname storeWrite-parquetGeomStore
@@ -205,34 +229,45 @@ setMethod("storeWrite", signature("parquetGeomStore", "SpatVector"), function(st
 #'   geometry to write. Determines whether [GiottoClass::createGiottoPoints()]
 #'   or [GiottoClass::createGiottoPolygon()] is used to parse the values.
 #' @export
-setMethod("storeWrite", signature("parquetGeomStore", "data.frame"),
-    function(store, data,
+setMethod(
+    "storeWrite",
+    signature("parquetGeomStore", "data.frame"),
+    function(
+        store,
+        data,
         type = c("points", "polygons"),
         geom_param = list(verbose = FALSE),
         row_offset = 0,
-        ...) {
-    if (nrow(data) == 0L) return(NULL)
-    GiottoUtils::package_check("arrow")
-    checkmate::assert_list(geom_param)
-    type <- match.arg(type, choices = c("points", "polygons"))
-    fun <- switch(type,
-        "points" = GiottoClass::createGiottoPoints,
-        "polygons" = GiottoClass::createGiottoPolygon
-    )
-    # coerce to giotto representation -> SpatVector
-    data <- do.call(fun, args = c(list(data), geom_param))
-    store <- storeWrite(store, data[], row_offset = row_offset, ...)
-    store
-})
+        ...
+    ) {
+        vmsg(.is_debug = TRUE, "[storeWrite] parquetGeomStore,data.frame")
+        if (nrow(data) == 0L) {
+            return(NULL)
+        }
+        GiottoUtils::package_check("arrow")
+        checkmate::assert_list(geom_param)
+        type <- match.arg(type, choices = c("points", "polygons"))
+        fun <- switch(
+            type,
+            "points" = GiottoClass::createGiottoPoints,
+            "polygons" = GiottoClass::createGiottoPolygon
+        )
+        # coerce to giotto representation -> SpatVector
+        data <- do.call(fun, args = c(list(data), geom_param))
+        store <- storeWrite(store, data[], row_offset = row_offset, ...)
+        store
+    }
+)
 
-setMethod("storeWrite", signature("parquetGeomStore", "parquetGeomStore"), 
-    function(store, data,
-    ...) {
-        # carry spatial metadata from source
-        store@extent <- data@extent
-        store@geomtype <- data@geomtype
+setMethod(
+    "storeWrite",
+    signature("parquetStore", "parquetStore"),
+    function(store, data, ...) {
+        vmsg(.is_debug = TRUE, "[storeWrite] parquetStore,parquetStore")
         store@params <- data@params
-      
+        # remove items that need to be regenerated
+        .pstore_disk_fields(store) <- NULL
+
         arrange_cols <- c("source_id", "tile_index", "row_index")
         drop_cols <- c("source_id", "tile_index", "row_index")
 
@@ -241,21 +276,45 @@ setMethod("storeWrite", signature("parquetGeomStore", "parquetGeomStore"),
             dplyr::select(-dplyr::any_of(drop_cols))
         # dispatch to parquetStore/ANY which regenerates the row_index
         storeWrite(store, atab, ...)
-    })
+    }
+)
 
-#' @describeIn storeWrite-parquetGeomStore reads in as `tibble`, then passes
-#' to `data.frame` method.
-#' @export
-setMethod("storeWrite", signature("parquetGeomStore", "parquetStore"), function(store, data, ...) {
-    storeWrite(store, storeRead(data, output = "tibble"), ...)
-})
+setMethod(
+    "storeWrite",
+    signature("parquetGeomStore", "parquetGeomStore"),
+    function(store, data, ...) {
+        vmsg(.is_debug = TRUE, "[storeWrite] parquetGeomStore,parquetGeomStore")
+        # carry spatial metadata from source
+        store@geomtype <- data@geomtype
+        callNextMethod(store, data, ...)
+    }
+)
+
+# #' @describeIn storeWrite-parquetGeomStore reads in as `tibble`, then passes
+# #' to `data.frame` method.
+# #' @export
+# setMethod("storeWrite", signature("parquetGeomStore", "parquetStore"), function(store, data, ...) {
+#     vmsg(.is_debug = TRUE, "[storeWrite] parquetGeomStore,parquetStore")
+#     storeWrite(store, storeRead(data, output = "tibble"), ...)
+# })
 
 # * parquetGeomTileStore ####
 # this one cannot use data inputs other than fileStore since it is parallelized
 #' @name storeWrite-parquetGeomTileStore
 #' @title Write to a Parquet Geometry Tiled Storage
 #' @description
-#' Write geometry data in a spatially tiled manner.
+#' Write geometry data to hive-partitoned spatially tiled parquets. The partition
+#' column is `"tile_index"`.
+#' 
+#' ## Accepted `data` inputs
+#' 
+#' * `queryableStore`-inheriting - Any dplyr lazy queryable store. Requires
+#'   selection of `type` param. 
+#'   * `"points"` - written directly.
+#'   * `"polygons"` - must already be written to `"parquetStore"`-inheriting
+#'     class. Computes geometries from vertices which requires row ordering.
+#'   
+#' * `parquetGeomStore`-inheriting - Simple write to a new tiled store.
 #' @inheritParams storeWrite
 #' @inheritParams storeWrite-parquetStore
 #' @inheritParams storeWrite-parquetGeomStore
@@ -264,8 +323,8 @@ setMethod("storeWrite", signature("parquetGeomStore", "parquetStore"), function(
 #'   to write all.
 #' @param sdimx,sdimy `character`. Names of columns containing x and y values,
 #'   respectively.
-#' @param poly_id `character`. If `type = "polygons"`, name of column containing
-#'   IDs that group vertices
+#' @param group_col `character`. If `type = "polygons"`, name of column that
+#'   groups related rows (vertices). Usually the polygon IDs.
 #' @param contiguous `logical` (default = TRUE) When `TRUE`, tile inclusivity
 #' rules (see [getBoundedData]) prevent duplication of data at tile boundaries
 #' (assuming no padding).
@@ -275,83 +334,78 @@ setMethod("storeWrite", signature("parquetGeomStore", "parquetStore"), function(
 #' writing function.
 #' @param ... additional params to pass to `tileApply`
 #' @family storeWrite methods
+NULL
+
+#' @name storeWrite-parquetGeomTileStore
 #' @export
-setMethod("storeWrite", signature("parquetGeomTileStore", "queryableStore"),
-    function(store, data,
-             n_tiles = 100,
-             i = NULL,
-             sdimx, sdimy, poly_id,
-             type = c("points", "polygons"),
-             contiguous = TRUE,
-             dry_run = FALSE,
-             geom_param = list(verbose = FALSE),
-             write_param = list(),
-             verbose = NULL,
-             ...) {
+setMethod(
+    "storeWrite",
+    signature("parquetGeomTileStore", "queryableStore"),
+    function(
+        store,
+        data,
+        n_tiles = 100,
+        i = NULL,
+        sdimx,
+        sdimy,
+        type = c("points", "polygons"),
+        contiguous = TRUE,
+        dry_run = FALSE,
+        geom_param = list(verbose = FALSE),
+        write_param = list(),
+        verbose = NULL,
+        ...
+    ) {
+        vmsg(
+            .is_debug = TRUE,
+            "[storeWrite] parquetGeomTileStore,queryableStore"
+        )
         type <- match.arg(type, choices = c("points", "polygons"))
-        poly_stores <- c("parquetStore")
-        if (type == "polygons" && !inherits(data, poly_stores)) {
-            msg <- c("[storeWrite] not a recognized type to write to 'parquetGeomTileStore'.\n",
-                " Consider writing to 'parquetStore' inheriting class first.")
+        if (type == "polygons") {
+            # polygons vertices need exact row ordering. A correct `row_index` is needed.
+            msg <- c(
+                "[storeWrite] not a recognized type to write to 'parquetGeomTileStore'.\n",
+                " Consider writing to 'parquetStore' inheriting class first."
+            )
             stop(msg, call. = FALSE)
         }
-        GiottoUtils::package_check("arrow")
+        
         a <- storeRead(data)
-        # only permit lazy reading
-        .guard_lazy_access(a)
-        if (nrow(a) == 0L) return(NULL)
-        tiles <- store@tiles
-        # row offsets are needed -- can't be calculated by child processes
-        envelope <- switch(type,
-            "points" = FALSE,
-            "polygons" = TRUE
-        )
-
-        # 1. setup tiles with requested n
-        # 2. add $n_records metadata/tile
-        tiles <- .tile_annotate(tiles,
-            data = a,
+        .guard_lazy_access(a) # only permit lazy reading
+        if (nrow(a) == 0L) {
+            return(NULL)
+        }
+      
+        plans <- .tile_plan(store, a, 
             n_tiles = n_tiles,
-            sdimx = sdimx,
-            sdimy = sdimy,
-            poly_id = poly_id,
-            envelope = envelope
+            i = i,
+            dry_run = dry_run,
+            verbose = verbose,
+            annotate_args = list(
+                sdimx = sdimx,
+                sdimy = sdimy,
+                envelope = FALSE
+            )
         )
-        # get tile indices with non-zero counts
-        tile_indices <- tiles$tile[tiles$n_records > 0L]
-        vmsg(.v = verbose, sprintf("nonzero tiles: %d out of %d", length(tile_indices), n_tiles))
-        # select non-zero + requested tiles
-        # coerces to tiles to `tileSelection`
-        if (!is.null(i)) {
-            tile_sel <- tiles[i = intersect(tile_indices, as.integer(i)), drop = FALSE]
-        } else {
-            tile_sel <- tiles[i = tile_indices, drop = FALSE]
-        }
-        # 'dry_run' stops here. Show planning with a plot
-        if (isTRUE(dry_run)) {
-            message("[storeWrite] dry run: planned tiles")
-            plot(tile_sel, values = "n_records", main = "geoms per planned tile")
-            return(tile_sel)
-        }
-        # update store slots
-        store@tiles <- tile_sel@tp
-        store@extent <- .ext_to_num_vec(ext(tile_sel@tp))
-
+        store <- plans$store
+        tile_sel <- plans$tile_sel
+        store@geomtype <- type
+      
         # write tile stores
         written_stores <- tileApply(
             x = data,
             tiles = tile_sel,
             contiguous = contiguous, # passes to getTile via ...
-            get_params_x = list( # passes to getBoundedData
+            get_params_x = list(
+                # passes to getBoundedData
                 sdimx = sdimx,
                 sdimy = sdimy,
-                group_col = poly_id,
-                envelope = envelope
+                envelope = FALSE
             ),
             FUN = function(tile_atab, .I) {
                 # pull into memory
                 mem_data <- tile_atab |>
-                    dplyr::arrange(source_id, row_index) |>
+                    dplyr::arrange(dplyr::across(dplyr::any_of(c("source_id", "row_index")))) |>
                     dplyr::collect() |>
                     dplyr::select(-dplyr::any_of(c("row_index", "source_id")))
                 tile_store <- storeCreate(
@@ -361,27 +415,214 @@ setMethod("storeWrite", signature("parquetGeomTileStore", "queryableStore"),
                 )
                 # pass to parquetGeomStore, data.frame
                 sw_args <- c(
-                    list(tile_store, mem_data, 
+                    list(
+                        tile_store,
+                        mem_data,
                         type = type,
                         geom_param = geom_param,
-                        uid_partition = FALSE # would double tag otherwise
-                    ), 
+                        uid_partition = FALSE, # would double tag otherwise
+                        .arrow_meta = .arrow_meta_add_geoparquet(store)
+                    ),
                     write_param
                 )
                 do.call(storeWrite, sw_args)
             },
             ...
         )
-        written_stores <- written_stores[!vapply(written_stores, is.null, FUN.VALUE = logical(1L))]
-        store@fields <- written_stores[[1]]@fields
+        written_stores <- written_stores[
+            !vapply(written_stores, is.null, FUN.VALUE = logical(1L))
+        ]
         store@params$crs <- written_stores[[1]]@params$crs
-        store
-    })
+        initialize(store)
+    }
+)
+
+#' @name storeWrite-parquetGeomTileStore
+#' @export
+setMethod(
+    "storeWrite",
+    signature("parquetGeomTileStore", "parquetStore"),
+    function(
+        store,
+        data,
+        n_tiles = 100,
+        i = NULL,
+        sdimx,
+        sdimy,
+        group_col = NULL,
+        type = c("points", "polygons"),
+        contiguous = TRUE,
+        dry_run = FALSE,
+        geom_param = list(verbose = FALSE),
+        write_param = list(),
+        verbose = NULL,
+        ...
+    ) {
+        vmsg(
+            .is_debug = TRUE,
+            "[storeWrite] parquetGeomTileStore,parquetStore"
+        )
+        type <- match.arg(type, choices = c("points", "polygons"))
+        
+        a <- storeRead(data)
+        .guard_lazy_access(a)
+        if (nrow(a) == 0L) {
+            return(NULL)
+        }
+        envelope <- type != "points"
+      
+        plans <- .tile_plan(store, a, 
+            n_tiles = n_tiles,
+            i = i,
+            dry_run = dry_run,
+            verbose = verbose,
+            annotate_args = list(
+                sdimx = sdimx,
+                sdimy = sdimy,
+                envelope = envelope,
+                group_col = group_col
+            )
+        )
+        store <- plans$store
+        tile_sel <- plans$tile_sel
+        store@geomtype <- type
+
+        # write tile stores
+        written_stores <- tileApply(
+            x = data,
+            tiles = tile_sel,
+            contiguous = contiguous, # passes to getTile via ...
+            get_params_x = list(
+                # passes to getBoundedData
+                sdimx = sdimx,
+                sdimy = sdimy,
+                group_col = group_col,
+                envelope = envelope
+            ),
+            FUN = function(tile_atab, .I) {
+                # pull into memory
+                mem_data <- tile_atab |>
+                    dplyr::arrange(dplyr::across(dplyr::any_of(c("source_id", "row_index")))) |>
+                    dplyr::collect() |>
+                    dplyr::select(-dplyr::any_of(c("row_index", "source_id")))
+                tile_store <- storeCreate(
+                    path = .tilepath(.idpath(store@path, store@uid), idx = .I),
+                    type = "parquetGeom",
+                    uid = store@uid # inherit parent uid
+                )
+                # pass to parquetGeomStore, data.frame
+                sw_args <- c(
+                    list(
+                        tile_store,
+                        mem_data,
+                        type = type,
+                        geom_param = geom_param,
+                        uid_partition = FALSE, # would double tag otherwise
+                        .arrow_meta = .arrow_meta_add_geoparquet(store)
+                    ),
+                    write_param
+                )
+                do.call(storeWrite, sw_args)
+            },
+            ...
+        )
+        written_stores <- written_stores[
+            !vapply(written_stores, is.null, FUN.VALUE = logical(1L))
+        ]
+        store@params$crs <- written_stores[[1]]@params$crs
+        initialize(store)
+    }
+)
+
+#' @name storeWrite-parquetGeomTileStore
+#' @export
+setMethod(
+    "storeWrite",
+    signature("parquetGeomTileStore", "parquetGeomStore"),
+    function(
+        store,
+        data,
+        n_tiles = 100,
+        i = NULL,
+        contiguous = TRUE,
+        dry_run = FALSE,
+        write_param = list(),
+        verbose = NULL,
+        ...
+    ) {
+        vmsg(
+            .is_debug = TRUE,
+            "[storeWrite] parquetGeomTileStore,parquetGeomStore"
+        )
+        
+        a <- storeRead(data)
+        .guard_lazy_access(a) # only permit lazy reading
+        if (nrow(a) == 0L) {
+            return(NULL)
+        }
+      
+        plans <- .tile_plan(store, a, 
+            n_tiles = n_tiles,
+            i = i,
+            dry_run = dry_run,
+            verbose = verbose,
+            annotate_args = list(
+                sdimx = "x_index",
+                sdimy = "y_index",
+                envelope = FALSE
+            )
+        )
+        store <- plans$store
+        tile_sel <- plans$tile_sel
+        store@geomtype <- data@geomtype
+      
+        # write tile stores
+        written_stores <- tileApply(
+            x = data,
+            tiles = tile_sel,
+            contiguous = contiguous, # passes to getTile via ...
+            get_params_x = list(
+                # passes to getBoundedData
+                sdimx = "x_index",
+                sdimy = "y_index",
+                envelope = FALSE
+            ),
+            FUN = function(tile_atab, .I) {
+                tile_atab <- tile_atab |>
+                    dplyr::arrange(dplyr::across(dplyr::any_of(c("source_id", "row_index")))) |>
+                    dplyr::select(-dplyr::any_of(c("row_index", "source_id", "tile_index")))
+                tile_store <- storeCreate(
+                    path = .tilepath(.idpath(store@path, store@uid), idx = .I),
+                    type = "parquetGeom",
+                    uid = store@uid # inherit parent uid
+                )
+                # pass to parquetGeomStore, ANY (lazy)
+                sw_args <- c(
+                    list(
+                        tile_store,
+                        tile_atab,
+                        uid_partition = FALSE # would double tag otherwise
+                    ),
+                    write_param
+                )
+                do.call(storeWrite, sw_args)
+            },
+            ...
+        )
+        written_stores <- written_stores[
+            !vapply(written_stores, is.null, FUN.VALUE = logical(1L))
+        ]
+        store@params$crs <- data@params$crs
+        initialize(store)
+    }
+)
 
 # * h5ArrayStore ####
 #' @rdname storeWrite
 #' @export
-setMethod("storeWrite", signature("h5ArrayStore", "memoryMatrix"),
+setMethod(
+    "storeWrite",
+    signature("h5ArrayStore", "memoryMatrix"),
     function(store, data, ...) {
         HDF5Array::writeHDF5Array(
             x = data,
@@ -390,49 +631,128 @@ setMethod("storeWrite", signature("h5ArrayStore", "memoryMatrix"),
             ...
         )
         store
-    })
+    }
+)
+
 
 # * tileDBArrayStore ####
 #' @rdname storeWrite
 #' @export
-setMethod("storeWrite", signature("tileDBArrayStore", "memoryMatrix"),
+setMethod(
+    "storeWrite",
+    signature("tileDBArrayStore", "memoryMatrix"),
     function(store, data, ...) {
         p <- store@path
-        if (!dir.exists(p)) dir.create(p, recursive = TRUE)
-        TileDBArray::writeTileDBArray(data,
-            path = p,
-            ...
-        )
+        if (!dir.exists(p)) {
+            dir.create(p, recursive = TRUE)
+        }
+        TileDBArray::writeTileDBArray(data, path = p, ...)
         store
-    })
+    }
+)
 
 # * bpcMatrixStore ####
 #' @rdname storeWrite
 #' @export
-setMethod("storeWrite", signature("bpcMatrixStore", "memoryMatrix"),
+setMethod(
+    "storeWrite",
+    signature("bpcMatrixStore", "memoryMatrix"),
     function(store, data, ...) {
         p <- store@path
         BPCells::write_matrix_dir(data, dir = p, ...)
         store
-    })
+    }
+)
 
 
 # internals ####
+
+.tile_plan <- function(store, a, n_tiles, i, dry_run, verbose, annotate_args) {
+    # 1. setup tiles with requested n
+    # 2. add $n_records metadata/tile
+    tiles <- do.call(.tile_annotate, 
+        c(list(store@tiles, data = a, n_tiles = n_tiles), annotate_args))
+
+    # remove tiles with nothing to write
+    tile_indices <- tiles$tile[tiles$n_records > 0L]
+  
+    vmsg(.v = verbose, 
+        sprintf("nonzero tiles: %d out of %d", length(tile_indices), n_tiles))
+    tile_sel <- if (!is.null(i)) {
+        tiles[i = intersect(tile_indices, as.integer(i)), drop = FALSE]
+    } else {
+        tiles[i = tile_indices, drop = FALSE]
+    }
+
+    if (isTRUE(dry_run)) {
+        message("[storeWrite] dry run: planned tiles")
+        plot(tile_sel, values = "n_records", main = "geoms per planned tile")
+        return(invisible(tile_sel))
+    }
+
+    # update store and return
+    store@tiles <- tile_sel@tp
+    .pstore_disk_extent(store) <- ext(tile_sel@tp)
+    list(tile_sel = tile_sel, store = store)
+}
+
+.write_parquet <- function(store, data, uid_partition = TRUE, ...) {
+    if (isTRUE(uid_partition)) {
+        path <- .idpath(store@path, store@uid)
+    } else {
+        path <- store@path
+    }
+    arrow::write_dataset(
+        dataset = data,
+        path = path,
+        format = "parquet",
+        ...
+    )
+}
 
 .terra_to_parquet_format <- function(x, row_offset = 0L) {
     checkmate::assert_class(x, "SpatVector")
     wkb <- terra::geom(x, wkb = TRUE)
     ctrs <- XY(centroids(x))
-    if (!is.matrix(ctrs)) ctrs <- t(as.matrix(ctrs))
+    if (!is.matrix(ctrs)) {
+        ctrs <- t(as.matrix(ctrs))
+    }
 
     data <- data.frame(
         row_index = as.integer(seq_len(nrow(ctrs)) + row_offset),
-        x_index = ctrs[,1],
-        y_index = ctrs[,2]
+        x_index = ctrs[, 1],
+        y_index = ctrs[, 2]
     )
     data$geom <- wkb # raw needs to be added separately
-    data <- cbind(data, terra::values(x))
+    vals <- terra::values(x)
+    if (ncol(vals) > 0L) {
+        data <- cbind(data, vals)
+    }
     data
+}
+
+# generate the geoparquet metadata for a geom store if needed
+.arrow_meta_add_geoparquet <- function(store, .arrow_meta = NULL, extent = NULL) {
+    checkmate::assert_class(store, "parquetGeomStore")
+    checkmate::assert_list(.arrow_meta, null.ok = TRUE)
+    
+    if (is.null(.arrow_meta)) {
+        .arrow_meta <- list()
+    }
+    # append to existing metadata if any/modify if extent specified
+    if (is.null(.arrow_meta$geo) || !is.null(extent)) {
+        extent <- extent %||% store@params$disk_extent
+        geo_meta <- list(
+            geo = .geoparquet_metadata(
+                geom_col = "geom",
+                geomtype = store@geomtype,
+                crs = store@params$crs %||% "",
+                extent = extent
+            )
+        )
+        .arrow_meta <- c(.arrow_meta, geo_meta)
+    }
+    .arrow_meta
 }
 
 # hive partitioning style
@@ -454,9 +774,11 @@ setMethod("storeWrite", signature("bpcMatrixStore", "memoryMatrix"),
 }
 
 .tilepath <- function(dir, idx) {
-    vapply(idx, function(idx_i) {
-        .hive_part_path(dir = dir, cols = "tile_index", indices = idx_i)
-    }, character(1L))
+    vapply(
+        idx,
+        function(idx_i) {
+            .hive_part_path(dir = dir, cols = "tile_index", indices = idx_i)
+        },
+        character(1L)
+    )
 }
-
-

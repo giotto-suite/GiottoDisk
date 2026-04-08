@@ -4,7 +4,7 @@
 \alias{fileStore}
 \title{Create a File Store}
 \usage{
-fileStore(path = tempfile(), read_fun, ...)
+fileStore(path = .dump_tempfile(), read_fun, ...)
 }
 \arguments{
 \item{path}{\code{character}. Disk path to file}

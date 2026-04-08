@@ -1,7 +1,7 @@
 #' @import GiottoUtils
 #' @import tilework
 #' @import methods
-#' @importFrom terra crop ext geomtype
+#' @importFrom terra crop ext geomtype head tail window `window<-`
 #' @importFrom GiottoClass XY calculateOverlap overlapToMatrix setGiotto
 #' @importClassesFrom GiottoClass giotto
 #' @importClassesFrom terra SpatVector

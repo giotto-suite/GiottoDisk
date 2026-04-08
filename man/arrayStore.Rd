@@ -7,7 +7,7 @@
 \alias{bpcMatrixStore}
 \title{Array Storage}
 \usage{
-h5ArrayStore(path = tempfile(), name = HDF5Array::getHDF5DumpName(), ...)
+h5ArrayStore(path = .dump_tempfile(), name = HDF5Array::getHDF5DumpName(), ...)
 
 tileDBArrayStore(
   path = file.path(tempdir(), .make_uid()),

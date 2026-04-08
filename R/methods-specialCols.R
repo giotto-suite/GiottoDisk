@@ -11,19 +11,24 @@ NULL
 
 #' @rdname specialCols
 #' @export
-setMethod("specialCols", signature("dataStore"), function(store) character(0L))
+setMethod("specialCols", signature("ANY"), function(store) character(0L))
 #' @rdname specialCols
 #' @export
-setMethod("specialCols", signature("parquetStore"), function(store) {
+setMethod("specialCols", signature("parquetBase"), function(store) {
     c(callNextMethod(store), "row_index", "source_id")
 })
 #' @rdname specialCols
 #' @export
-setMethod("specialCols", signature("parquetGeomStore"), function(store) {
+setMethod("specialCols", signature("parquetGeomBase"), function(store) {
     c(callNextMethod(store), "x_index", "y_index", "geom")
 })
 #' @rdname specialCols
 #' @export
 setMethod("specialCols", signature("parquetGeomTileStore"), function(store) {
     c(callNextMethod(store), "tile_index")
+})
+#' @rdname specialCols
+#' @export
+setMethod("specialCols", signature("unionParquetStore"), function(store) {
+    unique(unlist(lapply(store@stores, specialCols)))
 })

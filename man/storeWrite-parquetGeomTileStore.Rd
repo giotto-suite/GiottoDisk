@@ -11,11 +11,39 @@
   i = NULL,
   sdimx,
   sdimy,
-  poly_id,
   type = c("points", "polygons"),
   contiguous = TRUE,
   dry_run = FALSE,
   geom_param = list(verbose = FALSE),
+  write_param = list(),
+  verbose = NULL,
+  ...
+)
+
+\S4method{storeWrite}{parquetGeomTileStore,parquetStore}(
+  store,
+  data,
+  n_tiles = 100,
+  i = NULL,
+  sdimx,
+  sdimy,
+  group_col = NULL,
+  type = c("points", "polygons"),
+  contiguous = TRUE,
+  dry_run = FALSE,
+  geom_param = list(verbose = FALSE),
+  write_param = list(),
+  verbose = NULL,
+  ...
+)
+
+\S4method{storeWrite}{parquetGeomTileStore,parquetGeomStore}(
+  store,
+  data,
+  n_tiles = 100,
+  i = NULL,
+  contiguous = TRUE,
+  dry_run = FALSE,
   write_param = list(),
   verbose = NULL,
   ...
@@ -33,9 +61,6 @@ to write all.}
 
 \item{sdimx, sdimy}{\code{character}. Names of columns containing x and y values,
 respectively.}
-
-\item{poly_id}{\code{character}. If \code{type = "polygons"}, name of column containing
-IDs that group vertices}
 
 \item{type}{\code{character}. Either \code{"points"} or \code{"polygons"}. What type of
 geometry to write. Determines whether \code{\link[GiottoClass:createGiottoPoints]{GiottoClass::createGiottoPoints()}}
@@ -56,9 +81,25 @@ depending on \code{type}.}
 writing function.}
 
 \item{...}{additional params to pass to \code{tileApply}}
+
+\item{group_col}{\code{character}. If \code{type = "polygons"}, name of column that
+groups related rows (vertices). Usually the polygon IDs.}
 }
 \description{
-Write geometry data in a spatially tiled manner.
+Write geometry data to hive-partitoned spatially tiled parquets. The partition
+column is \code{"tile_index"}.
+\subsection{Accepted \code{data} inputs}{
+\itemize{
+\item \code{queryableStore}-inheriting - Any dplyr lazy queryable store. Requires
+selection of \code{type} param.
+\itemize{
+\item \code{"points"} - written directly.
+\item \code{"polygons"} - must already be written to \code{"parquetStore"}-inheriting
+class. Computes geometries from vertices which requires row ordering.
+}
+\item \code{parquetGeomStore}-inheriting - Simple write to a new tiled store.
+}
+}
 }
 \seealso{
 Other storeWrite methods: 

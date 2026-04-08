@@ -2,19 +2,22 @@
 % Please edit documentation in R/methods-specialCols.R
 \name{specialCols}
 \alias{specialCols}
-\alias{specialCols,dataStore-method}
-\alias{specialCols,parquetStore-method}
-\alias{specialCols,parquetGeomStore-method}
+\alias{specialCols,ANY-method}
+\alias{specialCols,parquetBase-method}
+\alias{specialCols,parquetGeomBase-method}
 \alias{specialCols,parquetGeomTileStore-method}
+\alias{specialCols,unionParquetStore-method}
 \title{Special Store Columns}
 \usage{
-\S4method{specialCols}{dataStore}(store)
+\S4method{specialCols}{ANY}(store)
 
-\S4method{specialCols}{parquetStore}(store)
+\S4method{specialCols}{parquetBase}(store)
 
-\S4method{specialCols}{parquetGeomStore}(store)
+\S4method{specialCols}{parquetGeomBase}(store)
 
 \S4method{specialCols}{parquetGeomTileStore}(store)
+
+\S4method{specialCols}{unionParquetStore}(store)
 }
 \arguments{
 \item{store}{\code{dataStore}-inheriting class}

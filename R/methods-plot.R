@@ -6,6 +6,7 @@
 #' @param sample_max `integer`-like (default = 1e4). Maximum
 #'   number of geometries to plot (regularly sampled). If
 #'   `NULL`, no sampling is performed.
+#' @export
 setMethod("plot", signature("parquetGeomStore", "missing"),
     function(x, sample_max = 1e5, ...) {
     

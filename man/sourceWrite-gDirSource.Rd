@@ -7,13 +7,7 @@
 \alias{sourceWrite,gDirSource,data.frame-method}
 \title{Write Data to a \code{gDirSource}}
 \usage{
-\S4method{sourceWrite}{gDirSource,memoryMatrix}(
-  src,
-  data,
-  meta = NULL,
-  store_type = getOption("giotto.gdsrc_matrix_format", "h5"),
-  ...
-)
+\S4method{sourceWrite}{gDirSource,memoryMatrix}(src, data, meta = NULL, store_type = NULL, ...)
 
 \S4method{sourceWrite}{gDirSource,SpatVector}(
   src,
@@ -51,7 +45,8 @@ written \code{store} object
 Write data to a \link{gDirSource} managed project directory. Defaults for
 different data types are settable via global options:
 \itemize{
-\item \emph{matrices:} \code{"giotto.gdsrc_matrix_format"} (default = "h5")
+\item \emph{sparse matrices:} \code{giotto.gdsrc_sparsematrix_format} (default = "bpcells")
+\item \emph{dense matrices:} \code{"giotto.gdsrc_densematrix_format"} (default = "h5")
 \item \emph{dataframes:} \code{"giotto.gdsrc_dataframe_format"} (default = "parquet")
 \item \emph{spatvector:} \code{"giotto.gdsrc_spatvector_format"} (default = "parquetGeom")
 }

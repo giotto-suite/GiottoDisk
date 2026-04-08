@@ -55,7 +55,7 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     )
   
     vmsg(.v = verbose, "[GiottoDisk] writing snapshot")
-    temp <- tempfile() # temp location for atomic writes
+    temp <- .dump_tempfile() # temp location for atomic writes
     switch(method,
         "rds" = {
             fullpath <- file.path(gsdir, paste0(name, ".rds"))

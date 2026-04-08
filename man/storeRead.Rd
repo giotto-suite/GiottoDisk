@@ -5,6 +5,8 @@
 \alias{storeRead,fileStore-method}
 \alias{storeRead,queryableStore-method}
 \alias{storeRead,parquetStore-method}
+\alias{storeRead,unionParquetStore-method}
+\alias{storeRead,unionParquetGeomStore-method}
 \alias{storeRead,parquetGeomStore-method}
 \alias{storeRead,parquetGeomTileStore-method}
 \alias{storeRead,h5ArrayStore-method}
@@ -27,6 +29,25 @@
   store,
   fields = NULL,
   output = c("query", "tibble", "duckdb"),
+  callback = NULL,
+  duckdb_params = list(),
+  ...
+)
+
+\S4method{storeRead}{unionParquetStore}(
+  store,
+  fields = NULL,
+  output = c("query", "tibble", "duckdb"),
+  callback = NULL,
+  duckdb_params = list(),
+  ...
+)
+
+\S4method{storeRead}{unionParquetGeomStore}(
+  store,
+  extent = NULL,
+  fields = NULL,
+  output = c("query", "tibble", "terra", "sf", "duckdb"),
   callback = NULL,
   duckdb_params = list(),
   ...

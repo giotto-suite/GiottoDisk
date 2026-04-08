@@ -141,16 +141,85 @@
     reader_out
 }
 
- .arrow_sample_max_rows <- function(atab, nmax) {                        
-      nmax <- as.integer(nmax)                                            
-                                                                          
-      total <- atab |>
-          dplyr::count() |>
-          dplyr::collect() |>
-          dplyr::pull(n)
+.arrow_sample_max_rows <- function(atab, nmax) {                        
+    nmax <- as.integer(nmax)                                            
+                                                                        
+    total <- atab |>
+        dplyr::count() |>
+        dplyr::collect() |>
+        dplyr::pull(n)
 
-      if (total <= nmax) return(atab)
+    if (total <= nmax) return(atab)
 
-      k <- as.integer(ceiling(total / nmax))
-      dplyr::filter(atab, (row_index - 1L) %% k == 0L)
-  }
+    k <- as.integer(ceiling(total / nmax))
+    dplyr::filter(atab, (row_index - 1L) %% k == 0L)
+}
+
+.arrow_cast_int64_to_int32 <- function(atab) {
+    sc <- arrow::schema(atab)
+    if (is.null(sc)) return(atab)
+    int64_cols <- names(sc)[
+        vapply(sc$fields, 
+            function(f) identical(class(f$type), class(arrow::int64())),
+            FUN.VALUE = logical(1L))
+    ]
+    if (length(int64_cols) == 0L) return(atab)
+
+    atab |>
+        dplyr::mutate(dplyr::across(dplyr::all_of(int64_cols), ~cast(., arrow::int32())))
+}
+
+# Map R types to Arrow types
+.arrow_r_type_map <- function(datatype) {
+    switch(datatype,
+        "integer" = arrow::int32(),
+        "double" = arrow::float64(),
+        "raw" = arrow::binary(),
+        "character" = arrow::string(),
+        "logical" = arrow::boolean(),
+        "Date" = arrow::date32(),
+        "POSIXct" = arrow::timestamp(
+            timestamp_locale = getOption("giottodisk.arrow_timestamp_locale", "us")
+        )
+    )
+}
+
+.arrow_type_from_string <- function(s) {                     
+      switch(s,                                                
+          # integer                                            
+          "int8"    = arrow::int8(),                           
+          "int16"   = arrow::int16(),                          
+          "int32"   = arrow::int32(),                          
+          "int64"   = arrow::int64(),         
+          "uint8"   = arrow::uint8(),                          
+          "uint16"  = arrow::uint16(),                         
+          "uint32"  = arrow::uint32(),                         
+          "uint64"  = arrow::uint64(),                         
+          # float (ToString names differ from constructor names)                                                       
+          "halffloat" = arrow::float16(),
+          "float"     = arrow::float32(),                      
+          "double"    = arrow::float64(),     
+          # string                                             
+          "utf8"         = ,
+          "string"       = arrow::utf8(),                      
+          "large_utf8"   = ,              
+          "large_string" = arrow::large_utf8(),                
+          # binary                                             
+          "binary"       = arrow::binary(),
+          "large_binary" = arrow::large_binary(),              
+          # boolean                                            
+          "bool"    = ,                   
+          "boolean" = arrow::bool(),                           
+          # null                                               
+          "null" = arrow::null(),
+          # date                                               
+          "date32" = arrow::date32(),     
+          "date64" = arrow::date64(),
+          # parameterized types (timestamp, duration, decimal, time32/64, etc.)                            
+          # ToString() includes params e.g. "timestamp[us, tz=UTC]" - not parseable here                                
+          stop(sprintf("%s '%s'\n  %s",
+              "[GiottoDisk] cannot reconstruct Arrow type from string:", s,                                                
+              "Provide arrow type objects directly via @datatype for parameterized types"
+          ), call. = FALSE)                                    
+      )                                                        
+  }        

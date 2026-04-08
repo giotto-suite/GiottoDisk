@@ -4,7 +4,7 @@
 \alias{storeCreate}
 \title{Create a Store}
 \usage{
-storeCreate(path = tempfile(), type = "parquet", ...)
+storeCreate(path = .dump_tempfile(), type = "parquet", ...)
 }
 \arguments{
 \item{path}{\code{character}. Disk path to file or hive storage directory}

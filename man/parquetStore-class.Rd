@@ -14,6 +14,12 @@ in-place updates or edits. Create with \code{\link[=parquetStore]{parquetStore()
 
 Stores represent a query interface to on-disk data and do not contain the
 actual table data as state.
+
+\verb{[, j]} indexing is supported. \verb{[i, ]} row indexing is not — use
+filter/crop-based access instead.
+
+\code{nrow()} and \code{dim()} calls return as \code{numeric} instead of \code{integer} to
+support row counts exceeding R's int32 limit (~2.1 billion).
 }
 \section{Slots}{
 
@@ -29,20 +35,43 @@ partitioning.}
 \item{\code{read_fun}}{function. Preset to \code{arrow::open_dataset()} for standard
 parquet access. Can be customized for edge cases (see \linkS4class{fileStore}).}
 
-\item{\code{extent}}{numeric(4). (\code{parquetGeomStore}-inheriting) Spatial extent as
-xmin, xmax, ymin, ymax of contained geometries.}
+\item{\code{window}}{numeric(4). (\code{parquetGeomStore}-inheriting) Spatial window as
+xmin, xmax, ymin, ymax.}
 
 \item{\code{geomtype}}{\code{character} (\code{parquetGeomStore}-inheriting) Type of geometry
 contained (i.e. polygons/points)}
 
-\item{\code{selection}}{\code{integer}. Tracks row indexing/selection. At the lazy
-query level, these are filtered for. When materialized, ordering is also
-obeyed.}
-
 \item{\code{tiles}}{tileIterator. (parquetGeomTileStore only) \{tilework\} object
 defining which tile(s) in a tile plan this store is responsible for.}
+
+\item{\code{datatype}}{named \code{list} of \code{character} (optional). Datatype to read
+a column as. These are applied to the arrow schema at dataset opening.}
 }}
 
+\examples{
+# creation, writing, and existence tests
+ps <- parquetStore()
+storeExists(ps)
+ps <- storeWrite(ps, mtcars)
+storeExists(ps)
+
+# object shape
+nrow(ps) # numeric
+ncol(ps) # integer
+dim(ps) # numeric
+
+# different outputs
+storeRead(ps)
+storeRead(ps, output = "tibble")
+
+# filtering ops
+ps_1 <- subset(ps, subset = cyl > gear)
+ps_1
+storeRead(ps_1, output = "tibble")
+head(ps_1, 2) |> storeRead(output = 'tibble')
+# sample size is approximate
+rowSample(ps_1, 4) |> storeRead(output = "tibble")
+}
 \seealso{
 Other store types: 
 \code{\link{dataStore-class}},

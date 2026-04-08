@@ -133,15 +133,17 @@ setMethod("getBoundedData", signature("fileStore", "ANY"), function(x, bound) {
 #' defined in the `tilePlan`.
 #' @param pad `numeric` (optional) additional padding to apply before tile retrieval.
 #'   Useful for temporarily increasing padding without affecting `tile*` object.
-#' @param get_params `list` (optional). Additional named params to pass to the
-#' underlying `getBoundedData()` call.
-#' @param ... see additional params section
+#' @param ... additional named params passed through to [getBoundedData()]
+#'   (e.g. `sdimx`, `sdimy`, `inclusive`, `envelope`, `output`).
 #' @seealso [tilework::tilePlan]
 #' @family tile methods
 #' @returns a lazy arrow/dplyr query
+NULL
+
+#' @rdname getTile
 #' @export
-setMethod("getTile", signature("queryableStore", "spatialTilePlan"), 
-    function(x, tiles, i = NULL, j, contiguous = FALSE, pad = NULL, get_params = list(), ...) {
+setMethod("getTile", signature("queryableStore", "spatialTilePlan"),
+    function(x, tiles, i = NULL, j, contiguous = FALSE, pad = NULL, ...) {
     vmsg(.is_debug = TRUE, "[getTile] contiguous: ", contiguous)
     if (!is.null(pad)) {
         checkmate::assert_numeric(pad)
@@ -150,12 +152,12 @@ setMethod("getTile", signature("queryableStore", "spatialTilePlan"),
 
     if (!isTRUE(contiguous)) {
         if (missing(j)) {
-            return(callNextMethod(x, tiles, i = i, get_params = get_params, ...))
+            return(callNextMethod(x, tiles, i = i, ...))
         } else {
-            return(callNextMethod(x, tiles, i = i, j = j, get_params = get_params, ...))
+            return(callNextMethod(x, tiles, i = i, j = j, ...))
         }
     }
-    
+
     # contiguous workflow
     if (missing(j)) { # ensure ij indexing
         ij <- .tile_idx_to_ij(tiles, i)
@@ -166,9 +168,10 @@ setMethod("getTile", signature("queryableStore", "spatialTilePlan"),
         i <- ij_tab[[2L]]
         j <- ij_tab[[1L]]
     }
-      
-    bounds_list <- tiles[i, j, expand_grid = FALSE, ...]
-    
+
+    bounds_list <- tiles[i, j, expand_grid = FALSE]
+    extra <- list(...)
+
     mapply(function(b, ri, ci) {
         inclusivity <- c(
             ri == 1, # bottom
@@ -176,10 +179,43 @@ setMethod("getTile", signature("queryableStore", "spatialTilePlan"),
             TRUE, # top
             ci == ncol(tiles) # right
         )
-        get_params$inclusive <- inclusivity
-        a <- c(list(x, b), get_params)
-        do.call(getBoundedData, a)
+        extra$inclusive <- inclusivity
+        do.call(getBoundedData, c(list(x, b), extra))
     }, bounds_list, i, j, SIMPLIFY = FALSE)
+})
+
+#' @rdname getTile
+#' @export
+setMethod("getTile", signature("queryableStore", "freeTilePlan"), 
+    function(x, tiles, i = NULL, contiguous = FALSE, pad = NULL, ...) {
+    vmsg(.is_debug = TRUE, "[getTile] contiguous: ", contiguous)
+    if (!is.null(pad)) {
+        checkmate::assert_numeric(pad)
+        tiles <- tiles + pad
+    }
+
+    if (!isTRUE(contiguous)) {
+        return(callNextMethod(x, tiles, i = i, ...))
+    }
+      
+    extra <- list(...)
+      
+    blims <- c(
+        max(tiles$bounds[, 2L]), # xmax (right)
+        min(tiles$bounds[, 3L]) # ymin (bottom)
+    )
+      
+    lapply(i, function(ii) {
+        inclusivity <- c(
+            tiles$bounds[ii, 3L] == blims[2L], # bottom: tile ymin == global ymin
+            TRUE, # left
+            TRUE, # top
+            tiles$bounds[ii, 2L] == blims[1L] # right: tile xmax == global xmax
+        )
+        extra$inclusive <- inclusivity
+        b <- tiles[ii][[1L]]
+        do.call(getBoundedData, c(list(x, b), extra))
+    })
 })
 
 # internals ####
@@ -267,12 +303,12 @@ setMethod("getTile", signature("queryableStore", "spatialTilePlan"),
         n_tiles = 100,
         sdimx,
         sdimy,
-        poly_id,
+        group_col = NULL,
         envelope = TRUE) {
     checkmate::assert_class(tiles, "tilePlan")
     checkmate::assert_character(sdimx, len = 1L)
     checkmate::assert_character(sdimy, len = 1L)
-    if (isTRUE(envelope)) checkmate::assert_character(poly_id, len = 1L)
+
     ext(tiles) <- .dplyr_ext(data, sdimx = sdimx, sdimy = sdimy)
     length(tiles) <- n_tiles
     n_tiles <- length(tiles) # actual length may be different
@@ -280,10 +316,11 @@ setMethod("getTile", signature("queryableStore", "spatialTilePlan"),
 
     # get spatial envelope centroids
     if (isTRUE(envelope)) {
+        checkmate::assert_character(group_col, len = 1L)
         data <- .dplyr_xy_envelopes(data,
             sdimx = sdimx,
             sdimy = sdimy,
-            group_col = poly_id
+            group_col = group_col
         )
         sdimx = "ecentroid_x"
         sdimy = "ecentroid_y"
@@ -298,7 +335,7 @@ setMethod("getTile", signature("queryableStore", "spatialTilePlan"),
             envelope = FALSE
         )
         .dplyr_nrow(tile_data)
-    }, FUN.VALUE = integer(1L))
+    }, FUN.VALUE = double(1L))
     tiles$n_records <- count
     tiles
 }
