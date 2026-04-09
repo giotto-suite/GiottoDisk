@@ -50,7 +50,7 @@ setMethod("subset", signature("parquetBase"), function(x, subset, select,
             q <- rlang::enquo(subset)                               
             expr <- rlang::quo_get_expr(q)  
             env <- rlang::quo_get_env(q)                              
-            expr <- .inline_local_vars(expr, colnames(x), env)         
+            expr <- .inline_local_vars(expr, c(colnames(x), specialCols(x)), env)
         } else {                                                       
             expr <- subset  # pre-quoted expression passed directly    
         }                                                              
