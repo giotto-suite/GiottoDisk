@@ -7,7 +7,8 @@
 \S4method{storeWrite}{parquetGeomTileStore,queryableStore}(
   store,
   data,
-  n_tiles = 100,
+  threshold = NULL,
+  tiles = NULL,
   i = NULL,
   id_col,
   sdimx,
@@ -23,7 +24,8 @@
 \S4method{storeWrite}{parquetGeomTileStore,parquetStore}(
   store,
   data,
-  n_tiles = 100,
+  threshold = NULL,
+  tiles = NULL,
   i = NULL,
   id_col,
   sdimx,
@@ -41,7 +43,8 @@
 \S4method{storeWrite}{parquetGeomTileStore,parquetGeomStore}(
   store,
   data,
-  n_tiles = 100,
+  threshold = NULL,
+  tiles = NULL,
   i = NULL,
   contiguous = TRUE,
   dry_run = FALSE,
@@ -55,7 +58,17 @@
 
 \item{data}{data to write}
 
-\item{n_tiles}{\code{numeric}. Minimum number of tiles to write across}
+\item{threshold}{\code{numeric} or \code{NULL}. Maximum number of records per tile.
+\code{NULL} (default) auto-selects based on total row count and \code{type}:
+\itemize{
+\item \code{"points"}: 1M/tile up to 1B rows; clamped ramp \code{n/1000} (1M–100M) above.
+\item \code{"polygons"} (vertex rows): 500k/tile up to 500M rows;
+clamped ramp \code{n/1000} (500k–5M) above that.
+}}
+
+\item{tiles}{\code{tilePlan} or \code{NULL}. Optional seed tile plan passed to
+\code{\link[tilework:quadtreePlan]{tilework::quadtreePlan()}} as the initial grid. When \code{NULL}, \code{quadtreePlan}
+builds a default grid based on the data extent's aspect ratio.}
 
 \item{i}{\code{integerlike} specific tile(s) to write. Leave as NULL (default)
 to write all.}
@@ -75,8 +88,9 @@ geometry to write.}
 rules (see \link{getBoundedData}) prevent duplication of data at tile boundaries
 (assuming no padding).}
 
-\item{dry_run}{\code{logical} (default = FALSE). When \code{TRUE}, stops after planning
-the tiles to write and plots the tiles to write.}
+\item{dry_run}{\code{logical} (default = FALSE). When \code{TRUE}, runs tile planning
+and plots the adaptive tile layout with record counts, then returns without
+writing.}
 
 \item{write_param}{named \code{list} (optional). Additional params to pass to the
 writing function.}

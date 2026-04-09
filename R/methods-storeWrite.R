@@ -352,7 +352,16 @@ setMethod(
 #' @inheritParams storeWrite
 #' @inheritParams storeWrite-parquetStore
 #' @inheritParams storeWrite-parquetGeomStore
-#' @param n_tiles `numeric`. Minimum number of tiles to write across
+#' @param threshold `numeric` or `NULL`. Maximum number of records per tile.
+#'   `NULL` (default) auto-selects based on total row count and `type`:
+#'   * `"points"`: 1M/tile up to 1B rows; clamped ramp `n/1000` (1M–100M) above.
+#'   * `"polygons"` (vertex rows): 500k/tile up to 500M rows;
+#'     clamped ramp `n/1000` (500k–5M) above that.
+#' @param tiles `freeTilePlan`, `tilePlan`, or `NULL`. When a `freeTilePlan`
+#'   is provided (e.g. the output of a `dry_run`), it is used directly without
+#'   replanning. When a `tilePlan` is provided, it is used as the seed grid for
+#'   [tilework::quadtreePlan()]. When `NULL`, a default seed grid is built from
+#'   the data extent's aspect ratio.
 #' @param i `integerlike` specific tile(s) to write. Leave as NULL (default)
 #'   to write all.
 #' @param sdimx,sdimy `character`. Names of columns containing x and y spatial
@@ -363,8 +372,10 @@ setMethod(
 #' @param contiguous `logical` (default = TRUE) When `TRUE`, tile inclusivity
 #' rules (see [getBoundedData]) prevent duplication of data at tile boundaries
 #' (assuming no padding).
-#' @param dry_run `logical` (default = FALSE). When `TRUE`, stops after planning
-#' the tiles to write and plots the tiles to write.
+#' @param dry_run `logical` (default = FALSE). When `TRUE`, runs tile planning
+#'   and plots the adaptive tile layout with record counts, then returns the
+#'   `freeTilePlan` invisibly without writing for inspection. This can then be
+#'   passed to `tiles` to skip tile planning.
 #' @param write_param named `list` (optional). Additional params to pass to the
 #' writing function.
 #' @param ... additional params to pass to `tileApply`
@@ -379,7 +390,8 @@ setMethod(
     function(
         store,
         data,
-        n_tiles = 100,
+        threshold = NULL,
+        tiles = NULL,
         i = NULL,
         id_col,
         sdimx,
@@ -409,28 +421,39 @@ setMethod(
             sdimx = sdimx,
             sdimy = sdimy
         )
-        
+
         a <- storeRead(data)
         .guard_lazy_access(a) # only permit lazy reading
         if (nrow(a) == 0L) {
             return(NULL)
         }
-      
-        plans <- .tile_plan(store, a, 
-            n_tiles = n_tiles,
+
+        n <- .dplyr_nrow(a)
+        threshold <- threshold %||% .auto_threshold(n, type = type)
+        if (is.null(tiles)) {
+            tiles <- tilework::tilePlan("spatial")
+            data_ext <- .dplyr_ext(a, sdimx = sdimx, sdimy = sdimy)
+            terra::ext(tiles) <- data_ext
+            erange <- range(data_ext)
+            length(tiles) <- round(max(erange) / min(erange)) * 4L
+        }
+        plans <- .tile_plan_quadtree(store, data,
+            threshold = threshold,
+            tiles = tiles,
             i = i,
             dry_run = dry_run,
             verbose = verbose,
-            annotate_args = list(
+            qtree_args = list(
                 sdimx = sdimx,
                 sdimy = sdimy,
-                envelope = FALSE
+                contiguous = contiguous
             )
         )
+        if (isTRUE(dry_run)) return(invisible(plans$tile_sel@tp))
         store <- plans$store
         tile_sel <- plans$tile_sel
         store@geomtype <- type
-      
+
         # write tile stores
         written_stores <- tileApply(
             x = data,
@@ -485,7 +508,8 @@ setMethod(
     function(
         store,
         data,
-        n_tiles = 100,
+        threshold = NULL,
+        tiles = NULL,
         i = NULL,
         id_col,
         sdimx,
@@ -510,26 +534,36 @@ setMethod(
             sdimy = sdimy,
             part_col = part_col
         )
-        
+
         a <- storeRead(data)
         .guard_lazy_access(a)
         if (nrow(a) == 0L) {
             return(NULL)
         }
         envelope <- type != "points"
-      
-        plans <- .tile_plan(store, a, 
-            n_tiles = n_tiles,
+
+        n <- .dplyr_nrow(a)
+        threshold <- threshold %||% .auto_threshold(n, type = type)
+        if (is.null(tiles)) {
+            tiles <- tilework::tilePlan("spatial")
+            data_ext <- .dplyr_ext(a, sdimx = sdimx, sdimy = sdimy)
+            terra::ext(tiles) <- data_ext
+            erange <- range(data_ext)
+            length(tiles) <- round(max(erange) / min(erange)) * 4L
+        }
+        plans <- .tile_plan_quadtree(store, data,
+            threshold = threshold,
+            tiles = tiles,
             i = i,
             dry_run = dry_run,
             verbose = verbose,
-            annotate_args = list(
+            qtree_args = list(
                 sdimx = sdimx,
                 sdimy = sdimy,
-                envelope = envelope,
-                group_col = group_col
+                contiguous = contiguous
             )
         )
+        if (isTRUE(dry_run)) return(invisible(NULL))
         store <- plans$store
         tile_sel <- plans$tile_sel
         store@geomtype <- type
@@ -589,7 +623,8 @@ setMethod(
     function(
         store,
         data,
-        n_tiles = 100,
+        threshold = NULL,
+        tiles = NULL,
         i = NULL,
         contiguous = TRUE,
         dry_run = FALSE,
@@ -601,24 +636,27 @@ setMethod(
             .is_debug = TRUE,
             "[storeWrite] parquetGeomTileStore,parquetGeomStore"
         )
-        
+
         a <- storeRead(data)
         .guard_lazy_access(a) # only permit lazy reading
         if (nrow(a) == 0L) {
             return(NULL)
         }
-      
-        plans <- .tile_plan(store, a, 
-            n_tiles = n_tiles,
+
+        threshold <- threshold %||% .auto_threshold(.dplyr_nrow(a), type = data@geomtype)
+        plans <- .tile_plan_quadtree(store, data,
+            threshold = threshold,
+            tiles = tiles,
             i = i,
             dry_run = dry_run,
             verbose = verbose,
-            annotate_args = list(
+            qtree_args = list(
                 sdimx = "x_index",
                 sdimy = "y_index",
-                envelope = FALSE
+                contiguous = contiguous
             )
         )
+        if (isTRUE(dry_run)) return(invisible(NULL))
         store <- plans$store
         tile_sel <- plans$tile_sel
         store@geomtype <- data@geomtype
@@ -714,22 +752,37 @@ setMethod(
 
 # internals ####
 
-.tile_plan <- function(store, a, n_tiles, i, dry_run, verbose, annotate_args) {
-    # 1. setup tiles with requested n
-    # 2. add $n_records metadata/tile
-    tiles <- do.call(.tile_annotate, 
-        c(list(store@tiles, data = a, n_tiles = n_tiles), annotate_args))
-
-    # remove tiles with nothing to write
-    tile_indices <- tiles$tile[tiles$n_records > 0L]
-  
-    vmsg(.v = verbose, 
-        sprintf("nonzero tiles: %d out of %d", length(tile_indices), n_tiles))
-    tile_sel <- if (!is.null(i)) {
-        tiles[i = intersect(tile_indices, as.integer(i)), drop = FALSE]
+.auto_threshold <- function(n, type = c("points", "polygons")) {
+    type <- match.arg(type)
+    if (type == "points") {
+        if (n < 1e6) return(Inf)
+        if (n < 1e9) return(1e6)
+        return(min(max(n / 1000, 1e6), 1e8))
     } else {
-        tiles[i = tile_indices, drop = FALSE]
+        if (n < 5e5) return(Inf)
+        if (n < 5e8) return(5e5)
+        return(min(max(n / 1000, 5e5), 5e6))
     }
+}
+
+.tile_plan_quadtree <- function(store, data, threshold, tiles, i, dry_run, verbose, qtree_args) {
+    if (inherits(tiles, "freeTilePlan")) {
+        fp <- tiles # use directly — already a finished plan (e.g. from dry_run)
+    } else {
+        fp <- do.call(tilework::quadtreePlan, c(
+            list(data, tiles = tiles, threshold = threshold),
+            qtree_args
+        ))
+    }
+
+    # filter to non-empty tiles, then intersect with requested i
+    nonempty <- which(fp@metadata$n_records > 0L)
+    tile_indices <- if (!is.null(i)) intersect(nonempty, as.integer(i)) else nonempty
+
+    vmsg(.v = verbose,
+        sprintf("nonzero tiles: %d out of %d", length(tile_indices), length(fp)))
+
+    tile_sel <- fp[i = tile_indices, drop = FALSE]
 
     if (isTRUE(dry_run)) {
         message("[storeWrite] dry run: planned tiles")
@@ -737,9 +790,10 @@ setMethod(
         return(invisible(tile_sel))
     }
 
-    # update store and return
-    store@tiles <- tile_sel@tp
-    .pstore_disk_extent(store) <- ext(tile_sel@tp)
+    b <- fp@bounds
+    disk_ext <- as.numeric(c(min(b[, 1L]), max(b[, 2L]), min(b[, 3L]), max(b[, 4L])))
+    store@tiles <- fp
+    .pstore_disk_extent(store) <- disk_ext
     list(tile_sel = tile_sel, store = store)
 }
 
