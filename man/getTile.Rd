@@ -2,9 +2,13 @@
 % Please edit documentation in R/tilework.R
 \name{getTile}
 \alias{getTile}
+\alias{getTile,queryableStore,spatialTilePlan-method}
+\alias{getTile,queryableStore,freeTilePlan-method}
 \title{Get Tile Data}
 \usage{
 \S4method{getTile}{queryableStore,spatialTilePlan}(x, tiles, i = NULL, j, contiguous = FALSE, pad = NULL, ...)
+
+\S4method{getTile}{queryableStore,freeTilePlan}(x, tiles, i = NULL, contiguous = FALSE, pad = NULL, ...)
 }
 \arguments{
 \item{x}{\code{fileStore} object (currently \code{parquetStore} inheriting

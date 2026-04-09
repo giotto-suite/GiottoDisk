@@ -461,32 +461,43 @@ setMethod("storeRead", signature("bpcMatrixStore"), function(store, ...) {
 }
 
 # should not be performed on the whole, only in chunks or tiles
-.pgstore_to_spatial <- function(atab, 
-    output = c("terra", "sf"), 
+.pgstore_to_spatial <- function(atab,
+    output = c("terra", "sf"),
     dropcols = character(0L),
     crs = NULL,
     ...) { # passthrough to .pstore_to_tibble()
     output <- match.arg(output, choices = c("terra", "sf"))
     # enforced drops (never drop geom)
     dropcols <- setdiff(
-        unique(c("x_index", "y_index", dropcols)), 
+        unique(c("x_index", "y_index", dropcols)),
         "geom"
     )
 
     if (!"geom" %in% names(atab)) {
         stop("[storeRead][parquet->spatial] geom col missing\n")
     }
-  
-    # collect + consume indices -> sf readin
-    sfdata <- .pstore_to_tibble(atab, dropcols = dropcols, ...) |>
-        sf::st_as_sf(sf_column_name = "geom")
-    if (!is.null(crs) && nzchar(crs)) {
-        sfdata <- sf::st_set_crs(sfdata, crs)
+
+    data <- .pstore_to_tibble(atab, dropcols = dropcols, ...)
+
+    if (output == "sf") {
+        sfdata <- sf::st_as_sf(data, sf_column_name = "geom")
+        if (!is.null(crs) && nzchar(crs)) {
+            sfdata <- sf::st_set_crs(sfdata, crs)
+        }
+        return(sfdata)
     }
-    switch(output,
-        "sf" = sfdata,
-        "terra" = terra::vect(sfdata)
-    )
+
+    # "terra": use WKB directly — avoids sf R-level geometry allocation overhead
+    wkb <- as.list(data$geom)
+    data$geom <- NULL
+    sv <- terra::vect(wkb)
+    if (!is.null(crs) && nzchar(crs)) {
+        terra::crs(sv) <- crs
+    }
+    if (ncol(data) > 0L) {
+        terra::values(sv) <- data
+    }
+    sv
 }
 
 .pstore_fields_requested <- function(store, fields = NULL) {

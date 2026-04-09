@@ -252,7 +252,7 @@ setMethod("initialize", signature("unionParquetStore"), function(.Object, ...) {
     names(.store_simple_read(x)) # fallback (direct read from disk)
 }
 
-# parquetStore-specific get/set
+##  parquetStore-specific get/set ####
 .pstore_disk_fields <- function(x) x@params$disk_fields
 `.pstore_disk_fields<-` <- function(x, value) {
     x@params$disk_fields <- value

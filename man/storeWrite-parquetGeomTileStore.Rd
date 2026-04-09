@@ -9,12 +9,12 @@
   data,
   n_tiles = 100,
   i = NULL,
+  id_col,
   sdimx,
   sdimy,
   type = c("points", "polygons"),
   contiguous = TRUE,
   dry_run = FALSE,
-  geom_param = list(verbose = FALSE),
   write_param = list(),
   verbose = NULL,
   ...
@@ -25,13 +25,14 @@
   data,
   n_tiles = 100,
   i = NULL,
+  id_col,
   sdimx,
   sdimy,
-  group_col = NULL,
+  part_col = NULL,
+  group_col = id_col,
   type = c("points", "polygons"),
   contiguous = TRUE,
   dry_run = FALSE,
-  geom_param = list(verbose = FALSE),
   write_param = list(),
   verbose = NULL,
   ...
@@ -59,12 +60,16 @@
 \item{i}{\code{integerlike} specific tile(s) to write. Leave as NULL (default)
 to write all.}
 
-\item{sdimx, sdimy}{\code{character}. Names of columns containing x and y values,
-respectively.}
+\item{id_col}{\code{character}. Column name to use as the geometry identifier.
+For polygons, this is the polygon ID (\code{poly_ID}) that groups vertices into
+individual geometries. For points, this is the feature ID (\code{feat_ID}).}
+
+\item{sdimx, sdimy}{\code{character}. Names of columns containing x and y spatial
+coordinate values, respectively. Used for spatial tile planning and
+geometry construction.}
 
 \item{type}{\code{character}. Either \code{"points"} or \code{"polygons"}. What type of
-geometry to write. Determines whether \code{\link[GiottoClass:createGiottoPoints]{GiottoClass::createGiottoPoints()}}
-or \code{\link[GiottoClass:createGiottoPolygon]{GiottoClass::createGiottoPolygon()}} is used to parse the values.}
+geometry to write.}
 
 \item{contiguous}{\code{logical} (default = TRUE) When \code{TRUE}, tile inclusivity
 rules (see \link{getBoundedData}) prevent duplication of data at tile boundaries
@@ -73,17 +78,16 @@ rules (see \link{getBoundedData}) prevent duplication of data at tile boundaries
 \item{dry_run}{\code{logical} (default = FALSE). When \code{TRUE}, stops after planning
 the tiles to write and plots the tiles to write.}
 
-\item{geom_param}{\code{list} (optional). Additional params to pass to
-\link[GiottoClass:createGiottoPoints]{GiottoClass::createGiottoPoints} or \link[GiottoClass:createGiottoPolygon]{GiottoClass::createGiottoPolygon},
-depending on \code{type}.}
-
 \item{write_param}{named \code{list} (optional). Additional params to pass to the
 writing function.}
 
 \item{...}{additional params to pass to \code{tileApply}}
 
-\item{group_col}{\code{character}. If \code{type = "polygons"}, name of column that
-groups related rows (vertices). Usually the polygon IDs.}
+\item{part_col}{\code{character} (optional, polygons only). Column name for
+multi-part polygon grouping. See \link[GiottoClass:createGiottoPolygon]{GiottoClass::createGiottoPolygon}.}
+
+\item{group_col}{\code{character}. If \code{type = "polygons"}, name of column used
+for spatial tile planning via envelope centroids. Defaults to \code{id_col}.}
 }
 \description{
 Write geometry data to hive-partitoned spatially tiled parquets. The partition

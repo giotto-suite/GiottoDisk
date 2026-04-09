@@ -5,13 +5,16 @@
 \alias{storeWrite,parquetGeomStore,data.frame-method}
 \title{Write to a Parquet Geometry Storage}
 \usage{
-\S4method{storeWrite}{parquetGeomStore,SpatVector}(store, data, row_offset = 0, .arrow_meta = NULL, ...)
+\S4method{storeWrite}{parquetGeomStore,SpatVector}(store, data, meta = NULL, row_offset = 0, .arrow_meta = NULL, ...)
 
 \S4method{storeWrite}{parquetGeomStore,data.frame}(
   store,
   data,
   type = c("points", "polygons"),
-  geom_param = list(verbose = FALSE),
+  id_col,
+  sdimx,
+  sdimy,
+  part_col = NULL,
   row_offset = 0,
   ...
 )
@@ -20,6 +23,11 @@
 \item{store}{\code{dataStore} inheriting class}
 
 \item{data}{data to write}
+
+\item{meta}{(optional) \code{data.frame-like} that contains attributes info in the
+same ordering as the spatvector in \code{data}. If not provided and attributes
+are in the spatvector, they will be automatically extracted with
+\code{\link[terra:values]{terra::values()}}}
 
 \item{row_offset}{\code{numeric}, will be coerced to \code{integer} (default = 0L).
 Offset to apply to row number indexing. For example \code{row_offset = 0L} means
@@ -32,12 +40,18 @@ metadata}
 \code{\link[arrow:write_dataset]{arrow::write_dataset()}}}
 
 \item{type}{\code{character}. Either \code{"points"} or \code{"polygons"}. What type of
-geometry to write. Determines whether \code{\link[GiottoClass:createGiottoPoints]{GiottoClass::createGiottoPoints()}}
-or \code{\link[GiottoClass:createGiottoPolygon]{GiottoClass::createGiottoPolygon()}} is used to parse the values.}
+geometry to write.}
 
-\item{geom_param}{\code{list} (optional). Additional params to pass to
-\link[GiottoClass:createGiottoPoints]{GiottoClass::createGiottoPoints} or \link[GiottoClass:createGiottoPolygon]{GiottoClass::createGiottoPolygon},
-depending on \code{type}.}
+\item{id_col}{\code{character}. Column name to use as the geometry identifier.
+For polygons, this is the polygon ID (\code{poly_ID}) that groups vertices into
+individual geometries. For points, this is the feature ID (\code{feat_ID}).}
+
+\item{sdimx}{\code{character}. Column name containing x spatial coordinates.}
+
+\item{sdimy}{\code{character}. Column name containing y spatial coordinates.}
+
+\item{part_col}{\code{character} (optional, polygons only). Column name for
+multi-part polygon grouping. See \link[GiottoClass:createGiottoPolygon]{GiottoClass::createGiottoPolygon}.}
 }
 \description{
 Write geometry data to a \code{parquetGeomStore}. Each row is a single geometry.

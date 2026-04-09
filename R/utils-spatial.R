@@ -79,6 +79,66 @@
     data
 }
 
+# Convert a data.frame of points or polygon vertices to a sidecar list.
+# Geometry columns are used to build the SpatVector; remaining columns are
+# returned separately as a data.table so terra never ingests the metadata.
+# Returns list(geom = giottoPolygon, meta = data.table).
+.df_to_terra_pts <- function(x,
+    id_col = NULL,
+    sdimx = NULL,
+    sdimy = NULL,
+    feat_ID_colname = NULL, # sink: prevent duplicate arg if passed via ... 
+    x_colname = NULL, # sink: prevent duplicate arg if passed via ... 
+    y_colname = NULL, # sink: prevent duplicate arg if passed via ... 
+    ...) {
+    checkmate::assert_data_frame(x)
+    data.table::setDT(x)
+    
+    geom_cols <- c(id_col, sdimx, sdimy)
+    meta_cols <- c(id_col, setdiff(colnames(x), geom_cols))
+    x_geom <- x[, geom_cols, with = FALSE]
+    x_meta <- x[, meta_cols, with = FALSE]
+  
+    x_sv <- GiottoClass::createGiottoPoints(x_geom,
+        feat_ID_colname = id_col, # not actually geom id
+        x_colname = sdimx,
+        y_colname = sdimy,
+        split_keyword = NULL, # not done at this level
+        ...
+    )[] # drop to spatvector
+    list(
+        geom = x_sv,
+        meta = x_meta
+    )
+}
+
+.df_to_terra_poly <- function(x,
+    id_col = NULL,
+    part_col = NULL,
+    sdimx = NULL,
+    sdimy = NULL,
+    hole_col = NULL,
+    ...) {
+    checkmate::assert_data_frame(x)
+    data.table::setDT(x)
+      
+    geom_cols <- c(id_col, sdimx, sdimy, part_col, hole_col)
+    meta_cols <- c(id_col, setdiff(colnames(x), geom_cols))
+    x_geom <- x[, geom_cols, with = FALSE]
+    x_meta <- x[, meta_cols, with = FALSE]
+  
+    x_sv <- GiottoClass::createGiottoPolygon(x_geom,
+        part_col = part_col,
+        calc_centroids = FALSE,
+        make_valid = TRUE,
+        ...
+    )[] # drop to spatvector
+    list(
+        geom = x_sv,
+        meta = unique(x_meta) # deduplication
+    )
+}
+
 # create the geoparquet json metadata
 .geoparquet_metadata <- function(geom_col = "geom",                  
     geomtype = NULL,                                                 

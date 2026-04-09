@@ -183,11 +183,10 @@ setMethod(
 #' `createGiottoPolygon`, depending on the `type` param.
 #' @inheritParams storeWrite
 #' @inheritParams storeWrite-parquetStore
-#' @param type `character`. One of `"points"` or `"polygons"` depending on the
-#' geometries to create from the table data.
-#' @param geom_param `list` (optional). Additional params to pass to
-#' [GiottoClass::createGiottoPoints] or [GiottoClass::createGiottoPolygon],
-#' depending on `type`.
+#' @param meta (optional) `data.frame-like` that contains attributes info in the 
+#'   same ordering as the spatvector in `data`. If not provided and attributes
+#'   are in the spatvector, they will be automatically extracted with 
+#'   [terra::values()]
 #' @param ... addtional params to pass to `parquetStore` method and
 #' [arrow::write_dataset()]
 #' @family storeWrite methods
@@ -195,7 +194,7 @@ setMethod(
 setMethod(
     "storeWrite",
     signature("parquetGeomStore", "SpatVector"),
-    function(store, data, row_offset = 0, .arrow_meta = NULL, ...) {
+    function(store, data, meta = NULL, row_offset = 0, .arrow_meta = NULL, ...) {
         if (nrow(data) == 0L) {
             return(NULL)
         }
@@ -206,11 +205,22 @@ setMethod(
         store@params$crs <- terra::crs(data)
         if (store@geomtype == "polygons") {
             store@params$max_poly_radius <- sqrt(
-                max(terra::expanse(data)) / pi
+                suppressWarnings(max(terra::expanse(data), na.rm = TRUE)) / pi
             )
         }
+        # get meta if not already separate
+        if (is.null(meta)) {
+            if (ncol(data) > 0L) {
+                meta <- terra::values(data)
+            } else {
+                meta <- data.frame()
+            }
+        }
         # convert to data.frame with column 'geom' as WKB
-        data <- .terra_to_parquet_format(data, row_offset = row_offset)
+        data <- .terra_to_parquet_format(data, 
+            meta = meta, 
+            row_offset = row_offset
+        )
         # add geoparquet metadata if needed
         .arrow_meta <- .arrow_meta_add_geoparquet(store, .arrow_meta)
 
@@ -218,7 +228,10 @@ setMethod(
             "storeWrite",
             signature("parquetStore", "data.frame")
         )
-        store <- store_write_next(store, data, .arrow_meta = .arrow_meta, ...) # call a lower method
+        store <- store_write_next(store, data, 
+            .arrow_meta = .arrow_meta,
+            ...
+        )
         store
     }
 )
@@ -226,8 +239,14 @@ setMethod(
 # parse geometries via {GiottoClass} then pass to further conversion and writes
 #' @rdname storeWrite-parquetGeomStore
 #' @param type `character`. Either `"points"` or `"polygons"`. What type of
-#'   geometry to write. Determines whether [GiottoClass::createGiottoPoints()]
-#'   or [GiottoClass::createGiottoPolygon()] is used to parse the values.
+#'   geometry to write.
+#' @param id_col `character`. Column name to use as the geometry identifier.
+#'   For polygons, this is the polygon ID (`poly_ID`) that groups vertices into
+#'   individual geometries. For points, this is the feature ID (`feat_ID`).
+#' @param sdimx `character`. Column name containing x spatial coordinates.
+#' @param sdimy `character`. Column name containing y spatial coordinates.
+#' @param part_col `character` (optional, polygons only). Column name for
+#'   multi-part polygon grouping. See [GiottoClass::createGiottoPolygon].
 #' @export
 setMethod(
     "storeWrite",
@@ -236,7 +255,10 @@ setMethod(
         store,
         data,
         type = c("points", "polygons"),
-        geom_param = list(verbose = FALSE),
+        id_col,
+        sdimx,
+        sdimy,
+        part_col = NULL,
         row_offset = 0,
         ...
     ) {
@@ -245,16 +267,28 @@ setMethod(
             return(NULL)
         }
         GiottoUtils::package_check("arrow")
-        checkmate::assert_list(geom_param)
+        geom_param <- list(
+            id_col = id_col,
+            sdimx = sdimx,
+            sdimy = sdimy,
+            verbose = FALSE
+        )
         type <- match.arg(type, choices = c("points", "polygons"))
-        fun <- switch(
-            type,
-            "points" = GiottoClass::createGiottoPoints,
-            "polygons" = GiottoClass::createGiottoPolygon
+        if (type == "polygons") {
+            geom_param$part_col <- part_col
+        }
+        fun <- switch(type,
+            "points" = .df_to_terra_pts,
+            "polygons" = .df_to_terra_poly
         )
         # coerce to giotto representation -> SpatVector
-        data <- do.call(fun, args = c(list(data), geom_param))
-        store <- storeWrite(store, data[], row_offset = row_offset, ...)
+        out <- do.call(fun, args = c(list(data), geom_param))
+        store <- storeWrite(store, 
+            data = out$geom, 
+            meta = out$meta,
+            row_offset = row_offset,
+            ...
+        )
         store
     }
 )
@@ -321,10 +355,11 @@ setMethod(
 #' @param n_tiles `numeric`. Minimum number of tiles to write across
 #' @param i `integerlike` specific tile(s) to write. Leave as NULL (default)
 #'   to write all.
-#' @param sdimx,sdimy `character`. Names of columns containing x and y values,
-#'   respectively.
-#' @param group_col `character`. If `type = "polygons"`, name of column that
-#'   groups related rows (vertices). Usually the polygon IDs.
+#' @param sdimx,sdimy `character`. Names of columns containing x and y spatial
+#'   coordinate values, respectively. Used for spatial tile planning and
+#'   geometry construction.
+#' @param group_col `character`. If `type = "polygons"`, name of column used
+#'   for spatial tile planning via envelope centroids. Defaults to `id_col`.
 #' @param contiguous `logical` (default = TRUE) When `TRUE`, tile inclusivity
 #' rules (see [getBoundedData]) prevent duplication of data at tile boundaries
 #' (assuming no padding).
@@ -346,12 +381,12 @@ setMethod(
         data,
         n_tiles = 100,
         i = NULL,
+        id_col,
         sdimx,
         sdimy,
         type = c("points", "polygons"),
         contiguous = TRUE,
         dry_run = FALSE,
-        geom_param = list(verbose = FALSE),
         write_param = list(),
         verbose = NULL,
         ...
@@ -369,6 +404,11 @@ setMethod(
             )
             stop(msg, call. = FALSE)
         }
+        geom_param <- list(
+            id_col = id_col,
+            sdimx = sdimx,
+            sdimy = sdimy
+        )
         
         a <- storeRead(data)
         .guard_lazy_access(a) # only permit lazy reading
@@ -419,10 +459,10 @@ setMethod(
                         tile_store,
                         mem_data,
                         type = type,
-                        geom_param = geom_param,
                         uid_partition = FALSE, # would double tag otherwise
                         .arrow_meta = .arrow_meta_add_geoparquet(store)
                     ),
+                    geom_param,
                     write_param
                 )
                 do.call(storeWrite, sw_args)
@@ -447,13 +487,14 @@ setMethod(
         data,
         n_tiles = 100,
         i = NULL,
+        id_col,
         sdimx,
         sdimy,
-        group_col = NULL,
+        part_col = NULL,
+        group_col = id_col,
         type = c("points", "polygons"),
         contiguous = TRUE,
         dry_run = FALSE,
-        geom_param = list(verbose = FALSE),
         write_param = list(),
         verbose = NULL,
         ...
@@ -463,6 +504,12 @@ setMethod(
             "[storeWrite] parquetGeomTileStore,parquetStore"
         )
         type <- match.arg(type, choices = c("points", "polygons"))
+        geom_param <- list(
+            id_col = id_col,
+            sdimx = sdimx,
+            sdimy = sdimy,
+            part_col = part_col
+        )
         
         a <- storeRead(data)
         .guard_lazy_access(a)
@@ -516,10 +563,10 @@ setMethod(
                         tile_store,
                         mem_data,
                         type = type,
-                        geom_param = geom_param,
                         uid_partition = FALSE, # would double tag otherwise
                         .arrow_meta = .arrow_meta_add_geoparquet(store)
                     ),
+                    geom_param,
                     write_param
                 )
                 do.call(storeWrite, sw_args)
@@ -710,7 +757,7 @@ setMethod(
     )
 }
 
-.terra_to_parquet_format <- function(x, row_offset = 0L) {
+.terra_to_parquet_format <- function(x, meta, row_offset = 0L) {
     checkmate::assert_class(x, "SpatVector")
     wkb <- terra::geom(x, wkb = TRUE)
     ctrs <- XY(centroids(x))
@@ -724,9 +771,8 @@ setMethod(
         y_index = ctrs[, 2]
     )
     data$geom <- wkb # raw needs to be added separately
-    vals <- terra::values(x)
-    if (ncol(vals) > 0L) {
-        data <- cbind(data, vals)
+    if (ncol(meta) > 0L) {
+        data <- cbind(data, meta)
     }
     data
 }
