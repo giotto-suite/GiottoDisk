@@ -20,12 +20,7 @@ setMethod("specialCols", signature("parquetBase"), function(store) {
 #' @rdname specialCols
 #' @export
 setMethod("specialCols", signature("parquetGeomBase"), function(store) {
-    c(callNextMethod(store), "x_index", "y_index", "geom")
-})
-#' @rdname specialCols
-#' @export
-setMethod("specialCols", signature("parquetGeomTileStore"), function(store) {
-    c(callNextMethod(store), "tile_index")
+    c(callNextMethod(store), "x_index", "y_index", "geom", "tile_index")
 })
 #' @rdname specialCols
 #' @export

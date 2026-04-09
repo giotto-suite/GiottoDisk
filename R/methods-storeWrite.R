@@ -86,6 +86,7 @@ setMethod(
         callback = NULL,
         row_offset = 0L,
         uid_partition = TRUE,
+        tile_idx = NULL,
         .arrow_meta = NULL,
         ...
     ) {
@@ -115,7 +116,7 @@ setMethod(
             data$metadata <- c(data$metadata, .arrow_meta)
         }
       
-        .write_parquet(store, data, uid_partition = uid_partition, ...)
+        .write_parquet(store, data, uid_partition = uid_partition, tile_idx = tile_idx, ...)
         initialize(store)
     }
 )
@@ -183,10 +184,15 @@ setMethod(
 #' `createGiottoPolygon`, depending on the `type` param.
 #' @inheritParams storeWrite
 #' @inheritParams storeWrite-parquetStore
-#' @param meta (optional) `data.frame-like` that contains attributes info in the 
+#' @param meta (optional) `data.frame-like` that contains attributes info in the
 #'   same ordering as the spatvector in `data`. If not provided and attributes
-#'   are in the spatvector, they will be automatically extracted with 
+#'   are in the spatvector, they will be automatically extracted with
 #'   [terra::values()]
+#' @param tile_idx `integer(1)`. Tile index to write under as a hive partition
+#'   (`tile_index=<n>/`). Defaults to `0L` so flat geom stores share a uniform
+#'   `(tile_index, row_index)` join key with tiled stores without needing
+#'   `dplyr::coalesce`. Pass `NULL` to write without a tile subdir (not
+#'   recommended for `parquetGeomStore`).
 #' @param ... addtional params to pass to `parquetStore` method and
 #' [arrow::write_dataset()]
 #' @family storeWrite methods
@@ -194,7 +200,7 @@ setMethod(
 setMethod(
     "storeWrite",
     signature("parquetGeomStore", "SpatVector"),
-    function(store, data, meta = NULL, row_offset = 0, .arrow_meta = NULL, ...) {
+    function(store, data, meta = NULL, row_offset = 0, tile_idx = 0L, .arrow_meta = NULL, ...) {
         if (nrow(data) == 0L) {
             return(NULL)
         }
@@ -228,7 +234,8 @@ setMethod(
             "storeWrite",
             signature("parquetStore", "data.frame")
         )
-        store <- store_write_next(store, data, 
+        store <- store_write_next(store, data,
+            tile_idx = tile_idx,
             .arrow_meta = .arrow_meta,
             ...
         )
@@ -797,11 +804,14 @@ setMethod(
     list(tile_sel = tile_sel, store = store)
 }
 
-.write_parquet <- function(store, data, uid_partition = TRUE, ...) {
+.write_parquet <- function(store, data, uid_partition = TRUE, tile_idx = NULL, ...) {
     if (isTRUE(uid_partition)) {
         path <- .idpath(store@path, store@uid)
     } else {
         path <- store@path
+    }
+    if (!is.null(tile_idx)) {
+        path <- file.path(path, .hive_part_col("tile_index", tile_idx))
     }
     arrow::write_dataset(
         dataset = data,

@@ -17,6 +17,12 @@
 #'   * "duckdb" - (requires {duckdb} and {dbplyr}) produces a `tbl_dbi`
 #'      lazy query. **Note:** should not be used in a parallelized
 #'      context as duckdb handles parallelization internally.
+#' @param omit_internals `logical` (default `TRUE`). Whether to drop internal
+#'   special columns (`row_index`, `source_id`) from materialized output
+#'   (`"tibble"`, `"terra"`, `"sf"`). Set to `FALSE` to retain them, e.g.
+#'   when downstream code needs these columns for joining.
+#'   Has no effect for `"query"` or `"duckdb"` outputs (those always expose
+#'   all columns).
 #' @param ... additional params to pass (if any implemented)
 NULL
 
@@ -78,10 +84,11 @@ setMethod("storeRead", signature("queryableStore"), function(store,
 #' @rdname storeRead
 #' @export
 setMethod("storeRead", signature("parquetStore"), function(store,
-    fields = NULL, 
-    output = c("query", "tibble", "duckdb"), 
+    fields = NULL,
+    output = c("query", "tibble", "duckdb"),
     callback = NULL,
     duckdb_params = list(),
+    omit_internals = TRUE,
     ...) {
     checkmate::assert_character(fields, null.ok = TRUE)
     output <- match.arg(output, choices = c("query", "tibble", "duckdb"))
@@ -111,6 +118,7 @@ setMethod("storeRead", signature("parquetStore"), function(store,
         fields = fields,
         output = output,
         duckdb_params = duckdb_params,
+        omit_internals = omit_internals,
         ...
     )
 })
@@ -118,10 +126,11 @@ setMethod("storeRead", signature("parquetStore"), function(store,
 #' @rdname storeRead
 #' @export
 setMethod("storeRead", signature("unionParquetStore"), function(store,
-    fields = NULL, 
-    output = c("query", "tibble", "duckdb"), 
+    fields = NULL,
+    output = c("query", "tibble", "duckdb"),
     callback = NULL,
     duckdb_params = list(),
+    omit_internals = TRUE,
     ...) {
     checkmate::assert_character(fields, null.ok = TRUE)
     output <- match.arg(output, choices = c("query", "tibble", "duckdb"))
@@ -156,6 +165,7 @@ setMethod("storeRead", signature("unionParquetStore"), function(store,
         output = output,
         source_order = source_order,
         duckdb_params = duckdb_params,
+        omit_internals = omit_internals,
         ...
     )
 })
@@ -168,6 +178,7 @@ setMethod("storeRead", signature("unionParquetGeomStore"), function(store,
     output = c("query", "tibble", "terra", "sf", "duckdb"),
     callback = NULL,
     duckdb_params = list(),
+    omit_internals = TRUE,
     ...) {
     output <- match.arg(output, choices = c("query", "tibble", "terra", "sf", "duckdb"))
     fields <- .pstore_fields_requested(store, fields)
@@ -215,14 +226,16 @@ setMethod("storeRead", signature("unionParquetGeomStore"), function(store,
         "tibble" = .pstore_to_tibble(atab,
             dropcols = dropcols,
             arrangecols = c("source_id", "tile_index", "row_index"),
-            source_order = source_order),
+            source_order = source_order,
+            omit_internals = omit_internals),
         "duckdb" = .arrow_to_duckdb(atab, duckdb_params = duckdb_params),
         .pgstore_to_spatial(atab,
             output = output,
             dropcols = dropcols,
             arrangecols = c("source_id", "tile_index", "row_index"),
             source_order = source_order,
-            crs = store@params$crs
+            crs = store@params$crs,
+            omit_internals = omit_internals
         )
     )
 })
@@ -232,6 +245,7 @@ setMethod("storeRead", signature("unionParquetGeomStore"), function(store,
     output,
     source_order = NULL,
     duckdb_params = list(),
+    omit_internals = TRUE,
     ...) {
 
     for (op in store@ops) {
@@ -248,7 +262,8 @@ setMethod("storeRead", signature("unionParquetGeomStore"), function(store,
         "query" = atab,
         "tibble" = .pstore_to_tibble(atab,
             dropcols = dropcols,
-            source_order = source_order),
+            source_order = source_order,
+            omit_internals = omit_internals),
         "duckdb" = .arrow_to_duckdb(atab, duckdb_params = duckdb_params)
     )
 }
@@ -258,9 +273,10 @@ setMethod("storeRead", signature("unionParquetGeomStore"), function(store,
 setMethod("storeRead", signature("parquetGeomStore"), function(store,
     extent = NULL,
     fields = NULL,
-    output = c("query", "tibble", "terra", "sf", "duckdb"), 
+    output = c("query", "tibble", "terra", "sf", "duckdb"),
     callback = NULL,
     duckdb_params = list(),
+    omit_internals = TRUE,
     ...) {
     output <- match.arg(output, choices = c("query", "tibble", "terra", "sf", "duckdb"))
     fields <- .pstore_fields_requested(store, fields)
@@ -305,12 +321,14 @@ setMethod("storeRead", signature("parquetGeomStore"), function(store,
     switch(output,
         "query" = atab,
         "tibble" = .pstore_to_tibble(atab,
-            dropcols = dropcols),
-        "duckdb" = .arrow_to_duckdb(atab, duckdb_params = duckdb_params),
-        .pgstore_to_spatial(atab, 
-            output = output, 
             dropcols = dropcols,
-            crs = store@params$crs
+            omit_internals = omit_internals),
+        "duckdb" = .arrow_to_duckdb(atab, duckdb_params = duckdb_params),
+        .pgstore_to_spatial(atab,
+            output = output,
+            dropcols = dropcols,
+            crs = store@params$crs,
+            omit_internals = omit_internals
         )
     )
 })
@@ -318,12 +336,13 @@ setMethod("storeRead", signature("parquetGeomStore"), function(store,
 #' @rdname storeRead
 #' @export
 setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
-    extent = NULL, 
+    extent = NULL,
     tile = NULL,
     fields = NULL,
     output = c("query", "tibble", "terra", "sf", "duckdb"),
     callback = NULL,
     duckdb_params = list(),
+    omit_internals = TRUE,
     ...) {
     output <- match.arg(output, choices = c("query", "tibble", "terra", "sf", "duckdb"))
     fields <- .pstore_fields_requested(store, fields)
@@ -347,7 +366,7 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
         ...
     )
 
-    dropcols <- c("tile_index", "source_id")
+    dropcols <- c("source_id")
     if (!is.null(fields)) { # handle upstream special col injections
         dropcols <- setdiff(specialCols(store), fields)
     }
@@ -355,16 +374,18 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
     if (!is.null(callback)) atab <- callback(atab)
     switch(output,
         "query" = atab,
-        "tibble" = .pstore_to_tibble(atab, 
-            dropcols = dropcols, 
-            arrangecols = c("source_id", "tile_index", "row_index")),
-        "duckdb" = .arrow_to_duckdb(atab, 
+        "tibble" = .pstore_to_tibble(atab,
+            dropcols = dropcols,
+            arrangecols = c("source_id", "tile_index", "row_index"),
+            omit_internals = omit_internals),
+        "duckdb" = .arrow_to_duckdb(atab,
             duckdb_params = duckdb_params),
-        .pgstore_to_spatial(atab, 
+        .pgstore_to_spatial(atab,
             output = output,
             dropcols = dropcols,
             arrangecols = c("source_id", "tile_index", "row_index"),
-            crs = store@params$crs
+            crs = store@params$crs,
+            omit_internals = omit_internals
         )
     )
 })
@@ -414,9 +435,12 @@ setMethod("storeRead", signature("bpcMatrixStore"), function(store, ...) {
     dropcols = character(0L),
     arrangecols = c("source_id", "row_index"),
     source_order = NULL,
-    selection = integer(0L)) {
+    selection = integer(0L),
+    omit_internals = TRUE) {
     # enforced drops
-    dropcols <- unique(c("row_index", "source_id", dropcols))
+    if (isTRUE(omit_internals)) {
+        dropcols <- unique(c("row_index", "source_id", dropcols))
+    }
   
     if (!"row_index" %in% names(atab)) {
         warning("[storeRead][parquet->tibble] row_index missing\n",
@@ -465,6 +489,7 @@ setMethod("storeRead", signature("bpcMatrixStore"), function(store, ...) {
     output = c("terra", "sf"),
     dropcols = character(0L),
     crs = NULL,
+    omit_internals = TRUE,
     ...) { # passthrough to .pstore_to_tibble()
     output <- match.arg(output, choices = c("terra", "sf"))
     # enforced drops (never drop geom)
@@ -477,7 +502,8 @@ setMethod("storeRead", signature("bpcMatrixStore"), function(store, ...) {
         stop("[storeRead][parquet->spatial] geom col missing\n")
     }
 
-    data <- .pstore_to_tibble(atab, dropcols = dropcols, ...)
+    data <- .pstore_to_tibble(atab, dropcols = dropcols,
+        omit_internals = omit_internals, ...)
 
     if (output == "sf") {
         sfdata <- sf::st_as_sf(data, sf_column_name = "geom")
@@ -516,10 +542,7 @@ setMethod("storeRead", signature("bpcMatrixStore"), function(store, ...) {
 
     # store requirements
     if (inherits(store, "parquetGeomBase")) {
-        lazy <- unique(c("x_index", "y_index", lazy))
-    }
-    if (inherits(store, "parquetGeomTileStore")) {
-        lazy <- unique(c("tile_index", lazy))
+        lazy <- unique(c("x_index", "y_index", "tile_index", lazy))
     }
   
     # output requirements
