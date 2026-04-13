@@ -33,7 +33,9 @@ getArtifactDumpDir <- function() {
 }
 
 .dump_tempfile <- function() {
-    tempfile(tmpdir = getArtifactDumpDir())
+    dir <- getArtifactDumpDir()
+    if (!dir.exists(dir)) dir.create(dir, recursive = TRUE)
+    tempfile(tmpdir = dir)
 }
 
 # get number of rows in data
