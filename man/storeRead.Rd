@@ -31,6 +31,7 @@
   output = c("query", "tibble", "duckdb"),
   callback = NULL,
   duckdb_params = list(),
+  omit_internals = TRUE,
   ...
 )
 
@@ -40,6 +41,7 @@
   output = c("query", "tibble", "duckdb"),
   callback = NULL,
   duckdb_params = list(),
+  omit_internals = TRUE,
   ...
 )
 
@@ -50,6 +52,7 @@
   output = c("query", "tibble", "terra", "sf", "duckdb"),
   callback = NULL,
   duckdb_params = list(),
+  omit_internals = TRUE,
   ...
 )
 
@@ -60,17 +63,19 @@
   output = c("query", "tibble", "terra", "sf", "duckdb"),
   callback = NULL,
   duckdb_params = list(),
+  omit_internals = TRUE,
   ...
 )
 
 \S4method{storeRead}{parquetGeomTileStore}(
   store,
   extent = NULL,
-  tile = NULL,
+  tile_idx = NULL,
   fields = NULL,
   output = c("query", "tibble", "terra", "sf", "duckdb"),
   callback = NULL,
   duckdb_params = list(),
+  omit_internals = TRUE,
   ...
 )
 
@@ -114,9 +119,16 @@ Key params:
 for the registered table will be generated
 }}
 
+\item{omit_internals}{\code{logical} (default \code{TRUE}). Whether to drop internal
+special columns (\code{row_index}, \code{source_id}) from materialized output
+(\code{"tibble"}, \code{"terra"}, \code{"sf"}). Set to \code{FALSE} to retain them, e.g.
+when downstream code needs these columns for joining.
+Has no effect for \code{"query"} or \code{"duckdb"} outputs (those always expose
+all columns).}
+
 \item{extent}{\code{SpatExtent} to filter on (optional)}
 
-\item{tile}{\code{integerlike} (optional) specific tile number(s) to read}
+\item{tile_idx}{\code{integerlike} (optional) specific tile number(s) to read}
 }
 \description{
 Read from a \code{dataStore} inheriting object. The output should be a useful

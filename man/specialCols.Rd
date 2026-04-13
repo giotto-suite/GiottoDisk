@@ -5,7 +5,6 @@
 \alias{specialCols,ANY-method}
 \alias{specialCols,parquetBase-method}
 \alias{specialCols,parquetGeomBase-method}
-\alias{specialCols,parquetGeomTileStore-method}
 \alias{specialCols,unionParquetStore-method}
 \title{Special Store Columns}
 \usage{
@@ -14,8 +13,6 @@
 \S4method{specialCols}{parquetBase}(store)
 
 \S4method{specialCols}{parquetGeomBase}(store)
-
-\S4method{specialCols}{parquetGeomTileStore}(store)
 
 \S4method{specialCols}{unionParquetStore}(store)
 }

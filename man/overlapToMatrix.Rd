@@ -9,7 +9,7 @@
   x,
   path = .dump_tempfile(),
   feat_id_col = "feat_ID",
-  cell_id_col = "cell_ID",
+  poly_id_col = "poly_ID",
   count_col = NULL,
   store_type = getOption("giotto.gdsrc_matrix_format", "bpcells"),
   ...
@@ -20,7 +20,7 @@
 
 \item{feat_id_col}{\code{character} feature ID column name (default \code{"feat_ID"})}
 
-\item{cell_id_col}{\code{character} cell ID column name (default \code{"cell_ID"})}
+\item{poly_id_col}{\code{character} polygon ID column name (default \code{"poly_ID"})}
 
 \item{count_col}{\code{character} (optional) column to sum instead of counting
 rows. Useful when feature detections carry a \code{count} field.}

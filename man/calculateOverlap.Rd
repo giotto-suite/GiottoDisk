@@ -3,42 +3,106 @@
 \name{calculateOverlap}
 \alias{calculateOverlap}
 \alias{calculateOverlap,parquetGeomStore,parquetGeomStore-method}
+\alias{calculateOverlap,parquetGeomStore,parquetGeomTileStore-method}
 \title{Calculate Overlap}
 \usage{
 \S4method{calculateOverlap}{parquetGeomStore,parquetGeomStore}(
   x,
   y,
   method = c("vector", "raster"),
-  n_tiles = 100,
+  threshold = NULL,
+  tiles = NULL,
   pad_y = 500,
   engine = c("terra", "duckdb"),
   path = .dump_tempfile(),
   poly_id_col = "poly_ID",
+  feat_id_col = "feat_ID",
+  keep_cols = NULL,
+  ...
+)
+
+\S4method{calculateOverlap}{parquetGeomStore,parquetGeomTileStore}(
+  x,
+  y,
+  method = c("vector", "raster"),
+  poly_buf_factor = 0.15,
+  pad_y = NULL,
+  tile_idx = NULL,
+  engine = c("terra", "duckdb"),
+  path = .dump_tempfile(),
+  poly_id_col = "poly_ID",
+  feat_id_col = "feat_ID",
+  keep_cols = NULL,
   ...
 )
 }
 \arguments{
-\item{x, y}{\code{store} classes containing geometries, such as \code{parquetGeomStore}}
+\item{x}{\code{parquetGeomStore}-inheriting object containing polygons}
 
-\item{method}{(\code{engine = "terra"}) \code{character}. One of \code{"vector"} or \code{"raster"}. Method of overlap
-calculation. See \code{\link[GiottoClass:calculateOverlap]{GiottoClass::calculateOverlap()}} for details.}
+\item{y}{\code{parquetGeomStore}-inheriting object containing features (points)}
 
-\item{n_tiles}{(\code{engine = "terra"}) \code{integer}-like minimal number of tiles to break the operation into}
+\item{method}{(\code{engine = "terra"}) \code{character}. One of \code{"vector"} or \code{"raster"}.
+Method of overlap calculation. See \code{\link[GiottoClass:calculateOverlap]{GiottoClass::calculateOverlap()}} for details.}
 
-\item{pad_y}{(\code{engine = "terra"}) \code{numeric} padding value applied only to \code{y}. Used to make sure \code{x}
-has full spatial context of \code{y}.}
+\item{threshold}{(optional) \code{numeric} maximum number of polygons per tile
+when \code{y} is a flat store. \code{NULL} auto-computes via \code{.auto_threshold()}.}
 
-\item{engine}{\code{character} one of \code{"terra"} or \code{"duckdb"} (default = \code{"terra"})
-spatial querying engine to use.}
+\item{tiles}{(optional) seed \code{tilePlan} for quadtree planning when \code{y} is a
+flat store. \code{NULL} builds a default grid from the data extent and aspect
+ratio. A \code{freeTilePlan} (e.g. from \code{dry_run}) is used directly.}
+
+\item{pad_y}{(optional) \code{numeric}. Fixed spatial padding (in data units)
+around each tile extent when fetching points.
+\itemize{
+\item \code{parquetGeomStore} dispatch: padding around each polygon tile. Default \code{500}.
+\item \code{parquetGeomTileStore} dispatch: padding around each point tile. When
+\code{NULL} (default), derived from \code{x@params$max_poly_radius * (1 + poly_buf_factor)}.
+Supply a value directly when \code{max_poly_radius} was not recorded at write time.
+}}
+
+\item{engine}{\code{character} one of \code{"terra"} or \code{"duckdb"} (default = \code{"terra"}).
+\code{"terra"} iterates over adaptive polygon tiles (or point tiles for
+\code{parquetGeomTileStore} \code{y}). \code{"duckdb"} performs a single full-dataset
+spatial join via DuckDB's spatial extension — tiling params
+(\code{threshold}, \code{tiles}, \code{pad_y}, \code{poly_buf_factor}) are ignored.
+Requires the DuckDB spatial extension (\verb{INSTALL spatial}).}
 
 \item{path}{\code{character} filepath for the result store}
 
-\item{poly_id_col}{\code{character} name of the polygon ID column in \code{x} (default = \code{"poly_ID"})}
+\item{poly_id_col}{\code{character} column in \code{x} holding polygon IDs. Written as
+\code{poly_ID} in the result (default = \code{"poly_ID"}).}
+
+\item{feat_id_col}{\code{character} column in \code{y} holding feature IDs. Written as
+\code{feat_ID} in the result (default = \code{"feat_ID"}).}
+
+\item{keep_cols}{\code{character} (optional) additional columns from \code{y} to carry
+into the result. \code{"count"} is auto-included if present in \code{y}.}
 
 \item{...}{additional params to pass}
+
+\item{poly_buf_factor}{(optional) \code{numeric}. Fractional buffer beyond
+\code{x@params$max_poly_radius} (auto-computed at write time) applied around
+each point tile extent when fetching points. Default \code{0.15}. Ignored when
+\code{pad_y} is supplied directly.}
+
+\item{tile_idx}{(optional) \code{integerlike}. When \code{y} is a
+\code{parquetGeomTileStore}, restrict processing to these tile indices only.
+\code{NULL} (default) processes all tiles. Ignored for \code{engine = "duckdb"}.}
 }
 \description{
 Calculate features \code{y} that are overlapped by polygons \code{x}. GiottoDisk
 provides methods for \code{\link[GiottoClass:calculateOverlap]{GiottoClass::calculateOverlap()}} for operating on
 disk backed stores.
+
+Both dispatch paths produce a flat \code{parquetStore} with a unified schema:
+\code{poly_ID}, \code{feat_ID}, any \code{keep_cols}, auto-included \code{count} (if present),
+\code{pt_tile_index}, \code{pt_row_index}, \code{row_index}. The result is self-contained
+for \code{\link[=overlapToMatrix]{overlapToMatrix()}} and retains integer join keys for optional joins back
+to the point store.
+
+When \code{y} is a \code{parquetGeomTileStore}, iteration is driven by the point tiles.
+Each point belongs to exactly one tile (no deduplication needed).
+
+When \code{y} is a flat \code{parquetGeomStore}, iteration is driven by adaptive polygon
+tiles built via \code{quadtreePlan}.
 }

@@ -66,16 +66,21 @@
 clamped ramp \code{n/1000} (500k–5M) above that.
 }}
 
-\item{tiles}{\code{tilePlan} or \code{NULL}. Optional seed tile plan passed to
-\code{\link[tilework:quadtreePlan]{tilework::quadtreePlan()}} as the initial grid. When \code{NULL}, \code{quadtreePlan}
-builds a default grid based on the data extent's aspect ratio.}
+\item{tiles}{\code{freeTilePlan}, \code{tilePlan}, or \code{NULL}. When a \code{freeTilePlan}
+is provided (e.g. the output of a \code{dry_run}), it is used directly without
+replanning. When a \code{tilePlan} is provided, it is used as the seed grid for
+\code{\link[tilework:quadtreePlan]{tilework::quadtreePlan()}}. When \code{NULL}, a default seed grid is built from
+the data extent's aspect ratio.}
 
 \item{i}{\code{integerlike} specific tile(s) to write. Leave as NULL (default)
 to write all.}
 
-\item{id_col}{\code{character}. Column name to use as the geometry identifier.
-For polygons, this is the polygon ID (\code{poly_ID}) that groups vertices into
-individual geometries. For points, this is the feature ID (\code{feat_ID}).}
+\item{id_col}{\code{character}. Column name in \code{data} that holds the geometry
+identifier. For polygons this groups vertices into individual geometries;
+for points this is the feature name. Regardless of the input name, the
+column is written to disk as \code{poly_ID} (polygons) or \code{feat_ID} (points)
+so downstream consumers (e.g. \code{\link[=calculateOverlap]{calculateOverlap()}}) can assume standardized
+names.}
 
 \item{sdimx, sdimy}{\code{character}. Names of columns containing x and y spatial
 coordinate values, respectively. Used for spatial tile planning and
@@ -89,8 +94,9 @@ rules (see \link{getBoundedData}) prevent duplication of data at tile boundaries
 (assuming no padding).}
 
 \item{dry_run}{\code{logical} (default = FALSE). When \code{TRUE}, runs tile planning
-and plots the adaptive tile layout with record counts, then returns without
-writing.}
+and plots the adaptive tile layout with record counts, then returns the
+\code{freeTilePlan} invisibly without writing for inspection. This can then be
+passed to \code{tiles} to skip tile planning.}
 
 \item{write_param}{named \code{list} (optional). Additional params to pass to the
 writing function.}

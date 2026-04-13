@@ -5,7 +5,15 @@
 \alias{storeWrite,parquetGeomStore,data.frame-method}
 \title{Write to a Parquet Geometry Storage}
 \usage{
-\S4method{storeWrite}{parquetGeomStore,SpatVector}(store, data, meta = NULL, row_offset = 0, .arrow_meta = NULL, ...)
+\S4method{storeWrite}{parquetGeomStore,SpatVector}(
+  store,
+  data,
+  meta = NULL,
+  row_offset = 0,
+  tile_idx = 0L,
+  .arrow_meta = NULL,
+  ...
+)
 
 \S4method{storeWrite}{parquetGeomStore,data.frame}(
   store,
@@ -33,6 +41,12 @@ are in the spatvector, they will be automatically extracted with
 Offset to apply to row number indexing. For example \code{row_offset = 0L} means
 the first \code{row_index} value in this file will be \code{1}.}
 
+\item{tile_idx}{\code{integer(1)}. Tile index to write under as a hive partition
+(\verb{tile_index=<n>/}). Defaults to \code{0L} so flat geom stores share a uniform
+\verb{(tile_index, row_index)} join key with tiled stores without needing
+\code{dplyr::coalesce}. Pass \code{NULL} to write without a tile subdir (not
+recommended for \code{parquetGeomStore}).}
+
 \item{.arrow_meta}{\verb{named list} of \code{character} strings to add as parquet
 metadata}
 
@@ -42,9 +56,12 @@ metadata}
 \item{type}{\code{character}. Either \code{"points"} or \code{"polygons"}. What type of
 geometry to write.}
 
-\item{id_col}{\code{character}. Column name to use as the geometry identifier.
-For polygons, this is the polygon ID (\code{poly_ID}) that groups vertices into
-individual geometries. For points, this is the feature ID (\code{feat_ID}).}
+\item{id_col}{\code{character}. Column name in \code{data} that holds the geometry
+identifier. For polygons this groups vertices into individual geometries;
+for points this is the feature name. Regardless of the input name, the
+column is written to disk as \code{poly_ID} (polygons) or \code{feat_ID} (points)
+so downstream consumers (e.g. \code{\link[=calculateOverlap]{calculateOverlap()}}) can assume standardized
+names.}
 
 \item{sdimx}{\code{character}. Column name containing x spatial coordinates.}
 

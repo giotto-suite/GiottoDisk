@@ -11,6 +11,7 @@
   callback = NULL,
   row_offset = 0L,
   uid_partition = TRUE,
+  tile_idx = NULL,
   .arrow_meta = NULL,
   ...
 )
