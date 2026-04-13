@@ -110,7 +110,7 @@ setMethod("sourceAdopt", signature("gDirSource", "SpatRaster"),
             stop("[sourceAdopt] multi-source SpatRasters are not supported",
                 call. = FALSE)
         }
-        .move_path(f, savepath)
+        file.copy(f, savepath)
         r <- terra::rast(savepath)
     }
 
