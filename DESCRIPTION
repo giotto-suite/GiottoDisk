@@ -59,7 +59,7 @@ Collate:
     'methods-sourceAdopt.R'
     'methods-sourcePrune.R'
     'methods-specialCols.R'
-    'methods-storeExists.R'
+    'methods-storeInspect.R'
     'methods-storeRead.R'
     'methods-storeWrite.R'
     'utils-spatial.R'
