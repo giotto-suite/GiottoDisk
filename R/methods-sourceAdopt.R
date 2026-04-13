@@ -1,6 +1,44 @@
 #' @include methods-sourceWrite.R
 NULL
 
+#' @name sourceContains
+#' @title Test if a Store is Managed by a Source
+#' @description
+#' Returns `TRUE` if the store is already registered in the artifact vault
+#' of a [gsource].
+#'
+#' * `fileStore`: checks whether the store's uid is present in the manifest.
+#' * `SpatRaster`: checks whether all source file paths are inside the vault
+#'   directory. In-memory rasters always return `FALSE`.
+#' * Union stores: `TRUE` only if all substores are contained.
+#' @param src `gsource` object
+#' @param store object to test (`fileStore`, `SpatRaster`, or union store)
+#' @param ... additional params (unused)
+#' @returns `logical(1)`
+#' @export
+setMethod("sourceContains", signature("gDirSource", "fileStore"),
+    function(src, store, ...) {
+    !is.null(src[store@uid])
+})
+
+#' @rdname sourceContains
+#' @export
+setMethod("sourceContains", signature("gDirSource", "SpatRaster"),
+    function(src, store, ...) {
+    f <- normalizePath(terra::sources(store), mustWork = FALSE)
+    if (all(!nzchar(f))) return(FALSE) # in-memory
+    vdir <- normalizePath(.gdsrc_vault_dir(src@path))
+    all(startsWith(f, paste0(vdir, "/")))
+})
+
+#' @rdname sourceContains
+#' @export
+setMethod("sourceContains", signature("gDirSource", "unionParquetStore"),
+    function(src, store, ...) {
+    all(vapply(store@stores, function(s) sourceContains(src, s),
+        FUN.VALUE = logical(1L)))
+})
+
 #' @name sourceAdopt
 #' @title Adopt a Store into a Source
 #' @description

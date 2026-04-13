@@ -106,15 +106,13 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     export_image = TRUE,
     verbose = NULL) {
     src <- gobject@source
-    vdir <- normalizePath(.gdsrc_vault_dir(src@path))
     img_list <- gobject[["images"]]
     for (img in img_list) {
         r <- img@raster_object
         if (is.null(r)) next
+        if (sourceContains(src, r)) next
 
         f <- normalizePath(terra::sources(r), mustWork = FALSE)
-        is_in_vault <- nzchar(f) && all(startsWith(f, paste0(vdir, "/")))
-        if (is_in_vault) next
         if (!export_image && nzchar(f)) next # skip external on-disk if not exporting
 
         vmsg(.v = verbose, sprintf(
