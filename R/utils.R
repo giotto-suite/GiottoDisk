@@ -156,3 +156,27 @@ NULL
 .hash <- function(x) {
     digest::digest(x)
 }
+
+# Move a path (file or directory) to a new location.
+# Prefers file.rename (atomic, instant, same-fs). Falls back to
+# recursive copy + delete when rename fails (e.g. cross-device moves).
+# Use this over bare file.rename whenever the source and destination
+# may be on different filesystems.
+.move_path <- function(from, to) {
+    if (isTRUE(file.rename(from, to))) return(invisible(to))
+    # cross-device fallback
+    if (dir.exists(from)) {
+        # file.copy(dir, parent, recursive=TRUE) copies dir INTO parent as basename(from)
+        to_parent <- dirname(to)
+        from_name <- basename(from)
+        to_name <- basename(to)
+        file.copy(from, to_parent, recursive = TRUE)
+        if (from_name != to_name) {
+            file.rename(file.path(to_parent, from_name), to)
+        }
+    } else {
+        file.copy(from, to, overwrite = FALSE)
+    }
+    unlink(from, recursive = TRUE, force = TRUE)
+    invisible(to)
+}
