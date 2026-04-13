@@ -217,9 +217,22 @@ setMethod("window<-", signature("parquetGeomBase"), function(x, ..., value) {
     type <- op$type
     switch(type,
         "filter" = dplyr::filter(atab, !!op$expr),
-        "head" = head(atab, op$n),
-        "tail" = tail(atab, op$n),
+        "head"   = head(atab, op$n),
+        "tail"   = tail(atab, op$n),
         "sample" = .arrow_sample_max_rows(atab, op$size),
+        "join"   = {
+            y_q <- storeRead(op$y, output = "query")
+            # drop all of y's special cols except those used as join keys —
+            # they belong to y's store context and would conflict or be
+            # meaningless in the joined result
+            y_drop <- setdiff(specialCols(op$y), unname(op$by))
+            y_drop <- intersect(y_drop, names(y_q))
+            if (length(y_drop) > 0L) {
+                y_q <- dplyr::select(y_q, -dplyr::all_of(y_drop))
+            }
+            join_fn <- if (op$nomatch == "inner") dplyr::inner_join else dplyr::left_join
+            join_fn(atab, y_q, by = op$by)
+        },
         stop(sprintf("[.do_op] unknown op type: '%s'", type), call. = FALSE)
     )
 }

@@ -273,3 +273,10 @@ setMethod("initialize", signature("unionParquetStore"), function(.Object, ...) {
     x@params$disk_extent <- value
     x
 }
+
+##  parquetGeomStore-specific get/set ####
+.pgeom_max_poly_radius <- function(x) x@params$max_poly_radius
+`.pgeom_max_poly_radius<-` <- function(x, value) {
+    x@params$max_poly_radius <- value
+    x
+}

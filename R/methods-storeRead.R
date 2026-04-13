@@ -6,7 +6,7 @@
 #' representation of the contained data.
 #' @param store `dataStore` inheriting object
 #' @param extent `SpatExtent` to filter on (optional)
-#' @param tile `integerlike` (optional) specific tile number(s) to read
+#' @param tile_idx `integerlike` (optional) specific tile number(s) to read
 #' @param fields `character` (optional) specific fields/columns to read
 #' @param output `character` (default = "query"). Format to get values in:
 #' 
@@ -337,7 +337,7 @@ setMethod("storeRead", signature("parquetGeomStore"), function(store,
 #' @export
 setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
     extent = NULL,
-    tile = NULL,
+    tile_idx = NULL,
     fields = NULL,
     output = c("query", "tibble", "terra", "sf", "duckdb"),
     callback = NULL,
@@ -349,12 +349,10 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
     lazy_fields <- .pstore_lazy_fields(store, fields, output)
 
     upstream_callback <- NULL
-    if (!is.null(tile)) {
-        # this callback is conditional
-        tile <- as.integer(tile)
+    if (!is.null(tile_idx)) {
+        tile_idx <- as.integer(tile_idx)
         upstream_callback <- function(atab) {
-            # tile filtering
-            atab <- dplyr::filter(atab, tile_index %in% tile)
+            atab <- dplyr::filter(atab, tile_index %in% tile_idx)
         }
     }
 

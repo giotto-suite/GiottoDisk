@@ -128,6 +128,12 @@ setMethod("show", signature("tileDBArrayStore"), function(object) {
         "tail"   = format(step$n),
         "sample" = sprintf("size = %g", step$size),
         "select" = toString(step$cols),
+        "join"   = {
+            type_str <- step$nomatch
+            keys_str <- paste(names(step$by), unname(step$by), sep = " = ",
+                collapse = ", ")
+            sprintf("%s on [%s]", type_str, keys_str)
+        },
         "..."
     )
     sprintf("  %-8s: %s\n", step$type, args)

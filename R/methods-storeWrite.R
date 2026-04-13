@@ -210,7 +210,7 @@ setMethod(
         store@geomtype <- terra::geomtype(data)
         store@params$crs <- terra::crs(data)
         if (store@geomtype == "polygons") {
-            store@params$max_poly_radius <- sqrt(
+            .pgeom_max_poly_radius(store) <- sqrt(
                 suppressWarnings(max(terra::expanse(data), na.rm = TRUE)) / pi
             )
         }
@@ -247,9 +247,12 @@ setMethod(
 #' @rdname storeWrite-parquetGeomStore
 #' @param type `character`. Either `"points"` or `"polygons"`. What type of
 #'   geometry to write.
-#' @param id_col `character`. Column name to use as the geometry identifier.
-#'   For polygons, this is the polygon ID (`poly_ID`) that groups vertices into
-#'   individual geometries. For points, this is the feature ID (`feat_ID`).
+#' @param id_col `character`. Column name in `data` that holds the geometry
+#'   identifier. For polygons this groups vertices into individual geometries;
+#'   for points this is the feature name. Regardless of the input name, the
+#'   column is written to disk as `poly_ID` (polygons) or `feat_ID` (points)
+#'   so downstream consumers (e.g. [calculateOverlap()]) can assume standardized
+#'   names.
 #' @param sdimx `character`. Column name containing x spatial coordinates.
 #' @param sdimy `character`. Column name containing y spatial coordinates.
 #' @param part_col `character` (optional, polygons only). Column name for
@@ -290,8 +293,13 @@ setMethod(
         )
         # coerce to giotto representation -> SpatVector
         out <- do.call(fun, args = c(list(data), geom_param))
-        store <- storeWrite(store, 
-            data = out$geom, 
+        # standardize ID column name on disk regardless of user-supplied id_col
+        standard_id <- if (type == "polygons") "poly_ID" else "feat_ID"
+        if (id_col != standard_id && id_col %in% names(out$meta)) {
+            data.table::setnames(out$meta, id_col, standard_id)
+        }
+        store <- storeWrite(store,
+            data = out$geom,
             meta = out$meta,
             row_offset = row_offset,
             ...
@@ -503,6 +511,14 @@ setMethod(
             !vapply(written_stores, is.null, FUN.VALUE = logical(1L))
         ]
         store@params$crs <- written_stores[[1]]@params$crs
+        if (type == "polygons") {
+            poly_radii <- vapply(written_stores, function(s) {
+                .pgeom_max_poly_radius(s) %||% NA_real_
+            }, numeric(1L))
+            if (any(!is.na(poly_radii))) {
+                .pgeom_max_poly_radius(store) <- max(poly_radii, na.rm = TRUE)
+            }
+        }
         initialize(store)
     }
 )
@@ -618,6 +634,14 @@ setMethod(
             !vapply(written_stores, is.null, FUN.VALUE = logical(1L))
         ]
         store@params$crs <- written_stores[[1]]@params$crs
+        if (type == "polygons") {
+            poly_radii <- vapply(written_stores, function(s) {
+                .pgeom_max_poly_radius(s) %||% NA_real_
+            }, numeric(1L))
+            if (any(!is.na(poly_radii))) {
+                .pgeom_max_poly_radius(store) <- max(poly_radii, na.rm = TRUE)
+            }
+        }
         initialize(store)
     }
 )
@@ -705,6 +729,9 @@ setMethod(
             !vapply(written_stores, is.null, FUN.VALUE = logical(1L))
         ]
         store@params$crs <- data@params$crs
+        if (!is.null(.pgeom_max_poly_radius(data))) {
+            .pgeom_max_poly_radius(store) <- .pgeom_max_poly_radius(data)
+        }
         initialize(store)
     }
 )

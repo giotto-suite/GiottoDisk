@@ -44,8 +44,26 @@ setMethod("[", signature("parquetBase", "missing", "logical", "missing"),
     x[, j = get_fields, ...]
 })
 
+setMethod("[", signature("parquetBase", "parquetBase", "missing"),
+    function(x, i, j, ..., drop) {
+    dots <- list(...)
+    on <- dots$on
+    # nomatch = NULL (inner join, data.table convention) is indistinguishable
+    # from "not passed" via dots$nomatch — check names explicitly.
+    # Store as "inner"/"left" string to survive list storage (NULL is lost).
+    nomatch <- if ("nomatch" %in% names(dots)) {
+        if (is.null(dots$nomatch)) "inner" else "left"
+    } else {
+        "inner"  # default: inner join — unmatched rows indicate a data problem
+    }
+    checkmate::assert_character(on, min.len = 1L,
+        .var.name = "on", null.ok = FALSE)
+    x@ops <- c(x@ops, list(list(type = "join", y = i, by = on, nomatch = nomatch)))
+    x
+})
+
 ## internals ####
-.guard_pstore_i_index <- function(i) { 
+.guard_pstore_i_index <- function(i) {
     fmt <- "[parquetStore] `i` %s row indexing not supported"
     if (is.logical(i)) {
         fmt <- paste0(fmt, "\n If trying to downsample, use `rowSample()` instead.")

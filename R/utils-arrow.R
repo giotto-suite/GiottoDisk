@@ -1,4 +1,44 @@
 
+# Open a GiottoDisk-managed DuckDB connection and apply package-level settings.
+# Option giottodisk.duckdb_memory_limit: character string passed to
+# SET memory_limit (e.g. "8GB", "32GiB"). Defaults to "8GB", raising
+# DuckDB's conservative 2GB default while staying within personal computer
+# RAM budgets. Set to NULL to leave DuckDB's default untouched.
+.duckdb_connect <- function() {
+    GiottoUtils::package_check("duckdb")
+    GiottoUtils::package_check("DBI")
+    conn <- duckdb::dbConnect(duckdb::duckdb())
+    mem <- getOption("giottodisk.duckdb_memory_limit", default = "8GB")
+    if (!is.null(mem)) {
+        checkmate::assert_string(mem)
+        DBI::dbExecute(conn, sprintf("SET memory_limit = '%s'", mem))
+    }
+    conn
+}
+
+# Load the DuckDB spatial extension, installing it first if needed.
+# `conn` should be an open DBI connection to a DuckDB instance.
+.duckdb_load_spatial <- function(conn) {
+    tryCatch(
+        DBI::dbExecute(conn, "LOAD spatial"),
+        error = function(e) {
+            vmsg("[duckdb] spatial extension not found, attempting install...")
+            tryCatch(
+                {
+                    DBI::dbExecute(conn, "INSTALL spatial")
+                    DBI::dbExecute(conn, "LOAD spatial")
+                },
+                error = function(e2) stop(
+                    "[duckdb] could not install/load spatial extension.\n",
+                    "Original error: ", conditionMessage(e2),
+                    call. = FALSE
+                )
+            )
+        }
+    )
+    invisible(NULL)
+}
+
 #' @name .arrow_add_row_index
 #' @title arrow Utility: Add row index
 #' @description
