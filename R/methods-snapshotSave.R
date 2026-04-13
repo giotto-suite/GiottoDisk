@@ -102,63 +102,33 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     return(raster_object)
 }
 
-.ss_gdsrc_register_external_images <- function(gobject, giottosave, 
+.ss_gdsrc_register_external_images <- function(gobject, giottosave,
     export_image = TRUE,
     verbose = NULL) {
-    p <- gobject@source@path
-    vdir <- normalizePath(.gdsrc_vault_dir(p))
+    src <- gobject@source
+    vdir <- normalizePath(.gdsrc_vault_dir(src@path))
     img_list <- gobject[["images"]]
     for (img in img_list) {
         r <- img@raster_object
         if (is.null(r)) next
-      
-        # save extent info (needed for non-COG formats)
-        img@extent <- terra::ext(r)[]
-        # check if external
+
         f <- normalizePath(terra::sources(r), mustWork = FALSE)
-        is_external <- !startsWith(f, paste0(vdir, "/"))
-        if (sum(is_external) == 0L) next
-        if (!export_image && f != "") next # skip external on-disk if not exporting
+        is_in_vault <- nzchar(f) && all(startsWith(f, paste0(vdir, "/")))
+        if (is_in_vault) next
+        if (!export_image && nzchar(f)) next # skip external on-disk if not exporting
+
         vmsg(.v = verbose, sprintf(
-            "[GiottoDisk] processing external image '%s'", 
+            "[GiottoDisk] processing external image '%s'",
             GiottoClass::objName(img)
         ))
 
-        # allocate a save location
-        savepath <- .gdsrc_allocate_artifact_dir(p, create = TRUE)
-        uid <- names(savepath)
-        names(savepath) <- NULL
-      
-        # if in memory
-        if (f == "") { # not yet written
-            r <- terra::writeRaster(r,
-                filename = savepath,
-                filetype = "COG",
-                NAflag = NA,
-                overwrite = FALSE
-            )
-        } else { # copy over existing image to artifact vault
-            res <- file.copy(f, savepath)
-            if (!res) stop("[GiottoDisk] image copy to vault failed\n", call. = FALSE)
-        }
-        # update filepath
-        img@file_path <- savepath
-        # update gobject
-        gobject <- GiottoClass::setGiotto(gobject, img, 
-            verbose = FALSE
-        )
-      
-        # record hash of delayed representation
-        new_r <- .create_terra_spatraster(savepath)
-        capture.output(show(new_r)) # ping once since hash changes afterwards
-        hash <- .hash(new_r)
-        # record artifact entry
-        .gdsrc_json_add_artifact(p,
-            store_type = "IMAGE",
-            uid = uid,
-            hash = hash,
-            giottosave = giottosave
-        )
+        # save extent info (needed for non-COG formats)
+        img@extent <- terra::ext(r)[]
+
+        r <- sourceAdopt(src, r, giottosave = giottosave)
+
+        img@file_path <- terra::sources(r)
+        gobject <- GiottoClass::setGiotto(gobject, img, verbose = FALSE)
     }
     gobject
 }

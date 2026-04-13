@@ -30,6 +30,27 @@ setMethod("storeExists", signature("unionParquetStore"), function(x, all = TRUE,
     res
 })
 
+# storePaths ####
+
+#' @name storePaths
+#' @title Store Paths
+#' @description
+#' Return the artifact-level path(s) for a store. For composite stores
+#' (e.g. union stores), one path is returned per substore.
+#' @param x `store` object
+#' @param ... additional params to pass
+#' @returns `character` vector of paths
+#' @export
+setMethod("storePaths", signature("fileStore"), function(x, ...) {
+    x@path
+})
+
+#' @rdname storePaths
+#' @export
+setMethod("storePaths", signature("unionParquetStore"), function(x, ...) {
+    vapply(x@stores, function(s) s@path, FUN.VALUE = character(1L))
+})
+
 # internals ####
 .test_empty_path <- function(path) {
     length(path) == 0L || is.na(path) || path == ""
