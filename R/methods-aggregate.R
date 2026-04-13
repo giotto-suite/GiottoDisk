@@ -5,11 +5,11 @@
 #' provides methods for [GiottoClass::calculateOverlap()] for operating on
 #' disk backed stores.
 #'
-#' Both dispatch paths produce a flat `parquetStore` with a unified schema:
-#' `poly_ID`, `feat_ID`, any `keep_cols`, auto-included `count` (if present),
-#' `pt_tile_index`, `pt_row_index`, `row_index`. The result is self-contained
-#' for [overlapToMatrix()] and retains integer join keys for optional joins back
-#' to the point store.
+#' Both dispatch paths return an `overlapPointDisk` wrapping a flat parquet
+#' store with a unified schema: `poly_ID`, `feat_ID`, any `keep_cols`,
+#' auto-included `count` (if present), `pt_tile_index`, `pt_row_index`,
+#' `row_index`. The result is self-contained for [overlapToMatrix()] and
+#' retains integer join keys for optional joins back to the point store.
 #'
 #' When `y` is a `parquetGeomTileStore`, iteration is driven by the point tiles.
 #' Each point belongs to exactly one tile (no deduplication needed).
@@ -65,7 +65,7 @@ NULL
 #'
 #' To obtain a BPCells on-disk matrix pass the returned path to
 #' [BPCells::import_matrix_market()] followed by [BPCells::write_matrix_dir()].
-#' @param overlap_store `parquetStore` output from [calculateOverlap()]
+#' @param x `overlapPointDisk` output from [calculateOverlap()]
 #' @param path `character` output directory for the Matrix Market files
 #' @param feat_id_col `character` feature ID column name (default `"feat_ID"`)
 #' @param poly_id_col `character` polygon ID column name (default `"poly_ID"`)
@@ -74,6 +74,18 @@ NULL
 #' @param ... additional params to pass
 #' @returns `character` path to the output directory (invisibly)
 NULL
+
+# overlapPointDisk class ####
+
+setClass("overlapPointDisk",
+    contains = "overlapInfo",
+    slots = list(
+        poly_id_col = "character",
+        feat_id_col = "character",
+        spat_ids = "character",  # all polygon IDs (including zero-overlap)
+        feat_ids = "character"   # all feature IDs (including zero-overlap)
+    )
+)
 
 # calculateOverlap #####
 
@@ -101,26 +113,31 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomStore"),
             call. = FALSE
         )
     }
-    if (engine == "duckdb") {
-        return(.calculate_overlap_duckdb(x, y,
+    spat_ids <- .collect_ids(x, poly_id_col)
+    feat_ids <- .collect_ids(y, feat_id_col)
+    result <- if (engine == "duckdb") {
+        .calculate_overlap_duckdb(x, y,
             dir = path,
             poly_id_col = poly_id_col,
             feat_id_col = feat_id_col,
             keep_cols = keep_cols
-        ))
+        )
+    } else {
+        if (method == "raster") {
+            stop("[calculateOverlap] raster method not yet implemented", call. = FALSE)
+        }
+        .calculate_overlap_terra(x, y,
+            dir = path,
+            threshold = threshold,
+            tiles = tiles,
+            pad_y = pad_y,
+            poly_id_col = poly_id_col,
+            feat_id_col = feat_id_col,
+            keep_cols = keep_cols
+        )
     }
-    if (method == "raster") {
-        stop("[calculateOverlap] raster method not yet implemented", call. = FALSE)
-    }
-    .calculate_overlap_terra(x, y,
-        dir = path,
-        threshold = threshold,
-        tiles = tiles,
-        pad_y = pad_y,
-        poly_id_col = poly_id_col,
-        feat_id_col = feat_id_col,
-        keep_cols = keep_cols
-    )
+    .wrap_overlap(result, poly_id_col, feat_id_col,
+        spat_ids = spat_ids, feat_ids = feat_ids)
 })
 
 #' @rdname calculateOverlap
@@ -140,26 +157,31 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
     ) {
     method <- match.arg(method, c("vector", "raster"))
     engine <- match.arg(engine, c("terra", "duckdb"))
-    if (engine == "duckdb") {
-        return(.calculate_overlap_duckdb(x, y,
+    spat_ids <- .collect_ids(x, poly_id_col)
+    feat_ids <- .collect_ids(y, feat_id_col)
+    result <- if (engine == "duckdb") {
+        .calculate_overlap_duckdb(x, y,
             dir = path,
             poly_id_col = poly_id_col,
             feat_id_col = feat_id_col,
             keep_cols = keep_cols
-        ))
+        )
+    } else {
+        if (method == "raster") {
+            stop("[calculateOverlap] raster method not yet implemented", call. = FALSE)
+        }
+        .calculate_overlap_terra_tiled(x, y,
+            dir = path,
+            poly_buf_factor = poly_buf_factor,
+            pad_y = pad_y,
+            tile_idx = tile_idx,
+            poly_id_col = poly_id_col,
+            feat_id_col = feat_id_col,
+            keep_cols = keep_cols
+        )
     }
-    if (method == "raster") {
-        stop("[calculateOverlap] raster method not yet implemented", call. = FALSE)
-    }
-    .calculate_overlap_terra_tiled(x, y,
-        dir = path,
-        poly_buf_factor = poly_buf_factor,
-        pad_y = pad_y,
-        tile_idx = tile_idx,
-        poly_id_col = poly_id_col,
-        feat_id_col = feat_id_col,
-        keep_cols = keep_cols
-    )
+    .wrap_overlap(result, poly_id_col, feat_id_col,
+        spat_ids = spat_ids, feat_ids = feat_ids)
 })
 
 ## internals ####
@@ -371,6 +393,25 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
     initialize(result_store)
 }
 
+.collect_ids <- function(store, col) {
+    storeRead(store, output = "query") |>
+        dplyr::select(!!as.name(col)) |>
+        dplyr::distinct() |>
+        dplyr::pull(col) |>
+        as.character()
+}
+
+.wrap_overlap <- function(store, poly_id_col, feat_id_col,
+        spat_ids = character(), feat_ids = character()) {
+    new("overlapPointDisk",
+        data = store,
+        poly_id_col = poly_id_col,
+        feat_id_col = feat_id_col,
+        spat_ids = spat_ids,
+        feat_ids = feat_ids
+    )
+}
+
 # Build the per-tile overlap data.frame.
 # poly_id_vals: polygon ID values for each overlap row (from terra::extract)
 # pt_vals: terra::values(pt_sv) — must include tile_index + row_index
@@ -479,6 +520,41 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
 
 #' @rdname overlapToMatrix
 #' @export
+setMethod("overlapToMatrix", signature("overlapPointDisk"),
+    function(x,
+        name = "raw",
+        sort = TRUE,
+        count_col = NULL,
+        store_type = getOption("giotto.gdsrc_matrix_format", "bpcells"),
+        path = .dump_tempfile(),
+        output = c("store", "exprObj"),
+        ...
+    ) {
+    output <- match.arg(tolower(output), choices = c("store", "exprobj"))
+    mat_store <- overlapToMatrix(x@data,
+        path = path,
+        feat_id_col = x@feat_id_col,
+        poly_id_col = x@poly_id_col,
+        count_col = count_col,
+        store_type = store_type,
+        sort = sort,
+        all_feat_ids = x@feat_ids,
+        all_cell_ids = x@spat_ids
+    )
+    switch(output,
+        "store" = mat_store,
+        "exprobj" = createExprObj(
+            expression_data = storeRead(mat_store),
+            name = name,
+            spat_unit = spatUnit(x),
+            feat_type = featType(x),
+            provenance = prov(x)
+        )
+    )
+})
+
+#' @rdname overlapToMatrix
+#' @export
 setMethod("overlapToMatrix", signature("parquetStore"),
     function(x,
         path = .dump_tempfile(),
@@ -486,6 +562,9 @@ setMethod("overlapToMatrix", signature("parquetStore"),
         poly_id_col = "poly_ID",
         count_col = NULL,
         store_type = getOption("giotto.gdsrc_matrix_format", "bpcells"),
+        sort = TRUE,
+        all_feat_ids = NULL,
+        all_cell_ids = NULL,
         ...
     ) {
     GiottoUtils::package_check("arrow")
@@ -515,8 +594,12 @@ setMethod("overlapToMatrix", signature("parquetStore"),
             dplyr::collect()
     }
 
-    feat_ids <- sort(unique(agg[[feat_id_col]]))
-    cell_ids <- sort(unique(agg[[poly_id_col]]))
+    feat_ids <- if (length(all_feat_ids) > 0L) all_feat_ids else unique(agg[[feat_id_col]])
+    cell_ids <- if (length(all_cell_ids) > 0L) all_cell_ids else unique(agg[[poly_id_col]])
+    if (isTRUE(sort)) {
+        feat_ids <- GiottoUtils::mixedsort(feat_ids)
+        cell_ids <- GiottoUtils::mixedsort(cell_ids)
+    }
     i <- match(agg[[feat_id_col]], feat_ids)
     j <- match(agg[[poly_id_col]], cell_ids)
     vals <- as.integer(agg$n)

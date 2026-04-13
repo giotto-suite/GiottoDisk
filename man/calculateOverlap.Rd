@@ -94,11 +94,11 @@ Calculate features \code{y} that are overlapped by polygons \code{x}. GiottoDisk
 provides methods for \code{\link[GiottoClass:calculateOverlap]{GiottoClass::calculateOverlap()}} for operating on
 disk backed stores.
 
-Both dispatch paths produce a flat \code{parquetStore} with a unified schema:
-\code{poly_ID}, \code{feat_ID}, any \code{keep_cols}, auto-included \code{count} (if present),
-\code{pt_tile_index}, \code{pt_row_index}, \code{row_index}. The result is self-contained
-for \code{\link[=overlapToMatrix]{overlapToMatrix()}} and retains integer join keys for optional joins back
-to the point store.
+Both dispatch paths return an \code{overlapPointDisk} wrapping a flat parquet
+store with a unified schema: \code{poly_ID}, \code{feat_ID}, any \code{keep_cols},
+auto-included \code{count} (if present), \code{pt_tile_index}, \code{pt_row_index},
+\code{row_index}. The result is self-contained for \code{\link[=overlapToMatrix]{overlapToMatrix()}} and
+retains integer join keys for optional joins back to the point store.
 
 When \code{y} is a \code{parquetGeomTileStore}, iteration is driven by the point tiles.
 Each point belongs to exactly one tile (no deduplication needed).

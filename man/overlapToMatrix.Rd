@@ -2,9 +2,21 @@
 % Please edit documentation in R/methods-aggregate.R
 \name{overlapToMatrix}
 \alias{overlapToMatrix}
+\alias{overlapToMatrix,overlapPointDisk-method}
 \alias{overlapToMatrix,parquetStore-method}
 \title{Aggregate Overlap Results to Sparse Matrix}
 \usage{
+\S4method{overlapToMatrix}{overlapPointDisk}(
+  x,
+  name = "raw",
+  sort = TRUE,
+  count_col = NULL,
+  store_type = getOption("giotto.gdsrc_matrix_format", "bpcells"),
+  path = .dump_tempfile(),
+  output = c("store", "exprObj"),
+  ...
+)
+
 \S4method{overlapToMatrix}{parquetStore}(
   x,
   path = .dump_tempfile(),
@@ -12,22 +24,25 @@
   poly_id_col = "poly_ID",
   count_col = NULL,
   store_type = getOption("giotto.gdsrc_matrix_format", "bpcells"),
+  sort = TRUE,
+  all_feat_ids = NULL,
+  all_cell_ids = NULL,
   ...
 )
 }
 \arguments{
-\item{path}{\code{character} output directory for the Matrix Market files}
-
-\item{feat_id_col}{\code{character} feature ID column name (default \code{"feat_ID"})}
-
-\item{poly_id_col}{\code{character} polygon ID column name (default \code{"poly_ID"})}
+\item{x}{\code{overlapPointDisk} output from \code{\link[=calculateOverlap]{calculateOverlap()}}}
 
 \item{count_col}{\code{character} (optional) column to sum instead of counting
 rows. Useful when feature detections carry a \code{count} field.}
 
+\item{path}{\code{character} output directory for the Matrix Market files}
+
 \item{...}{additional params to pass}
 
-\item{overlap_store}{\code{parquetStore} output from \code{\link[=calculateOverlap]{calculateOverlap()}}}
+\item{feat_id_col}{\code{character} feature ID column name (default \code{"feat_ID"})}
+
+\item{poly_id_col}{\code{character} polygon ID column name (default \code{"poly_ID"})}
 }
 \value{
 \code{character} path to the output directory (invisibly)
