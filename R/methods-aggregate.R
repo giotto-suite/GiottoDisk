@@ -306,9 +306,7 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
 
     fp <- tilework::quadtreePlan(x,
         tiles = tiles,
-        threshold = threshold,
-        sdimx = "x_index",
-        sdimy = "y_index"
+        threshold = threshold
     )
 
     nonempty <- which(fp@metadata$n_records > 0L)
