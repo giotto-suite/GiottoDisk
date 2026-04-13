@@ -397,7 +397,7 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
     storeRead(store, output = "query") |>
         dplyr::select(!!as.name(col)) |>
         dplyr::distinct() |>
-        dplyr::pull(col) |>
+        dplyr::pull(col, as_vector = TRUE) |>
         as.character()
 }
 
