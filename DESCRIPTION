@@ -51,6 +51,7 @@ Collate:
     'methods-combine.R'
     'methods-ops.R'
     'methods-plot.R'
+    'methods-rasterize.R'
     'methods-show.R'
     'methods-snapshotDelete.R'
     'methods-snapshotLoad.R'
