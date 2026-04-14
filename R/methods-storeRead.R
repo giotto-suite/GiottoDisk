@@ -415,6 +415,21 @@ setMethod("storeRead", signature("bpcMatrixStore"), function(store, ...) {
 })
 
 
+# as.data.frame ####
+
+#' @export
+setMethod("as.data.frame", "parquetBase", function(x, ...) {
+    as.data.frame(storeRead(x, output = "tibble", ...))
+})
+
+# as.terra ####
+
+#' @export
+setMethod("as.terra", "parquetGeomBase", function(x, ...) {
+    storeRead(x, output = "terra", ...)
+})
+
+
 # internals ####
 
 .guard_store_written <- function(path) {
