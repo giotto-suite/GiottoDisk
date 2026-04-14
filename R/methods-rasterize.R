@@ -19,11 +19,15 @@
 #' @returns `SpatRaster` with the same extent and CRS as `y`. Cells with no
 #'   points are `NA`.
 #' @examples
-#' # create 500 random points in [0, 100] x [0, 100]
+#' # create 500 random points
 #' set.seed(42)
+#' x <- rnorm(500, 0, 100)
+#' y <- rnorm(500, 0, 100)
 #' pts <- terra::vect(
-#'     data.frame(x = rnorm(500, 0, 100), y = rnorm(500, 0, 100),
-#'                value = rnorm(500)),
+#'     data.frame(
+#'         x = x,
+#'         y = y,
+#'         value = x + y),
 #'     geom = c("x", "y")
 #' )
 #'
@@ -39,9 +43,11 @@
 #'
 #' # point density per cell
 #' r_count <- rasterize(store, template)
+#' plot(r_count)
 #'
 #' # mean of `value` field per cell
 #' r_mean <- rasterize(store, template, field = "value", fun = "mean")
+#' plot(r_mean)
 #' @export
 setMethod("rasterize", signature("parquetGeomStore", "SpatRaster"),
     function(x, y, field = NULL, fun = "count", ...) {
