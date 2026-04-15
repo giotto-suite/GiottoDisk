@@ -29,6 +29,7 @@ setMethod("show", signature("unionParquetGeomStore"), function(object) {
     } else {
         e <- ext(object)
     }
+    if (nzchar(object@geomtype)) cat(sprintf("geomtype: %s\n", object@geomtype))
     cat(.format_extent(e))
 })
 
@@ -83,7 +84,8 @@ setMethod("show", signature("parquetGeomStore"), function(object) {
     } else {
         e <- ext(object)
     }
-  
+
+    if (nzchar(object@geomtype)) cat(sprintf("geomtype: %s\n", object@geomtype))
     cat(.format_extent(e))
 })
 
