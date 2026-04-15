@@ -49,6 +49,7 @@ Collate:
     'methods-accessors.R'
     'methods-aggregate.R'
     'methods-combine.R'
+    'methods-giotto.R'
     'methods-ops.R'
     'methods-plot.R'
     'methods-rasterize.R'
