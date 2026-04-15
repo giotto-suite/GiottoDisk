@@ -1,3 +1,24 @@
+#' @name centroids
+#' @title Get Polygon Centroids from a Parquet Geometry Store
+#' @description
+#' Returns a modified copy of `x` flagged to read as points using the
+#' pre-computed `x_index`/`y_index` centroid columns instead of the `geom`
+#' WKB column. No data is read or rewritten — the flag is applied lazily at
+#' [storeRead()] time.
+#'
+#' `@geomtype` is also updated to `"points"` so downstream dispatch is
+#' consistent with a point store.
+#' @param x `parquetGeomBase` store
+#' @param ... unused
+#' @returns modified `parquetGeomBase` store
+#' @export
+setMethod("centroids", signature("parquetGeomBase"), function(x, ...) {
+    x@geomtype <- "points"
+    x@params$use_xy_as_geom <- TRUE
+    x
+})
+
+
 #' @name rasterize
 #' @title Rasterize Parquet Point Data
 #' @description

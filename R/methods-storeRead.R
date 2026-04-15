@@ -235,6 +235,7 @@ setMethod("storeRead", signature("unionParquetGeomStore"), function(store,
             arrangecols = c("source_id", "tile_index", "row_index"),
             source_order = source_order,
             crs = store@params$crs,
+            use_xy_as_geom = isTRUE(store@params$use_xy_as_geom),
             omit_internals = omit_internals
         )
     )
@@ -328,6 +329,7 @@ setMethod("storeRead", signature("parquetGeomStore"), function(store,
             output = output,
             dropcols = dropcols,
             crs = store@params$crs,
+            use_xy_as_geom = isTRUE(store@params$use_xy_as_geom),
             omit_internals = omit_internals
         )
     )
@@ -383,6 +385,7 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
             dropcols = dropcols,
             arrangecols = c("source_id", "tile_index", "row_index"),
             crs = store@params$crs,
+            use_xy_as_geom = isTRUE(store@params$use_xy_as_geom),
             omit_internals = omit_internals
         )
     )
@@ -502,9 +505,23 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
     output = c("terra", "sf"),
     dropcols = character(0L),
     crs = NULL,
+    use_xy_as_geom = FALSE,
     omit_internals = TRUE,
     ...) { # passthrough to .pstore_to_tibble()
     output <- match.arg(output, choices = c("terra", "sf"))
+
+    if (isTRUE(use_xy_as_geom)) {
+        # centroid path: build point geometries from x_index/y_index
+        dropcols <- unique(c("geom", dropcols))
+        data <- .pstore_to_tibble(atab, dropcols = dropcols,
+            omit_internals = omit_internals, ...)
+        sv <- terra::vect(data, geom = c("x_index", "y_index"))
+        data$x_index <- NULL
+        data$y_index <- NULL
+        if (!is.null(crs) && nzchar(crs)) terra::crs(sv) <- crs
+        return(sv)
+    }
+
     # enforced drops (never drop geom)
     dropcols <- setdiff(
         unique(c("x_index", "y_index", dropcols)),
