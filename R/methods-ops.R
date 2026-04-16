@@ -93,6 +93,14 @@ setMethod("subset", signature("parquetBase"), function(x, subset, select,
     expr # literals pass through
 }
 
+# unique ####
+
+#' @export
+setMethod("unique", signature("parquetBase"), function(x, incomparables = FALSE, ...) {
+    x@ops <- c(x@ops, list(list(type = "distinct", cols = colnames(x))))
+    x
+})
+
 # head ####
 
 setMethod("head", signature("parquetBase"), function(x, n = 6, ...) {
@@ -220,6 +228,7 @@ setMethod("window<-", signature("parquetGeomBase"), function(x, ..., value) {
         "head"   = head(atab, op$n),
         "tail"   = tail(atab, op$n),
         "sample" = .arrow_sample_max_rows(atab, op$size),
+        "distinct" = dplyr::distinct(atab, dplyr::across(dplyr::all_of(op$cols))),
         "join"   = {
             y_q <- storeRead(op$y, output = "query")
             # drop all of y's special cols except those used as join keys —

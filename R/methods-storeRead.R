@@ -449,6 +449,19 @@ setMethod("as.data.frame", "parquetGeomBase",
     as.data.frame(dplyr::rename(tbl, x = "x_index", y = "y_index"))
 })
 
+# as.vector ####
+
+#' @export
+setMethod("as.vector", "parquetBase", function(x, mode = "any") {
+    cols <- colnames(x)
+    if (length(cols) != 1L) stop(
+        "as.vector() requires exactly one column selected; use x[, col] first",
+        call. = FALSE
+    )
+    val <- storeRead(x, output = "query") |> dplyr::pull(cols)
+    stats::setNames(list(val), cols)
+})
+
 # as.terra ####
 
 #' @export

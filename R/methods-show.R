@@ -192,7 +192,8 @@ setMethod(".show_info", signature("tileDBArrayStore"), function(object, .print =
         "head"   = format(step$n),
         "tail"   = format(step$n),
         "sample" = sprintf("size = %g", step$size),
-        "select" = toString(step$cols),
+        "select"   = toString(step$cols),
+        "distinct" = toString(step$cols),
         "join"   = {
             type_str <- step$nomatch
             keys_str <- paste(names(step$by), unname(step$by), sep = " = ",

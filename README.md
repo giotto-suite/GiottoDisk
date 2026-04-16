@@ -171,6 +171,41 @@ gsource (VIRTUAL)
 
 ## Advanced Features
 
+### Lazy Operations
+
+Filtering, sampling, and deduplication are recorded lazily in the store and
+applied together at read time — no data is touched until `storeRead()` or a
+terminal step like `as.vector()`.
+
+```r
+# ops compose — only one parquet scan happens at storeRead()
+x |>
+    subset(cell_type == "neuron") |>
+    unique() |>
+    head(100) |>
+    storeRead(output = "tibble")
+```
+
+Column selection with `[, j]` is also lazy:
+
+```r
+# select columns first, then deduplicate
+unique(x[, c("feat_ID", "cell_type")]) |> storeRead(output = "tibble")
+```
+
+For extracting a single column, use `as.vector()` — it requires exactly one
+column selected and returns a named list, matching base R's `as.vector()` on a
+data.frame:
+
+```r
+# distinct gene names — returns list(feat_ID = c(...))
+unique(x[, "feat_ID"]) |> as.vector()
+```
+
+This keeps pipelines interchangeable between in-memory data.frames and
+parquet stores. The distinct step is safe even at billions of rows since the
+unique values of an ID column are always small.
+
 ### Callback for Custom Queries
 ```r
 # Apply custom operations to arrow queries before output
