@@ -425,6 +425,30 @@ setMethod("as.data.frame", "parquetBase", function(x, ...) {
     as.data.frame(storeRead(x, output = "tibble", ...))
 })
 
+#' @export
+setMethod("as.data.frame", "parquetGeomBase",
+    function(x, row.names = NULL, optional = FALSE, geom = NULL, ...) {
+    if (is.null(geom)) {
+        return(as.data.frame(storeRead(x, output = "tibble", ...)))
+    }
+    geom <- match.arg(geom, c("XY"))
+    if (nzchar(x@geomtype) && x@geomtype != "points" &&
+            !isTRUE(x@params$use_xy_as_geom)) {
+        stop("geom = \"XY\" requires a point geometry store")
+    }
+    xy_cols <- c("x_index", "y_index")
+    # When @fields is set by a prior select op, inject xy_cols directly so
+    # .pstore_fields_requested() keeps them through its intersection.
+    if (!is.null(x@fields)) {
+        x@fields <- unique(c(x@fields, xy_cols))
+        tbl <- storeRead(x, output = "tibble", ...)
+    } else {
+        tbl <- storeRead(x, output = "tibble",
+            fields = c(colnames(x), xy_cols), ...)
+    }
+    as.data.frame(dplyr::rename(tbl, x = "x_index", y = "y_index"))
+})
+
 # as.terra ####
 
 #' @export
