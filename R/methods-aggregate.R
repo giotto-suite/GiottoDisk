@@ -83,7 +83,9 @@ setClass("overlapPointDisk",
         poly_id_col = "character",
         feat_id_col = "character",
         spat_ids = "character",  # all polygon IDs (including zero-overlap)
-        feat_ids = "character"   # all feature IDs (including zero-overlap)
+        feat_ids = "character",  # all feature IDs (including zero-overlap)
+        poly_uids = "character", # uid(s) of polygon source store — provenance + future depends tracking
+        feat_uids = "character"  # uid(s) of feature source store — provenance + future depends tracking
     )
 )
 
@@ -137,7 +139,8 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomStore"),
         )
     }
     .wrap_overlap(result, poly_id_col, feat_id_col,
-        spat_ids = spat_ids, feat_ids = feat_ids)
+        spat_ids = spat_ids, feat_ids = feat_ids,
+        poly_uids = storeUID(x), feat_uids = storeUID(y))
 })
 
 #' @rdname calculateOverlap
@@ -181,7 +184,8 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
         )
     }
     .wrap_overlap(result, poly_id_col, feat_id_col,
-        spat_ids = spat_ids, feat_ids = feat_ids)
+        spat_ids = spat_ids, feat_ids = feat_ids,
+        poly_uids = storeUID(x), feat_uids = storeUID(y))
 })
 
 ## internals ####
@@ -401,14 +405,18 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
         as.character()
 }
 
+
 .wrap_overlap <- function(store, poly_id_col, feat_id_col,
-        spat_ids = character(), feat_ids = character()) {
+        spat_ids = character(), feat_ids = character(),
+        poly_uids = character(), feat_uids = character()) {
     new("overlapPointDisk",
         data = store,
         poly_id_col = poly_id_col,
         feat_id_col = feat_id_col,
         spat_ids = spat_ids,
-        feat_ids = feat_ids
+        feat_ids = feat_ids,
+        poly_uids = poly_uids,
+        feat_uids = feat_uids
     )
 }
 

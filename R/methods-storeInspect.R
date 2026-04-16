@@ -51,6 +51,34 @@ setMethod("storePaths", signature("unionParquetStore"), function(x, ...) {
     vapply(x@stores, function(s) s@path, FUN.VALUE = character(1L))
 })
 
+# storeUID ####
+
+#' @name storeUID
+#' @title Store UIDs
+#' @description
+#' Return the UID(s) for a store. For union stores, one UID is returned per
+#' substore. For `overlapPointDisk`, returns a named list with `poly` and
+#' `feat` UID vectors capturing the provenance of the overlap computation.
+#' @param x `store` or `overlapPointDisk` object
+#' @param ... unused
+#' @returns `character` vector of UIDs, or named `list` for `overlapPointDisk`
+#' @export
+setMethod("storeUID", signature("fileStore"), function(x, ...) {
+    x@uid
+})
+
+#' @rdname storeUID
+#' @export
+setMethod("storeUID", signature("unionParquetStore"), function(x, ...) {
+    vapply(x@stores, function(s) s@uid, FUN.VALUE = character(1L))
+})
+
+#' @rdname storeUID
+#' @export
+setMethod("storeUID", signature("overlapPointDisk"), function(x, ...) {
+    list(poly = x@poly_uids, feat = x@feat_uids)
+})
+
 # internals ####
 .test_empty_path <- function(path) {
     length(path) == 0L || is.na(path) || path == ""
