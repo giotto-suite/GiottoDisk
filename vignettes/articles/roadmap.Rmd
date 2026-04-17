@@ -1,0 +1,102 @@
+---
+title: "Roadmap"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Roadmap}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = FALSE
+)
+```
+
+This article outlines planned additions to GiottoDisk. Items vary in maturity
+from fully designed to early concept.
+
+---
+
+## `parquetMutableStore` — Disk-backed Mutable Metadata
+
+**Status:** Designed, not yet implemented.
+
+Cell and feature metadata is currently stored as an in-memory `data.table`.
+This is sufficient up to ~1M cells but becomes a bottleneck at transcript scale
+(~50M rows). `parquetMutableStore` is a disk-backed metadata class that supports
+column addition without rewriting the main file.
+
+### Structure
+
+- **Main file**: `cell_ID` + `row_index` + `source_id` — identity and join keys
+  only; written once and never reordered
+- **Sidecar files**: each holds one column group + `row_index` + `source_id` as
+  join keys. Adding a column group means writing one sidecar and appending its
+  path to the R object — no rewrite of any existing file
+- **R object**: holds the main file path + a named list of sidecar paths, keyed
+  by column group name
+
+### Key behaviours
+
+- **Head cache**: a 6-row preview per sidecar is kept in-memory, populated at
+  write time. `colnames()` and `show()` are driven by this cache — no file reads
+  for inspection
+- **Lazy column access**: `[, col]` joins only the relevant sidecars, not all of
+  them. Related columns (e.g. `UMAP_1`/`UMAP_2`/`UMAP_3`, PC loadings) should
+  be written to the same sidecar to avoid an explosion of small files
+- **Consolidation**: at `snapshotSave()` or an explicit `consolidate()` call,
+  all sidecars are merged into a single wide parquet and the sidecar list is
+  cleared. This is a one-time cost that produces a compact, join-free file for
+  downstream use
+- **Join key stability**: `(source_id, row_index)` must remain stable for the
+  lifetime of the main file — guaranteed because the main file is written once
+  and never reordered
+
+---
+
+## Partition Hardlink Utility — Lazy Virtual Partitioning
+
+**Status:** Early concept.
+
+Parquet hive partitioning encodes group membership in the directory structure
+(e.g. `source_id=<uid>/`, `tile_index=<n>/`). Arrow uses these directory names
+for partition pushdown, pruning entire directories without scanning their
+contents.
+
+The idea is a utility that creates hardlinks to existing parquet files under a
+new partition directory layout, without copying any data. This would allow a new
+logical partition column to be "applied" to a store purely through filesystem
+structure.
+
+### Motivating example
+
+A multi-sample experiment where cells from different samples share a single
+parquet store. Rather than rewriting the store with a `sample_id` column, the
+utility would:
+
+1. Determine which `cell_ID` values belong to each sample
+2. Create a new directory layout: `sample_id=sample1/`, `sample_id=sample2/`, ...
+3. Hardlink the relevant parquet files (or tile partitions) under each sample
+   directory
+4. Register the new partition column on the store object
+
+Arrow would then be able to use `sample_id` for partition pushdown — filtering
+to a single sample prunes all other directories before any row-level scanning.
+
+### Use cases
+
+- Blanket lazy operations scoped to a sample: `storeRead(store, sample = "s1")`
+  reads only that sample's partitions
+- Avoids the cost of adding a physical `sample_id` column to every row
+- Composable with existing `@crop`, `@ops`, and field projection
+
+### Open questions
+
+- Hardlinks require both paths to be on the same filesystem — cross-device or
+  remote stores would need copies or symlinks instead
+- Partition column cardinality: high-cardinality partitions (e.g. one directory
+  per cell) would defeat Arrow's pruning benefit
+- Integration with `sourceAdopt` / `gDirSource` artifact tracking

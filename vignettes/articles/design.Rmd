@@ -1,0 +1,228 @@
+---
+title: "Architecture and Design"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Architecture and Design}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = FALSE
+)
+```
+
+This article describes the internal architecture of GiottoDisk for contributors
+and advanced users. It covers the class hierarchy, storage schema, lazy operation
+system, and the reasoning behind key design decisions.
+
+## Class Hierarchy
+
+GiottoDisk uses an S4 class hierarchy to support different storage backends
+through shared dispatch.
+
+```
+dataStore (VIRTUAL)
+└── fileStore                         # path + read_fun + uid + params
+    └── queryableStore                # dplyr-queryable fileStore
+        └── parquetStore              # extends c("queryableStore", "parquetBase")
+            └── parquetGeomStore      # extends c("parquetStore", "parquetGeomBase")
+                └── parquetGeomTileStore  # adds @tiles slot
+
+parquetBase (VIRTUAL)                 # @fields, @ops — shared by parquet + union
+parquetGeomBase (VIRTUAL)             # @window, @crop, @geomtype
+
+unionParquetStore                     # extends "parquetBase" — multi-store union
+└── unionParquetGeomStore             # extends c("unionParquetStore", "parquetGeomBase")
+```
+
+`parquetBase` is a VIRTUAL class shared between the single-file (`parquetStore`)
+and multi-file union (`unionParquetStore`) branches. Methods defined on
+`parquetBase` — including `colnames`, `[,j]` column selection, `subset`, `nrow`,
+`unique`, and the lazy ops system — apply to both without duplication.
+
+Importantly, `parquetBase` methods must be self-contained and never call
+`callNextMethod()`, because `parquetStore` and `unionParquetStore` have
+incompatible inheritance chains above `parquetBase`. `storeRead` is not defined
+on `parquetBase` for this reason.
+
+## Special Column Schema
+
+Every parquet store maintains a set of internal columns that are hidden from
+`colnames()` but available in queries. These are called *special columns* and
+are enforced via `specialCols()`.
+
+| Column | Stores | Purpose |
+|--------|--------|---------|
+| `row_index` | all parquet | Intrinsic row ordering within a source |
+| `source_id` | all parquet | Stable sort key across rbind/union — hive partition (`source_id=<uid>/`) |
+| `x_index` | geom stores | Float centroid x coordinate for fast spatial filtering |
+| `y_index` | geom stores | Float centroid y coordinate for fast spatial filtering |
+| `geom` | geom stores | WKB geometry column (GeoParquet spec) |
+| `tile_index` | geom stores | Tile membership — hive partition (`tile_index=<n>/`) |
+
+Special cols are stripped from materialized outputs by default
+(`omit_internals = TRUE` strips `row_index`/`source_id`). The others are dropped
+via `dropcols` when they were injected lazily but not requested by the user.
+
+Flat `parquetGeomStore` writes use `tile_index=000` so joins always work on a
+uniform `(tile_index, row_index)` key regardless of whether a tiled or flat
+store is involved.
+
+## Lazy Operation System
+
+Operations on stores are recorded as a list of steps in the `@ops` slot and
+applied together at `storeRead()` time. This means multiple operations are
+collapsed into a single Arrow query — only one parquet scan happens regardless
+of how many ops are chained.
+
+```r
+x |>
+    subset(cell_type == "neuron") |>
+    unique() |>
+    head(100) |>
+    storeRead(output = "tibble")   # single scan
+```
+
+Supported op types:
+
+| Type | Method | Notes |
+|------|--------|-------|
+| `filter` | `subset()` | NSE via `rlang::enquo()` |
+| `head` | `head()` | |
+| `tail` | `tail()` | |
+| `sample` | `rowSample()` | |
+| `distinct` | `unique()` | Deduplicates by user columns, ignores special cols |
+| `join` | `x[y, on = ...]` | Inner or left join against another store |
+
+`arrange` is intentionally deferred to `.pstore_to_tibble()` rather than
+recorded as an op. Applying arrange inside Arrow would break `sample` and
+`COUNT(*)` operations.
+
+### Spatial Operations are Not Ops
+
+`@crop` and `@window` on `parquetGeomBase` are not recorded in `@ops`. They are
+stored in dedicated slots and applied as upstream callbacks before the op chain
+runs:
+
+- `@crop`: permanent composable spatial subset (numeric(4): xmin, xmax, ymin, ymax)
+- `@window`: temporary spatial filter (same format; `numeric(0)` = unset)
+
+`ext()` always queries the true data extent from parquet `x_index`/`y_index`
+column statistics. `storeRead` uses `.pstore_active_extent()` which gives
+window priority over crop.
+
+## Field Resolution
+
+When the user requests specific columns, two functions govern what actually gets
+read from disk:
+
+- **`.pstore_fields_requested(store, fields)`** — intersects the user-requested
+  fields with `store@fields` (set by a prior `[, j]` select op). Returns `NULL`
+  if no restriction is in effect.
+
+- **`.pstore_lazy_fields(store, fields, output)`** — expands the field set with
+  required special columns. Always adds `x_index`/`y_index`/`tile_index` for
+  geom stores; adds `source_id`/`row_index` for materialized outputs; adds
+  `geom` for `"terra"`/`"sf"` output. Returns `NULL` if `fields` is `NULL`
+  (fetch all).
+
+The `dropcols` vector passed to `.pstore_to_tibble()` is then
+`setdiff(specialCols(store), fields)` — special cols that were injected lazily
+but were not in the user's requested field set are dropped before the result is
+returned.
+
+## Design Decisions
+
+### No positional row indexing
+
+Parquet is not row-addressable. Building a positional index over a 2 billion row
+store would cost ~16GB on disk. Row access is value-based via `subset()` or
+statistical via `rowSample()`.
+
+### `nrow()` returns numeric (double)
+
+Arrow's `COUNT(*)` returns `int64`. Converting to `numeric` (double) gives exact
+integer representation up to 2^53 (~9 quadrillion rows) without overflow. `nrow`
+always queries via `COUNT(*)` — no caching.
+
+### XY centroid coordinates are always precomputed
+
+`x_index` and `y_index` store the centroid of each geometry at write time. This
+enables:
+
+- Fast spatial extent filtering without deserializing WKB geometry
+- `terra::rasterize()` entirely in Arrow (no `SpatVector` materialization)
+- `terra::centroids()` as a lazy flag (`store@params$use_xy_as_geom = TRUE`,
+  `store@geomtype = "points"`) with no store rewrite — at read time `x_index`/`y_index`
+  are used as point coordinates instead of parsing the `geom` WKB column
+
+### WKB direct path for terra output
+
+`output = "terra"` uses `terra::vect(as.list(geom_col))` directly from the WKB
+column, avoiding an sf intermediate (~6x faster at scale).
+
+### `unique()` as a lazy op
+
+`unique()` records a `"distinct"` step in `@ops` rather than immediately
+dispatching to Arrow. This keeps the result as a store that can be further
+composed, and ensures the distinct operation runs as part of the same Arrow scan
+as any preceding filters.
+
+### `as.vector()` returns a named list
+
+`as.vector()` on a single-column store returns `list(col = c(...))`, matching
+base R's `as.vector()` on a one-column data.frame. This keeps pipelines
+interchangeable between in-memory objects and parquet stores:
+
+```r
+# works the same whether x is a data.frame or parquetBase
+as.vector(x[, "feat_ID"])
+#> list(feat_ID = c("gene_1", "gene_2", ...))
+```
+
+`as.vector()` errors if more than one column is selected, directing users to
+`as.data.frame()` or `storeRead(output = "tibble")` for multi-column
+materialization.
+
+## Scale Targets
+
+Point/transcript stores are designed to handle **2 trillion+ rows**. Several
+design choices follow from this:
+
+- No full-column materialization by default — `$col` and `as.vector()` require
+  deliberate use
+- Lazy ops collapse to a single scan regardless of chain length
+- `x_index`/`y_index` enable spatial filtering without reading `geom`
+- Tiled stores (`parquetGeomTileStore`) partition data for parallel processing
+  and tile-level pruning
+
+## Project Management (gsource)
+
+`gDirSource` manages a project directory with the following layout:
+
+```
+<project_dir>/
+  giottodir.json       # manifest of all tracked artifacts
+  artifacts/<uid>/data # vault — subdirs named by artifact uid
+  _pending/            # WAL-style pending manifest edits
+  giottosave/          # .rds/.qs snapshots of giotto objects
+```
+
+Artifacts are written via `sourceWrite()`: allocate uid → write → hash → queue
+pending edit. Pending edits are consolidated into `giottodir.json` on-read,
+optionally with `filelock` for concurrent access safety.
+
+`sourcePrune()` removes artifacts not referenced by any snapshot, using a BFS
+walk over a `depends` graph for transitive protection.
+
+### Overlap Provenance
+
+`overlapPointDisk` (returned by `calculateOverlap()`) stores `poly_uids` and
+`feat_uids` — the UIDs of the polygon and feature source stores captured at
+computation time. Access via `storeUID(overlap)` which returns
+`list(poly = ..., feat = ...)`. These slots are intended for future integration
+with the `depends` BFS walk in `sourcePrune()`.
