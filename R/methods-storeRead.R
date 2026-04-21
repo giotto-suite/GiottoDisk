@@ -221,7 +221,7 @@ setMethod("storeRead", signature("unionParquetGeomStore"), function(store,
     }
 
     if (!is.null(callback)) atab <- callback(atab)
-    switch(output,
+    result <- switch(output,
         "query" = atab,
         "tibble" = .pstore_to_tibble(atab,
             dropcols = dropcols,
@@ -239,6 +239,11 @@ setMethod("storeRead", signature("unionParquetGeomStore"), function(store,
             omit_internals = omit_internals
         )
     )
+    r_ops <- store@post_ops
+    if (length(r_ops) > 0L && output %in% c("tibble", "terra", "sf")) {
+        result <- .apply_post_ops(result, r_ops, output)
+    }
+    result
 })
 
 .pbase_storeread_processing <- function(atab, store,
@@ -319,7 +324,7 @@ setMethod("storeRead", signature("parquetGeomStore"), function(store,
     }
 
     if (!is.null(callback)) atab <- callback(atab)
-    switch(output,
+    result <- switch(output,
         "query" = atab,
         "tibble" = .pstore_to_tibble(atab,
             dropcols = dropcols,
@@ -333,6 +338,11 @@ setMethod("storeRead", signature("parquetGeomStore"), function(store,
             omit_internals = omit_internals
         )
     )
+    r_ops <- store@post_ops
+    if (length(r_ops) > 0L && output %in% c("tibble", "terra", "sf")) {
+        result <- .apply_post_ops(result, r_ops, output)
+    }
+    result
 })
 
 #' @rdname storeRead
@@ -372,7 +382,7 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
     }
 
     if (!is.null(callback)) atab <- callback(atab)
-    switch(output,
+    result <- switch(output,
         "query" = atab,
         "tibble" = .pstore_to_tibble(atab,
             dropcols = dropcols,
@@ -389,6 +399,11 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
             omit_internals = omit_internals
         )
     )
+    r_ops <- store@post_ops
+    if (length(r_ops) > 0L && output %in% c("tibble", "terra", "sf")) {
+        result <- .apply_post_ops(result, r_ops, output)
+    }
+    result
 })
 
 #' @rdname storeRead
@@ -580,7 +595,7 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
         return(sfdata)
     }
 
-    # "terra": use WKB directly — avoids sf R-level geometry allocation overhead
+    # "terra": use WKB directly -- avoids sf R-level geometry allocation overhead
     wkb <- as.list(data$geom)
     data$geom <- NULL
     sv <- terra::vect(wkb)

@@ -21,7 +21,7 @@ Default \code{"poly_ID"}.}
 }
 \description{
 Create a \link[GiottoClass:giottoPolygon-class]{GiottoClass::giottoPolygon} object from a \code{parquetGeomBase}
-store. The store is kept in the \code{spatVector} slot — nothing is
+store. The store is kept in the \code{spatVector} slot -- nothing is
 materialized. The \code{unique_ID_cache} is populated via a single Arrow
 \code{DISTINCT} query at construction time.
 }

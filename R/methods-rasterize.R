@@ -3,7 +3,7 @@
 #' @description
 #' Returns a modified copy of `x` flagged to read as points using the
 #' pre-computed `x_index`/`y_index` centroid columns instead of the `geom`
-#' WKB column. No data is read or rewritten — the flag is applied lazily at
+#' WKB column. No data is read or rewritten -- the flag is applied lazily at
 #' [storeRead()] time.
 #'
 #' `@geomtype` is also updated to `"points"` so downstream dispatch is
@@ -25,13 +25,13 @@ setMethod("centroids", signature("parquetGeomBase"), function(x, ...) {
 #' Rasterize a `parquetGeomStore` of points onto a template `SpatRaster`.
 #' Rather than materializing the full geometry as a `SpatVector`, the
 #' template raster's extent and pixel dimensions are used to define spatial
-#' bins. Points are assigned to bins in Arrow and aggregated there — only
+#' bins. Points are assigned to bins in Arrow and aggregated there -- only
 #' the small summary table is pulled into R.
 #'
 #' Currently supports point geometries only.
 #'
 #' @param x `parquetGeomStore` (points)
-#' @param y `SpatRaster` template — defines extent, resolution, and CRS.
+#' @param y `SpatRaster` template -- defines extent, resolution, and CRS.
 #' @param field `character` (optional). Column in `x` to aggregate. Not
 #'   required when `fun = "count"`.
 #' @param fun `character`. Aggregation function. One of `"count"` (default),
@@ -89,7 +89,7 @@ setMethod("rasterize", signature("parquetGeomStore", "SpatRaster"),
     yres   <- (ymax - ymin) / nrows
 
     # query, bin, aggregate entirely in Arrow
-    # half-open intervals [xmin, xmax) x [ymin, ymax) — no boundary clamping needed:
+    # half-open intervals [xmin, xmax) x [ymin, ymax) -- no boundary clamping needed:
     #   col_bin in [1, ncols], row_bin in [1, nrows]
     q <- storeRead(x, output = "query", ...) |>
         dplyr::filter(

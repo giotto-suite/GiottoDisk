@@ -12,7 +12,7 @@
 
 \item{subset}{logical \code{expression} to filter rows. Column names
 in the store are referenced directly. Local variables are
-inlined automatically — no \verb{!!} injection needed.}
+inlined automatically -- no \verb{!!} injection needed.}
 
 \item{select}{\code{expression}, indicating columns to keep. \code{-} can
 be used to drop columns.}
@@ -43,7 +43,7 @@ and safe to pass across sessions or to parallel workers.
 # standard NSE
 subset(store, gene == "EPCAM")
 
-# local variable — inlined automatically
+# local variable -- inlined automatically
 my_genes <- c("EPCAM", "CDH1")
 subset(store, gene \%in\% my_genes)
 

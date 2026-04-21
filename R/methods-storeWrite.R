@@ -369,9 +369,9 @@ setMethod(
 #' @inheritParams storeWrite-parquetGeomStore
 #' @param threshold `numeric` or `NULL`. Maximum number of records per tile.
 #'   `NULL` (default) auto-selects based on total row count and `type`:
-#'   * `"points"`: 1M/tile up to 1B rows; clamped ramp `n/1000` (1M–100M) above.
+#'   * `"points"`: 1M/tile up to 1B rows; clamped ramp `n/1000` (1M--100M) above.
 #'   * `"polygons"` (vertex rows): 500k/tile up to 500M rows;
-#'     clamped ramp `n/1000` (500k–5M) above that.
+#'     clamped ramp `n/1000` (500k--5M) above that.
 #' @param tiles `freeTilePlan`, `tilePlan`, or `NULL`. When a `freeTilePlan`
 #'   is provided (e.g. the output of a `dry_run`), it is used directly without
 #'   replanning. When a `tilePlan` is provided, it is used as the seed grid for
@@ -801,7 +801,7 @@ setMethod(
 
 .tile_plan_quadtree <- function(store, data, threshold, tiles, i, dry_run, verbose, qtree_args) {
     if (inherits(tiles, "freeTilePlan")) {
-        fp <- tiles # use directly — already a finished plan (e.g. from dry_run)
+        fp <- tiles # use directly -- already a finished plan (e.g. from dry_run)
     } else {
         fp <- do.call(tilework::quadtreePlan, c(
             list(data, tiles = tiles, threshold = threshold),

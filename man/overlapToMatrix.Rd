@@ -48,7 +48,7 @@ rows. Useful when feature detections carry a \code{count} field.}
 \code{character} path to the output directory (invisibly)
 }
 \description{
-Aggregates the output of \code{\link[=calculateOverlap]{calculateOverlap()}} into a feature × cell sparse
+Aggregates the output of \code{\link[=calculateOverlap]{calculateOverlap()}} into a feature x cell sparse
 count matrix, written as a Matrix Market (.mtx) directory. The directory
 layout is 10x-compatible (\code{matrix.mtx}, \code{barcodes.tsv}, \code{features.tsv}) and
 can be loaded directly by \code{\link[BPCells:import_matrix_market]{BPCells::import_matrix_market()}},

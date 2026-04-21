@@ -5,13 +5,22 @@
 \alias{bbox}
 \title{Spatial Extent}
 \usage{
-\S4method{ext}{parquetGeomBase}(x, ...)
+\S4method{ext}{parquetGeomBase}(x, exact = TRUE, ...)
 }
 \arguments{
 \item{x}{object to use}
 
+\item{exact}{\code{logical(1)}. If \code{TRUE} (default), scans for a true extent.
+If \code{FALSE}, returns a fast metadata-based estimate without scanning.}
+
 \item{...}{additional params to pass (not used)}
 }
 \description{
-Spatially mapped bounds
+Spatially mapped bounds.
+\code{exact = TRUE} (default): scans coordinates with all spatial filter ops
+applied; pending transform is projected during the scan.
+\code{exact = FALSE}: fast estimate from metadata bounds (\verb{@crop} > \code{disk_extent})
+intersected with \verb{@window} and projected through any pending transform.
+Axis-aligned transforms are exact; rotation/shear gives a conservative AABB.
+Row-level ops (\code{subset}, \code{head}, etc.) are never reflected in either mode.
 }

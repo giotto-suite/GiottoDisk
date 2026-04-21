@@ -100,3 +100,33 @@ to a single sample prunes all other directories before any row-level scanning.
 - Partition column cardinality: high-cardinality partitions (e.g. one directory
   per cell) would defeat Arrow's pruning benefit
 - Integration with `sourceAdopt` / `gDirSource` artifact tracking
+
+---
+
+## `"geom_filter"` Post-Op — Exact Polygon Masking
+
+**Status:** Designed, not yet implemented.
+
+Currently `crop(store, y)` extracts `ext(y)` and uses the AABB for Arrow
+filtering. When `y` is a non-rectangular polygon, this over-fetches. The
+`"geom_filter"` post-op would record the exact geometry and apply it
+post-materialization via `terra::intersect()` or `sf::st_intersection()`.
+
+### Pattern
+
+```r
+# crop() with a polygon y:
+x@crop <- .ext_to_num_vec(ext(y))           # AABB for Arrow pre-filter
+x@post_ops <- c(x@post_ops,                 # exact mask post-materialization
+    list(list(type = "geom_filter", geom = y)))
+```
+
+`.apply_post_ops()` dispatches on `op$type == "geom_filter"`:
+
+- `"terra"`: `terra::intersect(result, op$geom)` or `terra::crop(result, op$geom)`
+- `"sf"`: `sf::st_intersection(result, sf::st_as_sf(op$geom))`
+- `"tibble"`: point-in-polygon test on `x_index`/`y_index`
+
+This is composable with `"transform"` post-ops — the geometry would need to
+be in the same coordinate space as the materialized output (i.e., transformed
+space if a `"transform"` post-op precedes it).

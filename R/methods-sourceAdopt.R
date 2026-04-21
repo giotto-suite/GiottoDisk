@@ -91,7 +91,7 @@ setMethod("sourceAdopt", signature("gDirSource", "SpatRaster"),
     f <- normalizePath(terra::sources(r), mustWork = FALSE)
     is_in_memory <- all(!nzchar(f))
 
-    # already in vault — nothing to do
+    # already in vault -- nothing to do
     if (!is_in_memory && all(startsWith(f, paste0(vdir, "/")))) return(r)
 
     savepath <- .gdsrc_allocate_artifact_dir(p, create = TRUE)
@@ -114,7 +114,7 @@ setMethod("sourceAdopt", signature("gDirSource", "SpatRaster"),
         r <- terra::rast(savepath)
     }
 
-    capture.output(show(r)) # ping before hashing — terra hash changes on first access
+    capture.output(show(r)) # ping before hashing -- terra hash changes on first access
     hash <- .hash(r)
     .gdsrc_json_add_artifact(p,
         store_type = "IMAGE",

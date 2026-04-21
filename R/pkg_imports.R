@@ -1,9 +1,9 @@
 #' @import GiottoUtils
 #' @import tilework
 #' @import methods
-#' @importFrom terra crop ext geomtype head tail window `window<-` rasterize centroids
-#' @importFrom GiottoClass XY calculateOverlap overlapToMatrix setGiotto createExprObj spatUnit featType prov as.terra createGiottoPoints createGiottoPolygon
-#' @importClassesFrom GiottoClass giotto overlapInfo
+#' @importFrom terra crop ext geomtype head tail window `window<-` rasterize centroids spin rescale flip
+#' @importFrom GiottoClass affine spatShift shear colnames XY calculateOverlap overlapToMatrix setGiotto createExprObj spatUnit featType prov as.terra createGiottoPoints createGiottoPolygon
+#' @importClassesFrom GiottoClass affine2d giotto overlapInfo
 #' @importClassesFrom terra SpatVector
 #' @importClassesFrom Matrix Matrix
 #' @importClassesFrom DelayedArray DelayedArray

@@ -49,12 +49,12 @@ setMethod("[", signature("parquetBase", "parquetBase", "missing"),
     dots <- list(...)
     on <- dots$on
     # nomatch = NULL (inner join, data.table convention) is indistinguishable
-    # from "not passed" via dots$nomatch — check names explicitly.
+    # from "not passed" via dots$nomatch -- check names explicitly.
     # Store as "inner"/"left" string to survive list storage (NULL is lost).
     nomatch <- if ("nomatch" %in% names(dots)) {
         if (is.null(dots$nomatch)) "inner" else "left"
     } else {
-        "inner"  # default: inner join — unmatched rows indicate a data problem
+        "inner"  # default: inner join -- unmatched rows indicate a data problem
     }
     checkmate::assert_character(on, min.len = 1L,
         .var.name = "on", null.ok = FALSE)
@@ -126,13 +126,31 @@ setMethod("colnames", signature("unionParquetStore"), function(x) {
 #' @title Spatial Extent
 #' @aliases bbox
 #' @description
-#' Spatially mapped bounds
+#' Spatially mapped bounds.
+#' `exact = TRUE` (default): scans coordinates with all spatial filter ops
+#' applied; pending transform is projected during the scan.
+#' `exact = FALSE`: fast estimate from metadata bounds (`@crop` > `disk_extent`)
+#' intersected with `@window` and projected through any pending transform.
+#' Axis-aligned transforms are exact; rotation/shear gives a conservative AABB.
+#' Row-level ops (`subset`, `head`, etc.) are never reflected in either mode.
 #' @param x object to use
+#' @param exact `logical(1)`. If `TRUE` (default), scans for a true extent.
+#'   If `FALSE`, returns a fast metadata-based estimate without scanning.
 #' @param ... additional params to pass (not used)
 #' @export
-setMethod("ext", signature("parquetGeomBase"), function(x, ...) {
-    .dplyr_ext(storeRead(x, output = "query"))
+setMethod("ext", signature("parquetGeomBase"), function(x, exact = TRUE, ...) {
+    aff <- .pgeom_pending_transform(x)
+    if (!exact) return(.pgeom_ext_estimate(x, aff))
+    q <- storeRead(x, output = "query")
+    if (is.null(aff)) .dplyr_ext(q) else .dplyr_ext_affine(q, aff)
 })
+
+# Always returns extent in intrinsic (on-disk) x_index/y_index space,
+# regardless of any pending "transform" op.  Used internally by crop(),
+# window<-, and affine() where intrinsic bounds are required.
+.pgeom_ext_intrinsic <- function(x) {
+    .dplyr_ext(storeRead(x, output = "query"))
+}
 
 setMethod("geomtype", signature("parquetGeomBase"), function(x) {
     x@geomtype

@@ -64,6 +64,7 @@ Collate:
     'methods-storeInspect.R'
     'methods-storeRead.R'
     'methods-storeWrite.R'
+    'methods-transforms.R'
     'utils-spatial.R'
     'tilework.R'
     'utils-arrow.R'

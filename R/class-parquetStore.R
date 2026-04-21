@@ -12,7 +12,7 @@ NULL
 #' Stores represent a query interface to on-disk data and do not contain the
 #' actual table data as state.
 #' 
-#' `[, j]` indexing is supported. `[i, ]` row indexing is not — use
+#' `[, j]` indexing is supported. `[i, ]` row indexing is not -- use
 #' filter/crop-based access instead.
 #' 
 #' `nrow()` and `dim()` calls return as `numeric` instead of `integer` to
@@ -74,7 +74,8 @@ setClass("parquetGeomBase",
     slots = list(
         crop = "numeric",
         window = "numeric",
-        geomtype = "character"
+        geomtype = "character",
+        post_ops = "list"
     )
 )
 

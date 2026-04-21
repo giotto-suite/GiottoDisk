@@ -63,7 +63,7 @@ Supply a value directly when \code{max_poly_radius} was not recorded at write ti
 \item{engine}{\code{character} one of \code{"terra"} or \code{"duckdb"} (default = \code{"terra"}).
 \code{"terra"} iterates over adaptive polygon tiles (or point tiles for
 \code{parquetGeomTileStore} \code{y}). \code{"duckdb"} performs a single full-dataset
-spatial join via DuckDB's spatial extension — tiling params
+spatial join via DuckDB's spatial extension -- tiling params
 (\code{threshold}, \code{tiles}, \code{pad_y}, \code{poly_buf_factor}) are ignored.
 Requires the DuckDB spatial extension (\verb{INSTALL spatial}).}
 
