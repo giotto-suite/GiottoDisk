@@ -13,6 +13,7 @@ R/
   class-gsource.R        # gsource class
   methods-accessors.R    # [,j] indexing, [i, on] join, colnames, nrow, dim, ext, window
   methods-ops.R          # subset, rowSample, head, tail, crop, window<-; .do_op()
+  methods-transforms.R   # affine, spin, rescale, shear, spatShift, t, flip; transform helpers
   methods-storeRead.R    # storeRead; as.data.frame, as.terra
   methods-storeWrite.R   # storeWrite methods
   methods-storeInspect.R # storeExists, storePaths methods
@@ -83,11 +84,13 @@ Applied in order at `storeRead()` time via `.do_op()`. `arrange` deferred to
 
 `crop` and `window` are NOT ops — they use dedicated slots on `parquetGeomBase`.
 
-`@ops` contains both Arrow-executable ops and R-level post-materialization ops in a single ordered list. `.do_op()` handles Arrow types and returns `atab` unchanged for R-level types (`"transform"`). After Arrow materialization in geom storeRead paths, R-level ops are collected from `@ops` (by type) and `@post_ops`, then applied via `.apply_post_ops()`.
+`@ops` contains Arrow-executable ops only. `.do_op()` dispatches each type to its dplyr/Arrow equivalent.
 
-`@post_ops` is reserved for ops with no Arrow equivalent that must be expressed as an R-level step — currently empty; planned: `"geom_filter"` (exact polygon mask; AABB pre-filter goes to `@ops`/`@crop`, exact polygon test in `@post_ops`).
+`@post_ops` holds R-level post-materialization ops with no Arrow equivalent. Currently one type: `"transform"` (affine2d). Planned: `"geom_filter"` (exact polygon mask; AABB pre-filter goes to `@ops`, exact polygon test in `@post_ops`).
 
-### Lazy spatial transforms (`@ops` `"transform"` type on `parquetGeomBase`)
+`crop()`/`window<-` may inject a `"filter"` half-plane op into `@ops` when rotation/shear is pending — a plain Arrow filter op injected by `.pgeom_resolve_extent()`, not a post-op.
+
+### Lazy spatial transforms (`@post_ops` `"transform"` type on `parquetGeomBase`)
 
 `affine(store, affine2d)` records the transform lazily. At `storeRead(output = "tibble"/"terra"/"sf")`, `.apply_post_ops()` applies it. `output = "query"` is unaffected.
 
@@ -97,12 +100,13 @@ Applied in order at `storeRead()` time via `.do_op()`. `arrange` deferred to
 - `@anchor` is a **composition scaffold only** — used by `affine(affine2d, matrix)` for centroid-shift calculation when composing transforms. NOT read when applying a transform to actual coordinates (`affine(SpatVector, affine2d)` uses only `@affine`). Only `spin()` and `rescale()` need the centroid; callers build the `affine2d` with the correct extent set externally before passing to `affine(store, aff)`. `affine(parquetGeomBase, affine2d)` sets the anchor via `.pgeom_ext_intrinsic(x)` only when `y@anchor` is still at the prototype default — avoids redundant scans on composition chains while ensuring a valid pivot on first use.
 
 **crop/window back-projection when transform pending:**
-1. Back-project query extent to intrinsic space: `affine(as.polygons(ext(y)), inverse_affine2d)`
+1. Back-project query extent to intrinsic space: `affine(as.polygons(ext(y)), aff, inv = TRUE)`
 2. If rotation/shear: append exact parallelogram half-plane filter to `@ops` (Arrow-native: `a*x_index + b*y_index >= c`)
 3. AABB of back-projected corners stored in `@crop`/`@window` for display and AABB pre-filter
 4. Axis-aligned transforms (scale/translate only): back-projected extent is already a rectangle, no extra filter needed
 
-Utilities: `.affine2d_inverse()`, `.affine_has_rotation()`, `.affine_halfplane_expr()`, `.affine_aabb()`, `.apply_post_ops()`, `.aff_linear_2d()` — all in `utils-spatial.R`.
+Utilities: `.affine_has_rotation()`, `.affine_halfplane_expr()`, `.affine_aabb()`, `.apply_post_ops()`, `.aff_linear_2d()` — all in `utils-spatial.R`.
+Transform helpers: `.pgeom_pending_transform()`, `.pgeom_get_transform()`, `.pgeom_set_transform()` — in `methods-transforms.R`.
 
 ### @crop vs @window (parquetGeomBase)
 - `@crop`: permanent composable spatial subset (numeric(4): xmin, xmax, ymin, ymax)
@@ -119,11 +123,11 @@ the true data extent including effects of any spatial subset ops.
 - **Transform pending**: `.dplyr_ext_affine(q, aff)` — scan affine-projected coordinates;
   works for all transform types (axis-aligned cross-terms collapse to 0)
 
-`ext(x, exact = FALSE)`: always returns `.pgeom_ext_metadata()` without scanning.
+`ext(x, exact = FALSE)`: always returns `.pgeom_ext_estimate()` without scanning.
 Used for display — `show()` always calls `ext(x, exact = FALSE)`. Half-plane filter
 effects are NOT reflected (uses `@crop`/`disk_extent` AABB).
 
-`.pgeom_ext_metadata(x, aff)`: tightest metadata upper bound.
+`.pgeom_ext_estimate(x, aff)`: tightest metadata upper bound.
 - Intrinsic base: `@crop` (already ⊆ disk_extent) > `disk_extent` > live scan fallback
 - Applies `@window` intersection on top
 - Projects 4 AABB corners through affine if pending — exact for axis-aligned, AABB

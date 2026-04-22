@@ -111,9 +111,24 @@ runs:
 - `@crop`: permanent composable spatial subset (numeric(4): xmin, xmax, ymin, ymax)
 - `@window`: temporary spatial filter (same format; `numeric(0)` = unset)
 
-`ext()` always queries the true data extent from parquet `x_index`/`y_index`
-column statistics. `storeRead` uses `.pstore_active_extent()` which gives
-window priority over crop.
+`storeRead` uses `.pstore_active_extent()` which gives window priority over crop.
+
+### Spatial Transforms are Post-Ops
+
+Affine transforms are recorded in `@post_ops` as a single `"transform"` entry.
+They have no Arrow equivalent and are applied to the materialized result by
+`.apply_post_ops()`. `output = "query"` is unaffected.
+
+All spatial transform verbs (`spin`, `rescale`, `shear`, `spatShift`, `t`, `flip`,
+`affine`) collapse their result into a single `affine2d` entry — no matter how
+many are chained, only one transform is stored at any time.
+
+**Back-projection for crop/window:** when a transform is pending, `crop()` and
+`window<-` back-project the query extent through the inverse transform into
+intrinsic (on-disk) space before recording `@crop`/`@window`. For rotation/shear,
+an exact half-plane filter is also injected into `@ops` as an Arrow-native
+inequality filter on `x_index`/`y_index`. Axis-aligned transforms need only the
+AABB.
 
 ## Spatial Extent Tracking
 
@@ -144,11 +159,16 @@ outside the data extent is caught immediately.
 
 ### Live query (`ext()`)
 
-`ext(parquetGeomBase)` always runs a live Arrow `min`/`max` aggregate on
-`x_index`/`y_index`. It intentionally ignores `@crop` and `@window` — it returns
-the true data bounds regardless of any applied filters. This is necessary because
-`crop()` and `window<-` call `ext(x)` internally to validate and clip the
-requested extent against the actual data.
+`ext(parquetGeomBase, exact = TRUE)` (default) always scans `x_index`/`y_index`
+with all Arrow-phase filter ops applied (crop AABB, half-plane filters from
+back-projected rotations). Returns the true data extent. When a transform is
+pending, coordinates are projected through the affine before the scan via
+`.dplyr_ext_affine()`.
+
+`ext(parquetGeomBase, exact = FALSE)` returns a fast metadata estimate without
+scanning: `@crop` > `disk_extent` > live scan fallback, intersected with
+`@window`, corners projected through any pending transform. Axis-aligned result is
+exact; rotation/shear gives a conservative AABB. Used by `show()`.
 
 ### Active extent resolution
 
@@ -164,10 +184,8 @@ intersected with the active extent if one is present.
 
 ### Display extent in `show()`
 
-`show()` uses a three-way fallback to avoid a live disk read when possible:
-1. Active extent from `.pstore_active_extent()` — if a crop or window is set
-2. `@params$disk_extent` — if set **and** `@ops` is empty (safe approximation)
-3. Live `ext()` call — fallback when neither of the above apply
+`show()` calls `ext(x, exact = FALSE)` — a single fast metadata path with no
+disk scan. Pending transforms are projected through the estimate.
 
 ## Field Resolution
 
