@@ -176,6 +176,15 @@ setMethod("crop", signature("parquetGeomBase", "ANY"), function(x, y, ...) {
     x
 })
 
+# * crop (tile store) ####
+
+setMethod("crop", signature("parquetGeomTileStore", "ANY"), function(x, y, ...) {
+    x <- callNextMethod()  # parquetGeomBase: resolves transforms, composes @crop
+    tile_sel <- tilework::intersect(x@tiles, terra::ext(x@crop))
+    x@tile_filter <- as.integer(tile_sel$tile)
+    x
+})
+
 # * window ####
 
 #' @name window

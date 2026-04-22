@@ -89,10 +89,10 @@ setMethod("getBoundedData", signature("queryableStore", "SpatExtent"),
 #' @rdname getBoundedData
 #' @export
 setMethod("getBoundedData", signature("parquetGeomStore", "SpatExtent"),
-    function(x, bound, inclusive = TRUE, ...) {
+    function(x, bound, sdimx = "x_index", sdimy = "y_index", inclusive = TRUE, ...) {
     callNextMethod(x, bound, # to queryableStore method
-        sdimx = "x_index",
-        sdimy = "y_index",
+        sdimx = sdimx,
+        sdimy = sdimy,
         inclusive = inclusive,
         ...
     )

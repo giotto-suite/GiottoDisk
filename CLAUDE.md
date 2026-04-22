@@ -38,7 +38,7 @@ dataStore (VIRTUAL)
     └── queryableStore                # dplyr-queryable fileStore
         └── parquetStore              # extends c("queryableStore", "parquetBase")
             └── parquetGeomStore      # extends c("parquetStore", "parquetGeomBase")
-                └── parquetGeomTileStore  # adds @tiles slot
+                └── parquetGeomTileStore  # adds @tiles (tilePlan) + @tile_filter (integer) slots
 
 parquetBase (VIRTUAL)                 # @fields, @ops — shared by parquet + union
 parquetGeomBase (VIRTUAL)             # @window, @crop, @geomtype
@@ -201,7 +201,16 @@ Tiled stores write the top-level extent to each tile file (intentional — files
 
 `omit_internals = TRUE` (default): strips `row_index`/`source_id` from materialized output.
 
-`tile_idx` on `storeRead(parquetGeomTileStore)`: filter by tile partition integer(s).
+`tile_idx` on `storeRead(parquetGeomTileStore)`: explicit tile partition filter (integer vector).
+When `tile_idx = NULL`, falls through to `@tile_filter` if non-empty. Explicit `tile_idx`
+always takes precedence.
+
+`@tile_filter` on `parquetGeomTileStore`: set by `crop()` to the indices of tiles whose
+padded bounds intersect `@crop` (computed via `tilework::intersect(x@tiles, ext(x@crop))`).
+Applied as an Arrow hive-partition filter at `storeRead` time — eliminates irrelevant tile
+directories before any row-level filtering. Overwritten (not accumulated) on each `crop()`
+call; `integer(0L)` means no tile pruning. For rotated crops the tile set may be slightly
+over-inclusive (AABB overestimate); exact filtering is handled by the half-plane op in `@ops`.
 
 ## GiottoClass Integration
 

@@ -361,10 +361,14 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
     lazy_fields <- .pstore_lazy_fields(store, fields, output)
 
     upstream_callback <- NULL
-    if (!is.null(tile_idx)) {
-        tile_idx <- as.integer(tile_idx)
+    effective_tile_idx <- if (!is.null(tile_idx)) {
+        as.integer(tile_idx)
+    } else if (length(store@tile_filter) > 0L) {
+        store@tile_filter
+    }
+    if (!is.null(effective_tile_idx)) {
         upstream_callback <- function(atab) {
-            atab <- dplyr::filter(atab, tile_index %in% tile_idx)
+            atab <- dplyr::filter(atab, tile_index %in% effective_tile_idx)
         }
     }
 

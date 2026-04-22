@@ -95,9 +95,13 @@ setClass("parquetGeomStore",
 #' @rdname parquetStore-class
 setClass("parquetGeomTileStore",
     contains = "parquetGeomStore",
-    slots = list(tiles = "tilePlan"),
+    slots = list(
+        tiles = "tilePlan",
+        tile_filter = "integer"
+    ),
     prototype = list(
-        tiles = tilework::tilePlan("spatial")
+        tiles = tilework::tilePlan("spatial"),
+        tile_filter = integer(0L)
     )
 )
 
