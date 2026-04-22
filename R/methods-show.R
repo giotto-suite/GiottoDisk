@@ -1,5 +1,5 @@
 # show ####
-# Public show methods are thin entry points — all content building happens in
+# Public show methods are thin entry points -- all content building happens in
 # .show_info(). With .print = FALSE, each method returns a named list of raw
 # values; callNextMethod() is called with .print = FALSE so parent levels
 # contribute without printing. The outermost (.print = TRUE) call collects the
@@ -92,15 +92,12 @@ setMethod(".show_info", signature("parquetGeomStore"), function(object, .print =
         if (.print) return(.print_show(object, info))
         return(invisible(info))
     }
-    e <- if (!is.null(.pstore_active_extent(object))) {
-        .ext_to_num_vec(.pstore_active_extent(object))
-    } else if (!is.null(object@params$disk_extent) && length(object@ops) == 0L) {
-        object@params$disk_extent
-    } else {
-        ext(object)
-    }
-    if (nzchar(object@geomtype)) info[["geomtype"]] <- object@geomtype
+    # exact = FALSE: estimated extent -- no scan, projects through pending
+    # transform if any. Appropriate for display; row-filter effects not reflected.
+    e <- .ext_to_num_vec(ext(object, exact = FALSE))
+    if (length(object@geomtype) > 0L && nzchar(object@geomtype)) info[["geomtype"]] <- object@geomtype
     info[["extent"]] <- .format_extent(e)
+    info[["ops"]] <- c(info[["ops"]], object@post_ops)
     if (.print) return(.print_show(object, info))
     invisible(info)
 })
@@ -111,13 +108,10 @@ setMethod(".show_info", signature("unionParquetGeomStore"), function(object, .pr
         if (.print) return(.print_show(object, info))
         return(invisible(info))
     }
-    e <- if (!is.null(.pstore_active_extent(object))) {
-        .ext_to_num_vec(.pstore_active_extent(object))
-    } else {
-        ext(object)
-    }
-    if (nzchar(object@geomtype)) info[["geomtype"]] <- object@geomtype
+    e <- .ext_to_num_vec(ext(object, exact = FALSE))
+    if (length(object@geomtype) > 0L && nzchar(object@geomtype)) info[["geomtype"]] <- object@geomtype
     info[["extent"]] <- .format_extent(e)
+    info[["ops"]] <- c(info[["ops"]], object@post_ops)
     if (.print) return(.print_show(object, info))
     invisible(info)
 })
@@ -200,7 +194,20 @@ setMethod(".show_info", signature("tileDBArrayStore"), function(object, .print =
                 collapse = ", ")
             sprintf("%s on [%s]", type_str, keys_str)
         },
+        "transform" = {
+            aff <- step$affine2d
+            parts <- character(0L)
+            if (!isTRUE(all.equal(unname(aff@rotate), 0)))
+                parts <- c(parts, sprintf("rotate=%.4g", aff@rotate))
+            if (!isTRUE(all.equal(unname(aff@shear), c(0, 0))))
+                parts <- c(parts, sprintf("shear=(%s)", paste(round(aff@shear, 4), collapse = ",")))
+            if (!isTRUE(all.equal(unname(aff@scale), c(1, 1))))
+                parts <- c(parts, sprintf("scale=(%s)", paste(round(aff@scale, 4), collapse = ",")))
+            if (!isTRUE(all.equal(unname(aff@translate), c(0, 0))))
+                parts <- c(parts, sprintf("translate=(%s)", paste(round(aff@translate, 4), collapse = ",")))
+            if (length(parts) == 0L) "identity" else paste(parts, collapse = " ")
+        },
         "..."
     )
-    sprintf("  %-8s: %s\n", step$type, args)
+    sprintf("  %-10s: %s\n", step$type, args)
 }

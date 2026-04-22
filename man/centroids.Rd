@@ -17,7 +17,7 @@ modified \code{parquetGeomBase} store
 \description{
 Returns a modified copy of \code{x} flagged to read as points using the
 pre-computed \code{x_index}/\code{y_index} centroid columns instead of the \code{geom}
-WKB column. No data is read or rewritten — the flag is applied lazily at
+WKB column. No data is read or rewritten -- the flag is applied lazily at
 \code{\link[=storeRead]{storeRead()}} time.
 
 \verb{@geomtype} is also updated to \code{"points"} so downstream dispatch is

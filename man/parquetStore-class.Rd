@@ -15,7 +15,7 @@ in-place updates or edits. Create with \code{\link[=parquetStore]{parquetStore()
 Stores represent a query interface to on-disk data and do not contain the
 actual table data as state.
 
-\verb{[, j]} indexing is supported. \verb{[i, ]} row indexing is not — use
+\verb{[, j]} indexing is supported. \verb{[i, ]} row indexing is not -- use
 filter/crop-based access instead.
 
 \code{nrow()} and \code{dim()} calls return as \code{numeric} instead of \code{integer} to

@@ -35,7 +35,7 @@ NULL
 #' @param output `character`. Output format passed to [storeRead()].
 #' @param ... additional params to pass to [storeRead()]
 #' @family tile methods
-#' @returns output as determined by `output` param — see [storeRead()]
+#' @returns output as determined by `output` param -- see [storeRead()]
 #' @export
 setMethod("getBoundedData", signature("queryableStore", "SpatExtent"),
     function(x, bound, 

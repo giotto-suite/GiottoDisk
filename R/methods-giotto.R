@@ -5,7 +5,7 @@ NULL
 #' @title Create a giottoPolygon from a Parquet Geometry Store
 #' @description
 #' Create a [GiottoClass::giottoPolygon] object from a `parquetGeomBase`
-#' store. The store is kept in the `spatVector` slot — nothing is
+#' store. The store is kept in the `spatVector` slot -- nothing is
 #' materialized. The `unique_ID_cache` is populated via a single Arrow
 #' `DISTINCT` query at construction time.
 #' @param x `parquetGeomBase` store (polygons)
@@ -31,7 +31,7 @@ setMethod("createGiottoPolygon", signature("parquetGeomBase"),
 #' @title Create a giottoPoints from a Parquet Geometry Store
 #' @description
 #' Create a [GiottoClass::giottoPoints] object from a `parquetGeomBase`
-#' store. The store is kept in the `spatVector` slot — nothing is
+#' store. The store is kept in the `spatVector` slot -- nothing is
 #' materialized. The `unique_ID_cache` is populated via a single Arrow
 #' `DISTINCT` query at construction time.
 #'

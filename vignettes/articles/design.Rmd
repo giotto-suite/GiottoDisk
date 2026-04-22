@@ -115,6 +115,60 @@ runs:
 column statistics. `storeRead` uses `.pstore_active_extent()` which gives
 window priority over crop.
 
+## Spatial Extent Tracking
+
+Spatial location information for `parquetGeomBase`-inheriting stores is maintained
+across three independent layers.
+
+### Write-time cache (`@params`)
+
+Set when data is written; not updated afterward:
+
+- **`@params$disk_extent`** (`numeric(4)`) — bounding box from the source data at
+  write time. Used for GeoParquet `bbox` metadata and as a fast display substitute
+  in `show()`.
+- **`@params$crs`** — CRS string from `terra::crs()` at write time. Applied to
+  materialized `SpatVector`/`sf` output at read time.
+
+### Runtime slots (`@crop`, `@window`)
+
+User-applied spatial restrictions, composable and independent of the write-time
+cache:
+
+- **`@crop`** — permanent spatial subset applied every time the store is read.
+- **`@window`** — temporary spatial filter; cleared by `window<-(x, NULL)`.
+
+Both are stored as `numeric(4)`: `c(xmin, xmax, ymin, ymax)`. Both are validated
+against the current data extent via `ext(x)` at set time — so setting a crop
+outside the data extent is caught immediately.
+
+### Live query (`ext()`)
+
+`ext(parquetGeomBase)` always runs a live Arrow `min`/`max` aggregate on
+`x_index`/`y_index`. It intentionally ignores `@crop` and `@window` — it returns
+the true data bounds regardless of any applied filters. This is necessary because
+`crop()` and `window<-` call `ext(x)` internally to validate and clip the
+requested extent against the actual data.
+
+### Active extent resolution
+
+`.pstore_active_extent(store)` resolves what spatial filter is in effect at read
+time:
+1. `@window` if set (takes priority)
+2. `@crop` if set
+3. `NULL` — no spatial filtering applied
+
+The result is converted to a `.dplyr_crop()` callback on `x_index`/`y_index`
+inside `storeRead`. An `extent =` argument passed directly to `storeRead` is
+intersected with the active extent if one is present.
+
+### Display extent in `show()`
+
+`show()` uses a three-way fallback to avoid a live disk read when possible:
+1. Active extent from `.pstore_active_extent()` — if a crop or window is set
+2. `@params$disk_extent` — if set **and** `@ops` is empty (safe approximation)
+3. Live `ext()` call — fallback when neither of the above apply
+
 ## Field Resolution
 
 When the user requests specific columns, two functions govern what actually gets

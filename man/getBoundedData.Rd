@@ -54,7 +54,7 @@ and xy filtering is performed on the point or the centroid.}
 \item{...}{additional params to pass to \code{\link[=storeRead]{storeRead()}}}
 }
 \value{
-output as determined by \code{output} param — see \code{\link[=storeRead]{storeRead()}}
+output as determined by \code{output} param -- see \code{\link[=storeRead]{storeRead()}}
 }
 \description{
 Get the region of the data defined by a bounding \code{SpatExtent}.

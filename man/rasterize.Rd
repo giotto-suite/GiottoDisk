@@ -9,7 +9,7 @@
 \arguments{
 \item{x}{\code{parquetGeomStore} (points)}
 
-\item{y}{\code{SpatRaster} template — defines extent, resolution, and CRS.}
+\item{y}{\code{SpatRaster} template -- defines extent, resolution, and CRS.}
 
 \item{field}{\code{character} (optional). Column in \code{x} to aggregate. Not
 required when \code{fun = "count"}.}
@@ -27,7 +27,7 @@ points are \code{NA}.
 Rasterize a \code{parquetGeomStore} of points onto a template \code{SpatRaster}.
 Rather than materializing the full geometry as a \code{SpatVector}, the
 template raster's extent and pixel dimensions are used to define spatial
-bins. Points are assigned to bins in Arrow and aggregated there — only
+bins. Points are assigned to bins in Arrow and aggregated there -- only
 the small summary table is pulled into R.
 
 Currently supports point geometries only.

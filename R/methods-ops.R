@@ -14,7 +14,7 @@
 #' @param x `parquetBase`-inheriting store object
 #' @param subset logical `expression` to filter rows. Column names
 #'  in the store are referenced directly. Local variables are 
-#'  inlined automatically — no `!!` injection needed.
+#'  inlined automatically -- no `!!` injection needed.
 #' @param select `expression`, indicating columns to keep. `-` can
 #'  be used to drop columns.
 #' @param negate `logical`. If `TRUE`, the filter expression is
@@ -28,7 +28,7 @@
 #' # standard NSE
 #' subset(store, gene == "EPCAM")
 #'
-#' # local variable — inlined automatically
+#' # local variable -- inlined automatically
 #' my_genes <- c("EPCAM", "CDH1")
 #' subset(store, gene %in% my_genes)
 #'
@@ -166,17 +166,12 @@ setMethod("rowSample", signature("parquetBase"), function(x, size, ...) {
 #' @export
 #' @seealso [window()]
 setMethod("crop", signature("parquetGeomBase", "ANY"), function(x, y, ...) {
-    e <- ext(x) # data extent
-    if (length(x@crop) > 0L) { # crop extent
-        e <- terra::intersect(e, ext(x@crop))
-    }
-    if (length(x@window) > 0L) { # window extent
-        e <- terra::intersect(e, ext(x@window))
-    }
-    e <- terra::intersect(e, ext(y)) # new crop extent
-    if (is.null(e)) {
-        stop("[crop] no geometries within requested extent\n", call. = FALSE)
-    }
+    r <- .pgeom_resolve_extent(x, y)
+    x <- r$x; y <- r$e; e <- r$base_e
+    if (length(x@crop) > 0L)   e <- terra::intersect(e, ext(x@crop))
+    if (length(x@window) > 0L) e <- terra::intersect(e, ext(x@window))
+    e <- terra::intersect(e, ext(y))
+    if (is.null(e)) stop("[crop] no geometries within requested extent\n", call. = FALSE)
     x@crop <- .ext_to_num_vec(e)
     x
 })
@@ -209,17 +204,39 @@ setMethod("window<-", signature("parquetGeomBase"), function(x, ..., value) {
         return(x)
     }
 
-    e <- ext(x) # data extent
-    if (length(x@crop) > 0L) { # crop extent
-        e <- terra::intersect(e, ext(x@crop))
-    }
-    e <- terra::intersect(e, ext(value)) # new window extent
-    if (is.null(e)) {
-        stop("[window] no geometries within requested extent\n", call. = FALSE)
-    }
+    r <- .pgeom_resolve_extent(x, value)
+    x <- r$x; value <- r$e; e <- r$base_e
+    if (length(x@crop) > 0L) e <- terra::intersect(e, ext(x@crop))
+    e <- terra::intersect(e, ext(value))
+    if (is.null(e)) stop("[window] no geometries within requested extent\n", call. = FALSE)
     x@window <- .ext_to_num_vec(e)
     x
 })
+
+# Back-project e through any pending affine into intrinsic space, injecting a
+# half-plane filter into x@ops when rotation/shear is pending. Also resolves
+# the tightest available intrinsic baseline (disk_extent or live scan).
+# Returns list(x, e, base_e): modified store, intrinsic AABB, intrinsic baseline.
+.pgeom_resolve_extent <- function(x, e) {
+    ops_before <- length(x@ops)
+    aff <- .pgeom_pending_transform(x)
+    if (!is.null(aff)) {
+        # Clamp +/-Inf: terra::as.polygons() cannot handle infinite coordinates.
+        inv_poly <- affine(terra::as.polygons(.clamp_ext_infinite(ext(e))), aff, inv = TRUE)
+        corners  <- terra::crds(inv_poly)[seq(4L), ]
+        if (.affine_has_rotation(aff)) {
+            x@ops <- c(x@ops, list(list(type = "filter",
+                expr = .affine_halfplane_expr(corners))))
+        }
+        e <- ext(.affine_aabb(corners))
+    }
+    base_e <- if (!is.null(.pstore_disk_extent(x)) && ops_before == 0L) {
+        ext(.pstore_disk_extent(x))
+    } else {
+        .pgeom_ext_intrinsic(x)
+    }
+    list(x = x, e = ext(e), base_e = base_e)
+}
 
 .do_op <- function(atab, op) {
     type <- op$type
@@ -231,9 +248,7 @@ setMethod("window<-", signature("parquetGeomBase"), function(x, ..., value) {
         "distinct" = dplyr::distinct(atab, dplyr::across(dplyr::all_of(op$cols))),
         "join"   = {
             y_q <- storeRead(op$y, output = "query")
-            # drop all of y's special cols except those used as join keys —
-            # they belong to y's store context and would conflict or be
-            # meaningless in the joined result
+            # drop y's special cols except join keys
             y_drop <- setdiff(specialCols(op$y), unname(op$by))
             y_drop <- intersect(y_drop, names(y_q))
             if (length(y_drop) > 0L) {

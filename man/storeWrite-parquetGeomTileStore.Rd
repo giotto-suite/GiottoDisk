@@ -61,9 +61,9 @@
 \item{threshold}{\code{numeric} or \code{NULL}. Maximum number of records per tile.
 \code{NULL} (default) auto-selects based on total row count and \code{type}:
 \itemize{
-\item \code{"points"}: 1M/tile up to 1B rows; clamped ramp \code{n/1000} (1M–100M) above.
+\item \code{"points"}: 1M/tile up to 1B rows; clamped ramp \code{n/1000} (1M--100M) above.
 \item \code{"polygons"} (vertex rows): 500k/tile up to 500M rows;
-clamped ramp \code{n/1000} (500k–5M) above that.
+clamped ramp \code{n/1000} (500k--5M) above that.
 }}
 
 \item{tiles}{\code{freeTilePlan}, \code{tilePlan}, or \code{NULL}. When a \code{freeTilePlan}

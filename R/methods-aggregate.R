@@ -41,7 +41,7 @@
 #' @param engine `character` one of `"terra"` or `"duckdb"` (default = `"terra"`).
 #'   `"terra"` iterates over adaptive polygon tiles (or point tiles for
 #'   `parquetGeomTileStore` `y`). `"duckdb"` performs a single full-dataset
-#'   spatial join via DuckDB's spatial extension — tiling params
+#'   spatial join via DuckDB's spatial extension -- tiling params
 #'   (`threshold`, `tiles`, `pad_y`, `poly_buf_factor`) are ignored.
 #'   Requires the DuckDB spatial extension (`INSTALL spatial`).
 #' @param path `character` filepath for the result store
@@ -57,7 +57,7 @@ NULL
 #' @name overlapToMatrix
 #' @title Aggregate Overlap Results to Sparse Matrix
 #' @description
-#' Aggregates the output of [calculateOverlap()] into a feature × cell sparse
+#' Aggregates the output of [calculateOverlap()] into a feature x cell sparse
 #' count matrix, written as a Matrix Market (.mtx) directory. The directory
 #' layout is 10x-compatible (`matrix.mtx`, `barcodes.tsv`, `features.tsv`) and
 #' can be loaded directly by [BPCells::import_matrix_market()],
@@ -84,8 +84,8 @@ setClass("overlapPointDisk",
         feat_id_col = "character",
         spat_ids = "character",  # all polygon IDs (including zero-overlap)
         feat_ids = "character",  # all feature IDs (including zero-overlap)
-        poly_uids = "character", # uid(s) of polygon source store — provenance + future depends tracking
-        feat_uids = "character"  # uid(s) of feature source store — provenance + future depends tracking
+        poly_uids = "character", # uid(s) of polygon source store -- provenance + future depends tracking
+        feat_uids = "character"  # uid(s) of feature source store -- provenance + future depends tracking
     )
 )
 
@@ -240,7 +240,7 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
         r <- .pgeom_max_poly_radius(x)
         if (is.null(r) || is.na(r) || r <= 0) {
             stop(
-                "[calculateOverlap] `x@params$max_poly_radius` is missing or zero — ",
+                "[calculateOverlap] `x@params$max_poly_radius` is missing or zero -- ",
                 "padding cannot be derived automatically.\n",
                 "Supply `pad_y` directly (in data units) to set the point fetch buffer.",
                 call. = FALSE
@@ -249,7 +249,7 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
         r * (1 + poly_buf_factor)
     }
 
-    # resolve columns to fetch — avoids materializing unused attributes
+    # resolve columns to fetch -- avoids materializing unused attributes
     feat_col_names <- colnames(y)
     extra_cols <- keep_cols %||% character(0L)
     if ("count" %in% feat_col_names &&
@@ -392,7 +392,7 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
         # omit_internals = TRUE (default): poly_sv only needs poly_id_col
     )
 
-    # nothing was written — no overlaps found
+    # nothing was written -- no overlaps found
     if (!dir.exists(write_dir)) return(result_store)
     initialize(result_store)
 }
@@ -422,7 +422,7 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
 
 # Build the per-tile overlap data.frame.
 # poly_id_vals: polygon ID values for each overlap row (from terra::extract)
-# pt_vals: terra::values(pt_sv) — must include tile_index + row_index
+# pt_vals: terra::values(pt_sv) -- must include tile_index + row_index
 #   (point store fetched with omit_internals = FALSE)
 # pt_idx: point row indices from extracted[[1L]]
 # feat_id_col, keep_cols: column specs
@@ -490,7 +490,7 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
     }
     extra_cols <- intersect(extra_cols, pt_col_names)
 
-    # Build SELECT clause — quote identifiers to handle arbitrary column names
+    # Build SELECT clause -- quote identifiers to handle arbitrary column names
     q <- function(tbl, col) sprintf('%s."%s"', tbl, col)
 
     sel <- c(
@@ -580,7 +580,7 @@ setMethod("overlapToMatrix", signature("parquetStore"),
     checkmate::assert_string(poly_id_col)
     checkmate::assert_string(count_col, null.ok = TRUE)
 
-    # aggregate via Arrow — only the COO count table is collected
+    # aggregate via Arrow -- only the COO count table is collected
     atab <- storeRead(x, output = "query")
     if (!is.null(count_col)) {
         agg <- atab |>
@@ -623,7 +623,7 @@ setMethod("overlapToMatrix", signature("parquetStore"),
     if (!dir.exists(path)) dir.create(path, recursive = TRUE)
     mtx_path <- file.path(path, "matrix.mtx")
 
-    # header — nnz known upfront from aggregated COO
+    # header -- nnz known upfront from aggregated COO
     con <- file(mtx_path, "w")
     writeLines("%%MatrixMarket matrix coordinate integer general", con)
     writeLines(
