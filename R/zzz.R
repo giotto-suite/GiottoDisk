@@ -29,4 +29,6 @@
     init_option("giottodisk.duckdb_memory_limit", "8GB")
     # -- plot
     init_option("giottodisk.plot_sample_max", 1e5)
+    # -- sedona SQL translation
+    init_option("giottodisk.sedona_in_subquery_threshold", 1000L)
 }

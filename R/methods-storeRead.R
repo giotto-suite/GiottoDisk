@@ -685,7 +685,7 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
     }
     if (!is.null(eff_tile_idx)) {
         where_clauses <- c(where_clauses,
-            sprintf("tile_index IN (%s)", paste(eff_tile_idx, collapse = ", ")))
+            .sql_in_clause("tile_index", eff_tile_idx))
     }
 
     # @ops — filter (including half-plane exprs), head, distinct translated to SQL;
@@ -830,12 +830,9 @@ sd_view_ref <- function(sdf) {
         "("    = sprintf("(%s)",        .r_expr_to_sql(args[[1L]])),
         "%in%" = {
             rhs <- args[[2L]]
-            vals <- if (is.character(rhs)) {
-                paste(sprintf("'%s'", gsub("'", "''", rhs)), collapse = ", ")
-            } else {
-                paste(rhs, collapse = ", ")
-            }
-            sprintf("%s IN (%s)", L(), vals)
+            # inline c(...) literals arrive as call objects — evaluate them
+            if (is.call(rhs)) rhs <- eval(rhs)
+            .sql_in_clause(L(), rhs)
         },
         "is.na" = sprintf("%s IS NULL", .r_expr_to_sql(args[[1L]])),
         {
@@ -875,4 +872,25 @@ sd_view_ref <- function(sdf) {
     }
     attr(lazy, "lazy") <- TRUE
     lazy
+}
+
+# Emit a SQL IN clause, switching to a VALUES subquery above the threshold to
+# allow DataFusion to use a hash join rather than a flat literal list scan.
+.sql_in_clause <- function(col_sql, vals) {
+    threshold <- getOption("giottodisk.sedona_in_subquery_threshold", 1000L)
+    if (length(vals) > threshold) {
+        vals_sql <- if (is.character(vals)) {
+            paste(sprintf("('%s')", gsub("'", "''", vals)), collapse = ", ")
+        } else {
+            paste(sprintf("(%s)", vals), collapse = ", ")
+        }
+        sprintf("%s IN (SELECT column1 FROM (VALUES %s) AS _in)", col_sql, vals_sql)
+    } else {
+        vals_str <- if (is.character(vals)) {
+            paste(sprintf("'%s'", gsub("'", "''", vals)), collapse = ", ")
+        } else {
+            paste(vals, collapse = ", ")
+        }
+        sprintf("%s IN (%s)", col_sql, vals_str)
+    }
 }

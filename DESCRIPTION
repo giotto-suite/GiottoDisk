@@ -1,7 +1,7 @@
 Package: GiottoDisk
 Type: Package
 Title: Disk backed representations for Giotto
-Version: 0.0.0.0001
+Version: 0.0.0.2
 Authors@R: c(
     person("Ruben", "Dries", email = "rubendries@gmail.com",
 		 role = c("aut", "cre"), comment = c(ORCID = "0000-0001-7650-7754")),
