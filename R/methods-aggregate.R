@@ -38,6 +38,11 @@
 #' @param tile_idx (optional) `integerlike`. When `y` is a
 #'   `parquetGeomTileStore`, restrict processing to these tile indices only.
 #'   `NULL` (default) processes all tiles. Ignored for `engine = "duckdb"`.
+#' @param prune_tiles `logical` (default `FALSE`). When `y` is a
+#'   `parquetGeomTileStore`, run a parallel pre-filter pass to skip point tiles
+#'   that contain no polygon centroids. Enable when polygons are coarsely
+#'   distributed relative to the point tile plan to avoid spawning empty workers.
+#'   (For example when coarsely binning)
 #' @param engine `character` one of `"terra"` or `"duckdb"` (default = `"terra"`).
 #'   `"terra"` iterates over adaptive polygon tiles (or point tiles for
 #'   `parquetGeomTileStore` `y`). `"duckdb"` performs a single full-dataset
@@ -151,6 +156,7 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
         poly_buf_factor = 0.15,
         pad_y = NULL,
         tile_idx = NULL,
+        prune_tiles = FALSE,
         engine = c("terra", "duckdb"),
         path = .dump_tempfile(),
         poly_id_col = "poly_ID",
@@ -178,6 +184,7 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
             poly_buf_factor = poly_buf_factor,
             pad_y = pad_y,
             tile_idx = tile_idx,
+            prune_tiles = prune_tiles,
             poly_id_col = poly_id_col,
             feat_id_col = feat_id_col,
             keep_cols = keep_cols
@@ -195,6 +202,7 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
     poly_buf_factor = 0.15,
     pad_y = NULL,
     tile_idx = NULL,
+    prune_tiles = FALSE,
     poly_id_col = "poly_ID",
     feat_id_col = "feat_ID",
     keep_cols = NULL
@@ -259,6 +267,34 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
     extra_cols <- intersect(extra_cols, feat_col_names)
     x_sub <- x[, poly_id_col]
     y_sub <- y[, c(feat_id_col, extra_cols, specialCols(y))]
+
+    if (isTRUE(prune_tiles)) {
+        # Pre-filter: skip point tiles with no polygon centroids.
+        # Polygons are assigned to exactly one tile by centroid, so tiles with
+        # zero centroids will always produce empty overlap results. Avoids
+        # spawning workers for empty tiles -- significant when polygon binning is
+        # coarse relative to the point tile plan.
+        # Run as tileApply so counts are collected in parallel. FUN returns the
+        # flat plan index .I for non-empty tiles and NULL otherwise. @indices is
+        # then replaced directly, which is ordering-safe regardless of whether
+        # the future backend preserves result order.
+        tile_counts <- tilework::tileApply(
+            x_sub,
+            tiles = tile_sel,
+            FUN = function(poly_q, .I) if (.dplyr_nrow(poly_q) > 0L) .I else NULL,
+            get_params_x = list(output = "query")
+        )
+        nonempty_I <- sort(unique(as.integer(unlist(tile_counts))))
+        if (length(nonempty_I) == 0L) {
+            warning("[calculateOverlap] no polygon data in any point tile", call. = FALSE)
+            return(result_store)
+        }
+        # Coerce to tileSelection if needed so @indices can be set directly
+        if (!is(tile_sel, "tileSelection")) {
+            tile_sel <- tile_sel[seq_len(length(tile_sel)), drop = FALSE]
+        }
+        tile_sel@indices <- nonempty_I
+    }
 
     tile_overlap_fn <- function(poly_sv, feat_sv, .I) {
         if (is.null(poly_sv) || nrow(poly_sv) == 0L) return(NULL)

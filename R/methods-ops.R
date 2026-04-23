@@ -180,7 +180,18 @@ setMethod("crop", signature("parquetGeomBase", "ANY"), function(x, y, ...) {
 
 setMethod("crop", signature("parquetGeomTileStore", "ANY"), function(x, y, ...) {
     x <- callNextMethod()  # parquetGeomBase: resolves transforms, composes @crop
-    tile_sel <- tilework::intersect(x@tiles, terra::ext(x@crop))
+    # When a transform is pending, back-project the original query polygon through
+    # the inverse affine and use the exact parallelogram for tile intersection.
+    # This avoids the AABB over-inclusiveness that would pull in corner tiles outside
+    # the actual rotated/sheared crop region.
+    # When no transform is pending, @crop is already exact — use it directly.
+    aff <- .pgeom_pending_transform(x)
+    query_region <- if (!is.null(aff)) {
+        affine(terra::as.polygons(.clamp_ext_infinite(terra::ext(y))), aff, inv = TRUE)
+    } else {
+        terra::ext(x@crop)
+    }
+    tile_sel <- tilework::intersect(x@tiles, query_region)
     x@tile_filter <- as.integer(tile_sel$tile)
     x
 })
