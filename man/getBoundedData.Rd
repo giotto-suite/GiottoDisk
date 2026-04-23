@@ -17,7 +17,14 @@
   ...
 )
 
-\S4method{getBoundedData}{parquetGeomStore,SpatExtent}(x, bound, inclusive = TRUE, ...)
+\S4method{getBoundedData}{parquetGeomStore,SpatExtent}(
+  x,
+  bound,
+  sdimx = "x_index",
+  sdimy = "y_index",
+  inclusive = TRUE,
+  ...
+)
 }
 \arguments{
 \item{x}{\code{queryableStore} inheriting object}

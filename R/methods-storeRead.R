@@ -9,7 +9,7 @@
 #' @param tile_idx `integerlike` (optional) specific tile number(s) to read
 #' @param fields `character` (optional) specific fields/columns to read
 #' @param output `character` (default = "query"). Format to get values in:
-#' 
+#'
 #'   * "query" - produces an arrow lazy query
 #'   * "tibble" - materialized dplyr tibble
 #'   * "terra" - materialized `SpatVector`
@@ -17,6 +17,12 @@
 #'   * "duckdb" - (requires {duckdb} and {dbplyr}) produces a `tbl_dbi`
 #'      lazy query. **Note:** should not be used in a parallelized
 #'      context as duckdb handles parallelization internally.
+#'   * "sedona" - (requires {sedonadb}) produces a `sedonadb_dataframe`.
+#'      All pending Arrow-phase ops (`@ops`, `@crop`, `@window`) are
+#'      applied via the Arrow pipeline before handing off. Pending affine
+#'      transforms are applied via `ST_Affine` on the `geom` column.
+#'      **Note:** `x_index`/`y_index` are not updated after a transform —
+#'      use SedonaDB spatial functions for geometry-based filtering.
 #' @param omit_internals `logical` (default `TRUE`). Whether to drop internal
 #'   special columns (`row_index`, `source_id`) from materialized output
 #'   (`"tibble"`, `"terra"`, `"sf"`). Set to `FALSE` to retain them, e.g.
@@ -85,13 +91,14 @@ setMethod("storeRead", signature("queryableStore"), function(store,
 #' @export
 setMethod("storeRead", signature("parquetStore"), function(store,
     fields = NULL,
-    output = c("query", "tibble", "duckdb"),
+    output = c("query", "tibble", "duckdb", "sedona"),
     callback = NULL,
     duckdb_params = list(),
     omit_internals = TRUE,
     ...) {
     checkmate::assert_character(fields, null.ok = TRUE)
-    output <- match.arg(output, choices = c("query", "tibble", "duckdb"))
+    output <- match.arg(output, choices = c("query", "tibble", "duckdb", "sedona"))
+    if (output == "sedona") return(.pstore_to_sedona(store, ...))
     fields <- .pstore_fields_requested(store, fields)
     lazy_fields <- .pstore_lazy_fields(store, fields, output)
 
@@ -127,13 +134,14 @@ setMethod("storeRead", signature("parquetStore"), function(store,
 #' @export
 setMethod("storeRead", signature("unionParquetStore"), function(store,
     fields = NULL,
-    output = c("query", "tibble", "duckdb"),
+    output = c("query", "tibble", "duckdb", "sedona"),
     callback = NULL,
     duckdb_params = list(),
     omit_internals = TRUE,
     ...) {
     checkmate::assert_character(fields, null.ok = TRUE)
-    output <- match.arg(output, choices = c("query", "tibble", "duckdb"))
+    output <- match.arg(output, choices = c("query", "tibble", "duckdb", "sedona"))
+    if (output == "sedona") return(.pstore_to_sedona(store, ...))
     fields <- .pstore_fields_requested(store, fields)
     lazy_fields <- .pstore_lazy_fields(store, fields, output)
 
@@ -175,12 +183,13 @@ setMethod("storeRead", signature("unionParquetStore"), function(store,
 setMethod("storeRead", signature("unionParquetGeomStore"), function(store,
     extent = NULL,
     fields = NULL,
-    output = c("query", "tibble", "terra", "sf", "duckdb"),
+    output = c("query", "tibble", "terra", "sf", "duckdb", "sedona"),
     callback = NULL,
     duckdb_params = list(),
     omit_internals = TRUE,
     ...) {
-    output <- match.arg(output, choices = c("query", "tibble", "terra", "sf", "duckdb"))
+    output <- match.arg(output, choices = c("query", "tibble", "terra", "sf", "duckdb", "sedona"))
+    if (output == "sedona") return(.pstore_to_sedona(store, extent = extent, ...))
     fields <- .pstore_fields_requested(store, fields)
     lazy_fields <- .pstore_lazy_fields(store, fields, output)
 
@@ -279,12 +288,13 @@ setMethod("storeRead", signature("unionParquetGeomStore"), function(store,
 setMethod("storeRead", signature("parquetGeomStore"), function(store,
     extent = NULL,
     fields = NULL,
-    output = c("query", "tibble", "terra", "sf", "duckdb"),
+    output = c("query", "tibble", "terra", "sf", "duckdb", "sedona"),
     callback = NULL,
     duckdb_params = list(),
     omit_internals = TRUE,
     ...) {
-    output <- match.arg(output, choices = c("query", "tibble", "terra", "sf", "duckdb"))
+    output <- match.arg(output, choices = c("query", "tibble", "terra", "sf", "duckdb", "sedona"))
+    if (output == "sedona") return(.pstore_to_sedona(store, extent = extent, ...))
     fields <- .pstore_fields_requested(store, fields)
     lazy_fields <- .pstore_lazy_fields(store, fields, output)
 
@@ -351,12 +361,13 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
     extent = NULL,
     tile_idx = NULL,
     fields = NULL,
-    output = c("query", "tibble", "terra", "sf", "duckdb"),
+    output = c("query", "tibble", "terra", "sf", "duckdb", "sedona"),
     callback = NULL,
     duckdb_params = list(),
     omit_internals = TRUE,
     ...) {
-    output <- match.arg(output, choices = c("query", "tibble", "terra", "sf", "duckdb"))
+    output <- match.arg(output, choices = c("query", "tibble", "terra", "sf", "duckdb", "sedona"))
+    if (output == "sedona") return(.pstore_to_sedona(store, extent = extent, tile_idx = tile_idx, ...))
     fields <- .pstore_fields_requested(store, fields)
     lazy_fields <- .pstore_lazy_fields(store, fields, output)
 
@@ -612,6 +623,230 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
     sv
 }
 
+# .pstore_to_sedona ####
+#
+# Translate a store's full state into a SedonaDB lazy dataframe backed by the
+# original on-disk parquet files. SedonaDB reads the files directly via DataFusion,
+# preserving GeoParquet metadata so geometry columns are natively recognised.
+#
+# Pipeline:
+#   1. sd_read_parquet(paths) + sd_to_view() — DataFusion reads files directly;
+#      GeoParquet metadata intact, no WKB conversion needed
+#   2. SQL WHERE from: @crop/@window AABB on x_index/y_index (parquet stats pushdown),
+#      @tile_filter as tile_index IN (...), @ops filter exprs via .r_expr_to_sql()
+#   3. SELECT DISTINCT / LIMIT for distinct/head ops; tail/sample/join warn and skip
+#   4. If an affine transform is pending: wrap in outer SELECT with ST_Affine
+#      (one LIMIT 0 schema probe to enumerate non-geom columns)
+#
+# x_index/y_index are NOT updated after a transform — use SedonaDB spatial
+# predicates for geometry-based filtering post-transform.
+.pstore_to_sedona <- function(store, ...) {
+    GiottoUtils::package_check("sedonadb",
+        repository = "github:apache/sedona-db/r/sedonadb")
+
+    extra_args <- list(...)
+    extent_arg <- extra_args$extent
+    tile_idx_arg <- extra_args$tile_idx
+
+    aff <- if (inherits(store, "parquetGeomBase")) .pgeom_pending_transform(store) else NULL
+
+    # --- 1. Register base parquet paths ---
+    # View name must be all lowercase: DataFusion normalises unquoted identifiers
+    # to lowercase at registration time, which would break double-quoted SQL refs.
+    view_name <- tolower(paste0("gd_", .make_uid()))
+    sedonadb::sd_to_view(
+        sedonadb::sd_read_parquet(.pstore_sedona_paths(store)),
+        view_name, overwrite = TRUE
+    )
+
+    # --- 2. Build WHERE clause ---
+    where_clauses <- character(0L)
+
+    # Crop/window AABB — float range on centroid columns; parquet stats pushdown
+    e <- .pstore_active_extent(store)
+    if (!is.null(extent_arg)) {
+        e <- if (!is.null(e)) terra::intersect(e, ext(extent_arg)) else ext(extent_arg)
+    }
+    if (!is.null(e)) {
+        ev <- .ext_to_num_vec(e)
+        where_clauses <- c(where_clauses, sprintf(
+            "x_index >= %.17g AND x_index <= %.17g AND y_index >= %.17g AND y_index <= %.17g",
+            ev[[1L]], ev[[2L]], ev[[3L]], ev[[4L]]
+        ))
+    }
+
+    # Tile partition filter
+    eff_tile_idx <- if (!is.null(tile_idx_arg)) {
+        as.integer(tile_idx_arg)
+    } else if (inherits(store, "parquetGeomTileStore") && length(store@tile_filter) > 0L) {
+        store@tile_filter
+    } else {
+        NULL
+    }
+    if (!is.null(eff_tile_idx)) {
+        where_clauses <- c(where_clauses,
+            sprintf("tile_index IN (%s)", paste(eff_tile_idx, collapse = ", ")))
+    }
+
+    # @ops — filter (including half-plane exprs), head, distinct translated to SQL;
+    # tail/sample/join have no clean SQL equivalent and are skipped with a warning
+    distinct_cols <- NULL
+    limit_n <- NULL
+    for (op in store@ops) {
+        switch(op$type,
+            "filter"   = where_clauses <- c(where_clauses, .r_expr_to_sql(op$expr)),
+            "head"     = limit_n <- op$n,
+            "distinct" = distinct_cols <- op$cols,
+            "tail"     = ,
+            "sample"   = ,
+            "join"     = warning(sprintf(
+                "[storeRead][sedona] op '%s' cannot be expressed as SQL and is skipped",
+                op$type), call. = FALSE),
+            warning(sprintf("[storeRead][sedona] unknown op type '%s' skipped", op$type),
+                call. = FALSE)
+        )
+    }
+
+    # --- 3. Build inner SQL ---
+    where_sql <- if (length(where_clauses) > 0L) {
+        paste("WHERE", paste(where_clauses, collapse = " AND "))
+    } else {
+        ""
+    }
+    select_sql <- if (!is.null(distinct_cols)) {
+        paste("DISTINCT", paste(sprintf('"%s"', distinct_cols), collapse = ", "))
+    } else {
+        "*"
+    }
+    inner_sql <- trimws(sprintf('SELECT %s FROM "%s" %s', select_sql, view_name, where_sql))
+    if (!is.null(limit_n)) inner_sql <- paste(inner_sql, "LIMIT", limit_n)
+
+    # --- 4. Wrap with ST_Affine if transform is pending ---
+    # Post-multiply convention: [x, y, 1] %*% M
+    #   x' = x*M[1,1] + y*M[2,1] + M[3,1],  y' = x*M[1,2] + y*M[2,2] + M[3,2]
+    # ST_Affine(geom, a, b, d, e, xoff, yoff):
+    #   x' = a*x + b*y + xoff,  y' = d*x + e*y + yoff
+    if (!is.null(aff)) {
+        schema_df <- sedonadb::sd_collect(
+            sedonadb::sd_sql(sprintf("SELECT * FROM (%s) AS _probe LIMIT 0", inner_sql))
+        )
+        other_cols <- setdiff(names(schema_df), "geom")
+        m <- aff@affine
+        affine_expr <- sprintf(
+            "ST_Affine(geom, %.17g, %.17g, %.17g, %.17g, %.17g, %.17g) AS geom",
+            m[1L, 1L], m[2L, 1L], m[1L, 2L], m[2L, 2L], m[3L, 1L], m[3L, 2L]
+        )
+        outer_select <- if (length(other_cols) > 0L) {
+            paste(c(paste(sprintf('"%s"', other_cols), collapse = ", "), affine_expr),
+                collapse = ", ")
+        } else {
+            affine_expr
+        }
+        inner_sql <- sprintf("SELECT %s FROM (%s) AS _t", outer_select, inner_sql)
+    }
+
+    sdf <- sedonadb::sd_sql(inner_sql)
+    attr(sdf, "view_name") <- view_name
+    sdf
+}
+
+#' Get the registered view name for a GiottoDisk SedonaDB dataframe
+#'
+#' Returns the DataFusion view name as a double-quoted SQL identifier, suitable
+#' for embedding directly in [sedonadb::sd_sql()] queries. Only valid on
+#' `sedonadb_dataframe` objects returned by `storeRead(output = "sedona")`.
+#'
+#' @param sdf A `sedonadb_dataframe` from `storeRead(output = "sedona")`.
+#' @returns A length-1 character: the double-quoted view name, e.g. `'"gd_abc123"'`.
+#' @export
+sd_view_ref <- function(sdf) {
+    nm <- attr(sdf, "view_name", exact = TRUE)
+    if (is.null(nm)) stop(
+        "no 'view_name' attribute found; ",
+        "sdf must be produced by storeRead(output = \"sedona\")",
+        call. = FALSE
+    )
+    sprintf('"%s"', nm)
+}
+
+# Collect all parquet file paths for a store for sd_read_parquet().
+# For directory-based stores (hive-partitioned tile stores), recursively
+# finds all .parquet files under each base path.
+.pstore_sedona_paths <- function(store) {
+    base_paths <- storePaths(store)
+    unlist(lapply(base_paths, function(p) {
+        if (dir.exists(p)) {
+            list.files(p, pattern = "\\.parquet$", recursive = TRUE, full.names = TRUE)
+        } else {
+            p
+        }
+    }), use.names = FALSE)
+}
+
+# Translate an inlined R call expression to a SQL WHERE fragment.
+# Handles operators produced by subset() after .inline_local_vars():
+#   ==, !=, <, <=, >, >=, &/&&, |/||, !, (, %in%, is.na
+# Half-plane filter exprs (a*x_index + b*y_index >= c) translate naturally
+# since arithmetic operators map directly to SQL.
+# Falls back to deparse() with a warning for unrecognised operators.
+.r_expr_to_sql <- function(expr) {
+    if (is.name(expr)) return(sprintf('"%s"', as.character(expr)))
+    if (is.atomic(expr)) {
+        if (is.character(expr)) {
+            escaped <- gsub("'", "''", expr)
+            if (length(escaped) == 1L) return(sprintf("'%s'", escaped))
+            return(sprintf("('%s')", paste(escaped, collapse = "', '")))
+        }
+        if (is.logical(expr)) return(if (isTRUE(expr)) "TRUE" else "FALSE")
+        if (length(expr) == 1L) return(as.character(expr))
+        return(sprintf("(%s)", paste(expr, collapse = ", ")))
+    }
+    if (!is.call(expr)) {
+        warning("[storeRead][sedona] cannot translate expression to SQL; using deparse()",
+            call. = FALSE)
+        return(deparse(expr))
+    }
+    fn   <- as.character(expr[[1L]])
+    args <- as.list(expr[-1L])
+    L <- function() .r_expr_to_sql(args[[1L]])
+    R <- function() .r_expr_to_sql(args[[2L]])
+    switch(fn,
+        "=="   = sprintf("%s = %s",     L(), R()),
+        "!="   = sprintf("%s != %s",    L(), R()),
+        "<"    = sprintf("%s < %s",     L(), R()),
+        "<="   = sprintf("%s <= %s",    L(), R()),
+        ">"    = sprintf("%s > %s",     L(), R()),
+        ">="   = sprintf("%s >= %s",    L(), R()),
+        "+"    = sprintf("%s + %s",     L(), R()),
+        "-"    = if (length(args) == 1L) sprintf("-%s", L())
+                 else sprintf("%s - %s", L(), R()),
+        "*"    = sprintf("%s * %s",     L(), R()),
+        "/"    = sprintf("%s / %s",     L(), R()),
+        "&"    = ,
+        "&&"   = sprintf("(%s AND %s)", L(), R()),
+        "|"    = ,
+        "||"   = sprintf("(%s OR %s)",  L(), R()),
+        "!"    = sprintf("NOT (%s)",    .r_expr_to_sql(args[[1L]])),
+        "("    = sprintf("(%s)",        .r_expr_to_sql(args[[1L]])),
+        "%in%" = {
+            rhs <- args[[2L]]
+            vals <- if (is.character(rhs)) {
+                paste(sprintf("'%s'", gsub("'", "''", rhs)), collapse = ", ")
+            } else {
+                paste(rhs, collapse = ", ")
+            }
+            sprintf("%s IN (%s)", L(), vals)
+        },
+        "is.na" = sprintf("%s IS NULL", .r_expr_to_sql(args[[1L]])),
+        {
+            warning(sprintf(
+                "[storeRead][sedona] unsupported op '%s' in filter expression; using deparse()",
+                fn), call. = FALSE)
+            deparse(expr)
+        }
+    )
+}
+
 .pstore_fields_requested <- function(store, fields = NULL) {
     if (isTRUE(attr(fields, "lazy"))) return(fields) # already expanded, pass through
     if (is.null(fields) && is.null(store@fields)) return(NULL)
@@ -632,7 +867,7 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
     }
   
     # output requirements
-    if (!output %in% c("query", "duckdb")) { # if a materialized format...
+    if (!output %in% c("query", "duckdb", "sedona")) { # if a materialized format...
         lazy <- unique(c("source_id", "row_index", lazy))
     }
     if (output %in% c("terra", "sf")) {

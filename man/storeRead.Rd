@@ -28,7 +28,7 @@
 \S4method{storeRead}{parquetStore}(
   store,
   fields = NULL,
-  output = c("query", "tibble", "duckdb"),
+  output = c("query", "tibble", "duckdb", "sedona"),
   callback = NULL,
   duckdb_params = list(),
   omit_internals = TRUE,
@@ -38,7 +38,7 @@
 \S4method{storeRead}{unionParquetStore}(
   store,
   fields = NULL,
-  output = c("query", "tibble", "duckdb"),
+  output = c("query", "tibble", "duckdb", "sedona"),
   callback = NULL,
   duckdb_params = list(),
   omit_internals = TRUE,
@@ -49,7 +49,7 @@
   store,
   extent = NULL,
   fields = NULL,
-  output = c("query", "tibble", "terra", "sf", "duckdb"),
+  output = c("query", "tibble", "terra", "sf", "duckdb", "sedona"),
   callback = NULL,
   duckdb_params = list(),
   omit_internals = TRUE,
@@ -60,7 +60,7 @@
   store,
   extent = NULL,
   fields = NULL,
-  output = c("query", "tibble", "terra", "sf", "duckdb"),
+  output = c("query", "tibble", "terra", "sf", "duckdb", "sedona"),
   callback = NULL,
   duckdb_params = list(),
   omit_internals = TRUE,
@@ -72,7 +72,7 @@
   extent = NULL,
   tile_idx = NULL,
   fields = NULL,
-  output = c("query", "tibble", "terra", "sf", "duckdb"),
+  output = c("query", "tibble", "terra", "sf", "duckdb", "sedona"),
   callback = NULL,
   duckdb_params = list(),
   omit_internals = TRUE,
@@ -101,6 +101,12 @@
 \item "duckdb" - (requires {duckdb} and {dbplyr}) produces a \code{tbl_dbi}
 lazy query. \strong{Note:} should not be used in a parallelized
 context as duckdb handles parallelization internally.
+\item "sedona" - (requires {sedonadb}) produces a \code{sedonadb_dataframe}.
+All pending Arrow-phase ops (\verb{@ops}, \verb{@crop}, \verb{@window}) are
+applied via the Arrow pipeline before handing off. Pending affine
+transforms are applied via \code{ST_Affine} on the \code{geom} column.
+\strong{Note:} \code{x_index}/\code{y_index} are not updated after a transform —
+use SedonaDB spatial functions for geometry-based filtering.
 }}
 
 \item{callback}{(optional) \code{function} where the first param

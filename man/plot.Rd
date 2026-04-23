@@ -2,14 +2,27 @@
 % Please edit documentation in R/methods-plot.R
 \name{plot}
 \alias{plot}
+\alias{plot,sedonadb_dataframe,missing-method}
 \title{Visualize a Store}
 \usage{
-\S4method{plot}{parquetGeomStore,missing}(x, sample_max = 1e+05, ...)
+\S4method{plot}{parquetGeomStore,missing}(x, sample_max = getOption("giottodisk.plot_sample_max", 1e+05), ...)
+
+\S4method{plot}{sedonadb_dataframe,missing}(x, values = NULL, n = getOption("giottodisk.plot_sample_max", 1e+05), ...)
 }
 \arguments{
-\item{sample_max}{\code{integer}-like (default = 1e4). Maximum
-number of geometries to plot (regularly sampled). If
-\code{NULL}, no sampling is performed.}
+\item{x}{A \code{sedonadb_dataframe} from \code{storeRead(output = "sedona")}.}
+
+\item{sample_max}{\code{integer}-like. Maximum number of geometries to plot
+(regularly sampled). If \code{NULL}, no sampling is performed. Defaults to
+\code{getOption("giottodisk.plot_sample_max")}.}
+
+\item{values}{\code{character} (optional). Column name(s) to include as
+SpatVector attributes for coloring. Mirrors terra's \code{plot(sv, y)}.}
+
+\item{n}{\code{integer}. Target number of rows to display (default from
+\code{getOption("giottodisk.plot_sample_max")}). Implemented as systematic
+stride sampling (\code{row_index \%\% k == 0}) after a \verb{COUNT(*)} pass —
+proportional coverage across write order.}
 }
 \description{
 Plot a store's contents. Currently only for geometry

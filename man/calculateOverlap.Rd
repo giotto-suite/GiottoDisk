@@ -28,6 +28,7 @@
   poly_buf_factor = 0.15,
   pad_y = NULL,
   tile_idx = NULL,
+  prune_tiles = FALSE,
   engine = c("terra", "duckdb"),
   path = .dump_tempfile(),
   poly_id_col = "poly_ID",
@@ -88,6 +89,12 @@ each point tile extent when fetching points. Default \code{0.15}. Ignored when
 \item{tile_idx}{(optional) \code{integerlike}. When \code{y} is a
 \code{parquetGeomTileStore}, restrict processing to these tile indices only.
 \code{NULL} (default) processes all tiles. Ignored for \code{engine = "duckdb"}.}
+
+\item{prune_tiles}{\code{logical} (default \code{FALSE}). When \code{y} is a
+\code{parquetGeomTileStore}, run a parallel pre-filter pass to skip point tiles
+that contain no polygon centroids. Enable when polygons are coarsely
+distributed relative to the point tile plan to avoid spawning empty workers.
+(For example when coarsely binning)}
 }
 \description{
 Calculate features \code{y} that are overlapped by polygons \code{x}. GiottoDisk

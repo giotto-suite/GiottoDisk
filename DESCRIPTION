@@ -33,10 +33,15 @@ Imports:
     tilework
 Suggests:
     BPCells,
+    dbplyr,
+    duckdb,
     filelock (>= 1.0.2),
     HDF5Array,
+    nanoarrow,
     qs,
+    sedonadb,
     testthat,
+    wk,
     TileDBArray
 RoxygenNote: 7.3.3
 Collate: 
