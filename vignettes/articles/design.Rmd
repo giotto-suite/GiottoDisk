@@ -30,7 +30,7 @@ dataStore (VIRTUAL)
     └── queryableStore                # dplyr-queryable fileStore
         └── parquetStore              # extends c("queryableStore", "parquetBase")
             └── parquetGeomStore      # extends c("parquetStore", "parquetGeomBase")
-                └── parquetGeomTileStore  # adds @tiles slot
+                └── parquetGeomTileStore  # adds @tiles (tilePlan) + @tile_filter (integer) slots
 
 parquetBase (VIRTUAL)                 # @fields, @ops — shared by parquet + union
 parquetGeomBase (VIRTUAL)             # @window, @crop, @geomtype
@@ -130,6 +130,55 @@ an exact half-plane filter is also injected into `@ops` as an Arrow-native
 inequality filter on `x_index`/`y_index`. Axis-aligned transforms need only the
 AABB.
 
+### Tile Partition Pruning (`parquetGeomTileStore`)
+
+`parquetGeomTileStore` adds two slots beyond `parquetGeomStore`:
+
+- **`@tiles`** (`tilePlan`) — the full tile plan used at write time; tile `i` maps to
+  hive directory `tile_index=i/`.
+- **`@tile_filter`** (`integer`) — the set of tile indices that overlap the current
+  `@crop`. Empty (`integer(0)`) when no crop is set.
+
+`crop(parquetGeomTileStore, y)` first calls the parent `crop(parquetGeomBase, y)`, which
+handles affine back-projection and composes `@crop` in intrinsic space. It then selects
+the query region for tile intersection:
+
+- **No transform pending**: `@crop` is already the exact intrinsic-space extent —
+  `tilework::intersect(x@tiles, terra::ext(x@crop))` is used directly.
+- **Transform pending**: `@crop` holds only the AABB of the back-projected parallelogram,
+  which would be over-inclusive at the tile level. Instead, the original query `y` is
+  back-projected through the inverse affine to recover the exact parallelogram
+  (`SpatVector`), and `tilework::intersect` uses AABB pre-cull followed by exact
+  `terra::relate()` to find only tiles with genuine overlap.
+
+```r
+aff <- .pgeom_pending_transform(x)
+query_region <- if (!is.null(aff)) {
+    affine(terra::as.polygons(terra::ext(y)), aff, inv = TRUE)
+} else {
+    terra::ext(x@crop)
+}
+tile_sel <- tilework::intersect(x@tiles, query_region)
+x@tile_filter <- as.integer(tile_sel$tile)
+```
+
+`@tile_filter` is always a coarse hint — tiles it selects may still have rows outside the
+crop region, which the AABB filter on `x_index`/`y_index` (and the half-plane op for
+rotated crops) removes at the row level.
+
+At `storeRead` time, `@tile_filter` is applied as an Arrow hive-partition pre-filter —
+directories for excluded tiles are never opened. When `tile_idx` is passed explicitly to
+`storeRead`, it takes precedence over `@tile_filter`. A second `crop()` call overwrites
+`@tile_filter` (not accumulates), since the parent already composes `@crop` by
+intersecting with the existing value.
+
+#### `getBoundedData` parameter routing
+
+`getBoundedData(parquetGeomStore, SpatExtent)` promotes `sdimx`/`sdimy` to explicit
+parameters with defaults of `"x_index"`/`"y_index"` before forwarding to the
+`queryableStore` method. This prevents a duplicate-argument error when callers (such as
+`storeWrite`) already pass these params via `get_params_x`.
+
 ## Spatial Extent Tracking
 
 Spatial location information for `parquetGeomBase`-inheriting stores is maintained
@@ -209,6 +258,48 @@ returned.
 
 ## Design Decisions
 
+### Why a store contract?
+
+A store is an S4 object with four guaranteed properties: a designated on-disk
+location, a read spec, a write spec, and a stable uid. `storeRead` is the
+single point of materialization — output format is declared explicitly and all
+queued lazy ops are applied in one pass. `storeWrite` is the single point of
+persistence — it always produces a durable artifact at a known path. Because
+the store carries only metadata (path, uid, params, op queue), it is fully
+serializable: it can be saved to disk, passed to a parallel worker, embedded
+in a giotto object, and round-tripped across sessions without loss of state.
+
+Base R semantics (`$col`, `[i, ]`) imply eager in-memory output. At 1B+ rows
+that is unsafe — a misplaced `$` materializes gigabytes. GiottoDisk addresses
+this two ways: lazy op queuing for Arrow-expressible operations, and explicit
+writes as the unit of work for everything else. The store contract is the
+common surface for both.
+
+A `parquetStore` is simultaneously a **handle** (path + read spec + uid) and a
+**manipulation surface** (lazy ops via `subset`, `head`, `crop`, transforms,
+joins). A well-parameterized handle and a manipulation surface are the same
+thing — BPCells `matrixDir` is already this pattern: a disk location with an
+implicit read spec. The store makes the read and write specs explicit and adds
+provenance tracking.
+
+Arrow Dataset objects carry a path, schema, and lazy query semantics, but
+cannot provide a stable `uid`, composable spatial state (`@crop`, `@window`,
+`@post_ops`), or project directory integration. Those are the additions that
+the store layer provides over a raw Dataset.
+
+`storeRead` and `storeWrite` as named verbs rather than `as.*` coercions mark
+an explicit I/O boundary. For Arrow-expressible ops, they queue lazily and
+collapse into a single scan at `storeRead` time. For non-Arrow ops — spatial
+transforms, tiled overlap computation — `storeWrite` with a callback or a
+`tileApply` pass expresses the write as the primary action.
+
+`parquetStore` carries the full manipulation surface because GiottoDisk owns
+the format. Stores for external formats (`h5ArrayStore`, `bpcMatrixStore`) are
+thin wrappers used primarily for project directory integration — uid tracking,
+`sourceAdopt`, `sourcePrune`. Those objects are used directly in the giotto
+object; the store wrapper provides the hook without duplicating the
+manipulation surface those packages already implement.
+
 ### No positional row indexing
 
 Parquet is not row-addressable. Building a positional index over a 2 billion row
@@ -269,8 +360,8 @@ design choices follow from this:
   deliberate use
 - Lazy ops collapse to a single scan regardless of chain length
 - `x_index`/`y_index` enable spatial filtering without reading `geom`
-- Tiled stores (`parquetGeomTileStore`) partition data for parallel processing
-  and tile-level pruning
+- Tiled stores (`parquetGeomTileStore`) partition data spatially; `crop()` prunes
+  the active tile set so only relevant hive directories are opened at read time
 
 ## Project Management (gsource)
 
