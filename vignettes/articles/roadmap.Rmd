@@ -20,6 +20,59 @@ from fully designed to early concept.
 
 ---
 
+## `storeWrite(parquetGeomStore, sedonadb_dataframe)` — Direct Sedona Round-trip
+
+**Status:** Blocked by Arrow R view-type limitations.
+
+The goal is a direct `sedonadb_dataframe → parquetGeomStore` write path so that a
+`storeRead(output = "sedona")` view can be fed back into a store without going through
+an in-memory materialisation:
+
+```r
+src |> storeRead(output = "sedona") |> storeWrite(parquetGeomStore())
+```
+
+### What was attempted
+
+The write direction works: `sd_write_parquet()` can persist a DataFusion view to disk.
+The blocker is reading the result back via Arrow R.
+
+DataFusion (sedonadb's engine) writes all string and binary columns as Arrow view types:
+
+- `Utf8View` for string columns (even after `CAST(col AS VARCHAR)` in the query — DataFusion
+  ignores the cast hint at write time in current versions)
+- `geoarrow.wkb<BinaryView>` for geometry — the `geoarrow.wkb` Arrow extension type with
+  `BinaryView` storage
+
+Arrow R 23 cannot execute compute kernels on view types. The `collect(head(0L))` call in
+`.pstore_cache_values()` fails immediately with `cannot handle Array of type <utf8_view>`.
+
+### Why the schema override doesn't fix it
+
+A `binary()` schema override passed to `open_dataset()` would normally retype the column.
+For `geoarrow.wkb<BinaryView>` it silently returns wrong bytes: when `geoarrow` is loaded
+it registers a global extension type hook that fires at the Arrow IPC decode layer before
+the schema override takes effect. Arrow R then reads the `BinaryView` view-struct memory
+(16-byte headers: length, 4-byte data prefix, buffer index, offset) as raw bytes instead
+of following the indirection to the actual data buffers. The physical Parquet `BYTE_ARRAY`
+bytes are valid WKB (DuckDB reads them correctly); the problem is entirely in Arrow R's
+decode path.
+
+### Why write-time fixes don't help
+
+Intercepting the write to strip view types or the geoarrow extension metadata requires
+either a DuckDB disk-to-disk rewrite (a second write operation) or materialising to
+`SpatVector` first — both unacceptable for an automated pipeline at scale.
+
+### Unblock condition
+
+When Arrow R implements compute kernels for `BinaryView` / `Utf8View` (tracking:
+apache/arrow#39146 and related), the `@datatype` slot mechanism already on `parquetBase`
+can be wired into `storeRead` to apply schema overrides, and the `storeWrite` method can
+be restored.
+
+---
+
 ## `parquetMutableStore` — Disk-backed Mutable Metadata
 
 **Status:** Designed, not yet implemented.

@@ -150,6 +150,15 @@ exact intrinsic bounds are required.
 `storeWrite(,parquetGeomStore)` (copied), `terra::centroids()` (forced `"points"`).
 Consumed by: `as.data.frame(geom="XY")` guard, GeoParquet metadata, `show()`.
 
+### @datatype — on-disk type overrides
+
+`@datatype` is a named list mapping column names to R type strings (`"character"`, `"raw"`,
+`"integer"`, etc.). Intended as a mechanism for callers to signal that certain columns need
+to be read as a different Arrow type than what is physically in the file — e.g. when a
+writer uses a type that Arrow R cannot execute compute kernels on. Callers set `@datatype`
+manually before calling `initialize()`. The storeRead hook that applies the override schema
+is not yet wired; see roadmap.
+
 ### storeRead shared implementation
 `parquetStore::storeRead` and `unionParquetStore::storeRead` share post-dataset logic via
 `.pbase_storeread_processing()`, splitting after `atab` is obtained.
