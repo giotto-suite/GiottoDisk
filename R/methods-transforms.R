@@ -219,3 +219,24 @@ setMethod("flip", signature("parquetGeomBase"), function(x, direction = "vertica
     aff <- flip(aff, direction = direction, x0 = x0, y0 = y0)
     .pgeom_set_transform(x, aff)
 })
+
+
+#' @name centroids
+#' @title Get Polygon Centroids from a Parquet Geometry Store
+#' @description
+#' Returns a modified copy of `x` flagged to read as points using the
+#' pre-computed `x_index`/`y_index` centroid columns instead of the `geom`
+#' WKB column. No data is read or rewritten -- the flag is applied lazily at
+#' [storeRead()] time.
+#'
+#' `@geomtype` is also updated to `"points"` so downstream dispatch is
+#' consistent with a point store.
+#' @param x `parquetGeomBase` store
+#' @param ... unused
+#' @returns modified `parquetGeomBase` store
+#' @export
+setMethod("centroids", signature("parquetGeomBase"), function(x, ...) {
+    x@geomtype <- "points"
+    x@params$use_xy_as_geom <- TRUE
+    x
+})
