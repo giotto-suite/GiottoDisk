@@ -1,6 +1,8 @@
 # Methods for creating GiottoClass objects from disk-backed stores.
 NULL
 
+# constructors ####
+
 #' @name createGiottoPolygon
 #' @title Create a giottoPolygon from a Parquet Geometry Store
 #' @description
@@ -89,3 +91,30 @@ setMethod("createGiottoPoints", signature("parquetGeomBase"),
         )
     }, split_bools, feat_type, SIMPLIFY = FALSE)
 })
+
+# processData ####
+
+# catch for "suggested" backends (can't dispatch on class)
+setMethod("processData", signature(x = "ANY", param = "binarizeThreshParam"),
+    function(x, param, ...) {
+        if (inherits(x, "IterableMatrix")) {
+            return(BPCells::binarize(x, param$threshold %null% 0))
+        }
+
+        callNextMethod(x, param, ...)
+    }
+)
+setMethod("processData", signature(x = "ANY", param = "minmaxThreshParam"),
+    function(x, param, ...) {
+        if (inherits(x, "IterableMatrix")) {
+            upper <- param$upper
+            lower <- param$lower
+            if (!is.infinite(upper)) x <- BPCells::min_scalar(x, upper)
+            if (!is.infinite(lower)) x <- BPCells::min_scalar(x * -1L, -lower) * -1L
+            return(x)
+        }
+
+        callNextMethod(x, param, ...)
+    }
+)
+
