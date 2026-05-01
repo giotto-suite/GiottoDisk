@@ -6,17 +6,20 @@
 \alias{getArtifactDumpDir}
 \title{GiottoDisk artifact dump management}
 \usage{
-setArtifactDumpDir(dir, verbose = NULL)
+setArtifactDumpDir(x, verbose = NULL)
 
 getArtifactDumpDir()
 }
 \arguments{
-\item{dir}{\code{character} path to directory to use as dump directory}
+\item{x}{\code{character} path to directory, or a \code{gDirSource} object.
+When a \code{gDirSource} is supplied, the dump is set to the vault
+directory (\verb{<x@path>/artifacts/}). When missing, resets to the
+default session temp location.}
 
 \item{verbose}{verbosity}
 }
 \value{
-artifact dump directory path
+artifact dump directory path (invisibly)
 }
 \description{
 Utilities to control the location of automatically created
@@ -25,4 +28,9 @@ that materialize to disk. The dump is used as the default location
 artifacts will be written to. When setting objects into the
 Giotto object, these objects may be reclaimed from the dump and
 placed under control of the \code{gsource} managing the object.
+
+Passing a \code{gDirSource} object points the dump directly at the
+source's vault (\verb{artifacts/}). Artifacts are then written to their
+final vault location immediately, making adoption a pure registration
+step with no file movement.
 }

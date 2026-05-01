@@ -4,6 +4,7 @@
 \alias{sourceContains}
 \alias{sourceContains,gDirSource,SpatRaster-method}
 \alias{sourceContains,gDirSource,unionParquetStore-method}
+\alias{sourceContains,gDirSource,ANY-method}
 \title{Test if a Store is Managed by a Source}
 \usage{
 \S4method{sourceContains}{gDirSource,fileStore}(src, store, ...)
@@ -11,6 +12,8 @@
 \S4method{sourceContains}{gDirSource,SpatRaster}(src, store, ...)
 
 \S4method{sourceContains}{gDirSource,unionParquetStore}(src, store, ...)
+
+\S4method{sourceContains}{gDirSource,ANY}(src, store, ...)
 }
 \arguments{
 \item{src}{\code{gsource} object}

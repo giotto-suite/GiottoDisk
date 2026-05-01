@@ -262,31 +262,57 @@ At read time, `x_index`/`y_index` are used as point coordinates instead of parsi
 
 ## gsource / Project Directory System
 
-`gDirSource` manages a project directory:
+`gDirSource` manages a project directory. See `vignettes/articles/design.Rmd` for
+full architectural rationale (manifest design, dump lifecycle, deployment, multi-analysis).
+
 ```
 <project_dir>/
   giottodir.json       # manifest of all tracked artifacts
-  artifacts/<uid>/data # vault — subdirs named by artifact uid
+  artifacts/<uid>/data # vault — artifact subdirs named by uid
   _pending/            # WAL-style pending manifest edits
   giottosave/          # .rds/.qs snapshots of giotto objects
+  artifacts/           # vault — also the dump when setArtifactDumpDir(src) is used
 ```
 
 Artifacts written via `sourceWrite()`: allocate uid → write → hash → queue pending edit.
 Pending edits consolidated into `giottodir.json` on-read (optionally locked via `filelock`).
+Consolidation is atomic: `.json_atomic_write` writes to temp then renames.
 
 Manifest access: `src["uid"]`, `src["uid", "field"]`, `src[, "field"]`, `as.data.frame(src)`.
 
 ### sourceContains / sourceAdopt
+
 `sourceContains(src, store)`: uid-based for `fileStore`; path-prefix for `SpatRaster`;
-all-substores for union. Standard guard before `sourceAdopt`.
+all-substores for union; path-prefix over all leaves for `IterableMatrix`.
 
 `sourceAdopt(src, store)`: moves unmanaged store into vault and registers it.
 - `fileStore`: preserves `@uid`, moves files
 - `SpatRaster`: fresh uid; `file.copy` for on-disk, COG write for in-memory
 - Union: delegates per substore
+- `IterableMatrix` (ANY fallback, soft dep): uses `.im_map_leaves` to adopt each leaf
 
-### Snapshots
-`snapshotSave`: saves giotto as .rds/.qs; copies external images into vault; tags artifact uids.
+**IterableMatrix leaf traversal** (`methods-sourceAdopt.R`):
+- `.im_leaf_dirs(x)`: all leaf `@dir` paths — for vault checks and hashing
+- `.im_map_leaves(x, f)`: applies `f` to each leaf, rebuilds compound structure
+
+**External path guard**: adoption proceeds only for dump-resident paths or when
+`giottodisk.adopt_external = TRUE`.
+
+**Session cache** (`.adopt_session_map`): records old → new path per leaf within
+one `snapshotSave`. Handles shared-leaf compounds (`raw`/`normalized` same `@dir`).
+Reset via `.adopt_session_reset()` at the start of each `snapshotSave`.
+
+**Vault-resident unregistered**: uid extracted via `basename(dirname(path))`;
+`src[uid]` checked; manifest entry written if missing — no file movement.
+
+### snapshotSave lifecycle
+
+1. `.adopt_session_reset()`
+2. Register external images (`SpatRaster` not in vault)
+3. Register external expression matrices (`IterableMatrix`/`HDF5Array` not in vault)
+4. Write snapshot atomically: temp file → `file.rename` to `.rds`/`.qs`
+5. Tag artifact uids: hash-based detection via `.ss_hash_expr_base` (strips lazy ops)
+
 `sourcePrune`: removes untagged artifacts (protection transitive via `depends` BFS walk).
 
 ### Tiled geometry write planning

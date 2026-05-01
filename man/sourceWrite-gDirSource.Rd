@@ -5,6 +5,7 @@
 \alias{sourceWrite,gDirSource,memoryMatrix-method}
 \alias{sourceWrite,gDirSource,SpatVector-method}
 \alias{sourceWrite,gDirSource,data.frame-method}
+\alias{sourceWrite,gDirSource,ANY-method}
 \title{Write Data to a \code{gDirSource}}
 \usage{
 \S4method{sourceWrite}{gDirSource,memoryMatrix}(src, data, meta = NULL, store_type = NULL, ...)
@@ -24,6 +25,8 @@
   store_type = getOption("giotto.gdsrc_dataframe_format", "parquet"),
   ...
 )
+
+\S4method{sourceWrite}{gDirSource,ANY}(src, data, meta = NULL, ...)
 }
 \arguments{
 \item{src}{\code{gsource} object. Used to provide default save locations

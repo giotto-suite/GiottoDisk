@@ -35,7 +35,8 @@
   uid,
   hash,
   meta = NULL,
-  giottosave = NA_character_
+  giottosave = NA_character_,
+  depends = NULL
 )
 
 .gdsrc_json_consolidate(p)

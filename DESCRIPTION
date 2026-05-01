@@ -24,6 +24,7 @@ Imports:
     data.table (>= 1.12.2),
     digest,
     dplyr,
+    Giotto,
     GiottoClass,
     GiottoUtils,
     jsonlite,
@@ -54,6 +55,7 @@ Collate:
     'methods-accessors.R'
     'methods-aggregate.R'
     'methods-combine.R'
+    'methods-expanse.R'
     'methods-giotto.R'
     'methods-ops.R'
     'methods-plot.R'

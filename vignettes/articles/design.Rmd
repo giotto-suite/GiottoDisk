@@ -370,17 +370,133 @@ design choices follow from this:
 ```
 <project_dir>/
   giottodir.json       # manifest of all tracked artifacts
-  artifacts/<uid>/data # vault — subdirs named by artifact uid
+  artifacts/<uid>/data # vault — artifact subdirs named by uid
   _pending/            # WAL-style pending manifest edits
   giottosave/          # .rds/.qs snapshots of giotto objects
+  dump/                # optional persistent staging area (see setArtifactDumpDir)
 ```
 
 Artifacts are written via `sourceWrite()`: allocate uid → write → hash → queue
 pending edit. Pending edits are consolidated into `giottodir.json` on-read,
-optionally with `filelock` for concurrent access safety.
+optionally with `filelock` for concurrent access safety. Consolidation is atomic:
+new JSON is written to a temp file then renamed to the final path.
 
 `sourcePrune()` removes artifacts not referenced by any snapshot, using a BFS
 walk over a `depends` graph for transitive protection.
+
+### Manifest design
+
+The manifest uses JSON + a `_pending/` write-ahead log rather than a database.
+This is an intentional choice:
+
+- **Zero-serialization concurrent writes**: each process creates its own
+  `_pending/<uid>.json` via an atomic file creation — writers never block or
+  coordinate with each other. A database (DuckDB, SQLite in WAL mode) serializes
+  writers; the file-per-writer pattern has no serialization at all.
+- **No binary dependency**: `duckdb` is in `Suggests`. The manifest must work
+  with base R file I/O only. Embedded database backends also carry binary format
+  stability risk — storage format changes across versions can silently break an
+  existing catalog on upgrade. JSON has no equivalent risk.
+- **Human-readable and portable**: inspectable with any tool; the format is stable
+  across all versions of the package.
+- **Crash recovery**: pending file writes are atomic (write to temp → rename into
+  `_pending/`), so a crashed writer leaves nothing behind. Consolidation is also
+  atomic (write to temp → rename over `giottodir.json`). No partial writes reach
+  either the pending queue or the main manifest.
+
+The only meaningful gap vs a database catalog is query performance at thousands
+of artifacts (JSON parse overhead at consolidation time).
+
+For S3/cloud deployments, file-based locking and atomic rename are unavailable.
+A future `gCloudSource` would need either S3 conditional PUT (Delta Lake pattern)
+or an external catalog service (DuckLake/Iceberg pattern) for atomic pointer
+updates. The JSON manifest itself could remain unchanged — only the catalog
+coordination layer differs.
+
+### Dump directory and artifact lifecycle
+
+The dump (`giottodisk.artifact_dump` option, default `tempdir()`) is the staging
+area where intermediate artifacts land before adoption into the vault.
+
+**Hot path — `setArtifactDumpDir(gsrc)`**: points the dump directly at the
+source's vault (`artifacts/`). Artifacts are written to their final vault
+location immediately — adoption becomes a pure registration step with no file
+movement. The vault persists across R sessions (important for NFS/HPC
+environments where jobs end but project directories survive).
+
+**Vault-resident adoption**: when the dump is the vault, `sourceAdopt` detects
+the path is already vault-resident, extracts the uid via
+`basename(dirname(path))`, checks `src[uid]`, and writes a manifest entry if
+missing — no file movement.
+
+**Default `tempdir()` dump**: session-scoped, cleaned by the OS on session end.
+Suitable for local interactive use. Unadopted artifacts are lost if the session
+ends without a `snapshotSave`.
+
+Orphaned dump artifacts can be cleaned up via `dumpPrune(gsrc)` (not yet
+implemented).
+
+### IterableMatrix adoption
+
+`IterableMatrix` (BPCells) objects are adopted via the `ANY` fallback in
+`sourceAdopt`. Two traversal primitives handle all compound matrix structures:
+
+- **`.im_leaf_dirs(x)`**: returns all leaf `@dir` paths — used for vault
+  membership checks and canonical hashing
+- **`.im_map_leaves(x, f)`**: applies `f` to each leaf and rebuilds the compound
+  structure — used for adoption and path remapping
+
+This handles leaf matrices, lazy transforms (`@matrix`), and cbind/rbind
+compounds (`@matrix_list`) uniformly without knowing the specific BPCells
+subclass.
+
+**Session-scoped adoption cache**: `raw` and `normalized` matrices often share
+the same underlying BPCells leaf directory (same `@dir`). Without a cache,
+adopting `raw` moves the directory, then adopting `normalized`'s leaf fails
+with ENOENT. The `.adopt_session_map` environment records old → new path during
+each `snapshotSave` call. Subsequent adoptions of the same leaf redirect `@dir`
+to the cached vault path without attempting a second move. The cache is reset
+at the start of every `snapshotSave`.
+
+**External path guard**: adoption only proceeds for paths within the dump
+directory or when `giottodisk.adopt_external = TRUE`. Paths outside the dump
+are skipped with a warning to avoid silently moving data the user owns.
+
+### Multi-analysis / shared gsource
+
+Multiple gobjects can share one gsource. This is the recommended pattern when
+analyses share underlying data (same experiment, different processing pipelines):
+
+- Shared artifacts are stored once in the vault
+- `snapshotSave` for a second gobject sees shared artifacts via `sourceContains`
+  and only appends the new save name to the `giottosave` tag
+- `sourcePrune` keeps any artifact referenced by at least one save across all
+  analyses in the project
+
+Gobjects have no gsource by default (in-memory). Sharing requires explicitly
+assigning the same gsource to all gobjects. Two gobjects with separate gsources
+are fully independent — this is correct for unrelated datasets.
+
+The tradeoff is deliberate: a small amount of upfront project setup in exchange
+for file safety (no broken links, no partial writes, no silent data loss on
+session end). A single gsource shared across an entire lab or across all analyses
+ever run would accumulate artifacts unboundedly and eventually slow manifest
+reads. The right granularity is per-experiment or per-sample-cohort — large
+enough to get deduplication benefits across related analyses, small enough that
+`sourcePrune` keeps the manifest tidy.
+
+### Deployment
+
+| Setting | Recommended dump | Notes |
+|---------|-----------------|-------|
+| Local / workstation | `tempdir()` (default) | Session-scoped; works as long as `snapshotSave` is called before session end |
+| NFS / HPC (SLURM) | `setArtifactDumpDir(gsrc)` | Persistent dump in gsource dir; O(1) same-filesystem adoption; survives job end |
+| SLURM array jobs | Independent gsource per sample | No shared-manifest contention; each job manages its own vault |
+| Multi-analysis | Single shared gsource | All gobjects share one project dir; shared artifacts deduplicated automatically |
+
+`filelock` (Suggests) provides advisory locking for `_pending/` consolidation.
+On NFS, `flock` is unreliable — the `_pending/` design mitigates this by making
+each write an independent atomic file creation rather than a shared-file update.
 
 ### Overlap Provenance
 

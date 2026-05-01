@@ -27,6 +27,7 @@
   sort = TRUE,
   all_feat_ids = NULL,
   all_cell_ids = NULL,
+  verbose = NULL,
   ...
 )
 }
