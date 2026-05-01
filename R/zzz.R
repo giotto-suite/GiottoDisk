@@ -25,6 +25,7 @@
     init_option("giottodisk.arrow_timestamp_locale", "us")
     # -- dump management
     init_option("giottodisk.artifact_dump", file.path(tempdir(), "gdisk_dump"))
+    init_option("giottodisk.adopt_external", FALSE)
     # -- duckdb
     init_option("giottodisk.duckdb_memory_limit", "8GB")
     # -- plot

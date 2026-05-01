@@ -7,20 +7,32 @@
 #' artifacts will be written to. When setting objects into the
 #' Giotto object, these objects may be reclaimed from the dump and
 #' placed under control of the `gsource` managing the object.
-#' @param dir `character` path to directory to use as dump directory
+#'
+#' Passing a `gDirSource` object points the dump directly at the
+#' source's vault (`artifacts/`). Artifacts are then written to their
+#' final vault location immediately, making adoption a pure registration
+#' step with no file movement.
+#' @param x `character` path to directory, or a `gDirSource` object.
+#'   When a `gDirSource` is supplied, the dump is set to the vault
+#'   directory (`<x@path>/artifacts/`). When missing, resets to the
+#'   default session temp location.
 #' @param verbose verbosity
-#' @returns artifact dump directory path
+#' @returns artifact dump directory path (invisibly)
 NULL
 
 #' @rdname artifact_dump
 #' @export
-setArtifactDumpDir <- function(dir, verbose = NULL) {
-    if (missing(dir)) {
-        dir <- file.path(tempdir(), "gdisk_dump")
+setArtifactDumpDir <- function(x, verbose = NULL) {
+    dir <- if (missing(x)) {
+        file.path(tempdir(), "gdisk_dump")
+    } else if (inherits(x, "gDirSource")) {
+        .gdsrc_vault_dir(x@path)
+    } else {
+        x
     }
     vmsg(.v = verbose, "[GiottoDisk] Setting artifact dump:\n", dir)
     if (!dir.exists(dir)) {
-      dir.create(dir, recursive = TRUE)
+        dir.create(dir, recursive = TRUE)
     }
     options("giottodisk.artifact_dump" = dir)
     invisible(dir)

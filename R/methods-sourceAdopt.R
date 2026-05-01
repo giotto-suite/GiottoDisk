@@ -1,6 +1,51 @@
 #' @include methods-sourceWrite.R
 NULL
 
+# session-scoped cache: maps old_path -> new_path for adopted leaf dirs
+# reset at the start of each snapshotSave to avoid stale entries across saves
+.adopt_session_map <- new.env(parent = emptyenv())
+
+.adopt_session_lookup <- function(old_path) .adopt_session_map[[old_path]]
+.adopt_session_record <- function(old_path, new_path) {
+    .adopt_session_map[[old_path]] <- new_path
+}
+.adopt_session_reset <- function() {
+    rm(list = ls(.adopt_session_map), envir = .adopt_session_map)
+}
+
+# IterableMatrix leaf traversal primitives ####
+
+# returns all leaf @dir paths from any IterableMatrix structure
+.im_leaf_dirs <- function(x) {
+    if ("dir" %in% slotNames(x)) {
+        slot(x, "dir")
+    } else if ("matrix_list" %in% slotNames(x)) {
+        unlist(lapply(slot(x, "matrix_list"), .im_leaf_dirs))
+    } else if ("matrix" %in% slotNames(x)) {
+        .im_leaf_dirs(slot(x, "matrix"))
+    } else {
+        character(0L)
+    }
+}
+
+# applies f to each leaf IterableMatrix (has @dir), rebuilds the structure
+.im_map_leaves <- function(x, f) {
+    if ("dir" %in% slotNames(x)) {
+        f(x)
+    } else if ("matrix_list" %in% slotNames(x)) {
+        slot(x, "matrix_list") <- lapply(slot(x, "matrix_list"),
+            function(m) .im_map_leaves(m, f))
+        x
+    } else if ("matrix" %in% slotNames(x)) {
+        slot(x, "matrix") <- .im_map_leaves(slot(x, "matrix"), f)
+        x
+    } else {
+        warning("[sourceAdopt] unknown compound IterableMatrix type: ",
+            class(x), call. = FALSE)
+        x
+    }
+}
+
 #' @name sourceContains
 #' @title Test if a Store is Managed by a Source
 #' @description
@@ -59,7 +104,7 @@ setMethod("sourceContains", signature("gDirSource", "unionParquetStore"),
 #' @returns updated store/raster object pointing to the managed vault location
 #' @export
 setMethod("sourceAdopt", signature("gDirSource", "fileStore"),
-    function(src, store, meta = NULL, giottosave = NULL, ...) {
+    function(src, store, meta = NULL, giottosave = NULL, depends = NULL, ...) {
     if (!storeExists(store)) {
         stop("[sourceAdopt] store does not exist at path:\n  ", store@path,
             call. = FALSE)
@@ -75,7 +120,8 @@ setMethod("sourceAdopt", signature("gDirSource", "fileStore"),
         uid = uid,
         hash = hash,
         meta = meta,
-        giottosave = giottosave %||% NA_character_
+        giottosave = giottosave %||% NA_character_,
+        depends = depends
     )
     store
 })
@@ -136,3 +182,80 @@ setMethod("sourceAdopt", signature("gDirSource", "unionParquetStore"),
     store
 })
 
+# * ANY fallbacks ####
+
+#' @rdname sourceContains
+#' @export
+setMethod("sourceContains", signature("gDirSource", "ANY"),
+    function(src, store, ...) {
+    if (inherits(store, "IterableMatrix")) {
+        dirs <- normalizePath(.im_leaf_dirs(store), mustWork = FALSE)
+        if (length(dirs) == 0L) return(FALSE)
+        vdir <- normalizePath(.gdsrc_vault_dir(src@path))
+        all(startsWith(dirs, paste0(vdir, "/")))
+    } else {
+        FALSE
+    }
+})
+
+#' @rdname sourceAdopt
+#' @export
+setMethod("sourceAdopt", signature("gDirSource", "ANY"),
+    function(src, store, meta = NULL, giottosave = NULL, ...) {
+    if (inherits(store, "IterableMatrix")) {
+        .im_map_leaves(store, function(leaf) {
+            old_path <- normalizePath(slot(leaf, "dir"), mustWork = FALSE)
+            if (.any_adopt_in_vault(src, old_path)) {
+                uid <- basename(dirname(old_path))
+                if (is.null(src[uid])) {
+                    .gdsrc_json_add_artifact(src@path,
+                        store_type = class(leaf),
+                        uid = uid,
+                        hash = .hash(BPCells::open_matrix_dir(old_path)),
+                        meta = meta,
+                        giottosave = giottosave %||% NA_character_
+                    )
+                }
+                return(leaf)
+            }
+            if (!is.null(cached <- .adopt_session_lookup(old_path))) {
+                slot(leaf, "dir") <- cached
+                return(leaf)
+            }
+            if (!.any_adopt_external_ok(old_path)) return(leaf)
+            new_path <- .gdsrc_allocate_artifact_dir(src@path, create = TRUE)
+            uid <- names(new_path)
+            names(new_path) <- NULL
+            .move_path(old_path, new_path)
+            .adopt_session_record(old_path, new_path)
+            slot(leaf, "dir") <- new_path
+            .gdsrc_json_add_artifact(src@path,
+                store_type = class(leaf),
+                uid = uid,
+                hash = .hash(BPCells::open_matrix_dir(new_path)),
+                meta = meta,
+                giottosave = giottosave %||% NA_character_
+            )
+            leaf
+        })
+    } else {
+        stop("[sourceAdopt] no method for class: ", class(store), call. = FALSE)
+    }
+})
+
+.any_adopt_in_vault <- function(src, path) {
+    vdir <- normalizePath(.gdsrc_vault_dir(src@path))
+    startsWith(path, paste0(vdir, "/"))
+}
+
+.any_adopt_external_ok <- function(path) {
+    dump_dir <- normalizePath(getOption("giottodisk.artifact_dump"), mustWork = FALSE)
+    if (startsWith(path, paste0(dump_dir, "/"))) return(TRUE)
+    if (isTRUE(getOption("giottodisk.adopt_external", FALSE))) return(TRUE)
+    warning(
+        "[sourceAdopt] skipping external store at:\n  ", path, "\n",
+        "Set options(giottodisk.adopt_external = TRUE) to adopt.",
+        call. = FALSE
+    )
+    FALSE
+}

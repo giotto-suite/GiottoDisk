@@ -783,6 +783,20 @@ setMethod(
     }
 )
 
+#' @rdname storeWrite
+#' @export
+setMethod(
+    "storeWrite",
+    signature("bpcMatrixStore", "ANY"),
+    function(store, data, ...) {
+    if (!inherits(data, "IterableMatrix")) {
+        stop("[storeWrite] bpcMatrixStore requires an IterableMatrix or memoryMatrix",
+            call. = FALSE)
+    }
+    BPCells::write_matrix_dir(data, dir = store@path, ...)
+    store
+})
+
 
 # internals ####
 

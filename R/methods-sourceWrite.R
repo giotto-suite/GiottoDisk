@@ -120,6 +120,22 @@ setMethod("sourceWrite", signature("gDirSource", "fileStore"),
         )
     })
 
+#' @rdname sourceWrite-gDirSource
+#' @export
+setMethod("sourceWrite", signature("gDirSource", "ANY"),
+    function(src, data, meta = NULL, ...) {
+    if (inherits(data, "IterableMatrix")) {
+        .gdsrc_write_artifact(src@path,
+            data = data,
+            store_type = "bpcells",
+            meta = meta,
+            ...
+        )
+    } else {
+        stop("[sourceWrite] no method for class: ", class(data), call. = FALSE)
+    }
+})
+
 
 # internals ####
 

@@ -359,12 +359,13 @@ NULL
 #' @param giottosave `character` tagged giotto save(s) if any.
 #' be attached as further metadata to the particular uid
 #' @keywords internal
-.gdsrc_json_add_artifact <- function(p, store_type, uid, hash, meta = NULL, giottosave = NA_character_) {
+.gdsrc_json_add_artifact <- function(p, store_type, uid, hash, meta = NULL, giottosave = NA_character_, depends = NULL) {
     checkmate::assert_character(store_type)
     checkmate::assert_character(uid)
     checkmate::assert_character(hash)
     checkmate::assert_list(meta, null.ok = TRUE)
     checkmate::assert_character(giottosave)
+    checkmate::assert_character(depends, null.ok = TRUE)
 
     content <- list(
         "time" = .timestamp(),
@@ -372,6 +373,7 @@ NULL
         "giottosave" = giottosave,
         "hash" = hash
     )
+    if (length(depends) > 0L) content[["depends"]] <- depends
     content <- c(content, meta)
     .gdsrc_json_edit(p = p, uid = uid, x = content)
 }

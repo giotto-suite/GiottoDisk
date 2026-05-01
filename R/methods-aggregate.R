@@ -609,6 +609,7 @@ setMethod("overlapToMatrix", signature("parquetStore"),
         sort = TRUE,
         all_feat_ids = NULL,
         all_cell_ids = NULL,
+        verbose = NULL,
         ...
     ) {
     GiottoUtils::package_check("arrow")
@@ -616,66 +617,98 @@ setMethod("overlapToMatrix", signature("parquetStore"),
     checkmate::assert_string(poly_id_col)
     checkmate::assert_string(count_col, null.ok = TRUE)
 
-    # aggregate via Arrow -- only the COO count table is collected
     atab <- storeRead(x, output = "query")
-    if (!is.null(count_col)) {
-        agg <- atab |>
-            dplyr::group_by(
-                !!as.name(feat_id_col),
-                !!as.name(poly_id_col)
-            ) |>
-            dplyr::summarize(
-                n = sum(!!as.name(count_col), na.rm = TRUE),
-                .groups = "drop"
-            ) |>
-            dplyr::collect()
-    } else {
-        agg <- atab |>
-            dplyr::count(
-                !!as.name(feat_id_col),
-                !!as.name(poly_id_col)
-            ) |>
-            dplyr::collect()
-    }
 
-    feat_ids <- if (length(all_feat_ids) > 0L) all_feat_ids else unique(agg[[feat_id_col]])
-    cell_ids <- if (length(all_cell_ids) > 0L) all_cell_ids else unique(agg[[poly_id_col]])
+    # resolve ID universes; distinct() uses plain parquet scans (safe)
+    feat_ids <- if (length(all_feat_ids) > 0L) all_feat_ids else {
+        atab |>
+            dplyr::distinct(!!as.name(feat_id_col)) |>
+            dplyr::pull(feat_id_col, as_vector = TRUE) |>
+            as.character()
+    }
+    cell_ids <- if (length(all_cell_ids) > 0L) all_cell_ids else {
+        atab |>
+            dplyr::distinct(!!as.name(poly_id_col)) |>
+            dplyr::pull(poly_id_col, as_vector = TRUE) |>
+            as.character()
+    }
     if (isTRUE(sort)) {
         feat_ids <- GiottoUtils::mixedsort(feat_ids)
         cell_ids <- GiottoUtils::mixedsort(cell_ids)
     }
-    i <- match(agg[[feat_id_col]], feat_ids)
-    j <- match(agg[[poly_id_col]], cell_ids)
-    vals <- as.integer(agg$n)
 
-    mtx_dir <- .write_overlap_mtx(i, j, vals, feat_ids, cell_ids, path)
+    vmsg(.v = verbose, sprintf(
+        "[overlapToMatrix] building COO: %d features x %d cells",
+        length(feat_ids), length(cell_ids)
+    ))
+
+    # Build string -> integer lookup tables from the clean ID vectors.
+    feat_df <- data.frame(i = seq_along(feat_ids))
+    feat_df[[feat_id_col]] <- feat_ids
+    cell_df <- data.frame(j = seq_along(cell_ids))
+    cell_df[[poly_id_col]] <- cell_ids
+    feat_lut <- arrow::as_arrow_table(feat_df)
+    cell_lut <- arrow::as_arrow_table(cell_df)
+
+    # Join string -> integer on raw parquet batches (string buffers are live
+    # per-batch — no dangling pointer risk), then aggregate on integer keys.
+    # Aggregating strings first and joining after is unsafe: Arrow's hash-
+    # aggregate stores keys as utf8_view; at scale those view buffers can be
+    # freed before all output batches are consumed, causing join misses.
+    if (!is.null(count_col)) {
+        coo_query <- atab |>
+            dplyr::left_join(feat_lut, by = feat_id_col) |>
+            dplyr::left_join(cell_lut, by = poly_id_col) |>
+            dplyr::group_by(i, j) |>
+            dplyr::summarize(
+                n = sum(!!as.name(count_col), na.rm = TRUE),
+                .groups = "drop"
+            )
+    } else {
+        coo_query <- atab |>
+            dplyr::left_join(feat_lut, by = feat_id_col) |>
+            dplyr::left_join(cell_lut, by = poly_id_col) |>
+            dplyr::count(i, j)
+    }
+
+    vmsg(.v = verbose, "[overlapToMatrix] writing Matrix Market...")
+    mtx_dir <- .write_overlap_mtx(coo_query, feat_ids, cell_ids, path)
     .mtx_to_store(mtx_dir, store_type = store_type,
-        feat_ids = feat_ids, cell_ids = cell_ids)
+        feat_ids = feat_ids, cell_ids = cell_ids, verbose = verbose)
 })
 
 ## internals ####
 
-.write_overlap_mtx <- function(i, j, vals, feat_ids, cell_ids, path) {
+# coo_query: lazy Arrow query with columns i (int), j (int), n (int)
+# Streams record batches to a temp file to avoid peak memory, then prepends
+# the MTX header (which requires nnz, only known after streaming completes).
+.write_overlap_mtx <- function(coo_query, feat_ids, cell_ids, path) {
     if (!dir.exists(path)) dir.create(path, recursive = TRUE)
     mtx_path <- file.path(path, "matrix.mtx")
+    tmp_path  <- paste0(mtx_path, ".tmp")
+    on.exit(unlink(tmp_path), add = TRUE)
 
-    # header -- nnz known upfront from aggregated COO
+    reader <- arrow::as_record_batch_reader(coo_query)
+    nnz <- 0L
+    repeat {
+        batch <- reader$read_next_batch()
+        if (is.null(batch)) break
+        data.table::fwrite(
+            data.table::as.data.table(batch),
+            file      = tmp_path,
+            append    = TRUE,
+            sep       = " ",
+            col.names = FALSE
+        )
+        nnz <- nnz + nrow(batch)
+    }
+
+    # write header now that nnz is known, then append data
     con <- file(mtx_path, "w")
     writeLines("%%MatrixMarket matrix coordinate integer general", con)
-    writeLines(
-        sprintf("%d %d %d", length(feat_ids), length(cell_ids), length(vals)),
-        con
-    )
+    writeLines(sprintf("%d %d %d", length(feat_ids), length(cell_ids), nnz), con)
     close(con)
-
-    # stream triplets via fwrite (no in-memory sparse matrix object)
-    data.table::fwrite(
-        data.table::data.table(i = i, j = j, x = vals),
-        file = mtx_path,
-        append = TRUE,
-        sep = " ",
-        col.names = FALSE
-    )
+    file.append(mtx_path, tmp_path)
 
     # 10x-compatible sidecar files
     writeLines(cell_ids, file.path(path, "barcodes.tsv"))
@@ -686,15 +719,14 @@ setMethod("overlapToMatrix", signature("parquetStore"),
 
 # convert a Matrix Market directory to a store of the requested type.
 # feat_ids and cell_ids are passed directly to avoid re-reading sidecar files.
-.mtx_to_store <- function(path, store_type, feat_ids, cell_ids) {
+.mtx_to_store <- function(path, store_type, feat_ids, cell_ids, verbose = NULL) {
     store_type <- tolower(store_type)
     mtx_path <- file.path(path, "matrix.mtx")
     switch(store_type,
         "bpcells" = {
             GiottoUtils::package_check("BPCells")
             bp_path <- file.path(path, "bpcells")
-            # import_matrix_market streams .mtx to a lazy BPCells matrix;
-            # write_matrix_dir streams that to the binary CSC format on disk
+            vmsg(.v = verbose, "[overlapToMatrix] importing MTX to BPCells...")
             mat <- BPCells::import_matrix_market(mtx_path)
             rownames(mat) <- feat_ids
             colnames(mat) <- cell_ids

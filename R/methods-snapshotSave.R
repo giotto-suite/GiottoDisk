@@ -30,6 +30,7 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     method <- match.arg(tolower(method), choices = c("rds", "qs"))
     checkmate::assert_list(method_params)
     checkmate::assert_flag(overwrite)
+    .adopt_session_reset()
       
     p <- x@source@path
     vmsg(.v = verbose, "[GiottoDisk] Saving giotto...")
@@ -48,9 +49,27 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     }
   
     vmsg(.v = verbose, "[GiottoDisk] checking images...")
-    x <- .ss_gdsrc_register_external_images(x, 
+    x <- .ss_gdsrc_register_external_images(x,
         giottosave = name,
         export_image = export_image,
+        verbose = verbose
+    )
+
+    vmsg(.v = verbose, "[GiottoDisk] checking expression values...")
+    x <- .ss_gdsrc_register_external_expr(x,
+        giottosave = name,
+        verbose = verbose
+    )
+
+    vmsg(.v = verbose, "[GiottoDisk] checking spatial stores...")
+    x <- .ss_gdsrc_register_external_geom(x,
+        giottosave = name,
+        verbose = verbose
+    )
+
+    vmsg(.v = verbose, "[GiottoDisk] checking overlap stores...")
+    x <- .ss_gdsrc_register_external_overlap(x,
+        giottosave = name,
         verbose = verbose
     )
   
@@ -102,6 +121,26 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     return(raster_object)
 }
 
+.ss_gdsrc_register_external_expr <- function(gobject, giottosave, verbose = NULL) {
+    src <- gobject@source
+    data_list <- gobject[["expression"]]
+    for (x_i in data_list) {
+        mat <- x_i[]
+        if (!inherits(mat, "IterableMatrix")) next
+        if (sourceContains(src, mat)) next
+
+        vmsg(.v = verbose, sprintf(
+            "[GiottoDisk] adopting external matrix '%s'",
+            GiottoClass::objName(x_i)
+        ))
+
+        mat <- sourceAdopt(src, mat, giottosave = giottosave)
+        x_i[] <- mat
+        gobject <- GiottoClass::setGiotto(gobject, x_i, verbose = FALSE)
+    }
+    gobject
+}
+
 .ss_gdsrc_register_external_images <- function(gobject, giottosave,
     export_image = TRUE,
     verbose = NULL) {
@@ -140,6 +179,8 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     uids <- c(uids, .ss_gdsrc_detect_uid_spatial_points(gobject))
     # polys
     uids <- c(uids, .ss_gdsrc_detect_uid_spatial_polygons(gobject))
+    # overlaps
+    uids <- c(uids, .ss_gdsrc_detect_uid_overlaps(gobject))
     uids
 }
 
@@ -166,31 +207,137 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     )
     polys_list <- polys_list[is_tracked_class]
     if (length(polys_list) == 0L) return(c())
-  
+
     vapply(polys_list,
         function(x) x[]@uid,
         FUN.VALUE = character(1L)
     )
 }
 
+.ss_gdsrc_detect_uid_overlaps <- function(gobject) {
+    poly_list <- gobject[["spatial_info"]]
+    uids <- c()
+    for (poly_obj in poly_list) {
+        ovlps <- poly_obj@overlaps
+        if (is.null(ovlps)) next
+        for (feat_name in names(ovlps)) {
+            if (feat_name == "intensity") next
+            ovlp <- ovlps[[feat_name]]
+            if (!inherits(ovlp, "overlapPointDisk")) next
+            uids <- c(uids, ovlp@data@uid)
+        }
+    }
+    uids
+}
+
+.ss_gdsrc_register_external_geom <- function(gobject, giottosave, verbose = NULL) {
+    src <- gobject@source
+
+    pts_list <- gobject[["feat_info"]]
+    for (pts_obj in pts_list) {
+        store <- pts_obj[]
+        if (!inherits(store, "dataStore")) next
+        if (sourceContains(src, store)) next
+
+        vmsg(.v = verbose, sprintf(
+            "[GiottoDisk] adopting external points '%s'",
+            GiottoClass::objName(pts_obj)
+        ))
+
+        store <- sourceAdopt(src, store, giottosave = giottosave)
+        pts_obj[] <- store
+        gobject <- GiottoClass::setGiotto(gobject, pts_obj, verbose = FALSE)
+    }
+
+    poly_list <- gobject[["spatial_info"]]
+    for (poly_obj in poly_list) {
+        store <- poly_obj[]
+        if (!inherits(store, "dataStore")) next
+        if (sourceContains(src, store)) next
+
+        vmsg(.v = verbose, sprintf(
+            "[GiottoDisk] adopting external polygons '%s'",
+            GiottoClass::objName(poly_obj)
+        ))
+
+        store <- sourceAdopt(src, store, giottosave = giottosave)
+        poly_obj[] <- store
+        gobject <- GiottoClass::setGiotto(gobject, poly_obj, verbose = FALSE)
+    }
+
+    gobject
+}
+
+.ss_gdsrc_register_external_overlap <- function(gobject, giottosave, verbose = NULL) {
+    src <- gobject@source
+
+    poly_list <- gobject[["spatial_info"]]
+    for (poly_obj in poly_list) {
+        ovlps <- poly_obj@overlaps
+        if (is.null(ovlps)) next
+        modified <- FALSE
+
+        for (feat_name in names(ovlps)) {
+            if (feat_name == "intensity") next
+            ovlp <- ovlps[[feat_name]]
+            if (!inherits(ovlp, "overlapPointDisk")) next
+            if (sourceContains(src, ovlp@data)) next
+
+            vmsg(.v = verbose, sprintf(
+                "[GiottoDisk] adopting external overlap '%s/%s'",
+                GiottoClass::objName(poly_obj), feat_name
+            ))
+
+            depends <- c(ovlp@poly_uids, ovlp@feat_uids)
+            ovlp@data <- sourceAdopt(src, ovlp@data,
+                giottosave = giottosave, depends = depends
+            )
+            poly_obj@overlaps[[feat_name]] <- ovlp
+            modified <- TRUE
+        }
+
+        if (modified) {
+            gobject <- GiottoClass::setGiotto(gobject, poly_obj, verbose = FALSE)
+        }
+    }
+
+    gobject
+}
+
+# canonical hash of the underlying storage, stripping lazy ops
+.ss_hash_expr_base <- function(mat) {
+    if (inherits(mat, "IterableMatrix")) {
+        dirs <- .im_leaf_dirs(mat)
+        hashes <- vapply(dirs,
+            function(d) .hash(BPCells::open_matrix_dir(d)),
+            FUN.VALUE = character(1L)
+        )
+        paste(hashes, collapse = "|")
+    } else if (inherits(mat, "HDF5Array")) {
+        .hash(HDF5Array::HDF5Array(HDF5Array::path(mat), HDF5Array::name(mat)))
+    } else {
+        .hash(mat)
+    }
+}
+
 # detect matrix uid based on hash lookup in manifest
 .ss_gdsrc_detect_uid_matrices <- function(gobject, manifest) {
-    tracked_classes <- c("IterableMatrix", "DelayedArray")
+    tracked_classes <- c("IterableMatrix", "HDF5Array")
     mat_list <- gobject[["expression"]]
-  
+
     is_tracked_class <- vapply(mat_list,
         function(x) inherits(x[], tracked_classes),
         FUN.VALUE = logical(1L)
     )
     mat_list <- mat_list[is_tracked_class]
     if (length(mat_list) == 0L) return(c())
-  
+
     protected_hash <- vapply(mat_list,
-        function(x) .hash(x[]), 
+        function(x) .ss_hash_expr_base(x[]),
         FUN.VALUE = character(1L)
     )
     manifest <- manifest[!duplicated(hash)]
-    manifest[hash %in% protected_hash, uid] # get uids matching hashes
+    manifest[hash %in% protected_hash, uid]
 }
 
 # add numerical suffix to prevent file naming collision
