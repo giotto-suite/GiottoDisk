@@ -78,6 +78,7 @@ Collate:
     'stream-qc.R'
     'stream-filter.R'
     'stream-normalize.R'
+    'stream-hvg.R'
     'utils-spatial.R'
     'tilework.R'
     'utils-arrow.R'
