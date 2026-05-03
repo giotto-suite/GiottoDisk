@@ -76,6 +76,7 @@ Collate:
     'methods-transforms.R'
     'methods-parquetExprStore.R'
     'stream-qc.R'
+    'stream-filter.R'
     'utils-spatial.R'
     'tilework.R'
     'utils-arrow.R'
