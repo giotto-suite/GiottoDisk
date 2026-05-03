@@ -132,7 +132,7 @@ test_that("mtx_to_parquetExprStore on a synthetic 10x triple is lossless", {
         i = df$col_id, j = df$row_id, x = df$value,
         dims = c(nrow(pe), ncol(pe))
     )
-    expect_equal(as.matrix(mat), as.matrix(rt), ignore_attr = TRUE)
+    expect_equal(unname(as.matrix(mat)), unname(as.matrix(rt)))
 
     # Cleanup
     unlink(src_dir, recursive = TRUE)
@@ -165,7 +165,7 @@ test_that("mtx_to_parquetExprStore writes a directory when nnz > batch_lines", {
         i = df$col_id, j = df$row_id, x = df$value,
         dims = c(nrow(pe), ncol(pe))
     )
-    expect_equal(as.matrix(mat), as.matrix(rt), ignore_attr = TRUE)
+    expect_equal(unname(as.matrix(mat)), unname(as.matrix(rt)))
 
     unlink(src_dir, recursive = TRUE)
     unlink(out,     recursive = TRUE)
