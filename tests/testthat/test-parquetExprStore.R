@@ -192,13 +192,37 @@ test_that("mtx_to_parquetExprStore rejects mismatched barcode / feature counts",
 })
 
 
-# ---- exprObj integration --------------------------------------------------
+# ---- exprObj + giotto integration -----------------------------------------
 
 test_that("parquetExprStore can be embedded in an exprObj@exprMat slot", {
     skip_if_not_installed("GiottoClass")
     mat <- .tiny_mat()
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
-    eo  <- GiottoClass::create_expr_obj(exprMat = pe, name = "raw")
+    # Construct directly via new() — createExprObj would route through
+    # .evaluate_expr_matrix which doesn't yet recognize parquetExprStore.
+    eo  <- new("exprObj", name = "raw", exprMat = pe,
+               spat_unit = "cell", feat_type = "rna")
     expect_s4_class(eo, "exprObj")
     expect_s4_class(slot(eo, "exprMat"), "parquetExprStore")
+})
+
+test_that("parquetExprStore swaps into a giotto object via setExpression", {
+    skip_if_not_installed("Giotto")
+    skip_if_not_installed("GiottoClass")
+    mat <- .tiny_mat(n_genes = 8, n_cells = 12, density = 0.5, seed = 9)
+    pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+
+    # Build a giotto skeleton with the in-memory matrix, then swap pe in.
+    g  <- Giotto::createGiottoObject(expression = mat, verbose = FALSE)
+    eo <- new("exprObj", name = "raw", exprMat = pe,
+              spat_unit = "cell", feat_type = "rna")
+    g  <- GiottoClass::setExpression(g, x = eo, name = "raw", verbose = FALSE)
+
+    # @exprMat is now the parquetExprStore; structural shape matches.
+    em <- GiottoClass::getExpression(g)
+    expect_s4_class(slot(em, "exprMat"), "parquetExprStore")
+    expect_equal(nrow(em), nrow(mat))
+    expect_equal(ncol(em), ncol(mat))
+    expect_equal(rownames(em), rownames(mat))
+    expect_equal(colnames(em), colnames(mat))
 })
