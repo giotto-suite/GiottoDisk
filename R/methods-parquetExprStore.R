@@ -60,13 +60,14 @@ setMethod("ncol", "parquetExprStore", function(x) x@n_cells)
 #' @export
 setMethod("dim", "parquetExprStore", function(x) c(x@n_genes, x@n_cells))
 
-# rownames / colnames ####
+# dimnames / rownames / colnames ####
+# `rownames()` and `colnames()` in base R consult `dimnames()` first; defining
+# `dimnames` here makes them work uniformly without separate methods.
 
 #' @export
-setMethod("rownames", "parquetExprStore", function(x) x@feat_ids)
-
-#' @export
-setMethod("colnames", "parquetExprStore", function(x) x@cell_ids)
+setMethod("dimnames", "parquetExprStore",
+    function(x) list(x@feat_ids, x@cell_ids)
+)
 
 # show ####
 
