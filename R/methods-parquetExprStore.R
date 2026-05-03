@@ -69,6 +69,23 @@ setMethod("dimnames", "parquetExprStore",
     function(x) list(x@feat_ids, x@cell_ids)
 )
 
+# `rownames<-` and `colnames<-` fall back to `dimnames<-`. Define the
+# setter so downstream Giotto code that does `rownames(x) <- ...` after
+# normalize works transparently with our class.
+#' @export
+setMethod("dimnames<-",
+    signature(x = "parquetExprStore", value = "list"),
+    function(x, value) {
+        if (length(value) >= 1L && !is.null(value[[1L]])) {
+            x@feat_ids <- as.character(value[[1L]])
+        }
+        if (length(value) >= 2L && !is.null(value[[2L]])) {
+            x@cell_ids <- as.character(value[[2L]])
+        }
+        x
+    }
+)
+
 # show ####
 
 #' @export
