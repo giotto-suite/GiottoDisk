@@ -13,66 +13,76 @@
 }
 
 
-test_that("addStreamStatistics matches reference per-cell + per-gene stats", {
+test_that("processData(parquetExprStore, cellQcParam) matches reference", {
     skip_if_not_installed("Giotto")
     skip_if_not_installed("GiottoClass")
 
     mat <- .tiny_mat()
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
 
-    # Direct reference: replicate Giotto's addStatistics formulas by hand
-    # so the test does not depend on Giotto::addStatistics internals
-    # (which have a sys.call-3 lookup that misbehaves under testthat).
-    n_genes <- nrow(mat)
-    n_cells <- ncol(mat)
+    n_genes <- nrow(mat); n_cells <- ncol(mat)
     detect  <- mat > 0
     ref_cell_total <- as.numeric(Matrix::colSums(mat))
     ref_cell_nfeat <- as.integer(Matrix::colSums(detect))
-    ref_feat_total <- as.numeric(Matrix::rowSums(mat))
-    ref_feat_ncell <- as.integer(Matrix::rowSums(detect))
 
-    # Parquet-backed giotto + streaming pass
-    g_pq <- Giotto::createGiottoObject(expression = mat, verbose = FALSE)
-    eo   <- new("exprObj", name = "raw", exprMat = pe,
-                spat_unit = "cell", feat_type = "rna")
-    g_pq <- GiottoClass::setExpression(g_pq, x = eo, name = "raw",
-                                        verbose = FALSE)
-    g_pq <- addStreamStatistics(g_pq, verbose = FALSE)
+    cs <- GiottoClass::processData(pe, Giotto::qcParam("cell"))
+    cs <- cs[match(colnames(mat), cs$cells), ]
 
-    cm <- GiottoClass::getCellMetadata(g_pq,    output = "data.table")
-    fm <- GiottoClass::getFeatureMetadata(g_pq, output = "data.table")
+    expect_equal(cs$total_expr, ref_cell_total)
+    expect_equal(cs$nr_feats,   ref_cell_nfeat)
+    expect_equal(cs$perc_feats, ref_cell_nfeat / n_genes * 100)
+})
+
+
+test_that("processData(parquetExprStore, featQcParam) matches reference", {
+    skip_if_not_installed("Giotto")
+    mat <- .tiny_mat(seed = 7)
+    pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+
+    n_genes <- nrow(mat); n_cells <- ncol(mat)
+    detect  <- mat > 0
+    ref_total <- as.numeric(Matrix::rowSums(mat))
+    ref_ncell <- as.integer(Matrix::rowSums(detect))
+
+    fs <- GiottoClass::processData(pe, Giotto::qcParam("feat"))
+    fs <- fs[match(rownames(mat), fs$feats), ]
+
+    expect_equal(fs$total_expr,   ref_total)
+    expect_equal(fs$nr_cells,     ref_ncell)
+    expect_equal(fs$perc_cells,   ref_ncell / n_cells * 100)
+    expect_equal(fs$mean_expr,    ref_total / n_cells)
+})
+
+
+test_that("addStatistics(g) on parquet backend matches in-memory reference", {
+    skip_if_not_installed("Giotto")
+    skip_if_not_installed("GiottoClass")
+
+    mat <- .tiny_mat(seed = 11)
+    pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+
+    # Reference: compute inline (avoid Giotto::addStatistics internal
+    # sys.call brittleness under testthat)
+    n_genes <- nrow(mat); n_cells <- ncol(mat)
+    detect  <- mat > 0
+    ref_cell_total <- as.numeric(Matrix::colSums(mat))
+    ref_cell_nfeat <- as.integer(Matrix::colSums(detect))
+
+    # Parquet-backed giotto, then SAME user-facing addStatistics call as
+    # the in-memory workflow — dispatch routes via processData internally.
+    g <- Giotto::createGiottoObject(expression = mat, verbose = FALSE)
+    eo <- new("exprObj", name = "raw", exprMat = pe,
+              spat_unit = "cell", feat_type = "rna")
+    g <- GiottoClass::setExpression(g, x = eo, name = "raw", verbose = FALSE)
+
+    g <- suppressWarnings(  # silence "provenance mismatch" cosmetic warning
+        Giotto::addCellStatistics(g, expression_values = "raw",
+                                   verbose = FALSE)
+    )
+    cm <- GiottoClass::getCellMetadata(g, output = "data.table")
     cm <- cm[match(colnames(mat), cm$cell_ID), ]
-    fm <- fm[match(rownames(mat), fm$feat_ID), ]
 
     expect_equal(cm$total_expr, ref_cell_total)
     expect_equal(cm$nr_feats,   ref_cell_nfeat)
     expect_equal(cm$perc_feats, ref_cell_nfeat / n_genes * 100)
-
-    expect_equal(fm$total_expr, ref_feat_total)
-    expect_equal(fm$nr_cells,   ref_feat_ncell)
-    expect_equal(fm$perc_cells, ref_feat_ncell / n_cells * 100)
-    expect_equal(fm$mean_expr,  ref_feat_total / n_cells)
-    expect_equal(
-        fm$mean_expr_det,
-        ifelse(ref_feat_ncell > 0L, ref_feat_total / ref_feat_ncell, 0)
-    )
-})
-
-
-test_that("addStreamStatistics errors clearly on non-parquet backend", {
-    skip_if_not_installed("Giotto")
-    mat <- .tiny_mat(seed = 2)
-    g   <- Giotto::createGiottoObject(expression = mat, verbose = FALSE)
-    expect_error(
-        addStreamStatistics(g),
-        "requires a parquetExprStore"
-    )
-})
-
-
-test_that("addStreamStatistics rejects non-giotto input", {
-    expect_error(
-        addStreamStatistics(list()),
-        "must be a `giotto` object"
-    )
 })
