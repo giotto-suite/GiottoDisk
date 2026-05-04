@@ -135,19 +135,28 @@ setMethod("processData",
         numeric(P_hvg)
     }
 
+    # Translate subset positions to ORIGINAL parquet col_ids that
+    # correspond to the requested HVG features. (When pe is not
+    # subsetted, hvg_idx values ARE original col_ids.)
+    hvg_orig <- .pe_orig_col(hvg_idx, pe)
+
     # ---- Streaming chunk reader (cell-major) -----------------------------
     .read_chunk_norm_hvg <- function(cell_start, cell_end) {
-        ds <- storeRead(pe)
+        ds <- pe@read_fun(pe@path)   # unfiltered Arrow dataset
         row_id <- col_id <- value <- NULL  # NSE
+        # Original parquet row_ids for this subset cell band
+        orig_rows <- .pe_orig_row(cell_start:cell_end, pe)
         df <- ds |>
-            dplyr::filter(row_id >= !!cell_start, row_id <= !!cell_end,
-                           col_id %in% !!hvg_idx) |>
+            dplyr::filter(row_id %in% !!orig_rows,
+                           col_id %in% !!hvg_orig) |>
             dplyr::collect() |>
             data.table::as.data.table()
         if (nrow(df) == 0L) return(NULL)
         chunk_n  <- cell_end - cell_start + 1L
-        gene_map <- match(df$col_id, hvg_idx)
-        cell_map <- df$row_id - cell_start + 1L
+        # Map original col_id -> position in HVG vector
+        gene_map <- match(df$col_id, hvg_orig)
+        # Map original row_id -> within-band position [1..chunk_n]
+        cell_map <- match(df$row_id, orig_rows)
         A <- Matrix::sparseMatrix(
             i = cell_map, j = gene_map, x = as.double(df$value),
             dims = c(chunk_n, P_hvg), repr = "C"
@@ -265,21 +274,31 @@ setMethod("processData",
 
     g_sum <- numeric(P_hvg)
     row_id <- col_id <- value <- v_norm <- s <- NULL  # NSE
-    ds <- storeRead(pe)
+
+    # Translate hvg_idx (subset positions) to ORIGINAL parquet col_ids
+    hvg_orig <- .pe_orig_col(hvg_idx, pe)
+
+    ds_base <- pe@read_fun(pe@path)
     chunk_size <- as.integer(pe@chunk_size %null% 250000L)
     for (cs in seq.int(1L, n_cells, by = chunk_size)) {
         ce <- min(cs + chunk_size - 1L, n_cells)
-        df <- ds |>
-            dplyr::filter(row_id >= !!cs, row_id <= !!ce,
-                           col_id %in% !!hvg_idx) |>
+        # Original parquet row_ids for this subset cell band
+        orig_rows <- .pe_orig_row(cs:ce, pe)
+        df <- ds_base |>
+            dplyr::filter(row_id %in% !!orig_rows,
+                           col_id %in% !!hvg_orig) |>
             dplyr::collect() |>
             data.table::as.data.table()
         if (nrow(df) == 0L) next
+        # Remap row_id (orig parquet) -> subset position so sf[row_id] works
+        df[, row_id := .pe_remap_row(row_id, pe)]
         df[, v_norm := value * sf[row_id]]
         if (log_norm) df[, v_norm := log1p(v_norm) / log(log_base)]
         agg <- df[, .(s = sum(v_norm)), by = col_id]
-        g_idx <- match(agg$col_id, hvg_idx)
-        g_sum[g_idx] <- g_sum[g_idx] + agg$s
+        # Map orig col_id -> position in HVG vector
+        g_idx <- match(agg$col_id, hvg_orig)
+        keep <- !is.na(g_idx)
+        g_sum[g_idx[keep]] <- g_sum[g_idx[keep]] + agg$s[keep]
     }
     g_sum / n_cells
 }

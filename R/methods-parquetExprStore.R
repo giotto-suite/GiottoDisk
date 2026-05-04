@@ -2,11 +2,25 @@
 NULL
 
 # storeRead ####
+# When the store has been subsetted (cell_idx and/or gene_idx populated by
+# the `[` method), filter the Arrow dataset by those original-position
+# indices so all downstream methods automatically see only the active
+# entries. The Parquet file on disk is not rewritten.
 
 #' @rdname storeRead
 #' @export
 setMethod("storeRead", signature("parquetExprStore"), function(store, ...) {
-    store@read_fun(store@path, ...)
+    ds <- store@read_fun(store@path, ...)
+    row_id <- col_id <- NULL  # NSE bindings
+    if (length(store@cell_idx) > 0L) {
+        ci <- store@cell_idx
+        ds <- ds |> dplyr::filter(row_id %in% !!ci)
+    }
+    if (length(store@gene_idx) > 0L) {
+        gi <- store@gene_idx
+        ds <- ds |> dplyr::filter(col_id %in% !!gi)
+    }
+    ds
 })
 
 # storeWrite ####
@@ -108,7 +122,117 @@ setMethod("show", "parquetExprStore", function(object) {
             paste(object@cell_ids[seq_len(n_show)], collapse = ", "),
             if (length(object@cell_ids) > 3L) ", ..." else ""))
     }
+    if (length(object@cell_idx) > 0L || length(object@gene_idx) > 0L) {
+        cat(sprintf("  subset   : cell_idx[%d] gene_idx[%d]\n",
+            length(object@cell_idx), length(object@gene_idx)))
+    }
     cat(sprintf("  chunk    : %s cells\n",
         format(object@chunk_size, big.mark = ",", scientific = FALSE)))
     invisible(object)
 })
+
+
+# [ subset ####
+# `pe[i, j]` returns a new parquetExprStore narrowed to the kept rows
+# (genes) / columns (cells). The Parquet file on disk is unchanged;
+# the @cell_idx / @gene_idx slots record the original-parquet positions
+# of the kept entries so storeRead can filter via Arrow.
+#
+# Bioconductor convention: rows = genes, cols = cells.
+# Supported index types: integer, logical, character, missing.
+
+.resolve_subset_idx <- function(idx, all_ids, axis_name) {
+    if (is.logical(idx)) {
+        if (length(idx) != length(all_ids)) {
+            stop("[parquetExprStore subset] logical ", axis_name,
+                 " index length (", length(idx), ") != n (", length(all_ids),
+                 ").", call. = FALSE)
+        }
+        return(which(idx))
+    }
+    if (is.character(idx)) {
+        m <- match(idx, all_ids)
+        if (anyNA(m)) {
+            bad <- idx[is.na(m)]
+            stop("[parquetExprStore subset] character ", axis_name,
+                 " index has unknown IDs: ",
+                 toString(head(bad, 5L)),
+                 if (length(bad) > 5L) ", ..." else "",
+                 call. = FALSE)
+        }
+        return(m)
+    }
+    if (is.numeric(idx)) {
+        return(as.integer(idx))
+    }
+    stop("[parquetExprStore subset] unsupported ", axis_name, " index type: ",
+         class(idx)[1L], call. = FALSE)
+}
+
+# Helpers used by streaming methods after storeRead(pe) returns rows
+# whose row_id / col_id are still in the ORIGINAL parquet coordinate
+# system. After collect(), call these to map to subset positions
+# (1..n_cells / 1..n_genes of the current view).
+
+#' @keywords internal
+#' @noRd
+.pe_remap_row <- function(orig_row_ids, pe) {
+    if (length(pe@cell_idx) == 0L) return(as.integer(orig_row_ids))
+    as.integer(match(orig_row_ids, pe@cell_idx))
+}
+
+#' @keywords internal
+#' @noRd
+.pe_remap_col <- function(orig_col_ids, pe) {
+    if (length(pe@gene_idx) == 0L) return(as.integer(orig_col_ids))
+    as.integer(match(orig_col_ids, pe@gene_idx))
+}
+
+# Translate a vector of subset positions to the original parquet
+# row_ids / col_ids — used when methods filter Arrow by HVG genes or
+# cell bands and need the on-disk integer indices.
+
+#' @keywords internal
+#' @noRd
+.pe_orig_row <- function(subset_pos, pe) {
+    if (length(pe@cell_idx) == 0L) return(as.integer(subset_pos))
+    as.integer(pe@cell_idx[subset_pos])
+}
+
+#' @keywords internal
+#' @noRd
+.pe_orig_col <- function(subset_pos, pe) {
+    if (length(pe@gene_idx) == 0L) return(as.integer(subset_pos))
+    as.integer(pe@gene_idx[subset_pos])
+}
+
+#' @export
+setMethod("[",
+    signature(x = "parquetExprStore", i = "ANY", j = "ANY", drop = "ANY"),
+    function(x, i, j, ..., drop = TRUE) {
+        # i = genes (rows); j = cells (cols)
+        if (!missing(i)) {
+            i_int <- .resolve_subset_idx(i, x@feat_ids, "row (gene)")
+            new_gene_idx <- if (length(x@gene_idx) == 0L) {
+                as.integer(i_int)
+            } else {
+                x@gene_idx[i_int]
+            }
+            x@feat_ids <- x@feat_ids[i_int]
+            x@gene_idx <- as.integer(new_gene_idx)
+            x@n_genes  <- as.numeric(length(x@feat_ids))
+        }
+        if (!missing(j)) {
+            j_int <- .resolve_subset_idx(j, x@cell_ids, "col (cell)")
+            new_cell_idx <- if (length(x@cell_idx) == 0L) {
+                as.integer(j_int)
+            } else {
+                x@cell_idx[j_int]
+            }
+            x@cell_ids <- x@cell_ids[j_int]
+            x@cell_idx <- as.integer(new_cell_idx)
+            x@n_cells  <- as.numeric(length(x@cell_ids))
+        }
+        x
+    }
+)

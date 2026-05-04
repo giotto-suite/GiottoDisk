@@ -65,9 +65,10 @@ setMethod("processData",
     cell_total  <- numeric(n_cells)
     cell_nfeats <- integer(n_cells)
     if (nrow(cell_agg) > 0L) {
-        idx <- as.integer(cell_agg$row_id)
-        cell_total[idx]  <- as.numeric(cell_agg$total_expr)
-        cell_nfeats[idx] <- as.integer(cell_agg$nr_feats)
+        idx <- .pe_remap_row(cell_agg$row_id, pe)
+        keep <- !is.na(idx)
+        cell_total[idx[keep]]  <- as.numeric(cell_agg$total_expr[keep])
+        cell_nfeats[idx[keep]] <- as.integer(cell_agg$nr_feats[keep])
     }
 
     data.table::data.table(
@@ -103,9 +104,10 @@ setMethod("processData",
     feat_total  <- numeric(n_genes)
     feat_ncells <- integer(n_genes)
     if (nrow(feat_agg) > 0L) {
-        idx <- as.integer(feat_agg$col_id)
-        feat_total[idx]  <- as.numeric(feat_agg$total_expr)
-        feat_ncells[idx] <- as.integer(feat_agg$nr_cells)
+        idx <- .pe_remap_col(feat_agg$col_id, pe)
+        keep <- !is.na(idx)
+        feat_total[idx[keep]]  <- as.numeric(feat_agg$total_expr[keep])
+        feat_ncells[idx[keep]] <- as.integer(feat_agg$nr_cells[keep])
     }
 
     data.table::data.table(

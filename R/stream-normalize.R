@@ -86,6 +86,10 @@ setMethod("processData",
         data.table::as.data.table()
 
     cs <- numeric(n_cells)
-    if (nrow(agg) > 0L) cs[as.integer(agg$row_id)] <- as.numeric(agg$s)
+    if (nrow(agg) > 0L) {
+        idx <- .pe_remap_row(agg$row_id, pe)
+        keep <- !is.na(idx)
+        cs[idx[keep]] <- as.numeric(agg$s[keep])
+    }
     cs
 }

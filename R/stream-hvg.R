@@ -102,23 +102,35 @@ setMethod("processData",
     # NSE bindings
     row_id <- col_id <- value <- v_norm <- s <- s2 <- nz <- raw_total <- NULL
 
-    ds <- storeRead(pe)
+    # storeRead already filters by pe@cell_idx / pe@gene_idx if set, but we
+    # need to walk by SUBSET positions and translate to original parquet
+    # row_ids when the store has been subsetted.
+    ds_base <- pe@read_fun(pe@path)   # unfiltered — we apply our own
     chunk_size <- as.integer(pe@chunk_size %null% 250000L)
 
     for (start in seq.int(1L, n_cells, by = chunk_size)) {
         end <- min(start + chunk_size - 1L, n_cells)
-        chunk <- ds |>
-            dplyr::filter(row_id >= !!start, row_id <= !!end) |>
-            dplyr::collect() |>
-            data.table::as.data.table()
+        # Translate subset positions [start..end] to original parquet row_ids
+        orig_rows <- .pe_orig_row(start:end, pe)
+
+        q <- ds_base |> dplyr::filter(row_id %in% !!orig_rows)
+        if (length(pe@gene_idx) > 0L) {
+            gi <- pe@gene_idx
+            q <- q |> dplyr::filter(col_id %in% !!gi)
+        }
+        chunk <- q |> dplyr::collect() |> data.table::as.data.table()
         if (nrow(chunk) == 0L) next
+
+        # Remap row_id from original parquet -> subset position so
+        # sf[row_id] works (sf is in subset coords)
+        chunk[, row_id := .pe_remap_row(row_id, pe)]
 
         # Apply JIT recipe: scale per cell, then optional log
         chunk[, v_norm := value * sf[row_id]]
         if (log_norm) chunk[, v_norm := log1p(v_norm) / log(log_base)]
 
-        # Per-gene accumulators (only entries above detection threshold
-        # contribute to nz; sum / sumsq use all entries since zeros add 0)
+        # Per-gene accumulators (use ORIGINAL col_id for grouping then
+        # remap once at the end)
         agg <- chunk[, .(
                 s         = sum(v_norm),
                 s2        = sum(v_norm * v_norm),
@@ -126,11 +138,12 @@ setMethod("processData",
                 raw_total = sum(value)
             ), by = col_id]
 
-        idx <- as.integer(agg$col_id)
-        gene_sum[idx]       <- gene_sum[idx]       + agg$s
-        gene_sumsq[idx]     <- gene_sumsq[idx]     + agg$s2
-        gene_nnz[idx]       <- gene_nnz[idx]       + as.integer(agg$nz)
-        gene_total_raw[idx] <- gene_total_raw[idx] + agg$raw_total
+        idx <- .pe_remap_col(agg$col_id, pe)
+        keep <- !is.na(idx)
+        gene_sum[idx[keep]]       <- gene_sum[idx[keep]]       + agg$s[keep]
+        gene_sumsq[idx[keep]]     <- gene_sumsq[idx[keep]]     + agg$s2[keep]
+        gene_nnz[idx[keep]]       <- gene_nnz[idx[keep]]       + as.integer(agg$nz[keep])
+        gene_total_raw[idx[keep]] <- gene_total_raw[idx[keep]] + agg$raw_total[keep]
     }
 
     gene_mean <- gene_sum / n_cells

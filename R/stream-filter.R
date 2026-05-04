@@ -63,22 +63,28 @@ setMethod("processData",
 
     feat_count <- integer(n_genes)
     if (nrow(feat_agg) > 0L) {
-        idx <- as.integer(feat_agg$col_id)
-        feat_count[idx] <- as.integer(feat_agg$n_cells_above)
+        idx <- .pe_remap_col(feat_agg$col_id, pe)
+        keep <- !is.na(idx)
+        feat_count[idx[keep]] <- as.integer(feat_agg$n_cells_above[keep])
     }
-    feats_keep_idx <- which(feat_count >= f_min)
-    feats_keep_ids <- pe@feat_ids[feats_keep_idx]
+    feats_keep_idx_subset <- which(feat_count >= f_min)
+    feats_keep_ids <- pe@feat_ids[feats_keep_idx_subset]
 
     # ---- Pass 2: per-cell count, restricted to kept features --------------
-    if (length(feats_keep_idx) == 0L) {
+    if (length(feats_keep_idx_subset) == 0L) {
         # nothing kept — short-circuit
         return(list(feats_keep = character(0L),
                     cells_keep = character(0L)))
     }
 
+    # Translate kept-feature subset positions back to ORIGINAL parquet
+    # col_ids for the Arrow filter (the parquet payload uses on-disk
+    # original indices regardless of whether pe is subsetted).
+    feats_keep_orig <- .pe_orig_col(feats_keep_idx_subset, pe)
+
     cell_agg <- ds |>
         dplyr::filter(value >= !!thr,
-                       col_id %in% !!feats_keep_idx) |>
+                       col_id %in% !!feats_keep_orig) |>
         dplyr::group_by(row_id) |>
         dplyr::summarise(n_feats_above = dplyr::n()) |>
         dplyr::collect() |>
@@ -86,8 +92,9 @@ setMethod("processData",
 
     cell_count <- integer(n_cells)
     if (nrow(cell_agg) > 0L) {
-        idx <- as.integer(cell_agg$row_id)
-        cell_count[idx] <- as.integer(cell_agg$n_feats_above)
+        idx <- .pe_remap_row(cell_agg$row_id, pe)
+        keep <- !is.na(idx)
+        cell_count[idx[keep]] <- as.integer(cell_agg$n_feats_above[keep])
     }
     cells_keep_idx <- which(cell_count >= c_min)
     cells_keep_ids <- pe@cell_ids[cells_keep_idx]

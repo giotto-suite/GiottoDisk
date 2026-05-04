@@ -57,6 +57,18 @@ NULL
 # definitions ####
 
 #' @rdname parquetExprStore-class
+#' @section Subset semantics:
+#' `parquetExprStore` supports lightweight subsetting via the `[` operator.
+#' `pe[i, j]` returns a new store whose `feat_ids` / `cell_ids` are narrowed
+#' to the kept rows / columns and whose `gene_idx` / `cell_idx` slots record
+#' the *original* parquet positions of the kept entries. The Parquet file
+#' on disk is **not** rewritten — `storeRead()` filters lazily via Arrow
+#' using the recorded indices, so chained subsets stay cheap.
+#' @slot cell_idx integer. Active cell positions in the original Parquet
+#'   (length 0 = no subset, all cells are active). When non-empty:
+#'   `length(cell_idx) == length(cell_ids) == n_cells`.
+#' @slot gene_idx integer. Active gene positions in the original Parquet
+#'   (length 0 = no subset).
 setClass("parquetExprStore",
     contains = "fileStore",
     slots = list(
@@ -64,6 +76,8 @@ setClass("parquetExprStore",
         n_genes    = "numeric",
         cell_ids   = "character",
         feat_ids   = "character",
+        cell_idx   = "integer",
+        gene_idx   = "integer",
         chunk_size = "numeric"
     ),
     prototype = list(
@@ -71,6 +85,8 @@ setClass("parquetExprStore",
         n_genes    = 0,
         cell_ids   = character(0L),
         feat_ids   = character(0L),
+        cell_idx   = integer(0L),
+        gene_idx   = integer(0L),
         chunk_size = 250000
     )
 )
