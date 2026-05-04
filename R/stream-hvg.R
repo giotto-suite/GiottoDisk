@@ -13,10 +13,10 @@ NULL
 # sum + sum-of-squares, then computes mean / sd / cv on the small
 # (n_genes-sized) result vectors and runs LOESS in memory.
 #
-# Other hvgParam variants (covGroupsHvgParam, varPResidHvgParam) error
-# clearly on parquetExprStore for now — they require either binning all
-# gene means or per-feature variance over the full scaled matrix, neither
-# of which adds value over the cov_loess streaming path.
+# covGroupsHvgParam shares the streaming heavy-lifting with cov_loess —
+# only the post-processing (quantile-bin -> within-bin z-score) differs.
+# varPResidHvgParam still errors clearly because it requires the full
+# scaled (z-scored) gene-by-cell matrix, which densifies streaming reads.
 
 # ---- covLoessHvgParam: streaming ------------------------------------------
 
@@ -51,18 +51,59 @@ setMethod("processData",
 )
 
 
-# ---- Other hvgParam variants on parquet: clear error ----------------------
+# ---- covGroupsHvgParam: streaming -----------------------------------------
 
 #' @rdname processData
 #' @export
 setMethod("processData",
     signature(x = "parquetExprStore", param = "covGroupsHvgParam"),
     function(x, param, ...) {
-        stop("[processData(parquetExprStore, covGroupsHvgParam)] ",
-             "method = \"cov_groups\" is not implemented for the streaming ",
-             "backend. Use method = \"cov_loess\" instead.", call. = FALSE)
+        if (is.null(x@params$norm) ||
+            is.null(x@params$norm$scale_factors)) {
+            stop("[processData(parquetExprStore, covGroupsHvgParam)] ",
+                 "expression backend has no normalization recipe. Run ",
+                 "normalizeGiotto(g, scale_feats = FALSE, scale_cells = FALSE) ",
+                 "first to populate scale factors on the store.",
+                 call. = FALSE)
+        }
+
+        thr <- param$expression_threshold %null% 0
+        stats <- .stream_norm_gene_stats(x, expression_threshold = thr)
+
+        # NSE bindings
+        cov <- expr_groups <- cov_group_zscore <- selected <- NULL
+
+        # Quantile-bin by mean expression. If too many tied breaks (lots of
+        # zero-mean genes), recompute on the strictly positive subset and
+        # set the leading break to 0 so all-zero genes still bin into
+        # group_1 — matches Giotto's in-memory .calc_cov_group_hvf.
+        n_groups <- as.integer(param$nr_expression_groups)
+        prob_seq <- seq(0, 1, by = 1 / n_groups)
+        prob_seq[length(prob_seq)] <- 1
+        expr_group_breaks <- stats::quantile(stats$mean_expr, probs = prob_seq)
+        if (any(duplicated(expr_group_breaks))) {
+            m <- stats$mean_expr
+            expr_group_breaks <- stats::quantile(m[m > 0], probs = prob_seq)
+            expr_group_breaks[[1L]] <- 0
+        }
+
+        expr_groups_lbl <- cut(
+            stats$mean_expr,
+            breaks         = expr_group_breaks,
+            labels         = paste0("group_", seq_len(n_groups)),
+            include.lowest = TRUE
+        )
+        stats[, expr_groups := expr_groups_lbl]
+        stats[, cov_group_zscore := scale(cov), by = expr_groups]
+        stats[, selected := ifelse(
+            cov_group_zscore > param$zscore_threshold, "yes", "no"
+        )]
+        stats
     }
 )
+
+
+# ---- Other hvgParam variants on parquet: clear error ----------------------
 
 #' @rdname processData
 #' @export
