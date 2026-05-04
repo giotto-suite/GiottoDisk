@@ -80,6 +80,8 @@ Collate:
     'stream-normalize.R'
     'stream-hvg.R'
     'stream-pca.R'
+    'stream-recommend.R'
+    'createGiottoFromParquet.R'
     'utils-spatial.R'
     'tilework.R'
     'utils-arrow.R'
