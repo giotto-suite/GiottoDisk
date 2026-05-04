@@ -75,6 +75,7 @@ rowSample(ps_1, 4) |> storeRead(output = "tibble")
 \seealso{
 Other store types: 
 \code{\link{dataStore-class}},
-\code{\link{fileStore-class}}
+\code{\link{fileStore-class}},
+\code{\link{parquetExprStore-class}}
 }
 \concept{store types}

@@ -18,6 +18,7 @@ the \code{path} to load in the data in a useful format.
 }
 \seealso{
 Other store constructors: 
+\code{\link{parquetExprStore}},
 \code{\link{parquetStore}},
 \code{\link{storeCreate}()}
 }

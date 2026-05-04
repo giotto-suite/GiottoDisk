@@ -23,6 +23,7 @@ Create a parquet-backed storage.
 
 Other store constructors: 
 \code{\link{fileStore}},
+\code{\link{parquetExprStore}},
 \code{\link{storeCreate}()}
 }
 \concept{store constructors}

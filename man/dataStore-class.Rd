@@ -11,6 +11,7 @@ S4 class define a storage of data. The base class \code{dataStore} is VIRTUAL
 \seealso{
 Other store types: 
 \code{\link{fileStore-class}},
+\code{\link{parquetExprStore-class}},
 \code{\link{parquetStore-class}}
 }
 \concept{store types}

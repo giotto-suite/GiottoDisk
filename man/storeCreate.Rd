@@ -28,6 +28,7 @@ Hub function for creating a concrete store class.
 
 Other store constructors: 
 \code{\link{fileStore}},
+\code{\link{parquetExprStore}},
 \code{\link{parquetStore}}
 }
 \concept{store constructors}

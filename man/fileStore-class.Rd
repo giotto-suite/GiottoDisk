@@ -70,6 +70,7 @@ Flag that the \code{fileStore} is queryable by coercing to this class
 \seealso{
 Other store types: 
 \code{\link{dataStore-class}},
+\code{\link{parquetExprStore-class}},
 \code{\link{parquetStore-class}}
 }
 \concept{store types}
