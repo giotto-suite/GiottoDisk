@@ -1,6 +1,25 @@
 #' @include class-parquetExprStore.R
 NULL
 
+
+# Disambiguate duplicate feature IDs the 10x way (suffix `--N`).
+# Matches the convention used by Giotto::get10Xmatrix so the
+# parquet path produces the same feat_ids as the in-memory dgCMatrix
+# path. No-op when all names are already unique.
+.disambiguate_feat_ids <- function(feat_ids) {
+    feat_ids <- as.character(feat_ids)
+    counts <- table(feat_ids)
+    dups   <- names(counts)[counts > 1L]
+    if (length(dups) == 0L) return(feat_ids)
+    out <- feat_ids
+    for (nm in dups) {
+        idx <- which(feat_ids == nm)
+        out[idx] <- paste0(nm, "--", seq_along(idx))
+    }
+    out
+}
+
+
 # mtx_to_parquetExprStore ####
 
 #' @name mtx_to_parquetExprStore
@@ -72,7 +91,7 @@ mtx_to_parquetExprStore <- function(
              ") exceeds number of columns in ", features_path,
              " (", ncol(features), ").", call. = FALSE)
     }
-    feat_ids <- as.character(features[[feature_id_col]])
+    feat_ids <- .disambiguate_feat_ids(as.character(features[[feature_id_col]]))
 
     # ---- Open mtx connection (handles both .gz and plain text) ----
     is_gz <- grepl("\\.gz$", mtx_path, ignore.case = TRUE)
@@ -263,7 +282,8 @@ h5_to_parquetExprStore <- function(
     cell_ids   <- as.character(h5[[paste0(root, "/barcodes")]][])
     feat_id    <- as.character(h5[[paste0(root, "/features/id")]][])
     feat_name  <- as.character(h5[[paste0(root, "/features/name")]][])
-    feat_ids   <- if (feature_id_col == 1L) feat_id else feat_name
+    feat_ids   <- .disambiguate_feat_ids(
+        if (feature_id_col == 1L) feat_id else feat_name)
     n_genes    <- as.integer(h5[[paste0(root, "/shape")]][])[1L]
     n_cells    <- as.integer(h5[[paste0(root, "/shape")]][])[2L]
     indptr     <- as.numeric(h5[[paste0(root, "/indptr")]][])
