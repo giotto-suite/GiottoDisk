@@ -2,7 +2,9 @@
 
 S3method(as.list,gDirSource)
 export(as.data.frame.gDirSource)
+export(bin_gef_to_parquetExprStore)
 export(bpcMatrixStore)
+export(cellbin_gef_to_parquetExprStore)
 export(createGiottoFromParquet)
 export(fileStore)
 export(gDirSource)

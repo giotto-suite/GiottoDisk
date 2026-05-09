@@ -365,3 +365,349 @@ xenium_h5_to_parquetExprStore <- function(xenium_dir, output_path, ...) {
         ...
     )
 }
+
+
+# cellbin_gef_to_parquetExprStore ####
+
+#' @name cellbin_gef_to_parquetExprStore
+#' @title Stream-convert a Stereo-seq cellbin .gef file into a parquetExprStore
+#' @description
+#' Reads a Stereo-seq cell-bin GEF (`*.cellbin.gef` / `*.adjusted.cellbin.gef`)
+#' in **gene-chunks** via `rhdf5::h5read` hyperslab and writes one Parquet
+#' shard per chunk. **No full triplet table is ever materialized in memory** —
+#' only `batch_genes` genes' worth of `(cellID, count)` rows are held at a time.
+#'
+#' GEF cellbin layout (from BGI's SAW pipeline):
+#' ```
+#' cellBin/cell     : (id, x, y, ...) — small, n_cells rows
+#' cellBin/gene     : (geneName, geneID, cellCount, offset, ...) — small,
+#'                    n_genes rows. cellCount = nnz per gene; rows in geneExp
+#'                    are stored gene-major (run-length encoded by cellCount).
+#' cellBin/geneExp  : (cellID, count) — large, sum(cellCount) total rows.
+#' ```
+#'
+#' Note on predicate pushdown: shards are sorted by `row_id` (= cell index)
+#' within themselves, but each gene-chunk shard contains rows from many
+#' cells. Chunk-level row_id stats are wide; downstream cell-range filters
+#' touch every shard but read only matching rows within them.
+#'
+#' @param gef_path character. Path to a Stereo-seq cellbin .gef file.
+#' @param output_path character. Destination Parquet file (single file
+#'   when total nnz <= `batch_genes` worth) or directory (one shard per
+#'   gene-chunk, used otherwise).
+#' @param gene_column character. Which gene-id column to use as `feat_ids`:
+#'   `"geneName"` (default) or `"geneID"`.
+#' @param batch_genes integer. Number of genes per streaming chunk.
+#'   Default 500.
+#' @param overwrite logical. If `TRUE`, replace `output_path` if it exists.
+#' @return A [parquetExprStore-class] with `cell_ids = paste0("cell_",
+#'   cellDT$id)` and `feat_ids` from the chosen `gene_column`.
+#' @seealso [bin_gef_to_parquetExprStore()],
+#'   [h5_to_parquetExprStore()]
+#' @export
+cellbin_gef_to_parquetExprStore <- function(
+    gef_path,
+    output_path,
+    gene_column = c("geneName", "geneID"),
+    batch_genes = 500L,
+    overwrite   = FALSE
+) {
+    if (!requireNamespace("rhdf5", quietly = TRUE)) {
+        stop("[cellbin_gef_to_parquetExprStore] rhdf5 is required to read ",
+             "Stereo-seq .gef files. Install with: ",
+             "BiocManager::install(\"rhdf5\").",
+             call. = FALSE)
+    }
+    stopifnot(file.exists(gef_path))
+    gene_column <- match.arg(gene_column, c("geneName", "geneID"))
+
+    if (file.exists(output_path)) {
+        if (!overwrite) {
+            stop("[cellbin_gef_to_parquetExprStore] output already exists at ",
+                 output_path, "\n  set overwrite = TRUE to replace.",
+                 call. = FALSE)
+        }
+        unlink(output_path, recursive = TRUE)
+    }
+
+    # ---- Small support tables (full reads) -----------------------------------
+    cellDT <- data.table::setDT(rhdf5::h5read(gef_path, "cellBin/cell"))
+    geneDT <- data.table::setDT(rhdf5::h5read(gef_path, "cellBin/gene"))
+
+    n_cells  <- nrow(cellDT)
+    cell_ids <- paste0("cell_", cellDT$id)
+
+    # cellID (raw) → 1-based row index for the parquetExprStore
+    cell_idx_map <- data.table::setattr(
+        seq_len(n_cells), "names", as.character(cellDT$id)
+    )
+
+    # Collapse duplicate gene names + drop unexpressed genes
+    # (matches Giotto's matrix-path .stereoseq_build_expression).
+    cnt <- as.integer(geneDT$cellCount)
+    all_names <- as.character(geneDT[[gene_column]])
+    expressed_names <- all_names[cnt > 0]
+    feat_ids        <- sort(unique(expressed_names))
+    name_to_row     <- match(all_names, feat_ids)   # NA for unexpressed
+    n_genes         <- length(feat_ids)
+    n_genes_raw     <- length(cnt)
+
+    # cumulative gene offsets in geneExp (0-based exclusive)
+    cum <- c(0L, as.integer(cumsum(as.numeric(cnt))))   # length n_genes_raw+1
+    nnz_total <- cum[length(cum)]
+
+    # Build chunk boundaries that respect col_id groups: never split a
+    # set of raw geneDT rows that share the same name_to_row across two
+    # chunks (otherwise a duplicate-named gene's data would land in
+    # separate parquet shards and miss the within-chunk aggregation).
+    chunks <- .gef_safe_chunks(name_to_row, batch_genes)
+
+    use_dir <- nnz_total > 5e6 || length(chunks) > 1L
+    if (use_dir) dir.create(output_path, recursive = TRUE, showWarnings = FALSE)
+
+    # ---- Stream gene-chunks (safe-boundary plan) ----------------------------
+    batch_idx <- 0L
+    for (chunk_def in chunks) {
+        g_lo     <- chunk_def[1L]
+        g_hi     <- chunk_def[2L]
+        slice_lo <- cum[g_lo] + 1L            # 1-based row index in geneExp
+        slice_hi <- cum[g_hi + 1L]            # inclusive end
+        if (slice_hi < slice_lo) next
+        batch_idx <- batch_idx + 1L
+
+        # rhdf5 hyperslab on a compound dataset: start (1-based) + count
+        chunk <- data.table::setDT(rhdf5::h5read(
+            gef_path, "cellBin/geneExp",
+            start = slice_lo,
+            count = slice_hi - slice_lo + 1L
+        ))
+        # gene_idx (raw geneDT row): rep(g_lo..g_hi, cnt[g_lo..g_hi]).
+        # Remap through name_to_row so duplicate gene names collapse into
+        # the same col_id (matches the matrix path's behavior).
+        gene_idx_raw <- rep.int(seq.int(g_lo, g_hi), cnt[g_lo:g_hi])
+
+        # Aggregate by (row_id, col_id) within the chunk so duplicate
+        # geneDT entries that share a name (collapsed via name_to_row)
+        # become a single row with summed value — matches the matrix
+        # path's sparseMatrix() duplicate-summing behavior.
+        out <- data.table::data.table(
+            row_id = as.integer(cell_idx_map[as.character(chunk$cellID)]),
+            col_id = as.integer(name_to_row[gene_idx_raw]),
+            value  = as.double(chunk$count)
+        )
+        out <- out[!is.na(row_id) & !is.na(col_id),
+                    .(value = sum(value)),
+                    keyby = .(row_id, col_id)]
+
+        target <- if (use_dir)
+            file.path(output_path, sprintf("chunk_%010d.parquet", batch_idx))
+        else
+            output_path
+        arrow::write_parquet(out, target)
+    }
+
+    parquetExprStore(
+        path     = normalizePath(output_path),
+        cell_ids = cell_ids,
+        feat_ids = feat_ids,
+        n_cells  = n_cells,
+        n_genes  = n_genes
+    )
+}
+
+
+# Build chunk boundaries that respect duplicate-name groups: never split
+# a run of raw geneDT rows that share the same name_to_row between two
+# chunks. Returns a list of c(g_lo, g_hi) integer pairs covering 1..n.
+# `target_size` is the desired chunk size in raw geneDT rows.
+.gef_safe_chunks <- function(name_to_row, target_size) {
+    n <- length(name_to_row)
+    if (n == 0L) return(list())
+    target_size <- as.integer(target_size)
+
+    # Boundary positions (1-based): position i is a "safe break" if
+    # name_to_row[i] differs from name_to_row[i-1] (meaning the previous
+    # group ends at i-1 and a new one starts at i). Position 1 is always
+    # a starting point.
+    nm <- name_to_row
+    is_break <- c(TRUE, nm[-1] != nm[-n] |
+                  (is.na(nm[-1]) != is.na(nm[-n])))
+    is_break[is.na(is_break)] <- TRUE
+    safe_starts <- which(is_break)
+
+    # Walk safe_starts and group them into chunks of approximately
+    # target_size raw genes each.
+    out <- vector("list", length(safe_starts))
+    k <- 0L
+    last_start <- safe_starts[1L]
+    for (s in safe_starts[-1L]) {
+        if (s - last_start >= target_size) {
+            k <- k + 1L
+            out[[k]] <- c(last_start, s - 1L)
+            last_start <- s
+        }
+    }
+    k <- k + 1L
+    out[[k]] <- c(last_start, n)
+    out[seq_len(k)]
+}
+
+
+# bin_gef_to_parquetExprStore ####
+
+#' @name bin_gef_to_parquetExprStore
+#' @title Stream-convert a Stereo-seq bin .gef file into a parquetExprStore
+#' @description
+#' Reads a Stereo-seq bin GEF (`*.tissue.gef`, `*.gef`, `*.raw.gef`) at a
+#' chosen `bin_size` in **gene-chunks** via `rhdf5::h5read` hyperslab and
+#' writes one Parquet shard per chunk. Maintains a running
+#' `(x, y) → bin_ID` map so bin IDs are assigned online — no second pass
+#' through the data is required.
+#'
+#' GEF bin layout:
+#' ```
+#' geneExp/<bin_size>/expression : (x, y, count) — gene-major (run-length
+#'                                  encoded by gene$count).
+#' geneExp/<bin_size>/gene       : (geneName, geneID, count, ...).
+#' ```
+#'
+#' @param gef_path character. Path to a Stereo-seq bin .gef file.
+#' @param bin_size character. e.g. `"bin1"`, `"bin50"`, `"bin100"` (must
+#'   match a `geneExp/<bin_size>` group in the GEF).
+#' @param output_path character. Destination Parquet file or directory.
+#' @param gene_column character. `"geneName"` (default) or `"geneID"`.
+#' @param batch_genes integer. Number of genes per streaming chunk.
+#'   Default 500.
+#' @param overwrite logical. If `TRUE`, replace `output_path` if it exists.
+#' @return A list with two components:
+#'   * `pe`         — a [parquetExprStore-class] with
+#'                    `cell_ids = paste0("bin_", 1:n_bins)`.
+#'   * `bin_coords` — a `data.table` of `(bin_ID, x, y)` so callers can
+#'                    construct spatial locations without a second read.
+#' @seealso [cellbin_gef_to_parquetExprStore()]
+#' @export
+bin_gef_to_parquetExprStore <- function(
+    gef_path,
+    bin_size,
+    output_path,
+    gene_column = c("geneName", "geneID"),
+    batch_genes = 500L,
+    overwrite   = FALSE
+) {
+    if (!requireNamespace("rhdf5", quietly = TRUE)) {
+        stop("[bin_gef_to_parquetExprStore] rhdf5 is required to read ",
+             "Stereo-seq .gef files. Install with: ",
+             "BiocManager::install(\"rhdf5\").",
+             call. = FALSE)
+    }
+    stopifnot(file.exists(gef_path))
+    gene_column <- match.arg(gene_column, c("geneName", "geneID"))
+
+    if (file.exists(output_path)) {
+        if (!overwrite) {
+            stop("[bin_gef_to_parquetExprStore] output already exists at ",
+                 output_path, "\n  set overwrite = TRUE to replace.",
+                 call. = FALSE)
+        }
+        unlink(output_path, recursive = TRUE)
+    }
+
+    # NSE bindings
+    bin_ID <- x <- y <- NULL
+
+    # ---- Small support table -------------------------------------------------
+    geneDT <- data.table::setDT(rhdf5::h5read(
+        gef_path, paste0("geneExp/", bin_size, "/gene")
+    ))
+    cnt <- as.integer(geneDT$count)
+
+    # Collapse duplicate gene names + drop unexpressed genes
+    # (matches Giotto's matrix-path .stereoseq_build_expression).
+    all_names       <- as.character(geneDT[[gene_column]])
+    expressed_names <- all_names[cnt > 0]
+    feat_ids        <- sort(unique(expressed_names))
+    name_to_row     <- match(all_names, feat_ids)   # NA for unexpressed
+    n_genes         <- length(feat_ids)
+    n_genes_raw     <- length(cnt)
+
+    cum <- c(0L, as.integer(cumsum(as.numeric(cnt))))
+    nnz_total <- cum[length(cum)]
+
+    # Safe-boundary chunk plan (respects duplicate-name groupings)
+    chunks <- .gef_safe_chunks(name_to_row, batch_genes)
+
+    use_dir <- nnz_total > 5e6 || length(chunks) > 1L
+    if (use_dir) dir.create(output_path, recursive = TRUE, showWarnings = FALSE)
+
+    # ---- Running (x, y) → bin_ID lookup --------------------------------------
+    # Grows online as new bins are seen. data.table key on (x, y) makes
+    # the lookup O(log n_bins_so_far) per entry.
+    xy_to_bin <- data.table::data.table(
+        x = integer(0), y = integer(0), bin_ID = integer(0)
+    )
+    data.table::setkey(xy_to_bin, x, y)
+    n_bins <- 0L
+
+    expr_path <- paste0("geneExp/", bin_size, "/expression")
+
+    # ---- Stream gene-chunks (safe-boundary plan) ----------------------------
+    batch_idx <- 0L
+    for (chunk_def in chunks) {
+        g_lo     <- chunk_def[1L]
+        g_hi     <- chunk_def[2L]
+        slice_lo <- cum[g_lo] + 1L
+        slice_hi <- cum[g_hi + 1L]
+        if (slice_hi < slice_lo) next
+        batch_idx <- batch_idx + 1L
+
+        chunk <- data.table::setDT(rhdf5::h5read(
+            gef_path, expr_path,
+            start = slice_lo,
+            count = slice_hi - slice_lo + 1L
+        ))
+        gene_idx_raw <- rep.int(seq.int(g_lo, g_hi), cnt[g_lo:g_hi])
+
+        # Update bin lookup with new (x, y) seen in this chunk
+        chunk_xy <- unique(chunk[, .(x, y)])
+        new_xy <- chunk_xy[!xy_to_bin, on = c("x", "y")]
+        if (nrow(new_xy) > 0L) {
+            new_xy[, bin_ID := seq.int(n_bins + 1L, n_bins + .N)]
+            n_bins <- n_bins + nrow(new_xy)
+            xy_to_bin <- rbind(xy_to_bin, new_xy)
+            data.table::setkey(xy_to_bin, x, y)
+        }
+        # Look up bin_ID for every chunk row
+        chunk[, bin_ID := xy_to_bin[.SD, on = c("x", "y"), bin_ID]]
+
+        # Remap gene_idx through name_to_row to collapse duplicate names,
+        # then aggregate by (row_id, col_id) so within-chunk duplicates
+        # sum into one row — matches sparseMatrix()'s duplicate-summing.
+        out <- data.table::data.table(
+            row_id = as.integer(chunk$bin_ID),
+            col_id = as.integer(name_to_row[gene_idx_raw]),
+            value  = as.double(chunk$count)
+        )
+        out <- out[!is.na(row_id) & !is.na(col_id),
+                    .(value = sum(value)),
+                    keyby = .(row_id, col_id)]
+
+        target <- if (use_dir)
+            file.path(output_path, sprintf("chunk_%010d.parquet", batch_idx))
+        else
+            output_path
+        arrow::write_parquet(out, target)
+    }
+
+    cell_ids <- paste0("bin_", seq_len(n_bins))
+    pe <- parquetExprStore(
+        path     = normalizePath(output_path),
+        cell_ids = cell_ids,
+        feat_ids = feat_ids,
+        n_cells  = n_bins,
+        n_genes  = n_genes
+    )
+    # Return bin coordinates so callers (e.g. spatlocs construction) can
+    # reuse them without a second pass through the GEF.
+    data.table::setorder(xy_to_bin, bin_ID)
+    list(pe = pe, bin_coords = xy_to_bin)
+}
