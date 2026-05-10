@@ -778,7 +778,7 @@ csv_to_parquetExprStore <- function(
     cell_id_col   = "cell_ID",
     skip_cols     = NULL,
     row_filter_fun = NULL,
-    batch_rows    = 50000L,
+    batch_rows    = 5000L,
     overwrite     = FALSE
 ) {
     stopifnot(file.exists(csv_path))
@@ -794,14 +794,30 @@ csv_to_parquetExprStore <- function(
     # NSE bindings
     row_id <- col_id <- value <- NULL
 
-    # ---- Single-pass read ----------------------------------------------------
-    # `data.table::fread(skip = N)` on a gzipped file re-decompresses from
-    # the start each time → quadratic. Read once, then iterate row-chunks
-    # of the in-RAM data.table. Peak RAM is bounded by the CSV's
-    # uncompressed size; per-chunk melt buffer adds batch_rows × n_genes
-    # × 16 bytes on top.
-    full <- data.table::fread(csv_path, header = TRUE)
-    all_cols <- colnames(full)
+    # ---- Open streaming connection (gzfile detects gzip transparently) ------
+    # Mirrors mtx_to_parquetExprStore: gzip can't seek, so fread(skip = N)
+    # would re-decompress from byte 0 each chunk. Instead, open the gzip
+    # connection once and advance through it sequentially via readLines().
+    # Some files have .gz extensions but are plain text — magic-byte check.
+    is_gz <- grepl("\\.gz$", csv_path, ignore.case = TRUE)
+    if (is_gz) {
+        magic <- readBin(csv_path, what = "raw", n = 2L)
+        is_gz <- length(magic) == 2L && magic[1L] == as.raw(0x1f) &&
+                 magic[2L] == as.raw(0x8b)
+    }
+    con <- if (is_gz) gzfile(csv_path, "r") else file(csv_path, "r")
+    on.exit(close(con), add = TRUE)
+
+    # ---- Header --------------------------------------------------------------
+    header_line <- readLines(con, n = 1L, warn = FALSE)
+    if (length(header_line) == 0L) {
+        stop("[csv_to_parquetExprStore] empty CSV at ", csv_path,
+             call. = FALSE)
+    }
+    all_cols <- strsplit(header_line, ",", fixed = TRUE)[[1L]]
+    # Strip optional surrounding quotes data.table sometimes writes
+    all_cols <- gsub("^\"|\"$", "", all_cols)
+
     if (!cell_id_col %in% all_cols) {
         stop("[csv_to_parquetExprStore] cell_id_col \"", cell_id_col,
              "\" not found in CSV header. Header columns: ",
@@ -812,52 +828,65 @@ csv_to_parquetExprStore <- function(
     feat_ids  <- .disambiguate_feat_ids(feat_cols)
     n_genes   <- length(feat_ids)
 
-    # Apply optional row filter to the whole table once
-    if (!is.null(row_filter_fun)) {
-        keep <- row_filter_fun(full)
-        if (is.logical(keep)) full <- full[keep, ]
-        else full <- full[keep, ]
-    }
-
-    n_cells <- nrow(full)
-    cell_ids_out <- as.character(full[[cell_id_col]])
-
-    # ---- Iterate row-chunks of the in-RAM data.table -------------------------
+    # ---- Stream row-chunks ---------------------------------------------------
     dir.create(output_path, recursive = TRUE, showWarnings = FALSE)
+    cell_ids_out <- character(0)
+    n_cells_so_far <- 0L
     batch_idx <- 0L
-    r_lo <- 1L
-    while (r_lo <= n_cells) {
-        r_hi <- min(r_lo + batch_rows - 1L, n_cells)
-        batch_idx <- batch_idx + 1L
 
-        # Extract feature columns for this chunk as a base matrix; nonzero
-        # positions become triplets. as.matrix on a data.table sub-block
-        # is a single allocation of size chunk_rows × n_genes integers.
-        feat_mat <- as.matrix(full[r_lo:r_hi, ..feat_cols])
-        nz <- which(feat_mat != 0, arr.ind = TRUE)
-        if (nrow(nz) > 0L) {
-            chunk_row_ids <- seq.int(r_lo, r_hi)
-            out <- data.table::data.table(
-                row_id = chunk_row_ids[nz[, 1L]],
-                col_id = as.integer(nz[, 2L]),
-                value  = as.double(feat_mat[nz])
-            )
-            data.table::setorder(out, row_id, col_id)
-            arrow::write_parquet(
-                out,
-                file.path(output_path,
-                          sprintf("chunk_%010d.parquet", batch_idx))
-            )
+    repeat {
+        raw_lines <- readLines(con, n = batch_rows, warn = FALSE)
+        if (length(raw_lines) == 0L) break
+
+        chunk <- data.table::fread(
+            text = raw_lines, header = FALSE,
+            col.names = all_cols
+        )
+
+        # Apply optional row filter (e.g. CosMx: cell_ID != 0, FOV subset)
+        if (!is.null(row_filter_fun)) {
+            keep <- row_filter_fun(chunk)
+            if (is.logical(keep)) chunk <- chunk[keep, ]
+            else chunk <- chunk[keep, ]
         }
-        rm(feat_mat, nz)
-        r_lo <- r_hi + 1L
+        if (nrow(chunk) > 0L) {
+            batch_idx <- batch_idx + 1L
+
+            chunk_cell_ids <- as.character(chunk[[cell_id_col]])
+            chunk_row_ids  <- seq.int(n_cells_so_far + 1L,
+                                       n_cells_so_far + nrow(chunk))
+
+            # Triplets via dense matrix coercion of just the feat columns.
+            # Per-chunk allocation is bounded at
+            # batch_rows × n_genes × 4 bytes (~1 GB at 5,000 × 50,000 cols).
+            feat_mat <- as.matrix(chunk[, ..feat_cols])
+            nz <- which(feat_mat != 0L, arr.ind = TRUE)
+            if (nrow(nz) > 0L) {
+                out <- data.table::data.table(
+                    row_id = chunk_row_ids[nz[, 1L]],
+                    col_id = as.integer(nz[, 2L]),
+                    value  = as.double(feat_mat[nz])
+                )
+                data.table::setorder(out, row_id, col_id)
+                arrow::write_parquet(
+                    out,
+                    file.path(output_path,
+                              sprintf("chunk_%010d.parquet", batch_idx))
+                )
+            }
+            cell_ids_out <- c(cell_ids_out, chunk_cell_ids)
+            n_cells_so_far <- n_cells_so_far + nrow(chunk)
+            rm(feat_mat, nz, chunk)
+        }
+
+        if (length(raw_lines) < batch_rows) break  # EOF
     }
 
     parquetExprStore(
         path     = normalizePath(output_path),
         cell_ids = cell_ids_out,
         feat_ids = feat_ids,
-        n_cells  = n_cells,
+        n_cells  = n_cells_so_far,
         n_genes  = n_genes
     )
 }
