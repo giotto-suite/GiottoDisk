@@ -731,3 +731,133 @@ bin_gef_to_parquetExprStore <- function(
     data.table::setorder(xy_to_bin, bin_ID)
     list(pe = pe, bin_coords = xy_to_bin)
 }
+
+
+# csv_to_parquetExprStore ####
+
+#' @name csv_to_parquetExprStore
+#' @title Stream-convert a wide-format dense CSV into a parquetExprStore
+#' @description
+#' Reads a wide-format CSV (one row per cell, one column per gene; the
+#' first column or `cell_id_col` is the cell ID) in row-chunks via
+#' `data.table::fread(skip = ..., nrows = ...)`, melts each chunk
+#' wide → long (dropping zeros), and writes one Parquet shard per
+#' chunk. **No full dense matrix is ever materialized in memory** —
+#' only `batch_rows` cells of nonzeros are held at a time.
+#'
+#' This is the input format used by NanoString CosMx
+#' (`*_exprMat_file.csv`) and Vizgen MERSCOPE (`cell_by_gene.csv`).
+#'
+#' @param csv_path character. Path to the wide-format CSV (gzip OK —
+#'   `data.table::fread` autodetects).
+#' @param output_path character. Destination Parquet file (single
+#'   file when n_cells <= batch_rows) or directory (one shard per
+#'   batch otherwise).
+#' @param cell_id_col character. Name of the column to use as cell
+#'   ID. Default `"cell_ID"`. The values become `pe@cell_ids` (after
+#'   any caller-side renaming).
+#' @param skip_cols character. Other non-feature columns to drop
+#'   (e.g. `"fov"` for CosMx). All remaining columns become
+#'   features (`feat_ids`).
+#' @param row_filter_fun function or `NULL`. Optional predicate
+#'   applied to each chunk's `data.table` BEFORE melting; should
+#'   return a logical vector (same length as the chunk's rows) or
+#'   the row indices to keep. Used by callers to apply
+#'   technology-specific filters (CosMx: `cell_ID != 0`, FOV
+#'   subset) without a separate pre-pass over the CSV.
+#' @param batch_rows integer. Cells per streaming chunk. Default
+#'   50,000 — peak RAM ≈ batch_rows × n_genes × 16 bytes.
+#' @param overwrite logical. If `TRUE`, replace `output_path` if it
+#'   exists.
+#' @return A [parquetExprStore-class] with `cell_ids` collected
+#'   (in chunk order) and `feat_ids` from the header.
+#' @export
+csv_to_parquetExprStore <- function(
+    csv_path,
+    output_path,
+    cell_id_col   = "cell_ID",
+    skip_cols     = NULL,
+    row_filter_fun = NULL,
+    batch_rows    = 50000L,
+    overwrite     = FALSE
+) {
+    stopifnot(file.exists(csv_path))
+    if (file.exists(output_path)) {
+        if (!overwrite) {
+            stop("[csv_to_parquetExprStore] output already exists at ",
+                 output_path, "\n  set overwrite = TRUE to replace.",
+                 call. = FALSE)
+        }
+        unlink(output_path, recursive = TRUE)
+    }
+
+    # NSE bindings
+    row_id <- col_id <- value <- NULL
+
+    # ---- Single-pass read ----------------------------------------------------
+    # `data.table::fread(skip = N)` on a gzipped file re-decompresses from
+    # the start each time → quadratic. Read once, then iterate row-chunks
+    # of the in-RAM data.table. Peak RAM is bounded by the CSV's
+    # uncompressed size; per-chunk melt buffer adds batch_rows × n_genes
+    # × 16 bytes on top.
+    full <- data.table::fread(csv_path, header = TRUE)
+    all_cols <- colnames(full)
+    if (!cell_id_col %in% all_cols) {
+        stop("[csv_to_parquetExprStore] cell_id_col \"", cell_id_col,
+             "\" not found in CSV header. Header columns: ",
+             toString(head(all_cols, 5)), "...", call. = FALSE)
+    }
+    drop_cols <- unique(c(cell_id_col, skip_cols))
+    feat_cols <- setdiff(all_cols, drop_cols)
+    feat_ids  <- .disambiguate_feat_ids(feat_cols)
+    n_genes   <- length(feat_ids)
+
+    # Apply optional row filter to the whole table once
+    if (!is.null(row_filter_fun)) {
+        keep <- row_filter_fun(full)
+        if (is.logical(keep)) full <- full[keep, ]
+        else full <- full[keep, ]
+    }
+
+    n_cells <- nrow(full)
+    cell_ids_out <- as.character(full[[cell_id_col]])
+
+    # ---- Iterate row-chunks of the in-RAM data.table -------------------------
+    dir.create(output_path, recursive = TRUE, showWarnings = FALSE)
+    batch_idx <- 0L
+    r_lo <- 1L
+    while (r_lo <= n_cells) {
+        r_hi <- min(r_lo + batch_rows - 1L, n_cells)
+        batch_idx <- batch_idx + 1L
+
+        # Extract feature columns for this chunk as a base matrix; nonzero
+        # positions become triplets. as.matrix on a data.table sub-block
+        # is a single allocation of size chunk_rows × n_genes integers.
+        feat_mat <- as.matrix(full[r_lo:r_hi, ..feat_cols])
+        nz <- which(feat_mat != 0, arr.ind = TRUE)
+        if (nrow(nz) > 0L) {
+            chunk_row_ids <- seq.int(r_lo, r_hi)
+            out <- data.table::data.table(
+                row_id = chunk_row_ids[nz[, 1L]],
+                col_id = as.integer(nz[, 2L]),
+                value  = as.double(feat_mat[nz])
+            )
+            data.table::setorder(out, row_id, col_id)
+            arrow::write_parquet(
+                out,
+                file.path(output_path,
+                          sprintf("chunk_%010d.parquet", batch_idx))
+            )
+        }
+        rm(feat_mat, nz)
+        r_lo <- r_hi + 1L
+    }
+
+    parquetExprStore(
+        path     = normalizePath(output_path),
+        cell_ids = cell_ids_out,
+        feat_ids = feat_ids,
+        n_cells  = n_cells,
+        n_genes  = n_genes
+    )
+}
