@@ -223,8 +223,8 @@ setMethod(
             }
         }
         # convert to data.frame with column 'geom' as WKB
-        data <- .terra_to_parquet_format(data, 
-            meta = meta, 
+        data <- .terra_to_parquet_format(data,
+            meta = meta,
             row_offset = row_offset
         )
         # add geoparquet metadata if needed
@@ -862,7 +862,10 @@ setMethod(
     )
 }
 
-.terra_to_parquet_format <- function(x, meta, row_offset = 0L) {
+# ext: numeric(4) c(xmin,xmax,ymin,ymax) for Morton normalisation. NULL uses the
+# local extent of x, which is correct for per-tile ordering. Pass a global extent
+# only when cross-tile Morton code comparability is needed (e.g. global LOD).
+.terra_to_parquet_format <- function(x, meta, row_offset = 0L, ext = NULL) {
     checkmate::assert_class(x, "SpatVector")
     wkb <- terra::geom(x, wkb = TRUE)
     ctrs <- XY(centroids(x))
@@ -870,16 +873,17 @@ setMethod(
         ctrs <- t(as.matrix(ctrs))
     }
 
+    gext <- ext %||% .ext_to_num_vec(terra::ext(x))
     data <- data.frame(
         row_index = as.integer(seq_len(nrow(ctrs)) + row_offset),
         x_index = ctrs[, 1],
         y_index = ctrs[, 2]
     )
-    data$geom <- wkb # raw needs to be added separately
+    data$geom <- wkb
     if (ncol(meta) > 0L) {
         data <- cbind(data, meta)
     }
-    data
+    data[order(.morton_encode(data$x_index, data$y_index, gext)), ]
 }
 
 # generate the geoparquet metadata for a geom store if needed

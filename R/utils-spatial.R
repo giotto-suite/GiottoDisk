@@ -1,3 +1,19 @@
+# Morton (Z-order) encode 2D coordinates to a sortable integer key.
+# ext: numeric(4) c(xmin, xmax, ymin, ymax) — global bounds for normalisation.
+.morton_encode <- function(x, y, ext) {
+    xi <- as.integer((x - ext[[1L]]) / (ext[[2L]] - ext[[1L]]) * (2^16 - 1))
+    yi <- as.integer((y - ext[[3L]]) / (ext[[4L]] - ext[[3L]]) * (2^16 - 1))
+    spread <- function(v) {
+        v <- bitwAnd(v, 0x0000FFFF)
+        v <- bitwAnd(bitwOr(v, bitwShiftL(v, 8L)), 0x00FF00FF)
+        v <- bitwAnd(bitwOr(v, bitwShiftL(v, 4L)), 0x0F0F0F0F)
+        v <- bitwAnd(bitwOr(v, bitwShiftL(v, 2L)), 0x33333333)
+        v <- bitwAnd(bitwOr(v, bitwShiftL(v, 1L)), 0x55555555)
+        v
+    }
+    bitwOr(spread(xi), bitwShiftL(spread(yi), 1L))
+}
+
 # Strip names from a SpatExtent, returning a plain numeric vector
 .ext_to_num_vec <- function(x) {
     out <- x[]
