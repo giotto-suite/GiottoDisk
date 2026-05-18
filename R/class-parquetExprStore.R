@@ -70,7 +70,7 @@ NULL
 #' @slot gene_idx integer. Active gene positions in the original Parquet
 #'   (length 0 = no subset).
 setClass("parquetExprStore",
-    contains = "fileStore",
+    contains = "queryableStore",
     slots = list(
         n_cells    = "numeric",
         n_genes    = "numeric",

@@ -2,25 +2,27 @@
 NULL
 
 # storeRead ####
-# When the store has been subsetted (cell_idx and/or gene_idx populated by
-# the `[` method), filter the Arrow dataset by those original-position
-# indices so all downstream methods automatically see only the active
-# entries. The Parquet file on disk is not rewritten.
+# Subset state lives in @cell_idx / @gene_idx (populated by `[`). Injected
+# into the lazy Arrow query by wrapping @read_fun, then delegated to
+# queryableStore::storeRead which handles fields / callback / output
+# dispatch (query / tibble / duckdb).
 
 #' @rdname storeRead
 #' @export
 setMethod("storeRead", signature("parquetExprStore"), function(store, ...) {
-    ds <- store@read_fun(store@path, ...)
-    row_id <- col_id <- NULL  # NSE bindings
-    if (length(store@cell_idx) > 0L) {
+    if (length(store@cell_idx) > 0L || length(store@gene_idx) > 0L) {
+        orig_rf <- store@read_fun
         ci <- store@cell_idx
-        ds <- ds |> dplyr::filter(row_id %in% !!ci)
-    }
-    if (length(store@gene_idx) > 0L) {
         gi <- store@gene_idx
-        ds <- ds |> dplyr::filter(col_id %in% !!gi)
+        store@read_fun <- function(x, ...) {
+            row_id <- col_id <- NULL  # NSE bindings
+            ds <- orig_rf(x, ...)
+            if (length(ci) > 0L) ds <- dplyr::filter(ds, row_id %in% !!ci)
+            if (length(gi) > 0L) ds <- dplyr::filter(ds, col_id %in% !!gi)
+            ds
+        }
     }
-    ds
+    callNextMethod(store = store, ...)
 })
 
 # storeWrite ####
@@ -100,36 +102,7 @@ setMethod("dimnames<-",
     }
 )
 
-# show ####
-
-#' @export
-setMethod("show", "parquetExprStore", function(object) {
-    cat("An object of class parquetExprStore\n")
-    cat(sprintf("  path     : %s\n", object@path))
-    cat(sprintf("  uid      : %s\n", object@uid))
-    cat(sprintf("  dim      : %s genes × %s cells\n",
-        format(object@n_genes, big.mark = ",", scientific = FALSE),
-        format(object@n_cells, big.mark = ",", scientific = FALSE)))
-    if (length(object@feat_ids) > 0L) {
-        n_show <- min(3L, length(object@feat_ids))
-        cat(sprintf("  feat_ids : %s%s\n",
-            paste(object@feat_ids[seq_len(n_show)], collapse = ", "),
-            if (length(object@feat_ids) > 3L) ", ..." else ""))
-    }
-    if (length(object@cell_ids) > 0L) {
-        n_show <- min(3L, length(object@cell_ids))
-        cat(sprintf("  cell_ids : %s%s\n",
-            paste(object@cell_ids[seq_len(n_show)], collapse = ", "),
-            if (length(object@cell_ids) > 3L) ", ..." else ""))
-    }
-    if (length(object@cell_idx) > 0L || length(object@gene_idx) > 0L) {
-        cat(sprintf("  subset   : cell_idx[%d] gene_idx[%d]\n",
-            length(object@cell_idx), length(object@gene_idx)))
-    }
-    cat(sprintf("  chunk    : %s cells\n",
-        format(object@chunk_size, big.mark = ",", scientific = FALSE)))
-    invisible(object)
-})
+# show methods live in methods-show.R alongside the other store types.
 
 
 # [ subset ####
