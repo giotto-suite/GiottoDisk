@@ -193,6 +193,17 @@ setMethod(
 #'   `(tile_index, row_index)` join key with tiled stores without needing
 #'   `dplyr::coalesce`. Pass `NULL` to write without a tile subdir (not
 #'   recommended for `parquetGeomStore`).
+#' @param split_geom `logical` (polygons only, default `FALSE`). When `TRUE`,
+#'   multipart polygons are split into single-part polygons via
+#'   [GiottoClass::splitGeom()] before write. Caller is responsible for
+#'   producing globally unique IDs across all writes; tile orchestration
+#'   layers (the `parquetGeomTileStore` methods) bake the tile index into
+#'   `split_geom_fmt` before dispatch.
+#' @param split_geom_fmt `character`. `sprintf` format with a single `%d` slot
+#'   for the row counter. Default `"poly_%d"`. See [splitGeom()].
+#' @param split_geom_sourcename `character` or `NULL`. Column name carrying
+#'   the original `poly_ID` values (duplicated per part of a multipart
+#'   polygon). Default `NULL`.
 #' @param ... addtional params to pass to `parquetStore` method and
 #' [arrow::write_dataset()]
 #' @family storeWrite methods
@@ -200,12 +211,35 @@ setMethod(
 setMethod(
     "storeWrite",
     signature("parquetGeomStore", "SpatVector"),
-    function(store, data, meta = NULL, row_offset = 0, tile_idx = 0L, .arrow_meta = NULL, ...) {
+    function(store, data, meta = NULL, row_offset = 0, tile_idx = 0L,
+        split_geom = FALSE, split_geom_fmt = "poly_%d",
+        split_geom_sourcename = NULL,
+        .arrow_meta = NULL, ...) {
         if (nrow(data) == 0L) {
             return(NULL)
         }
         vmsg(.is_debug = TRUE, "[storeWrite] parquetGeomStore,SpatVector")
         GiottoUtils::package_check("arrow")
+
+        # split multipart polygons before deriving extent/crs/etc, so the
+        # downstream metadata reflects the post-split SpatVector. Wraps
+        # in a giottoPolygon to reuse GiottoClass's splitGeom.
+        # Tile-awareness is the caller's responsibility — the
+        # parquetGeomTileStore methods bake the tile index into
+        # `split_geom_fmt` before dispatching here.
+        if (isTRUE(split_geom) && terra::geomtype(data) == "polygons") {
+            if (!is.null(meta) && nrow(meta) > 0L) {
+                terra::values(data) <- as.data.frame(meta)
+            }
+            gpoly <- GiottoClass::createGiottoPolygon(data, verbose = FALSE)
+            gpoly <- GiottoClass::splitGeom(gpoly,
+                fmt = split_geom_fmt,
+                previous_id = split_geom_sourcename
+            )
+            data <- gpoly[]
+            meta <- data.table::as.data.table(terra::values(data))
+        }
+
         store@params$disk_extent <- .ext_to_num_vec(ext(data))
         store@geomtype <- terra::geomtype(data)
         store@params$crs <- terra::crs(data)
@@ -542,6 +576,9 @@ setMethod(
         type = c("points", "polygons"),
         contiguous = TRUE,
         dry_run = FALSE,
+        split_geom = FALSE,
+        split_geom_fmt = "poly_%d",
+        split_geom_sourcename = NULL,
         write_param = list(),
         verbose = NULL,
         ...
@@ -614,6 +651,17 @@ setMethod(
                     type = "parquetGeom",
                     uid = store@uid # inherit parent uid
                 )
+                # Bake .I into split_geom_fmt so per-tile sequential
+                # numbering never collides across tiles (e.g.
+                # "nucleus_%d" -> "nucleus_<.I>_%d"). Caller-side
+                # injection keeps the SpatVector method tile-unaware
+                # and avoids overloading the partition `tile_idx` arg.
+                tile_split_fmt <- if (isTRUE(split_geom)) {
+                    sub("%d", paste0(.I, "_%d"),
+                        split_geom_fmt, fixed = FALSE)
+                } else {
+                    split_geom_fmt
+                }
                 # pass to parquetGeomStore, data.frame
                 sw_args <- c(
                     list(
@@ -621,6 +669,9 @@ setMethod(
                         mem_data,
                         type = type,
                         uid_partition = FALSE, # would double tag otherwise
+                        split_geom = split_geom,
+                        split_geom_fmt = tile_split_fmt,
+                        split_geom_sourcename = split_geom_sourcename,
                         .arrow_meta = .arrow_meta_add_geoparquet(store)
                     ),
                     geom_param,
@@ -777,8 +828,13 @@ setMethod(
     "storeWrite",
     signature("bpcMatrixStore", "memoryMatrix"),
     function(store, data, ...) {
-        p <- store@path
-        BPCells::write_matrix_dir(data, dir = p, ...)
+        # BPCells::write_matrix_dir only accepts IterableMatrix or
+        # dgCMatrix. Coerce any other Matrix-package class (e.g.
+        # dgTMatrix from Giotto's expression readers) to dgCMatrix.
+        if (inherits(data, "Matrix") && !inherits(data, "dgCMatrix")) {
+            data <- methods::as(data, "CsparseMatrix")
+        }
+        BPCells::write_matrix_dir(data, dir = store@path, ...)
         store
     }
 )
