@@ -211,3 +211,341 @@ mtxInput <- function(
     magic <- readBin(path, what = "raw", n = 2L)
     length(magic) == 2L && magic[1L] == as.raw(0x1f) && magic[2L] == as.raw(0x8b)
 }
+
+
+# tenxH5Input ####
+
+#' @name tenxH5Input-class
+#' @title 10x cell_feature_matrix.h5 Input
+#' @description
+#' Wraps a 10x HDF5 sparse-matrix file (CSC layout with `data`,
+#' `indices`, `indptr`, `barcodes`, `features/{id,name}`, `shape`).
+#' Metadata is read eagerly at construction; the actual sparse data is
+#' streamed in cell-chunks by [storeRead()] via hyperslab reads on a
+#' long-lived `hdf5r::H5File` handle.
+#'
+#' @slot batch_cells integer. Cells per batch. Default 250,000.
+#' @slot feature_id_col integer. `1L` for Ensembl ID, `2L` for gene
+#'   symbol (default).
+#' @family store types
+NULL
+
+setClass("tenxH5Input",
+    contains = "exprInput",
+    slots = list(
+        batch_cells    = "integer",
+        feature_id_col = "integer"
+    ),
+    prototype = list(
+        batch_cells    = 250000L,
+        feature_id_col = 2L
+    )
+)
+
+#' @name tenxH5Input
+#' @title Create a 10x cell_feature_matrix.h5 input
+#' @description
+#' Opens the h5 briefly to read `barcodes`, `features/{id,name}`, and
+#' `shape`; closes immediately. The handle is reopened by `storeRead()`
+#' for streaming.
+#'
+#' @param h5_path character. Path to `cell_feature_matrix.h5`.
+#' @param feature_id_col integer. `1L` = Ensembl ID, `2L` = gene symbol
+#'   (default).
+#' @param batch_cells integer. Cells per batch. Default 250,000.
+#' @return A `tenxH5Input` object.
+#' @family store constructors
+#' @export
+tenxH5Input <- function(
+    h5_path,
+    feature_id_col = 2L,
+    batch_cells    = 250000L
+) {
+    if (!requireNamespace("hdf5r", quietly = TRUE)) {
+        stop("[tenxH5Input] hdf5r is required to read 10x .h5 files. ",
+             "Install with: install.packages(\"hdf5r\").", call. = FALSE)
+    }
+    stopifnot(file.exists(h5_path))
+    h5 <- hdf5r::H5File$new(h5_path, mode = "r")
+    on.exit(h5$close_all())
+
+    root      <- names(h5)[1L]
+    cell_ids  <- as.character(h5[[paste0(root, "/barcodes")]][])
+    feat_id   <- as.character(h5[[paste0(root, "/features/id")]][])
+    feat_name <- as.character(h5[[paste0(root, "/features/name")]][])
+    feat_ids  <- .disambiguate_feat_ids(
+        if (feature_id_col == 1L) feat_id else feat_name
+    )
+    shape     <- as.integer(h5[[paste0(root, "/shape")]][])
+
+    new("tenxH5Input",
+        path           = normalizePath(h5_path),
+        params         = list(root = root),
+        cell_ids       = cell_ids,
+        feat_ids       = feat_ids,
+        n_cells        = shape[2L],
+        n_genes        = shape[1L],
+        batch_cells    = as.integer(batch_cells),
+        feature_id_col = as.integer(feature_id_col)
+    )
+}
+
+
+# cellbinGefInput ####
+
+#' @name cellbinGefInput-class
+#' @title Stereo-seq cellbin GEF Input
+#' @description
+#' Wraps a Stereo-seq cellbin `.gef` file (HDF5 compound datasets under
+#' `cellBin/`). The `cell` and `gene` tables are read in full at
+#' construction (small); the compound `geneExp` is streamed gene-chunk-
+#' wise via [storeRead()] using rhdf5 hyperslab reads, respecting the
+#' safe-boundary chunk plan that keeps duplicate-named genes together.
+#'
+#' @slot batch_genes integer. Approximate raw-gene rows per batch
+#'   (default 500). Actual boundaries may be expanded to keep duplicate-
+#'   named gene groups intact.
+#' @slot gene_column character. `"geneName"` (default) or `"geneID"`.
+#' @family store types
+NULL
+
+setClass("cellbinGefInput",
+    contains = "exprInput",
+    slots = list(
+        batch_genes = "integer",
+        gene_column = "character"
+    ),
+    prototype = list(
+        batch_genes = 500L,
+        gene_column = "geneName"
+    )
+)
+
+#' @name cellbinGefInput
+#' @title Create a Stereo-seq cellbin GEF input
+#' @param gef_path character. Path to a Stereo-seq cellbin `.gef` file.
+#' @param gene_column character. `"geneName"` (default) or `"geneID"`.
+#' @param batch_genes integer. Approximate raw-gene rows per batch.
+#'   Default 500.
+#' @return A `cellbinGefInput` object.
+#' @family store constructors
+#' @export
+cellbinGefInput <- function(
+    gef_path,
+    gene_column = c("geneName", "geneID"),
+    batch_genes = 500L
+) {
+    if (!requireNamespace("rhdf5", quietly = TRUE)) {
+        stop("[cellbinGefInput] rhdf5 is required for Stereo-seq .gef. ",
+             "Install with: BiocManager::install(\"rhdf5\").",
+             call. = FALSE)
+    }
+    stopifnot(file.exists(gef_path))
+    gene_column <- match.arg(gene_column, c("geneName", "geneID"))
+
+    cellDT <- data.table::setDT(rhdf5::h5read(gef_path, "cellBin/cell"))
+    geneDT <- data.table::setDT(rhdf5::h5read(gef_path, "cellBin/gene"))
+
+    n_cells  <- nrow(cellDT)
+    cell_ids <- paste0("cell_", cellDT$id)
+
+    cnt             <- as.integer(geneDT$cellCount)
+    all_names       <- as.character(geneDT[[gene_column]])
+    expressed_names <- all_names[cnt > 0]
+    feat_ids        <- sort(unique(expressed_names))
+
+    new("cellbinGefInput",
+        path        = normalizePath(gef_path),
+        # Stash the parsed tables + name_to_row + cumulative offsets so
+        # storeRead doesn't re-read them. Cheap (tens of KB each).
+        params      = list(
+            cell_id_map = data.table::setattr(
+                seq_len(n_cells), "names", as.character(cellDT$id)
+            ),
+            gene_cnt    = cnt,
+            name_to_row = match(all_names, feat_ids),
+            cum_offsets = c(0L, as.integer(cumsum(as.numeric(cnt))))
+        ),
+        cell_ids    = cell_ids,
+        feat_ids    = feat_ids,
+        n_cells     = as.integer(n_cells),
+        n_genes     = length(feat_ids),
+        batch_genes = as.integer(batch_genes),
+        gene_column = gene_column
+    )
+}
+
+
+# binGefInput ####
+
+#' @name binGefInput-class
+#' @title Stereo-seq bin GEF Input
+#' @description
+#' Wraps a Stereo-seq bin `.gef` file (`geneExp/<bin_size>/expression`
+#' compound dataset). Unlike cellbin, the cell identity universe (one per
+#' unique `(x, y)` coord) is not known up-front — `(x, y) -> bin_ID` is
+#' assigned as new coords are encountered during the gene-chunk stream.
+#' [storeRead()]'s iterator publishes the accumulated `cell_ids` /
+#' `n_cells` via its accessors after iteration completes.
+#'
+#' @slot bin_size character. Bin size key under `geneExp/` (e.g. `"50"`).
+#' @slot batch_genes integer. Approximate raw-gene rows per batch.
+#' @slot gene_column character.
+#' @family store types
+NULL
+
+setClass("binGefInput",
+    contains = "exprInput",
+    slots = list(
+        bin_size    = "character",
+        batch_genes = "integer",
+        gene_column = "character"
+    ),
+    prototype = list(
+        bin_size    = "50",
+        batch_genes = 500L,
+        gene_column = "geneName"
+    )
+)
+
+#' @name binGefInput
+#' @title Create a Stereo-seq bin GEF input
+#' @param gef_path character.
+#' @param bin_size character or integer. Bin size key under `geneExp/`
+#'   (e.g. `50`, `"50"`, `"100"`).
+#' @param gene_column character. `"geneName"` (default) or `"geneID"`.
+#' @param batch_genes integer. Default 500.
+#' @return A `binGefInput` object. `cell_ids` / `n_cells` are empty until
+#'   [storeRead()] has been driven to completion.
+#' @family store constructors
+#' @export
+binGefInput <- function(
+    gef_path,
+    bin_size,
+    gene_column = c("geneName", "geneID"),
+    batch_genes = 500L
+) {
+    if (!requireNamespace("rhdf5", quietly = TRUE)) {
+        stop("[binGefInput] rhdf5 is required for Stereo-seq .gef. ",
+             "Install with: BiocManager::install(\"rhdf5\").",
+             call. = FALSE)
+    }
+    stopifnot(file.exists(gef_path))
+    gene_column <- match.arg(gene_column, c("geneName", "geneID"))
+    bin_size <- as.character(bin_size)
+
+    geneDT <- data.table::setDT(rhdf5::h5read(
+        gef_path, paste0("geneExp/", bin_size, "/gene")
+    ))
+    cnt             <- as.integer(geneDT$count)
+    all_names       <- as.character(geneDT[[gene_column]])
+    expressed_names <- all_names[cnt > 0]
+    feat_ids        <- sort(unique(expressed_names))
+
+    new("binGefInput",
+        path        = normalizePath(gef_path),
+        params      = list(
+            gene_cnt    = cnt,
+            name_to_row = match(all_names, feat_ids),
+            cum_offsets = c(0L, as.integer(cumsum(as.numeric(cnt))))
+        ),
+        cell_ids    = character(0L),
+        feat_ids    = feat_ids,
+        n_cells     = 0L,                 # accumulated during iteration
+        n_genes     = length(feat_ids),
+        bin_size    = bin_size,
+        batch_genes = as.integer(batch_genes),
+        gene_column = gene_column
+    )
+}
+
+
+# csvWideInput ####
+
+#' @name csvWideInput-class
+#' @title Wide-format CSV Input
+#' @description
+#' Wraps a wide-format CSV (one row per cell, one column per feature,
+#' plus a cell-ID column). The header is read at construction to
+#' establish `feat_ids` and `n_genes`; cells are streamed row-chunk-wise
+#' via [storeRead()] and `cell_ids` accumulate on the iterator as the
+#' file is consumed.
+#'
+#' @slot cell_id_col character. CSV column carrying the cell barcode.
+#' @slot skip_cols character. Additional non-feature columns to ignore.
+#' @slot row_filter_fun function. Optional per-chunk row filter (e.g.
+#'   CosMx `cell_ID != 0`).
+#' @slot batch_rows integer. Cells per batch. Default 5,000.
+#' @family store types
+NULL
+
+setClassUnion("FunctionOrNull", c("function", "NULL"))
+
+setClass("csvWideInput",
+    contains = "exprInput",
+    slots = list(
+        cell_id_col    = "character",
+        skip_cols      = "character",
+        row_filter_fun = "FunctionOrNull",
+        batch_rows     = "integer"
+    ),
+    prototype = list(
+        cell_id_col    = "cell_ID",
+        skip_cols      = character(0L),
+        row_filter_fun = NULL,
+        batch_rows     = 5000L
+    )
+)
+
+#' @name csvWideInput
+#' @title Create a wide-format CSV input
+#' @param csv_path character. Path to `.csv` or `.csv.gz`.
+#' @param cell_id_col character. CSV column carrying the cell barcode
+#'   (default `"cell_ID"`).
+#' @param skip_cols character. Additional non-feature columns to ignore.
+#' @param row_filter_fun function. Optional per-chunk row filter.
+#' @param batch_rows integer. Cells per batch. Default 5,000.
+#' @return A `csvWideInput` object. `cell_ids` / `n_cells` are empty
+#'   until [storeRead()] has been driven to completion.
+#' @family store constructors
+#' @export
+csvWideInput <- function(
+    csv_path,
+    cell_id_col    = "cell_ID",
+    skip_cols      = character(0L),
+    row_filter_fun = NULL,
+    batch_rows     = 5000L
+) {
+    stopifnot(file.exists(csv_path))
+
+    # Read header to determine feat_ids without scanning the body.
+    con <- if (.is_real_gz(csv_path)) gzfile(csv_path, "r") else file(csv_path, "r")
+    header_line <- readLines(con, n = 1L, warn = FALSE)
+    close(con)
+    if (length(header_line) == 0L) {
+        stop("[csvWideInput] empty CSV at ", csv_path, call. = FALSE)
+    }
+    all_cols <- strsplit(header_line, ",", fixed = TRUE)[[1L]]
+    all_cols <- gsub("^\"|\"$", "", all_cols)
+    if (!cell_id_col %in% all_cols) {
+        stop("[csvWideInput] cell_id_col '", cell_id_col,
+             "' not in CSV header. Header: ",
+             toString(head(all_cols, 5)), "...", call. = FALSE)
+    }
+    drop_cols <- unique(c(cell_id_col, skip_cols))
+    feat_cols <- setdiff(all_cols, drop_cols)
+    feat_ids  <- .disambiguate_feat_ids(feat_cols)
+
+    new("csvWideInput",
+        path           = normalizePath(csv_path),
+        params         = list(all_cols = all_cols, feat_cols = feat_cols),
+        cell_ids       = character(0L),
+        feat_ids       = feat_ids,
+        n_cells        = 0L,
+        n_genes        = length(feat_ids),
+        cell_id_col    = cell_id_col,
+        skip_cols      = as.character(skip_cols),
+        row_filter_fun = row_filter_fun,
+        batch_rows     = as.integer(batch_rows)
+    )
+}
