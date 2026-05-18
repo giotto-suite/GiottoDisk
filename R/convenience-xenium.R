@@ -632,6 +632,12 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
         verbose = verbose
     )
 
+    # `flip_vertical` is applied via a read_fun wrap on the
+    # intermediate inside the tile-write method. This bakes the flip
+    # into the on-disk tile values (matching the tx-on-disk
+    # convention) so anything reading the raw parquet directly
+    # Safe because the intermediate has row_index
+    # baked in by the prior `sourceWrite(store_type = "parquet")`.
     poly_store <- sourceWrite(
         gsource, poly_intermediate,
         store_type = "parquetGeomTile",
@@ -644,18 +650,10 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
         split_geom = split_geom,
         split_geom_fmt = split_geom_fmt,
         split_geom_sourcename = split_geom_sourcename,
+        flip_vertical = flip,
         verbose = verbose,
         ...
     )
-
-    # Apply the vertical flip lazily on the geom store now that row
-    # order is locked in. Equivalent to the in-mem reader's mutate
-    # `vertex_y = -vertex_y` but as a `@post_ops` transform applied at
-    # `storeRead` time.
-    if (flip) {
-        poly_store <- flip(poly_store, direction = "vertical",
-            x0 = 0, y0 = 0)
-    }
 
     if (output == "store") return(poly_store)
 

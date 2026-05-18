@@ -38,6 +38,7 @@
   split_geom = FALSE,
   split_geom_fmt = "poly_\%d",
   split_geom_sourcename = NULL,
+  flip_vertical = FALSE,
   write_param = list(),
   verbose = NULL,
   ...

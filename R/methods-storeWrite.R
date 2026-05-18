@@ -579,6 +579,7 @@ setMethod(
         split_geom = FALSE,
         split_geom_fmt = "poly_%d",
         split_geom_sourcename = NULL,
+        flip_vertical = FALSE,
         write_param = list(),
         verbose = NULL,
         ...
@@ -600,6 +601,25 @@ setMethod(
         if (nrow(a) == 0L) {
             return(NULL)
         }
+
+        # Bake a vertical flip (`sdimy = -sdimy`) into the output by
+        # wrapping the input's read_fun. Safe here because the input
+        # parquetStore already has `row_index` baked in.
+        # `local()` captures the original read_fun before reassignment
+        # to avoid recursion through the new binding.
+        if (isTRUE(flip_vertical)) {
+            data@read_fun <- local({
+                orig_rf <- data@read_fun
+                sdy <- sdimy
+                function(x, schema = NULL) {
+                    orig_rf(x, schema = schema) |>
+                        dplyr::mutate(!!rlang::sym(sdy) := -!!rlang::sym(sdy))
+                }
+            })
+            a <- storeRead(data) # refresh lazy query so the extent
+                                 # scan below reflects flipped values
+        }
+
         envelope <- type != "points"
 
         n <- .dplyr_nrow(a)
