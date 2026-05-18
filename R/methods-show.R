@@ -42,6 +42,7 @@ setMethod(".show_info", signature("fileStore"), function(object, .print = TRUE) 
     info <- list()
     info[["class"]] <- class(object)
     info[["path"]]  <- paste0(str_abbreviate(object@path), collapse = "\n      ")
+    if (length(object@uid) > 0L && nzchar(object@uid)) info[["uid"]] <- object@uid
     if (!storeExists(object)) info[["status"]] <- "<empty>"
     if (.print) return(.print_show(object, info))
     invisible(info)
@@ -187,7 +188,7 @@ setMethod(".show_info", signature("parquetExprStore"), function(object, .print =
 # internals ####
 
 .show_key_order <- c(
-    "path", "substores", "geomtype", "extent",
+    "path", "uid", "substores", "geomtype", "extent",
     "columns", "nrows", "tiles", "name",
     "dim", "feat_ids", "cell_ids", "subset", "chunk",
     "status"
