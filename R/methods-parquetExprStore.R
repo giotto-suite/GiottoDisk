@@ -29,7 +29,7 @@ setMethod("storeRead", signature("parquetExprStore"), function(store, ...) {
 # from a dgCMatrix / Matrix / matrix.  Convenience path: useful for tests
 # and small datasets that already live in memory.  The streaming converter
 # `mtx_to_parquetExprStore()` is the production entry point for raw inputs
-# (10x / Xenium MatrixMarket) — that path never materializes a dgCMatrix.
+# (10x / Xenium MatrixMarket) -- that path never materializes a dgCMatrix.
 
 #' @rdname storeWrite
 #' @export
@@ -42,9 +42,9 @@ setMethod(
             data <- methods::as(data, "CsparseMatrix")
         }
         sm <- Matrix::summary(data)
-        # In Giotto convention, expression matrices are gene × cell
-        # (rows = genes, cols = cells).  scstream's row_id = cell index,
-        # col_id = gene index.  So row_id <- sm$j, col_id <- sm$i.
+        # In Giotto convention, expression matrices are gene x cell
+        # (rows = genes, cols = cells). scstream's row_id = cell index,
+        # col_id = gene index. So row_id <- sm$j, col_id <- sm$i.
         dt <- data.table::data.table(
             row_id = as.integer(sm$j),
             col_id = as.integer(sm$i),
@@ -64,7 +64,7 @@ setMethod(
 )
 
 # dim / nrow / ncol ####
-# Bioconductor convention: expression matrices are gene × cell, so
+# Bioconductor convention: expression matrices are gene x cell, so
 # nrow = genes and ncol = cells.
 
 #' @export
@@ -162,7 +162,7 @@ setMethod("dimnames<-",
 }
 
 # Translate a vector of subset positions to the original parquet
-# row_ids / col_ids — used when methods filter Arrow by HVG genes or
+# row_ids / col_ids -- used when methods filter Arrow by HVG genes or
 # cell bands and need the on-disk integer indices.
 
 #' @keywords internal

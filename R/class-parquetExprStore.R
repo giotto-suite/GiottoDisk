@@ -9,7 +9,7 @@ NULL
 #' S4 class for **disk-backed expression matrices** stored as long-format
 #' Apache Parquet, designed for streaming read access. Unlike
 #' [parquetStore-class] (which stores arbitrary tabular data with a
-#' `row_index` column), `parquetExprStore` represents a sparse cell × gene
+#' `row_index` column), `parquetExprStore` represents a sparse cell x gene
 #' expression matrix using three integer / float columns:
 #'
 #' | Column   | Type    | Meaning              |
@@ -22,7 +22,7 @@ NULL
 #' row-group skipping makes chunked reads fast on large datasets.
 #'
 #' Cell barcodes (`cell_IDs`) and gene names (`feat_IDs`) are stored as
-#' character slots on the S4 object — the Parquet payload itself stays
+#' character slots on the S4 object -- the Parquet payload itself stays
 #' minimal. The slot vectors act as a lookup table from integer index to
 #' character ID.
 #'
@@ -62,7 +62,7 @@ NULL
 #' `pe[i, j]` returns a new store whose `feat_ids` / `cell_ids` are narrowed
 #' to the kept rows / columns and whose `gene_idx` / `cell_idx` slots record
 #' the *original* parquet positions of the kept entries. The Parquet file
-#' on disk is **not** rewritten — `storeRead()` filters lazily via Arrow
+#' on disk is **not** rewritten -- `storeRead()` filters lazily via Arrow
 #' using the recorded indices, so chained subsets stay cheap.
 #' @slot cell_idx integer. Active cell positions in the original Parquet
 #'   (length 0 = no subset, all cells are active). When non-empty:
