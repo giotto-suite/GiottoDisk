@@ -1,3 +1,19 @@
+# Morton (Z-order) encode 2D coordinates to a sortable integer key.
+# ext: numeric(4) c(xmin, xmax, ymin, ymax) — global bounds for normalisation.
+.morton_encode <- function(x, y, ext) {
+    xi <- as.integer((x - ext[[1L]]) / (ext[[2L]] - ext[[1L]]) * (2^16 - 1))
+    yi <- as.integer((y - ext[[3L]]) / (ext[[4L]] - ext[[3L]]) * (2^16 - 1))
+    spread <- function(v) {
+        v <- bitwAnd(v, 0x0000FFFF)
+        v <- bitwAnd(bitwOr(v, bitwShiftL(v, 8L)), 0x00FF00FF)
+        v <- bitwAnd(bitwOr(v, bitwShiftL(v, 4L)), 0x0F0F0F0F)
+        v <- bitwAnd(bitwOr(v, bitwShiftL(v, 2L)), 0x33333333)
+        v <- bitwAnd(bitwOr(v, bitwShiftL(v, 1L)), 0x55555555)
+        v
+    }
+    bitwOr(spread(xi), bitwShiftL(spread(yi), 1L))
+}
+
 # Strip names from a SpatExtent, returning a plain numeric vector
 .ext_to_num_vec <- function(x) {
     out <- x[]
@@ -155,21 +171,35 @@
     ...) {
     checkmate::assert_data_frame(x)
     data.table::setDT(x)
-      
+
     geom_cols <- c(id_col, sdimx, sdimy, part_col, hole_col)
     meta_cols <- c(id_col, setdiff(colnames(x), geom_cols))
     x_geom <- x[, geom_cols, with = FALSE]
     x_meta <- x[, meta_cols, with = FALSE]
-  
+
     x_sv <- GiottoClass::createGiottoPolygon(x_geom,
         part_col = part_col,
         calc_centroids = FALSE,
         make_valid = TRUE,
         ...
     )[] # drop to spatvector
+
+    # createGiottoPolygon may drop polygons (invalid geom under
+    # make_valid = TRUE, degenerate parts, etc.) — align meta to the
+    # surviving poly_IDs so `cbind(data, meta)` in
+    # `.terra_to_parquet_format` doesn't mismatch row counts. SV's id
+    # column is always "poly_ID" after createGiottoPolygon; x_meta still
+    # uses the user-provided `id_col` name.
+    sv_ids <- terra::values(x_sv)[["poly_ID"]]
+    meta_dedup <- unique(x_meta)
+    meta_aligned <- meta_dedup[
+        match(sv_ids, meta_dedup[[id_col]]), ,
+        drop = FALSE
+    ]
+
     list(
         geom = x_sv,
-        meta = unique(x_meta) # deduplication
+        meta = meta_aligned
     )
 }
 

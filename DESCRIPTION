@@ -52,6 +52,7 @@ Collate:
     'class-dataStore.R'
     'class-gsource.R'
     'class-parquetStore.R'
+    'convenience-xenium.R'
     'methods-accessors.R'
     'methods-aggregate.R'
     'methods-combine.R'

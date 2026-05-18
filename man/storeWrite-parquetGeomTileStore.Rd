@@ -35,6 +35,10 @@
   type = c("points", "polygons"),
   contiguous = TRUE,
   dry_run = FALSE,
+  split_geom = FALSE,
+  split_geom_fmt = "poly_\%d",
+  split_geom_sourcename = NULL,
+  flip_vertical = FALSE,
   write_param = list(),
   verbose = NULL,
   ...
@@ -108,6 +112,20 @@ multi-part polygon grouping. See \link[GiottoClass:createGiottoPolygon]{GiottoCl
 
 \item{group_col}{\code{character}. If \code{type = "polygons"}, name of column used
 for spatial tile planning via envelope centroids. Defaults to \code{id_col}.}
+
+\item{split_geom}{\code{logical} (polygons only, default \code{FALSE}). When \code{TRUE},
+multipart polygons are split into single-part polygons via
+\code{\link[GiottoClass:combine_split_geoms]{GiottoClass::splitGeom()}} before write. Caller is responsible for
+producing globally unique IDs across all writes; tile orchestration
+layers (the \code{parquetGeomTileStore} methods) bake the tile index into
+\code{split_geom_fmt} before dispatch.}
+
+\item{split_geom_fmt}{\code{character}. \code{sprintf} format with a single \verb{\%d} slot
+for the row counter. Default \code{"poly_\%d"}. See \code{\link[GiottoClass:combine_split_geoms]{GiottoClass::splitGeom()}}.}
+
+\item{split_geom_sourcename}{\code{character} or \code{NULL}. Column name carrying
+the original \code{poly_ID} values (duplicated per part of a multipart
+polygon). Default \code{NULL}.}
 }
 \description{
 Write geometry data to hive-partitoned spatially tiled parquets. The partition
