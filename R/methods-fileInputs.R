@@ -1,6 +1,28 @@
 #' @include class-fileInputs.R class-parquetExprStore.R
 NULL
 
+# dim / dimnames ####
+# Matrix-like introspection for any exprInput subclass. Mirrors the
+# parquetExprStore convention: rows = genes (features), cols = cells.
+# For accumulating-metadata formats (binGefInput, csvWideInput), n_cells
+# and cell_ids reflect zero / empty until storeRead() has been driven to
+# completion.
+
+#' @export
+setMethod("nrow", "exprInput", function(x) x@n_genes)
+
+#' @export
+setMethod("ncol", "exprInput", function(x) x@n_cells)
+
+#' @export
+setMethod("dim", "exprInput", function(x) c(x@n_genes, x@n_cells))
+
+#' @export
+setMethod("dimnames", "exprInput",
+    function(x) list(x@feat_ids, x@cell_ids)
+)
+
+
 # storeRead — batch iterators ####
 # Each exprInput subclass returns a `list(next_batch, close)` from
 # storeRead(). Calling next_batch() returns a data.table with
