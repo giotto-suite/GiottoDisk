@@ -161,7 +161,7 @@ setMethod("sourceWrite", signature("gDirSource", "ANY"),
     dstore@path <- savepath # update save path
     dstore <- storeWrite(dstore, data, ...)
     # record hash of delayed representation
-    hash <- .hash(storeRead(storeBase(dstore)))
+    hash <- .hash(storeRead(.store_nostate(dstore)))
     # record artifact entry
     .gdsrc_json_add_artifact(p,
         store_type = store_type,
