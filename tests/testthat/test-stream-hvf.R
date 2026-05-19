@@ -1,4 +1,4 @@
-# Tests for streaming HVG dispatch:
+# Tests for streaming HVF dispatch:
 #   analyzeData(parquetExprStore, covLoessParam) -> per-feature stats
 #     (cov_diff = residual COV above LOESS fit). Selection is a separate
 #     downstream step under processData.
