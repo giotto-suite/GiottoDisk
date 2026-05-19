@@ -1,82 +1,89 @@
 #' @include class-parquetExprStore.R
 NULL
 
-# stream-hvg ####
-# Streaming HVG mathematics for parquetExprStore-backed expression.
-# Plugs into Giotto's existing processData(x, hvgParam) dispatch:
+# stream-hvf ####
+# Streaming HVF-relevant stats for parquetExprStore-backed expression.
+# Dispatches via Giotto's analyzeData(x, param) generic. Methods return
+# the per-feature stats data.table without performing selection;
+# downstream thresholding / selection is a separate step.
 #
-#   processData(parquetExprStore, covLoessHvgParam)
-#       -> data.table of per-feature stats with selected = "yes"/"no"
+#   analyzeData(parquetExprStore, covLoessParam)
+#       -> per-feature stats including cov_diff (residual COV above
+#          a LOESS fit of cov ~ log(mean_expr))
+#   analyzeData(parquetExprStore, covGroupsParam)
+#       -> per-feature stats including cov_group_zscore (within-bin
+#          COV z-score)
 #
 # Implementation: one streaming Arrow pass that applies the JIT
 # normalize recipe stored on pe@params$norm and accumulates per-gene
 # sum + sum-of-squares, then computes mean / sd / cv on the small
-# (n_genes-sized) result vectors and runs LOESS in memory.
+# (n_genes-sized) result vectors and runs LOESS / bin-zscore in memory.
 #
-# covGroupsHvgParam shares the streaming heavy-lifting with cov_loess —
-# only the post-processing (quantile-bin -> within-bin z-score) differs.
-# varPResidHvgParam still errors clearly because it requires the full
-# scaled (z-scored) gene-by-cell matrix, which densifies streaming reads.
+# varParam still errors clearly because per-gene variance on a scaled
+# (z-scored) matrix requires materialising the dense matrix.
 
-# ---- covLoessHvgParam: streaming ------------------------------------------
+# ---- covLoessParam: streaming ---------------------------------------------
 
-#' @rdname processData
+#' @rdname analyzeData
 #' @export
-setMethod("processData",
-    signature(x = "parquetExprStore", param = "covLoessHvgParam"),
+setMethod("analyzeData",
+    signature(x = "parquetExprStore", param = "covLoessParam"),
     function(x, param, ...) {
         if (is.null(x@params$norm) ||
             is.null(x@params$norm$scale_factors)) {
-            stop("[processData(parquetExprStore, covLoessHvgParam)] ",
+            stop("[analyzeData(parquetExprStore, covLoessParam)] ",
                  "expression backend has no normalization recipe. Run ",
                  "normalizeGiotto(g, scale_feats = FALSE, scale_cells = FALSE) ",
                  "first to populate scale factors on the store.",
                  call. = FALSE)
         }
 
-        thr <- param$expression_threshold %null% 0
+        thr <- param$detection_threshold %null% 0
         stats <- .stream_norm_gene_stats(x, expression_threshold = thr)
 
-        # Reuse Giotto's in-memory LOESS step on the (small) per-gene table
-        cov <- pred_cov_feats <- cov_diff <- mean_expr <- selected <- NULL
-        loess_model <- stats::loess(cov ~ log(mean_expr), data = stats)
-        stats$pred_cov_feats <- stats::predict(loess_model, newdata = stats)
-        stats[, cov_diff := cov - pred_cov_feats]
+        # Match Giotto: drop zero-detection features before fitting
+        nr_cells <- cov <- pred_cov <- cov_diff <- mean_expr <- NULL
+        stats <- stats[nr_cells > 0]
+
+        loess_fit <- stats::loess(cov ~ log(mean_expr), data = stats)
+        stats[, pred_cov := stats::predict(loess_fit, newdata = stats)]
+        stats[, cov_diff := cov - pred_cov]
+        stats[, pred_cov := NULL]
         data.table::setorder(stats, -cov_diff)
-        stats[, selected := ifelse(
-            cov_diff > param$difference_in_cov, "yes", "no"
-        )]
         stats
     }
 )
 
 
-# ---- covGroupsHvgParam: streaming -----------------------------------------
+# ---- covGroupsParam: streaming --------------------------------------------
 
-#' @rdname processData
+#' @rdname analyzeData
 #' @export
-setMethod("processData",
-    signature(x = "parquetExprStore", param = "covGroupsHvgParam"),
+setMethod("analyzeData",
+    signature(x = "parquetExprStore", param = "covGroupsParam"),
     function(x, param, ...) {
         if (is.null(x@params$norm) ||
             is.null(x@params$norm$scale_factors)) {
-            stop("[processData(parquetExprStore, covGroupsHvgParam)] ",
+            stop("[analyzeData(parquetExprStore, covGroupsParam)] ",
                  "expression backend has no normalization recipe. Run ",
                  "normalizeGiotto(g, scale_feats = FALSE, scale_cells = FALSE) ",
                  "first to populate scale factors on the store.",
                  call. = FALSE)
         }
 
-        thr <- param$expression_threshold %null% 0
+        thr <- param$detection_threshold %null% 0
         stats <- .stream_norm_gene_stats(x, expression_threshold = thr)
 
         # NSE bindings
-        cov <- expr_groups <- cov_group_zscore <- selected <- NULL
+        nr_cells <- cov <- expr_groups <- cov_group_zscore <- NULL
+
+        # Match Giotto: drop zero-detection features before binning
+        stats <- stats[nr_cells > 0]
 
         # Quantile-bin by mean expression. If too many tied breaks (lots of
         # zero-mean genes), recompute on the strictly positive subset and
         # set the leading break to 0 so all-zero genes still bin into
-        # group_1 — matches Giotto's in-memory .calc_cov_group_hvf.
+        # group_1 -- matches Giotto's in-memory .calc_cov_group_hvf.
         n_groups <- as.integer(param$nr_expression_groups)
         prob_seq <- seq(0, 1, by = 1 / n_groups)
         prob_seq[length(prob_seq)] <- 1
@@ -95,25 +102,24 @@ setMethod("processData",
         )
         stats[, expr_groups := expr_groups_lbl]
         stats[, cov_group_zscore := scale(cov), by = expr_groups]
-        stats[, selected := ifelse(
-            cov_group_zscore > param$zscore_threshold, "yes", "no"
-        )]
+        stats[, expr_groups := NULL]
         stats
     }
 )
 
 
-# ---- Other hvgParam variants on parquet: clear error ----------------------
+# ---- varParam on parquet: clear error -------------------------------------
 
-#' @rdname processData
+#' @rdname analyzeData
 #' @export
-setMethod("processData",
-    signature(x = "parquetExprStore", param = "varPResidHvgParam"),
+setMethod("analyzeData",
+    signature(x = "parquetExprStore", param = "varParam"),
     function(x, param, ...) {
-        stop("[processData(parquetExprStore, varPResidHvgParam)] ",
-             "method = \"var_p_resid\" requires a scaled matrix and is ",
-             "not supported for streaming backends. Use ",
-             "method = \"cov_loess\" instead.", call. = FALSE)
+        stop("[analyzeData(parquetExprStore, varParam)] per-feature ",
+             "variance on a scaled (z-scored) matrix requires ",
+             "materialising the dense matrix and is not supported for ",
+             "streaming backends. Use covLoessParam or covGroupsParam.",
+             call. = FALSE)
     }
 )
 

@@ -84,7 +84,7 @@ Collate:
     'methods-storeWrite.R'
     'methods-transforms.R'
     'stream-filter.R'
-    'stream-hvg.R'
+    'stream-hvf.R'
     'stream-normalize.R'
     'stream-pca.R'
     'stream-qc.R'
