@@ -32,6 +32,11 @@ setMethod("show", signature("parquetExprStore"), function(object) {
     invisible(NULL)
 })
 
+setMethod("show", signature("unionParquetExprStore"), function(object) {
+    .show_info(object, .print = TRUE)
+    invisible(NULL)
+})
+
 
 # .show_info ####
 
@@ -180,6 +185,23 @@ setMethod(".show_info", signature("parquetExprStore"), function(object, .print =
     }
     info[["chunk"]] <- sprintf("%s cells",
         format(object@chunk_size, big.mark = ",", scientific = FALSE))
+    if (.print) return(.print_show(object, info))
+    invisible(info)
+})
+
+setMethod(".show_info", signature("unionParquetExprStore"), function(object, .print = TRUE) {
+    info <- list()
+    info[["class"]] <- "unionParquetExprStore"
+    info[["substores"]] <- length(object@stores)
+    info[["dim"]] <- sprintf("%s genes x %s cells",
+        format(object@n_genes, big.mark = ",", scientific = FALSE),
+        format(object@n_cells, big.mark = ",", scientific = FALSE))
+    if (length(object@feat_ids) > 0L) {
+        info[["feat_ids"]] <- .pe_id_preview(object@feat_ids)
+    }
+    if (length(object@cell_ids) > 0L) {
+        info[["cell_ids"]] <- .pe_id_preview(object@cell_ids)
+    }
     if (.print) return(.print_show(object, info))
     invisible(info)
 })

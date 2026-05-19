@@ -156,3 +156,99 @@ setMethod("initialize", signature("parquetExprStore"), function(.Object, ...) {
     }
     .Object
 })
+
+
+# unionParquetExprStore ####
+
+#' @name unionParquetExprStore-class
+#' @title Virtual Union of Expression Stores
+#' @description
+#' Lazy column-wise (cell-wise) concatenation of N
+#' [parquetExprStore-class] objects. Substores must share an identical
+#' `feat_ids` vector (same panel, same ordering); `cell_ids` accumulate
+#' across substores and must be globally unique (caller pre-prefixes if
+#' needed).
+#'
+#' Construction is O(1) — the union is purely virtual via Arrow's
+#' `UnionDataset` over the substores' on-disk hive-partitioned datasets.
+#' No data is rewritten; substores remain independently usable.
+#' @slot stores list of [parquetExprStore-class] objects
+#' @slot cell_ids character. Concatenated cell barcodes.
+#' @slot feat_ids character. Shared feature IDs.
+#' @slot n_cells numeric. Sum of substore n_cells.
+#' @slot n_genes numeric. Shared feature count.
+#' @slot params list. Reserved for downstream pipeline metadata.
+#' @family store types
+NULL
+
+setClass("unionParquetExprStore",
+    contains = "dataStore",
+    slots = list(
+        stores   = "list",
+        cell_ids = "character",
+        feat_ids = "character",
+        n_cells  = "numeric",
+        n_genes  = "numeric",
+        params   = "list"
+    ),
+    prototype = list(
+        stores   = list(),
+        cell_ids = character(0L),
+        feat_ids = character(0L),
+        n_cells  = 0,
+        n_genes  = 0,
+        params   = list()
+    )
+)
+
+#' @name unionParquetExprStore
+#' @title Construct a unionParquetExprStore
+#' @description
+#' Validates that all substores share an identical `feat_ids` vector,
+#' concatenates `cell_ids`, and returns the union handle. Substore files
+#' on disk are untouched.
+#'
+#' Equivalent to `cbind2()` over `parquetExprStore` objects — see also
+#' the `cbind2` methods.
+#' @param stores list of `parquetExprStore` objects
+#' @return A [unionParquetExprStore-class] object.
+#' @family store constructors
+#' @export
+unionParquetExprStore <- function(stores) {
+    if (!is.list(stores)) {
+        stop("[unionParquetExprStore] `stores` must be a list of ",
+             "parquetExprStore objects", call. = FALSE)
+    }
+    if (length(stores) == 0L) {
+        stop("[unionParquetExprStore] at least one substore is required",
+             call. = FALSE)
+    }
+    if (!all(vapply(stores, inherits, logical(1L), "parquetExprStore"))) {
+        stop("[unionParquetExprStore] all substores must be ",
+             "parquetExprStore objects", call. = FALSE)
+    }
+    # feat_ids must be identical and in identical order across substores.
+    f0 <- stores[[1L]]@feat_ids
+    for (i in seq_along(stores)[-1L]) {
+        if (!identical(stores[[i]]@feat_ids, f0)) {
+            stop("[unionParquetExprStore] substore ", i,
+                 "'s feat_ids differ from substore 1 (must be identical ",
+                 "and in identical order).", call. = FALSE)
+        }
+    }
+    cell_ids <- unlist(lapply(stores, function(s) s@cell_ids),
+                       use.names = FALSE)
+    if (anyDuplicated(cell_ids) > 0L) {
+        stop("[unionParquetExprStore] duplicate cell_ids across ",
+             "substores — caller must pre-prefix to ensure uniqueness.",
+             call. = FALSE)
+    }
+    new("unionParquetExprStore",
+        stores   = stores,
+        cell_ids = as.character(cell_ids),
+        feat_ids = f0,
+        n_cells  = as.numeric(sum(vapply(stores,
+                       function(s) s@n_cells, numeric(1L)))),
+        n_genes  = as.numeric(length(f0))
+    )
+}

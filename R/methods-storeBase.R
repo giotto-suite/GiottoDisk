@@ -95,3 +95,12 @@ setMethod("storeBase", "unionParquetGeomStore", function(x, ...) {
     x@post_ops <- list()
     x
 })
+
+# unionParquetExprStore: contains "dataStore" only — strip @params and
+# recurse storeBase into substores so per-substore subset state is also
+# zeroed.
+setMethod("storeBase", "unionParquetExprStore", function(x, ...) {
+    x@params <- list()
+    x@stores <- lapply(x@stores, storeBase)
+    x
+})
