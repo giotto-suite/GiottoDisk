@@ -13,7 +13,7 @@
 }
 
 
-test_that("processData(parquetExprStore, cellQcParam) matches reference", {
+test_that("analyzeData(parquetExprStore, cellStatsParam) matches reference", {
     skip_if_not_installed("Giotto")
     skip_if_not_installed("GiottoClass")
 
@@ -25,7 +25,7 @@ test_that("processData(parquetExprStore, cellQcParam) matches reference", {
     ref_cell_total <- as.numeric(Matrix::colSums(mat))
     ref_cell_nfeat <- as.integer(Matrix::colSums(detect))
 
-    cs <- GiottoClass::processData(pe, Giotto::qcParam("cell"))
+    cs <- GiottoClass::analyzeData(pe, Giotto::analyzeParam("cell_stats"))
     cs <- cs[match(colnames(mat), cs$cells), ]
 
     expect_equal(cs$total_expr, ref_cell_total)
@@ -34,7 +34,7 @@ test_that("processData(parquetExprStore, cellQcParam) matches reference", {
 })
 
 
-test_that("processData(parquetExprStore, featQcParam) matches reference", {
+test_that("analyzeData(parquetExprStore, featStatsParam) matches reference", {
     skip_if_not_installed("Giotto")
     mat <- .tiny_mat(seed = 7)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
@@ -44,7 +44,7 @@ test_that("processData(parquetExprStore, featQcParam) matches reference", {
     ref_total <- as.numeric(Matrix::rowSums(mat))
     ref_ncell <- as.integer(Matrix::rowSums(detect))
 
-    fs <- GiottoClass::processData(pe, Giotto::qcParam("feat"))
+    fs <- GiottoClass::analyzeData(pe, Giotto::analyzeParam("feat_stats"))
     fs <- fs[match(rownames(mat), fs$feats), ]
 
     expect_equal(fs$total_expr,   ref_total)

@@ -2,31 +2,28 @@
 NULL
 
 # stream-qc ####
-# Streaming QC for parquetExprStore-backed expression. Plugs into Giotto's
-# existing processData(x, param) dispatch via two setMethod calls:
+# Streaming QC stats for parquetExprStore-backed expression. Dispatches
+# via Giotto's analyzeData(x, param) generic — stats are computed and
+# returned; x is not mutated (selection / filtering is a separate step
+# under processData).
 #
-#   processData(parquetExprStore, cellQcParam) -> per-cell stats data.table
-#   processData(parquetExprStore, featQcParam) -> per-feature stats data.table
-#
-# The cellQcParam / featQcParam classes are defined in Giotto. Once both
-# packages are attached, addStatistics(g) / addCellStatistics(g) /
-# addFeatStatistics(g) auto-route to streaming code when @exprMat is a
-# parquetExprStore — no separate user-facing function name is needed.
+#   analyzeData(parquetExprStore, cellStatsParam) -> per-cell stats data.table
+#   analyzeData(parquetExprStore, featStatsParam) -> per-feature stats data.table
 
-#' @rdname processData
+#' @rdname analyzeData
 #' @export
-setMethod("processData",
-    signature(x = "parquetExprStore", param = "cellQcParam"),
+setMethod("analyzeData",
+    signature(x = "parquetExprStore", param = "cellStatsParam"),
     function(x, param, ...) {
         thr <- param$detection_threshold %null% 0
         .stream_cell_qc_stats(x, detection_threshold = thr)
     }
 )
 
-#' @rdname processData
+#' @rdname analyzeData
 #' @export
-setMethod("processData",
-    signature(x = "parquetExprStore", param = "featQcParam"),
+setMethod("analyzeData",
+    signature(x = "parquetExprStore", param = "featStatsParam"),
     function(x, param, ...) {
         thr <- param$detection_threshold %null% 0
         .stream_feat_qc_stats(x, detection_threshold = thr)
