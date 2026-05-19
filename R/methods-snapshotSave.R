@@ -184,7 +184,8 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     uids
 }
 
-# detect spatial store uids
+# detect spatial store uids — uses .ss_store_uids so union stores get
+# expanded to their substore uids (a union has no @uid of its own).
 .ss_gdsrc_detect_uid_spatial_points <- function(gobject) {
     pts_list <- gobject[["feat_info"]]
     is_tracked_class <- vapply(pts_list,
@@ -193,11 +194,7 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     )
     pts_list <- pts_list[is_tracked_class]
     if (length(pts_list) == 0L) return(c())
-  
-    vapply(pts_list,
-        function(x) x[]@uid,
-        FUN.VALUE = character(1L)
-    )
+    unlist(lapply(pts_list, function(x) .ss_store_uids(x[])))
 }
 .ss_gdsrc_detect_uid_spatial_polygons <- function(gobject) {
     polys_list <- gobject[["spatial_info"]]
@@ -207,11 +204,7 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     )
     polys_list <- polys_list[is_tracked_class]
     if (length(polys_list) == 0L) return(c())
-
-    vapply(polys_list,
-        function(x) x[]@uid,
-        FUN.VALUE = character(1L)
-    )
+    unlist(lapply(polys_list, function(x) .ss_store_uids(x[])))
 }
 
 .ss_gdsrc_detect_uid_overlaps <- function(gobject) {
@@ -304,25 +297,45 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     gobject
 }
 
-# canonical hash of the underlying storage, stripping lazy ops
+# canonical hash(es) of the underlying storage, stripping lazy ops /
+# view state. Returns a character vector — one entry per leaf / substore
+# so each manifest entry can be matched independently. This handles
+# compound stores (multi-leaf IterableMatrix, union*Store) without the
+# concat-collapse trick that never matched any single manifest hash.
 .ss_hash_expr_base <- function(mat) {
     if (inherits(mat, "IterableMatrix")) {
-        dirs <- .im_leaf_dirs(mat)
-        hashes <- vapply(dirs,
+        vapply(.im_leaf_dirs(mat),
             function(d) .hash(BPCells::open_matrix_dir(d)),
             FUN.VALUE = character(1L)
         )
-        paste(hashes, collapse = "|")
     } else if (inherits(mat, "HDF5Array")) {
         .hash(HDF5Array::HDF5Array(HDF5Array::path(mat), HDF5Array::name(mat)))
+    } else if (inherits(mat, "unionParquetStore") ||
+               inherits(mat, "unionParquetExprStore")) {
+        unlist(lapply(mat@stores, .ss_hash_expr_base))
+    } else if (inherits(mat, "dataStore")) {
+        .hash(storeRead(.store_nostate(mat)))
     } else {
         .hash(mat)
     }
 }
 
+# Returns the uids of all leaf / substore artifacts inside a (possibly
+# compound) store. Used by the spatial-store detectors where direct
+# @uid access fails for union stores (which have @stores, not @uid).
+.ss_store_uids <- function(x) {
+    if (inherits(x, "unionParquetStore") ||
+        inherits(x, "unionParquetExprStore")) {
+        return(unlist(lapply(x@stores, .ss_store_uids)))
+    }
+    if (inherits(x, "fileStore")) return(x@uid)
+    character(0L)
+}
+
 # detect matrix uid based on hash lookup in manifest
 .ss_gdsrc_detect_uid_matrices <- function(gobject, manifest) {
-    tracked_classes <- c("IterableMatrix", "HDF5Array")
+    tracked_classes <- c("IterableMatrix", "HDF5Array",
+                         "parquetExprStore", "unionParquetExprStore")
     mat_list <- gobject[["expression"]]
 
     is_tracked_class <- vapply(mat_list,
@@ -332,10 +345,11 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     mat_list <- mat_list[is_tracked_class]
     if (length(mat_list) == 0L) return(c())
 
-    protected_hash <- vapply(mat_list,
-        function(x) .ss_hash_expr_base(x[]),
-        FUN.VALUE = character(1L)
-    )
+    # unlist+lapply (not vapply) because compound stores return multiple
+    # hashes per matrix.
+    protected_hash <- unlist(lapply(mat_list,
+        function(x) .ss_hash_expr_base(x[])
+    ))
     manifest <- manifest[!duplicated(hash)]
     manifest[hash %in% protected_hash, uid]
 }
