@@ -90,3 +90,56 @@ test_that("varParam errors clearly on parquet backend (cov_groups is supported)"
         "not supported for streaming"
     )
 })
+
+
+test_that("covLoessParam output schema matches Giotto convention", {
+    skip_if_not_installed("Giotto")
+    mat <- .tiny_mat(seed = 23)
+    pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+    pe@params$norm <- list(scale_factors = rep(1, ncol(mat)))
+
+    dt <- GiottoClass::analyzeData(pe, Giotto::analyzeParam("cov_loess"))
+
+    expect_s3_class(dt, "data.table")
+    # intermediate prediction column is dropped (matches Giotto)
+    expect_false("pred_cov" %in% colnames(dt))
+    expect_false("pred_cov_feats" %in% colnames(dt))
+    expect_true("cov_diff" %in% colnames(dt))
+    # sorted descending by cov_diff
+    expect_equal(dt$cov_diff, sort(dt$cov_diff, decreasing = TRUE))
+    # zero-detection features filtered out before fit
+    expect_true(all(dt$nr_cells > 0))
+})
+
+
+test_that("covGroupsParam output schema matches Giotto convention", {
+    skip_if_not_installed("Giotto")
+    mat <- .tiny_mat(seed = 29)
+    pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+    pe@params$norm <- list(scale_factors = rep(1, ncol(mat)))
+
+    dt <- GiottoClass::analyzeData(pe, Giotto::analyzeParam("cov_groups"))
+
+    expect_s3_class(dt, "data.table")
+    # internal binning column is dropped before return
+    expect_false("expr_groups" %in% colnames(dt))
+    expect_true("cov_group_zscore" %in% colnames(dt))
+    # zero-detection features filtered out before binning
+    expect_true(all(dt$nr_cells > 0))
+})
+
+
+test_that("streaming + in-memory analyzeData share column schema", {
+    skip_if_not_installed("Giotto")
+    skip_if_not_installed("GiottoClass")
+    mat <- .tiny_mat(seed = 31)
+    pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+    pe@params$norm <- list(scale_factors = rep(1, ncol(mat)))
+
+    for (method in c("cov_loess", "cov_groups")) {
+        p <- Giotto::analyzeParam(method)
+        disk_dt <- GiottoClass::analyzeData(pe, p)
+        mem_dt  <- GiottoClass::analyzeData(mat, p)
+        expect_setequal(colnames(disk_dt), colnames(mem_dt))
+    }
+})
