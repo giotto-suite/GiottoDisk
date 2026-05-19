@@ -797,6 +797,51 @@ setMethod(
     store
 })
 
+# Delegate to BPCells' native streaming importers rather than chunking
+# through the R-side (row_id, col_id, value) iterator — BPCells's C++
+# import_matrix_market / open_matrix_10x_hdf5 are faster and avoid
+# round-tripping the data through R. The exprInput's eagerly-read IDs
+# are stamped onto the materialised matrix before write so dimnames
+# match the on-disk store.
+
+#' @rdname storeWrite
+#' @export
+setMethod(
+    "storeWrite",
+    signature("bpcMatrixStore", "mtxInput"),
+    function(store, data, ...) {
+        GiottoUtils::package_check(
+            pkg_name = "BPCells",
+            repository = "github:bnprks/BPCells/r"
+        )
+        mat <- BPCells::import_matrix_market(data@path)
+        rownames(mat) <- data@feat_ids
+        colnames(mat) <- data@cell_ids
+        BPCells::write_matrix_dir(mat, dir = store@path, ...)
+        store
+    }
+)
+
+#' @rdname storeWrite
+#' @export
+setMethod(
+    "storeWrite",
+    signature("bpcMatrixStore", "tenxH5Input"),
+    function(store, data, ...) {
+        GiottoUtils::package_check(
+            pkg_name = "BPCells",
+            repository = "github:bnprks/BPCells/r"
+        )
+        mat <- BPCells::open_matrix_10x_hdf5(data@path)
+        # Stamp dimnames from the input so feature_id_col / disambiguation
+        # is honoured (BPCells reads features/id by default).
+        rownames(mat) <- data@feat_ids
+        colnames(mat) <- data@cell_ids
+        BPCells::write_matrix_dir(mat, dir = store@path, ...)
+        store
+    }
+)
+
 
 # internals ####
 
