@@ -1,5 +1,7 @@
 # Tests for streaming HVG dispatch:
-#   processData(parquetExprStore, covLoessHvgParam) -> data.table with selected
+#   analyzeData(parquetExprStore, covLoessParam) -> per-feature stats
+#     (cov_diff = residual COV above LOESS fit). Selection is a separate
+#     downstream step under processData.
 
 .tiny_mat <- function(n_genes = 50L, n_cells = 200L,
                        density = 0.4, seed = 1L) {
@@ -12,18 +14,18 @@
 }
 
 
-test_that("processData(parquetExprStore, covLoessHvgParam) requires JIT recipe", {
+test_that("analyzeData(parquetExprStore, covLoessParam) requires JIT recipe", {
     skip_if_not_installed("Giotto")
     mat <- .tiny_mat()
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
     expect_error(
-        GiottoClass::processData(pe, Giotto::hvgParam("cov_loess")),
+        GiottoClass::analyzeData(pe, Giotto::analyzeParam("cov_loess")),
         "no normalization recipe"
     )
 })
 
 
-test_that("streaming covLoessHvgParam matches in-memory selection on a tiny matrix", {
+test_that("streaming covLoessParam matches in-memory selection on a tiny matrix", {
     skip_if_not_installed("Giotto")
     skip_if_not_installed("GiottoClass")
 
@@ -69,31 +71,22 @@ test_that("streaming covLoessHvgParam matches in-memory selection on a tiny matr
 })
 
 
-test_that("cov_groups and var_p_resid error clearly on parquet backend", {
+test_that("varParam errors clearly on parquet backend (cov_groups is supported)", {
     skip_if_not_installed("Giotto")
     mat <- .tiny_mat(seed = 19)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
-    locs <- data.frame(cell_ID = colnames(mat),
-                        sdimx = runif(ncol(mat)),
-                        sdimy = runif(ncol(mat)))
-    g <- Giotto::createGiottoObject(expression = mat, spatial_locs = locs,
-                                     verbose = FALSE)
-    eo <- new("exprObj", name = "raw", exprMat = pe,
-              spat_unit = "cell", feat_type = "rna")
-    g  <- GiottoClass::setExpression(g, x = eo, name = "raw", verbose = FALSE)
-    g  <- suppressWarnings(Giotto::normalizeGiotto(g,
-        scale_feats = FALSE, scale_cells = FALSE, verbose = FALSE))
+    pe@params$norm <- list(scale_factors = rep(1, ncol(mat)))
 
+    # cov_groups is supported by the streaming backend — returns stats
+    # data.table without erroring.
+    res <- GiottoClass::analyzeData(pe, Giotto::analyzeParam("cov_groups"))
+    expect_s3_class(res, "data.table")
+    expect_true("cov_group_zscore" %in% colnames(res))
+
+    # var (per-feature variance on a scaled matrix) requires densifying
+    # the streaming reads and is intentionally unsupported.
     expect_error(
-        suppressWarnings(Giotto::calculateHVF(g, method = "cov_groups",
-            show_plot = FALSE, return_plot = FALSE, save_plot = FALSE,
-            verbose = FALSE)),
-        "not implemented for the streaming"
-    )
-    expect_error(
-        suppressWarnings(Giotto::calculateHVF(g, method = "var_p_resid",
-            show_plot = FALSE, return_plot = FALSE, save_plot = FALSE,
-            verbose = FALSE)),
+        GiottoClass::analyzeData(pe, Giotto::analyzeParam("var")),
         "not supported for streaming"
     )
 })
