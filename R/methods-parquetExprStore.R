@@ -51,7 +51,15 @@ setMethod(
             value  = as.double(sm$x)
         )
         data.table::setorder(dt, row_id, col_id)
-        arrow::write_parquet(dt, store@path)
+
+        # source_id=<uid>/ hive partition layout — shared with parquetStore
+        # via .write_parquet (calls arrow::write_dataset, produces
+        # part-N.parquet naming). A union store can hardlink substore
+        # partition dirs without renaming or rewriting files.
+        if (file.exists(store@path) && !dir.exists(store@path)) {
+            unlink(store@path)
+        }
+        .write_parquet(store, dt)
 
         store@n_cells <- as.numeric(ncol(data))
         store@n_genes <- as.numeric(nrow(data))
@@ -208,4 +216,141 @@ setMethod("[",
         }
         x
     }
+)
+
+
+# unionParquetExprStore methods ####
+
+# storeRead: fuses substores via Arrow's UnionDataset (purely virtual —
+# no filesystem ops). Per-substore subset state (@cell_idx / @gene_idx)
+# is preserved by wrapping each substore's read_fun the same way
+# parquetExprStore::storeRead does. Output dispatch (query / tibble /
+# duckdb) handled inline since unionParquetExprStore doesn't inherit
+# queryableStore.
+
+#' @rdname storeRead
+#' @export
+setMethod("storeRead", signature("unionParquetExprStore"), function(store,
+    fields = NULL,
+    output = c("query", "tibble", "duckdb"),
+    callback = NULL,
+    duckdb_params = list(),
+    ...) {
+    output <- match.arg(output, choices = c("query", "tibble", "duckdb"))
+    wrapped <- lapply(store@stores, function(s) {
+        if (length(s@cell_idx) > 0L || length(s@gene_idx) > 0L) {
+            orig_rf <- s@read_fun
+            ci <- s@cell_idx
+            gi <- s@gene_idx
+            s@read_fun <- function(x, ...) {
+                row_id <- col_id <- NULL  # NSE bindings
+                ds <- orig_rf(x, ...)
+                if (length(ci) > 0L) ds <- dplyr::filter(ds, row_id %in% !!ci)
+                if (length(gi) > 0L) ds <- dplyr::filter(ds, col_id %in% !!gi)
+                ds
+            }
+        }
+        s
+    })
+    atab <- arrow::open_dataset(lapply(wrapped, .store_simple_read))
+    if (!is.null(fields)) atab <- dplyr::select(atab, dplyr::all_of(fields))
+    if (!is.null(callback)) atab <- callback(atab)
+    switch(output,
+        "query"  = atab,
+        "tibble" = dplyr::collect(atab),
+        "duckdb" = .arrow_to_duckdb(atab, duckdb_params = duckdb_params)
+    )
+})
+
+# dim / dimnames / nrow / ncol — same conventions as parquetExprStore.
+
+#' @export
+setMethod("nrow", "unionParquetExprStore", function(x) x@n_genes)
+
+#' @export
+setMethod("ncol", "unionParquetExprStore", function(x) x@n_cells)
+
+#' @export
+setMethod("dim", "unionParquetExprStore",
+    function(x) c(x@n_genes, x@n_cells)
+)
+
+#' @export
+setMethod("dimnames", "unionParquetExprStore",
+    function(x) list(x@feat_ids, x@cell_ids)
+)
+
+
+# [ subset
+# i (genes) — applied uniformly to all substores (feat_ids are shared).
+# j (cells) — mapped from union positions to per-substore positions via
+# cumulative offsets; substores that get zero cells after the subset
+# are dropped. Result is rebuilt through the constructor for invariant
+# checks.
+
+#' @export
+setMethod("[",
+    signature(x = "unionParquetExprStore", i = "ANY", j = "ANY", drop = "ANY"),
+    function(x, i, j, ..., drop = TRUE) {
+        if (!missing(i)) {
+            new_stores <- lapply(x@stores, function(s) s[i, ])
+        } else {
+            new_stores <- x@stores
+        }
+        if (!missing(j)) {
+            j_int <- .resolve_subset_idx(j, x@cell_ids, "col (cell)")
+            offsets <- c(0L, cumsum(vapply(new_stores,
+                function(s) s@n_cells, numeric(1L))))
+            kept <- list()
+            for (k in seq_along(new_stores)) {
+                lo <- as.integer(offsets[k]) + 1L
+                hi <- as.integer(offsets[k + 1L])
+                in_range <- j_int >= lo & j_int <= hi
+                if (any(in_range)) {
+                    local_j <- j_int[in_range] - as.integer(offsets[k])
+                    kept[[length(kept) + 1L]] <- new_stores[[k]][, local_j]
+                }
+            }
+            if (length(kept) == 0L) {
+                stop("[unionParquetExprStore] cell subset selected no ",
+                     "cells from any substore", call. = FALSE)
+            }
+            new_stores <- kept
+        }
+        unionParquetExprStore(new_stores)
+    }
+)
+
+
+# cbind2: pairwise combination producing a unionParquetExprStore. Higher
+# arity (cbind(a, b, c, d)) lands here pairwise via base R's cbind/Matrix
+# dispatch — left-fold builds a chain unionParquetExprStore(list(a, b)),
+# then unionParquetExprStore(c(<existing union>@stores, list(c))).
+
+#' @rdname unionParquetExprStore
+#' @export
+setMethod("cbind2",
+    signature("parquetExprStore", "parquetExprStore"),
+    function(x, y, ...) unionParquetExprStore(list(x, y))
+)
+
+#' @rdname unionParquetExprStore
+#' @export
+setMethod("cbind2",
+    signature("unionParquetExprStore", "parquetExprStore"),
+    function(x, y, ...) unionParquetExprStore(c(x@stores, list(y)))
+)
+
+#' @rdname unionParquetExprStore
+#' @export
+setMethod("cbind2",
+    signature("parquetExprStore", "unionParquetExprStore"),
+    function(x, y, ...) unionParquetExprStore(c(list(x), y@stores))
+)
+
+#' @rdname unionParquetExprStore
+#' @export
+setMethod("cbind2",
+    signature("unionParquetExprStore", "unionParquetExprStore"),
+    function(x, y, ...) unionParquetExprStore(c(x@stores, y@stores))
 )

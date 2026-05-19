@@ -114,7 +114,7 @@ setMethod("sourceAdopt", signature("gDirSource", "fileStore"),
     new_path <- .gdsrc_allocate_artifact_dir(src@path, uid = uid, create = TRUE)
     .move_path(old_path, new_path)
     store@path <- new_path
-    hash <- .hash(storeRead(store))
+    hash <- .hash(storeRead(.store_nostate(store)))
     .gdsrc_json_add_artifact(src@path,
         store_type = class(store),
         uid = uid,
