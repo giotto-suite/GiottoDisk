@@ -93,6 +93,7 @@ setMethod("expanse", signature("parquetGeomTileStore"), function(
     dots <- list(...)
     tile_results <- tilework::tileApply(
         x,
+        tiles = x@tiles,
         FUN = function(sv, .I) {
             if (is.null(sv) || nrow(sv) == 0L) return(NULL)
             terra::crs(sv) <- "local"

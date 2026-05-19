@@ -11,6 +11,9 @@
   meta = NULL,
   row_offset = 0,
   tile_idx = 0L,
+  split_geom = FALSE,
+  split_geom_fmt = "poly_\%d",
+  split_geom_sourcename = NULL,
   .arrow_meta = NULL,
   ...
 )
@@ -46,6 +49,20 @@ the first \code{row_index} value in this file will be \code{1}.}
 \verb{(tile_index, row_index)} join key with tiled stores without needing
 \code{dplyr::coalesce}. Pass \code{NULL} to write without a tile subdir (not
 recommended for \code{parquetGeomStore}).}
+
+\item{split_geom}{\code{logical} (polygons only, default \code{FALSE}). When \code{TRUE},
+multipart polygons are split into single-part polygons via
+\code{\link[GiottoClass:combine_split_geoms]{GiottoClass::splitGeom()}} before write. Caller is responsible for
+producing globally unique IDs across all writes; tile orchestration
+layers (the \code{parquetGeomTileStore} methods) bake the tile index into
+\code{split_geom_fmt} before dispatch.}
+
+\item{split_geom_fmt}{\code{character}. \code{sprintf} format with a single \verb{\%d} slot
+for the row counter. Default \code{"poly_\%d"}. See \code{\link[GiottoClass:combine_split_geoms]{GiottoClass::splitGeom()}}.}
+
+\item{split_geom_sourcename}{\code{character} or \code{NULL}. Column name carrying
+the original \code{poly_ID} values (duplicated per part of a multipart
+polygon). Default \code{NULL}.}
 
 \item{.arrow_meta}{\verb{named list} of \code{character} strings to add as parquet
 metadata}
