@@ -773,6 +773,16 @@ setMethod("overlapToMatrix", signature("parquetStore"),
 
     if (!dir.exists(path)) dir.create(path, recursive = TRUE)
 
+    # Construct the parquetExprStore upfront so its auto-generated uid
+    # is available for the source_id partition path (.idpath helper).
+    pe <- parquetExprStore(
+        path     = normalizePath(path),
+        cell_ids = cell_ids,
+        feat_ids = feat_ids
+    )
+    partition_dir <- .idpath(pe@path, pe@uid)
+    dir.create(partition_dir, recursive = TRUE, showWarnings = FALSE)
+
     pe_query <- coo_query |>
         dplyr::transmute(
             row_id = as.integer(j),
@@ -790,7 +800,8 @@ setMethod("overlapToMatrix", signature("parquetStore"),
         batch_idx <- batch_idx + 1L
         arrow::write_parquet(
             batch,
-            file.path(path, sprintf("chunk_%010d.parquet", batch_idx))
+            file.path(partition_dir,
+                      sprintf("part-%d.parquet", batch_idx - 1L))
         )
     }
 
@@ -804,12 +815,8 @@ setMethod("overlapToMatrix", signature("parquetStore"),
             value  = double(0L)
         )
         arrow::write_parquet(empty,
-            file.path(path, "chunk_0000000001.parquet"))
+            file.path(partition_dir, "part-0.parquet"))
     }
 
-    parquetExprStore(
-        path     = normalizePath(path),
-        cell_ids = cell_ids,
-        feat_ids = feat_ids
-    )
+    pe
 }

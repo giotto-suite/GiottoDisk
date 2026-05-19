@@ -410,26 +410,27 @@ setMethod(
     "storeWrite",
     signature("parquetExprStore", "exprInput"),
     function(store, data, ...) {
-        # Pre-allocate destination as a directory; one chunk_*.parquet
-        # per batch. Single-file is just a 1-batch special case under
-        # this scheme — open_dataset() handles both transparently.
+        # parquetExprStore lays out chunks under a `source_id=<uid>/`
+        # hive partition (.idpath helper). Mirrors the parquetStore
+        # source_id convention and lets a future unionParquetExprStore
+        # aggregate substores by hardlinking their partition dirs.
         out_path <- store@path
-        if (dir.exists(out_path)) {
-            # accept existing empty dir; refuse to silently merge into a
-            # populated one.
-            existing <- list.files(out_path, pattern = "\\.parquet$",
-                                   full.names = FALSE)
-            if (length(existing) > 0L) {
-                stop("[storeWrite] output directory is not empty: ", out_path,
-                     "\n  remove it or pass a fresh path before writing.",
-                     call. = FALSE)
-            }
-        } else if (file.exists(out_path)) {
+        if (file.exists(out_path) && !dir.exists(out_path)) {
             stop("[storeWrite] output path exists as a file: ", out_path,
                  "\n  pre-allocated store path must be a directory or absent.",
                  call. = FALSE)
+        }
+        partition_dir <- .idpath(out_path, store@uid)
+        if (dir.exists(partition_dir)) {
+            existing <- list.files(partition_dir, pattern = "\\.parquet$",
+                                   full.names = FALSE)
+            if (length(existing) > 0L) {
+                stop("[storeWrite] partition is not empty: ", partition_dir,
+                     "\n  remove it or pass a fresh store before writing.",
+                     call. = FALSE)
+            }
         } else {
-            dir.create(out_path, recursive = TRUE, showWarnings = FALSE)
+            dir.create(partition_dir, recursive = TRUE, showWarnings = FALSE)
         }
 
         itr <- storeRead(data)
@@ -443,8 +444,8 @@ setMethod(
             batch_idx <- batch_idx + 1L
             arrow::write_parquet(
                 dt,
-                file.path(out_path,
-                          sprintf("chunk_%010d.parquet", batch_idx))
+                file.path(partition_dir,
+                          sprintf("part-%d.parquet", batch_idx - 1L))
             )
         }
 

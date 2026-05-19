@@ -51,7 +51,15 @@ setMethod(
             value  = as.double(sm$x)
         )
         data.table::setorder(dt, row_id, col_id)
-        arrow::write_parquet(dt, store@path)
+
+        # source_id=<uid>/ hive partition layout — shared with parquetStore
+        # via .write_parquet (calls arrow::write_dataset, produces
+        # part-N.parquet naming). A union store can hardlink substore
+        # partition dirs without renaming or rewriting files.
+        if (file.exists(store@path) && !dir.exists(store@path)) {
+            unlink(store@path)
+        }
+        .write_parquet(store, dt)
 
         store@n_cells <- as.numeric(ncol(data))
         store@n_genes <- as.numeric(nrow(data))
