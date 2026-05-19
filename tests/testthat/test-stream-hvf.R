@@ -93,7 +93,6 @@ test_that("varParam errors clearly on parquet backend (cov_groups is supported)"
 
 
 test_that("covLoessParam output schema matches Giotto convention", {
-    skip_if_not_installed("Giotto")
     mat <- .tiny_mat(seed = 23)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
     pe@params$norm <- list(scale_factors = rep(1, ncol(mat)))
@@ -113,7 +112,6 @@ test_that("covLoessParam output schema matches Giotto convention", {
 
 
 test_that("covGroupsParam output schema matches Giotto convention", {
-    skip_if_not_installed("Giotto")
     mat <- .tiny_mat(seed = 29)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
     pe@params$norm <- list(scale_factors = rep(1, ncol(mat)))
@@ -130,8 +128,6 @@ test_that("covGroupsParam output schema matches Giotto convention", {
 
 
 test_that("streaming + in-memory analyzeData share column schema", {
-    skip_if_not_installed("Giotto")
-    skip_if_not_installed("GiottoClass")
     mat <- .tiny_mat(seed = 31)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
     pe@params$norm <- list(scale_factors = rep(1, ncol(mat)))
