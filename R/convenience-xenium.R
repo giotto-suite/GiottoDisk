@@ -70,6 +70,7 @@ setMethod(
             flip_vertical = TRUE,
             dropcols = c(),
             qv_threshold = obj@qv,
+            cores = GiottoUtils::determine_cores(),
             output = c("giottoPoints", "store"),
             verbose = NULL,
             ...
@@ -82,6 +83,7 @@ setMethod(
                 flip_vertical = flip_vertical,
                 dropcols = dropcols,
                 qv_threshold = qv_threshold,
+                cores = cores,
                 output = output,
                 verbose = verbose,
                 ...
@@ -100,6 +102,7 @@ setMethod(
             split_geom_sourcename = "cell_poly_id",
             flip_vertical = TRUE,
             calc_centroids = TRUE,
+            cores = GiottoUtils::determine_cores(),
             output = c("giottoPolygon", "store"),
             verbose = NULL,
             ...
@@ -114,6 +117,7 @@ setMethod(
                 split_geom_sourcename = split_geom_sourcename,
                 flip_vertical = flip_vertical,
                 calc_centroids = calc_centroids,
+                cores = cores,
                 output = output,
                 verbose = verbose,
                 ...
@@ -474,6 +478,7 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
     flip_vertical = TRUE,
     dropcols = c(),
     qv_threshold = 20,
+    cores = GiottoUtils::determine_cores(),
     output = c("giottoPoints", "store"),
     verbose = NULL,
     ...
@@ -568,6 +573,7 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
     split_geom_sourcename = "cell_poly_id",
     flip_vertical = TRUE,
     calc_centroids = TRUE,
+    cores = GiottoUtils::determine_cores(),
     output = c("giottoPolygon", "store"),
     verbose = NULL,
     ...
