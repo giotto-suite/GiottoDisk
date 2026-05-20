@@ -57,6 +57,7 @@ Collate:
     'class-gsource.R'
     'class-parquetExprStore.R'
     'class-parquetStore.R'
+    'convenience-cosmx.R'
     'convenience-xenium.R'
     'utils-parquetExprStore.R'
     'createGiottoFromParquet.R'
