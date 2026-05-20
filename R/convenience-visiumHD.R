@@ -82,20 +82,20 @@ setMethod(
         }
         obj@calls$load_expression <- ex_fun
 
-        # create_gobject (disk variant, binned-output path). Mirrors the
-        # parent's gobject_fun orchestration but: (a) initializes the
-        # giotto via createGiottoObject(backend = gsrc, ...) instead of
-        # bare giotto(), and (b) the expression branch goes through
-        # funs$load_expression -- the disk override -- so the
-        # parquetExprStore lands in the vault. Other modalities
-        # (tissue_positions, scalefactors, images, polygons, cellmeta)
-        # are delegated to the parent's inherited closures via
-        # funs$load_<modality> -- no internal-function copy needed.
+        # create_gobject (disk variant). Single closure registered as
+        # obj@calls$create_gobject; body is selected at init time by the
+        # if/!is_seg branch (mirrors the parent VisiumHDReader exactly --
+        # same pattern, same closure name, with the load_expression call
+        # routed through the disk override and the giotto initialized
+        # via createGiottoObject(backend = gsrc, ...)). Other modalities
+        # delegate to inherited funs$load_<modality> closures.
         #
-        # Note: segmented-output path is not yet handled here; users
-        # exercising VisiumHD segmentation should call the modalities
-        # directly until a segmented-aware override is added.
-        gobject_fun <- function(
+        # `is_seg` is inferred from @paths: only the binned-path detector
+        # populates @paths$binpath2, so its absence indicates segmented.
+        is_seg <- is.null(obj@paths$binpath2) && length(obj@paths) > 0L
+
+        if (!is_seg) {
+            gobject_fun <- function(
             load_expression = TRUE,
             load_spatlocs = TRUE,
             load_metadata = TRUE,
@@ -206,6 +206,99 @@ setMethod(
             }
             g
         }
+        } else {
+            gobject_fun <- function(
+            load_polygons = c("cell", "nucleus"),
+            load_expression = TRUE,
+            load_image = TRUE,
+            micron = obj@micron,
+            barcodes = barcodes_,
+            graphclust_annotated = FALSE,
+            expression_path = binpath,
+            scalefactors_path = binpath,
+            image_path = binpath,
+            geojson_path = binpath,
+            image_type = NULL,
+            instructions = NULL,
+            verbose = NULL,
+            ...
+        ) {
+            not_used <- names(list(...))
+            if (length(not_used) > 0L) {
+                GiottoUtils::vmsg(.v = verbose,
+                    "[VisiumHDDiskReader] params:", toString(not_used),
+                    "not used with segmentation outputs")
+            }
+            load_expression <- as.logical(load_expression)
+            load_image      <- as.logical(load_image)
+
+            funs <- obj@calls
+
+            g <- GiottoClass::createGiottoObject(
+                backend = gsrc,
+                instructions = instructions
+            )
+
+            # polygons (inherited; in-mem). cell/nucleus geojson polys.
+            poly_list <- NULL
+            if (length(load_polygons) > 0L) {
+                load_polygons <- match.arg(
+                    load_polygons,
+                    choices = c("cell", "nucleus"),
+                    several.ok = TRUE
+                )
+                poly_list <- lapply(load_polygons, function(ptype) {
+                    funs$load_polygon(
+                        type = ptype,
+                        path = geojson_path,
+                        graphclust_annotated = graphclust_annotated,
+                        scalefactors_path = scalefactors_path,
+                        micron = micron,
+                        barcodes = barcodes,
+                        verbose = verbose
+                    )
+                })
+            }
+
+            # expression (disk; overridden closure)
+            expr_list <- NULL
+            if (load_expression) {
+                expr_list <- funs$load_expression(
+                    path = expression_path,
+                    barcodes = barcodes,
+                    agg_type = "cell",
+                    verbose = verbose
+                )
+            }
+
+            # image (inherited; in-mem)
+            gimg <- NULL
+            if (load_image) {
+                gimg <- funs$load_image(
+                    path = image_path,
+                    scalefactors_path = scalefactors_path,
+                    micron = micron,
+                    verbose = verbose
+                )
+            }
+
+            # assemble. Polys first so centroids_to_spatlocs = TRUE
+            # populates spatlocs from the cell polygon centroids.
+            if (!is.null(poly_list)) {
+                g <- GiottoClass::setGiotto(g, poly_list,
+                    centroids_to_spatlocs = TRUE, verbose = verbose
+                )
+            }
+            if (!is.null(expr_list)) {
+                g <- GiottoClass::setGiotto(g, expr_list, verbose = verbose)
+            }
+            if (!is.null(gimg)) {
+                g <- GiottoClass::setGiotto(g, gimg, verbose = verbose)
+            }
+            g
+        }
+        }
+
         obj@calls$create_gobject <- gobject_fun
 
         obj
