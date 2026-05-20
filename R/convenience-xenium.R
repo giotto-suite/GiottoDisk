@@ -777,10 +777,10 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
     # suffixes so positional alignment is preserved.
     if (fmt == "mtx") {
         inp <- mtxInput(path, feature_id_col = feature_id_col)
-        feat_classes_vec <- .xenium_feat_classes_mtx(path)
+        feat_classes_vec <- .tenx_feat_classes_mtx(path)
     } else {
         inp <- tenxH5Input(path, feature_id_col = feature_id_col)
-        feat_classes_vec <- .xenium_feat_classes_h5(path)
+        feat_classes_vec <- .tenx_feat_classes_h5(path)
     }
 
     # Write to vault. sourceWrite(gDirSource, fileStore) is the dispatch
@@ -853,13 +853,14 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
 
 # Feature class extractor: 10x mtx triple. Reads column 3 of features.tsv
 # (the canonical feature-type column written by 10x); falls back to
-# "Gene Expression" when only ID + name are present.
-.xenium_feat_classes_mtx <- function(path) {
+# "Gene Expression" when only ID + name are present. Shared across 10x-
+# format readers (Xenium / VisiumHD).
+.tenx_feat_classes_mtx <- function(path) {
     files_10X <- list.files(path)
     features_file <- grep(files_10X, pattern = "features|genes",
                           value = TRUE)[1L]
     if (is.na(features_file)) {
-        stop("[xenium_expression_disk] features.tsv not found under ", path,
+        stop("[tenx_feat_classes_mtx] features.tsv not found under ", path,
              call. = FALSE)
     }
     featuresDT <- data.table::fread(
@@ -873,8 +874,9 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
 
 # Feature class extractor: 10x h5. Reads /<root>/features/feature_type.
 # Opens its own h5 handle (separate from tenxH5Input's read); cheap since
-# feature_type is a small vector.
-.xenium_feat_classes_h5 <- function(path) {
+# feature_type is a small vector. Shared across 10x-format readers
+# (Xenium / VisiumHD).
+.tenx_feat_classes_h5 <- function(path) {
     GiottoUtils::package_check("hdf5r")
     h5 <- hdf5r::H5File$new(path, mode = "r")
     on.exit(h5$close_all(), add = TRUE)

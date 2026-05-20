@@ -1,0 +1,208 @@
+# Stereo-seq ingest pipeline for `gDirSource`-managed projects.
+#
+# Disk-backed counterpart to Giotto's `StereoSeqReader`. Currently routes
+# only the expression matrix through GiottoDisk (`parquetExprStore`
+# written into the project vault via `sourceWrite`). Other modalities
+# (spatlocs, images, masks, binpoints, polygons) remain on the inherited
+# in-mem closures and can be ported following the same pattern when
+# needed.
+
+
+
+# CLASS ####
+
+
+
+setClass(
+    "StereoSeqDiskReader",
+    contains = "StereoSeqReader",
+    slots = list(
+        backend = "ANY"
+    ),
+    prototype = list(
+        backend = NULL
+    )
+)
+
+# * init ####
+setMethod(
+    "initialize", signature("StereoSeqDiskReader"),
+    function(.Object, ..., backend) {
+        obj <- callNextMethod(.Object, ...)
+
+        if (!missing(backend)) {
+            if (is.character(backend)) {
+                backend <- gDirSource(path = backend)
+            }
+            checkmate::assert_class(backend, "gsource")
+            obj@backend <- backend
+        }
+        if (is.null(obj@backend)) {
+            stop("[StereoSeqDiskReader] `backend` is required",
+                 call. = FALSE)
+        }
+
+        # The parent's load_expression closure has gef_path bound in its
+        # environment (.stereoseq_find_gef is not exported, so we can't
+        # re-resolve it here). Reach into the captured env to read the
+        # path -- harmless if absent (NULL fallback), in which case the
+        # caller must pass path explicitly.
+        parent_ex_fun <- obj@calls$load_expression
+        gef_path <- if (!is.null(parent_ex_fun)) {
+            tryCatch(get("gef_path", envir = environment(parent_ex_fun),
+                          inherits = FALSE),
+                error = function(e) NULL)
+        } else NULL
+
+        gsrc <- obj@backend
+        type_       <- obj@type
+        bin_size_   <- obj@bin_size
+        gene_col_   <- obj@gene_column
+
+        # expression (disk override)
+        ex_fun <- function(
+            path        = gef_path,
+            type        = type_,
+            bin_size    = bin_size_,
+            gene_column = gene_col_,
+            spat_unit   = if (type_ == "bin") bin_size_ else "cell",
+            output      = c("exprObj", "store"),
+            verbose     = NULL,
+            ...
+        ) {
+            .stereoseq_expression_disk(
+                path        = path,
+                gsource     = gsrc,
+                type        = type,
+                bin_size    = bin_size,
+                gene_column = gene_column,
+                spat_unit   = spat_unit,
+                output      = output,
+                verbose     = verbose,
+                ...
+            )
+        }
+        obj@calls$load_expression <- ex_fun
+
+        obj
+    }
+)
+
+
+
+# CREATE READER ####
+
+#' @title Import a BGI Stereo-seq assay (disk-backed)
+#' @name importStereoSeqDisk
+#' @description
+#' Disk-backed counterpart to [Giotto::importStereoSeq()]. Produces a
+#' `StereoSeqDiskReader` whose `load_expression()` call streams the
+#' source `.gef` file into a `parquetExprStore` written to the
+#' `gDirSource`-managed project vault. Other modalities (spatlocs,
+#' images, masks, binpoints, polygons) remain in-memory via the
+#' inherited `StereoSeqReader` closures.
+#' @param stereoseq_dir Stereo-seq output directory
+#' @param backend a `gsource` (typically `gDirSource`) project backend.
+#'   Naming matches [GiottoClass::createGiottoObject()]'s `backend` param.
+#' @param type,bin_size,gene_column,negative_y,gef_type passed through to
+#'   the parent `StereoSeqReader` initializer.
+#' @returns `StereoSeqDiskReader` object
+#' @seealso [Giotto::importStereoSeq()] for the in-memory variant
+#' @export
+importStereoSeqDisk <- function(
+    stereoseq_dir = NULL,
+    backend,
+    type        = c("bin", "cell"),
+    bin_size    = "bin50",
+    gene_column = c("geneName", "geneID"),
+    negative_y  = TRUE,
+    gef_type
+) {
+    if (missing(backend)) {
+        stop("[importStereoSeqDisk] `backend` is required", call. = FALSE)
+    }
+    type <- match.arg(type)
+    gene_column <- match.arg(gene_column)
+    if (missing(gef_type)) {
+        gef_type <- if (type == "bin") "tissue" else "cellbin"
+    }
+    a <- list(
+        Class       = "StereoSeqDiskReader",
+        backend     = backend,
+        type        = type,
+        bin_size    = bin_size,
+        gene_column = gene_column,
+        negative_y  = as.logical(negative_y),
+        gef_type    = gef_type
+    )
+    if (!is.null(stereoseq_dir)) a$stereoseq_dir <- stereoseq_dir
+    do.call(new, args = a)
+}
+
+
+
+# MODULAR ####
+
+
+## expression ####
+
+# Disk-backed Stereo-seq expression ingestion. Picks the appropriate
+# exprInput marker based on `type`:
+#   - "cell"  -> cellbinGefInput  (reads cellBin/cell + cellBin/gene)
+#   - "bin"   -> binGefInput      (reads geneExp/<bin>/gene + ../expression)
+# Routes through sourceWrite(gsource, inp, store_type = "parquetExpr").
+# The .gef file is never fully materialized -- the iterator streams
+# gene-chunks via rhdf5 hyperslabs.
+.stereoseq_expression_disk <- function(
+    path,
+    gsource,
+    type        = c("bin", "cell"),
+    bin_size    = "bin50",
+    gene_column = c("geneName", "geneID"),
+    spat_unit   = NULL,
+    output      = c("exprObj", "store"),
+    verbose     = NULL,
+    ...
+) {
+    if (missing(path) || is.null(path) || length(path) == 0L ||
+        !file.exists(path)) {
+        stop("[stereoseq_expression_disk] no .gef path provided",
+             call. = FALSE)
+    }
+    checkmate::assert_class(gsource, "gsource")
+    type <- match.arg(type)
+    gene_column <- match.arg(gene_column)
+    output <- match.arg(output, choices = c("exprObj", "store"))
+
+    if (is.null(spat_unit)) {
+        spat_unit <- if (type == "bin") bin_size else "cell"
+    }
+
+    GiottoUtils::vmsg("[stereoseq_expression_disk] type:", type,
+                       " gef:", path, .v = verbose)
+
+    if (type == "cell") {
+        inp <- cellbinGefInput(path, gene_column = gene_column)
+    } else {
+        # binGefInput's bin_size slot is just the numeric key under
+        # geneExp/, e.g. "50" for bin50. The StereoSeqReader-side
+        # convention is "bin50"/"bin100"/... -- strip the "bin" prefix.
+        bin_key <- sub("^bin", "", as.character(bin_size))
+        inp <- binGefInput(path,
+                            bin_size    = bin_key,
+                            gene_column = gene_column)
+    }
+
+    pe <- sourceWrite(gsource, inp, store_type = "parquetExpr",
+                       verbose = verbose, ...)
+
+    if (output == "store") return(pe)
+
+    methods::new("exprObj",
+        name       = "raw",
+        exprMat    = pe,
+        spat_unit  = spat_unit,
+        feat_type  = "rna",
+        provenance = spat_unit
+    )
+}
