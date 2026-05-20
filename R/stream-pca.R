@@ -3,10 +3,10 @@ NULL
 
 # stream-pca ####
 # Streaming randomized SVD (Halko, Martinsson & Tropp 2011) with streaming
-# Cholesky-QR for parquetExprStore-backed expression. Plugs into Giotto's
-# existing processData(x, randomPcaParam) dispatch via:
+# Cholesky-QR for parquetExprStore-backed expression. Plugs into
+# GiottoClass's reduceData(x, randomPcaParam) dispatch via:
 #
-#   processData(parquetExprStore, randomPcaParam)
+#   reduceData(parquetExprStore, randomPcaParam)
 #       -> list(u, d, v, sdev, eigenvalues)
 #
 # Algorithm (mirrors scstream::sc_pca):
@@ -30,27 +30,27 @@ NULL
 
 # ---- randomPcaParam: streaming Halko ---------------------------------------
 
-#' @rdname processData
+#' @rdname reduceData
 #' @export
-setMethod("processData",
+setMethod("reduceData",
     signature(x = "parquetExprStore", param = "randomPcaParam"),
     function(x, param, ...) {
         if (is.null(x@params$norm) ||
             is.null(x@params$norm$scale_factors)) {
-            stop("[processData(parquetExprStore, randomPcaParam)] ",
+            stop("[reduceData(parquetExprStore, randomPcaParam)] ",
                  "expression backend has no normalization recipe. Run ",
                  "normalizeGiotto(g, scale_feats = FALSE, scale_cells = FALSE) ",
                  "first.", call. = FALSE)
         }
         if (isTRUE(param$scale)) {
-            stop("[processData(parquetExprStore, randomPcaParam)] ",
+            stop("[reduceData(parquetExprStore, randomPcaParam)] ",
                  "scale = TRUE (per-gene z-score) is not supported for ",
                  "streaming because it densifies the matrix. Pass ",
                  "scale = FALSE.", call. = FALSE)
         }
         feats <- param$feats_to_use
         if (is.null(feats)) {
-            stop("[processData(parquetExprStore, randomPcaParam)] ",
+            stop("[reduceData(parquetExprStore, randomPcaParam)] ",
                  "feats_to_use is required for the streaming PCA path. ",
                  "Pass the HVG feature IDs (typically rownames where ",
                  "@featMetadata$hvf == \"yes\").", call. = FALSE)
@@ -72,24 +72,24 @@ setMethod("processData",
 
 # ---- Other pcaParam variants on parquet: clear error ----------------------
 
-#' @rdname processData
+#' @rdname reduceData
 #' @export
-setMethod("processData",
+setMethod("reduceData",
     signature(x = "parquetExprStore", param = "irlbaPcaParam"),
     function(x, param, ...) {
-        stop("[processData(parquetExprStore, irlbaPcaParam)] ",
+        stop("[reduceData(parquetExprStore, irlbaPcaParam)] ",
              "method = \"irlba\" is not supported for streaming. ",
              "Use method = \"random\" (Halko randomized SVD) instead.",
              call. = FALSE)
     }
 )
 
-#' @rdname processData
+#' @rdname reduceData
 #' @export
-setMethod("processData",
+setMethod("reduceData",
     signature(x = "parquetExprStore", param = "exactPcaParam"),
     function(x, param, ...) {
-        stop("[processData(parquetExprStore, exactPcaParam)] ",
+        stop("[reduceData(parquetExprStore, exactPcaParam)] ",
              "method = \"exact\" is not supported for streaming. ",
              "Use method = \"random\" (Halko randomized SVD) instead.",
              call. = FALSE)
