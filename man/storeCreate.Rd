@@ -27,8 +27,14 @@ Hub function for creating a concrete store class.
 \link{store}
 
 Other store constructors: 
+\code{\link{binGefInput}},
+\code{\link{cellbinGefInput}},
+\code{\link{csvWideInput}},
 \code{\link{fileStore}},
+\code{\link{mtxInput}},
 \code{\link{parquetExprStore}},
-\code{\link{parquetStore}}
+\code{\link{parquetStore}},
+\code{\link{tenxH5Input}},
+\code{\link{unionParquetExprStore}}
 }
 \concept{store constructors}

@@ -10,7 +10,7 @@ csv_to_parquetExprStore(
   cell_id_col = "cell_ID",
   skip_cols = NULL,
   row_filter_fun = NULL,
-  batch_rows = 50000L,
+  batch_rows = 5000L,
   overwrite = FALSE
 )
 }

@@ -47,8 +47,14 @@ To create the Parquet from a 10x / Xenium MatrixMarket triple, use
 }
 \seealso{
 Other store constructors: 
+\code{\link{binGefInput}},
+\code{\link{cellbinGefInput}},
+\code{\link{csvWideInput}},
 \code{\link{fileStore}},
+\code{\link{mtxInput}},
 \code{\link{parquetStore}},
-\code{\link{storeCreate}()}
+\code{\link{storeCreate}()},
+\code{\link{tenxH5Input}},
+\code{\link{unionParquetExprStore}}
 }
 \concept{store constructors}

@@ -145,7 +145,7 @@ class. Computes geometries from vertices which requires row ordering.
 }
 \seealso{
 Other storeWrite methods: 
-\code{\link{storeWrite,parquetExprStore,memoryMatrix-method}},
+\code{\link{storeWrite,parquetExprStore,exprInput-method}},
 \code{\link{storeWrite-parquetGeomStore}},
 \code{\link{storeWrite-parquetStore}}
 }

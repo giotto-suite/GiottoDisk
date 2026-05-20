@@ -8,7 +8,7 @@
 S4 class for \strong{disk-backed expression matrices} stored as long-format
 Apache Parquet, designed for streaming read access. Unlike
 \linkS4class{parquetStore} (which stores arbitrary tabular data with a
-\code{row_index} column), \code{parquetExprStore} represents a sparse cell × gene
+\code{row_index} column), \code{parquetExprStore} represents a sparse cell x gene
 expression matrix using three integer / float columns:\tabular{lll}{
    Column \tab Type \tab Meaning \cr
    \code{row_id} \tab int32 \tab 1-based cell index \cr
@@ -21,7 +21,7 @@ Parquet files are sorted by \code{row_id} so that Arrow predicate-pushdown
 row-group skipping makes chunked reads fast on large datasets.
 
 Cell barcodes (\code{cell_IDs}) and gene names (\code{feat_IDs}) are stored as
-character slots on the S4 object — the Parquet payload itself stays
+character slots on the S4 object -- the Parquet payload itself stays
 minimal. The slot vectors act as a lookup table from integer index to
 character ID.
 }
@@ -77,7 +77,7 @@ will dispatch to streaming implementations.
 \code{pe[i, j]} returns a new store whose \code{feat_ids} / \code{cell_ids} are narrowed
 to the kept rows / columns and whose \code{gene_idx} / \code{cell_idx} slots record
 the \emph{original} parquet positions of the kept entries. The Parquet file
-on disk is \strong{not} rewritten — \code{storeRead()} filters lazily via Arrow
+on disk is \strong{not} rewritten -- \code{storeRead()} filters lazily via Arrow
 using the recorded indices, so chained subsets stay cheap.
 }
 
@@ -85,8 +85,15 @@ using the recorded indices, so chained subsets stay cheap.
 \code{\link[=parquetExprStore]{parquetExprStore()}}, \code{\link[=mtx_to_parquetExprStore]{mtx_to_parquetExprStore()}}
 
 Other store types: 
+\code{\link{binGefInput-class}},
+\code{\link{cellbinGefInput-class}},
+\code{\link{csvWideInput-class}},
 \code{\link{dataStore-class}},
+\code{\link{exprInput-class}},
 \code{\link{fileStore-class}},
-\code{\link{parquetStore-class}}
+\code{\link{mtxInput-class}},
+\code{\link{parquetStore-class}},
+\code{\link{tenxH5Input-class}},
+\code{\link{unionParquetExprStore-class}}
 }
 \concept{store types}

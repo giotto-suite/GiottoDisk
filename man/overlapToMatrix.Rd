@@ -56,5 +56,5 @@ can be loaded directly by \code{\link[BPCells:import_matrix_market]{BPCells::imp
 \code{\link[Matrix:externalFormats]{Matrix::readMM()}}, or Python's \code{scipy.io.mmread}.
 
 To obtain a BPCells on-disk matrix pass the returned path to
-\code{\link[BPCells:import_matrix_market]{BPCells::import_matrix_market()}} followed by \code{\link[BPCells:write_matrix_dir]{BPCells::write_matrix_dir()}}.
+\code{\link[BPCells:import_matrix_market]{BPCells::import_matrix_market()}} followed by \code{\link[BPCells:matrix_io]{BPCells::write_matrix_dir()}}.
 }

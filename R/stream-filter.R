@@ -3,9 +3,9 @@ NULL
 
 # stream-filter ####
 # Streaming mask computation for parquetExprStore-backed expression.
-# Plugs into Giotto's existing processData(x, param) dispatch via:
+# Plugs into GiottoClass's filterData(x, param) dispatch via:
 #
-#   processData(parquetExprStore, filterParam)
+#   filterData(parquetExprStore, filterParam)
 #       -> list(feats_keep = <character>, cells_keep = <character>)
 #
 # Implements Giotto's two-stage filter in two streaming Arrow passes:
@@ -16,9 +16,9 @@ NULL
 # the bug noted in project.md where the original scstream sc_filter used
 # pre-computed n_genes_detected without re-counting after the gene mask).
 
-#' @rdname processData
+#' @rdname filterData
 #' @export
-setMethod("processData",
+setMethod("filterData",
     signature(x = "parquetExprStore", param = "filterParam"),
     function(x, param, ...) {
         thr   <- param$expression_threshold

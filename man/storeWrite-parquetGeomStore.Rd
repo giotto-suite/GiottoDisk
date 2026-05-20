@@ -99,7 +99,7 @@ that are first parsed via GiottoClass \code{createGiottoPoints} or
 }
 \seealso{
 Other storeWrite methods: 
-\code{\link{storeWrite,parquetExprStore,memoryMatrix-method}},
+\code{\link{storeWrite,parquetExprStore,exprInput-method}},
 \code{\link{storeWrite-parquetGeomTileStore}},
 \code{\link{storeWrite-parquetStore}}
 }
