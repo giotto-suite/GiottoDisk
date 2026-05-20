@@ -59,7 +59,6 @@ Collate:
     'class-parquetStore.R'
     'convenience-cosmx.R'
     'convenience-stereoseq.R'
-    'convenience-visiumHD.R'
     'convenience-xenium.R'
     'utils-parquetExprStore.R'
     'createGiottoFromParquet.R'
