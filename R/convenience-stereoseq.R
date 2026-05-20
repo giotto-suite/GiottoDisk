@@ -99,7 +99,7 @@ setMethod(
             gef_path        = gef_path,
             bin1_path       = bin1_gef_path,
             image_path      = image_dir,
-            mask_path       = NULL,
+            mask_path       = mask_path,
             instructions    = NULL,
             verbose         = NULL) {
 
