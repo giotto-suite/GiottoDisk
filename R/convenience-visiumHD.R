@@ -41,6 +41,10 @@ setMethod(
             stop("[VisiumHDDiskReader] `backend` is required", call. = FALSE)
         }
 
+        # Mirror @paths into the init frame so closures can reference
+        # the parent-detected paths (e.g. binpath) directly via default-
+        # arg expressions, same convention as XeniumDiskReader.
+        list2env(obj@paths, envir = environment())
         gsrc <- obj@backend
         bin_ <- obj@bin
         barcodes_ <- obj@barcodes
@@ -49,7 +53,7 @@ setMethod(
         # expression (disk override). Mirrors the parent closure's signature
         # so the inherited gobject_fun can plumb identical args through.
         ex_fun <- function(
-            path,
+            path = binpath,
             outdir = obj@outdir,
             bin = bin_,
             expression_source = obj@expression_source,

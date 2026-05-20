@@ -42,17 +42,11 @@ setMethod(
             stop("[CosMxDiskReader] `backend` is required", call. = FALSE)
         }
 
-        # Re-detect the paths the parent stashed in load-time scope so the
-        # disk closure can reference them via default-arg expressions, same
-        # convention as XeniumDiskReader.
-        if (length(obj@cosmx_dir) > 0L) {
-            p <- obj@cosmx_dir
-            expr_path <- .detect_in_dir(
-                pattern = "exprMat_file", path = p, platform = "CosMx"
-            )
-        } else {
-            expr_path <- character(0L)
-        }
+        # Mirror @paths into the init frame so subclass closures can
+        # reference path names directly via default-arg expressions
+        # (same convention as XeniumDiskReader). Each name resolves to a
+        # bare character string at call time.
+        list2env(obj@paths, envir = environment())
         gsrc  <- obj@backend
         slide <- obj@slide
         fovs_ <- obj@fovs
@@ -86,7 +80,7 @@ setMethod(
         gobject_fun <- function(
             transcript_path = tx_path,
             expression_path = expr_path,
-            metadata_path = cell_meta_path,
+            metadata_path = meta_path,
             cell_labels_dir = cell_labels_dir,
             composite_img_dir = composite_img_dir,
             overlay_img_dir = overlay_img_dir,

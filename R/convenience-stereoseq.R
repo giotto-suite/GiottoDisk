@@ -42,17 +42,11 @@ setMethod(
                  call. = FALSE)
         }
 
-        # The parent's load_expression closure has gef_path bound in its
-        # environment (.stereoseq_find_gef is not exported, so we can't
-        # re-resolve it here). Reach into the captured env to read the
-        # path -- harmless if absent (NULL fallback), in which case the
-        # caller must pass path explicitly.
-        parent_ex_fun <- obj@calls$load_expression
-        gef_path <- if (!is.null(parent_ex_fun)) {
-            tryCatch(get("gef_path", envir = environment(parent_ex_fun),
-                          inherits = FALSE),
-                error = function(e) NULL)
-        } else NULL
+        # Mirror @paths into the init frame so closures can reference
+        # parent-detected paths (gef_path, bin1_gef_path, image_dir)
+        # directly via default-arg expressions, same convention as
+        # XeniumDiskReader.
+        list2env(obj@paths, envir = environment())
 
         gsrc <- obj@backend
         type_       <- obj@type
