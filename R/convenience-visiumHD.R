@@ -82,6 +82,132 @@ setMethod(
         }
         obj@calls$load_expression <- ex_fun
 
+        # create_gobject (disk variant, binned-output path). Mirrors the
+        # parent's gobject_fun orchestration but: (a) initializes the
+        # giotto via createGiottoObject(backend = gsrc, ...) instead of
+        # bare giotto(), and (b) the expression branch goes through
+        # funs$load_expression -- the disk override -- so the
+        # parquetExprStore lands in the vault. Other modalities
+        # (tissue_positions, scalefactors, images, polygons, cellmeta)
+        # are delegated to the parent's inherited closures via
+        # funs$load_<modality> -- no internal-function copy needed.
+        #
+        # Note: segmented-output path is not yet handled here; users
+        # exercising VisiumHD segmentation should call the modalities
+        # directly until a segmented-aware override is added.
+        gobject_fun <- function(
+            load_expression = TRUE,
+            load_spatlocs = TRUE,
+            load_metadata = TRUE,
+            load_image = TRUE,
+            bin = bin_,
+            tissue_only = obj@tissue_only,
+            barcodes = barcodes_,
+            expression_path = binpath,
+            tissue_positions_path = binpath,
+            scalefactors_path = binpath,
+            image_path = binpath,
+            outdir = obj@outdir,
+            instructions = NULL,
+            verbose = NULL
+        ) {
+            load_expression <- as.logical(load_expression)
+            load_spatlocs   <- as.logical(load_spatlocs)
+            load_metadata   <- as.logical(load_metadata)
+            load_image      <- as.logical(load_image)
+
+            if (load_spatlocs && !load_expression) {
+                stop("[VisiumHDDiskReader] load_spatlocs = TRUE & ",
+                     "load_expression = FALSE: spatlocs require expression.",
+                     call. = FALSE)
+            }
+            if (load_metadata && !load_expression) {
+                stop("[VisiumHDDiskReader] load_metadata = TRUE & ",
+                     "load_expression = FALSE: metadata require expression.",
+                     call. = FALSE)
+            }
+
+            funs <- obj@calls
+
+            g <- GiottoClass::createGiottoObject(
+                backend = gsrc,
+                instructions = instructions
+            )
+
+            # spatlocs (inherited; in-mem)
+            sl <- NULL
+            if (load_spatlocs) {
+                sl <- funs$load_tissue_position(
+                    path = tissue_positions_path,
+                    outdir = outdir,
+                    bin = bin,
+                    scalefactors_path = scalefactors_path,
+                    barcodes = barcodes,
+                    tissue_only = tissue_only,
+                    output = "spatLocsObj",
+                    verbose = verbose
+                )
+                # update barcodes via tissue spatIDs
+                sl_barcodes <- GiottoClass::spatIDs(sl)
+                barcodes <- sl_barcodes %null% barcodes
+            }
+
+            # expression (disk; overridden closure)
+            expr_list <- NULL
+            if (load_expression) {
+                expr_list <- funs$load_expression(
+                    path = expression_path,
+                    bin = bin,
+                    barcodes = barcodes,
+                    verbose = verbose
+                )
+                ex_barcodes <- GiottoClass::spatIDs(expr_list[[1L]])
+                barcodes <- ex_barcodes %null% barcodes
+                if (!is.null(sl)) sl <- sl[barcodes]
+            }
+
+            # cellmeta (inherited; in-mem)
+            cmeta <- NULL
+            if (load_metadata) {
+                cmeta <- funs$load_cellmeta(
+                    tissue_positions_path = tissue_positions_path,
+                    outdir = outdir,
+                    bin = bin,
+                    barcodes = barcodes,
+                    tissue_only = tissue_only,
+                    verbose = verbose
+                )
+            }
+
+            # image (inherited; in-mem)
+            gimg <- NULL
+            if (load_image) {
+                gimg <- funs$load_image(
+                    path = image_path,
+                    outdir = outdir,
+                    bin = bin,
+                    scalefactors_path = scalefactors_path,
+                    verbose = verbose
+                )
+            }
+
+            # assemble
+            if (!is.null(expr_list)) {
+                g <- GiottoClass::setGiotto(g, expr_list, verbose = verbose)
+            }
+            if (!is.null(sl)) {
+                g <- GiottoClass::setGiotto(g, sl, verbose = verbose)
+            }
+            if (!is.null(cmeta)) {
+                g <- GiottoClass::setGiotto(g, cmeta, verbose = verbose)
+            }
+            if (!is.null(gimg)) {
+                g <- GiottoClass::setGiotto(g, gimg, verbose = verbose)
+            }
+            g
+        }
+        obj@calls$create_gobject <- gobject_fun
+
         obj
     }
 )
