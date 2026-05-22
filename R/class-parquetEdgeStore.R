@@ -616,10 +616,19 @@ setMethod("storeRead", signature(store = "parquetEdgeStore"),
 
 # SUBSETTING ####
 #
-# Igraph-shaped ergonomics. All push down as @ops "filter":
-#   x[v_set]                          # induced subgraph
-#   x[from = v_set]                   # endpoint filter
-#   x[from = v_set, to = u_set, negate = TRUE]
+# `[` follows igraph's adjacency-style semantics, with one-arg shorthand
+# for the common induced-subgraph case:
+#
+#   x[v_set]                # induced subgraph (both endpoints in v_set)
+#   x[v_a, v_b]             # from/to slice (matrix-shape)
+#   x[, v]                  # to-endpoint filter
+#   x[from = v, to = u]     # explicit named form (same as x[v, u])
+#   x[..., negate = TRUE]   # complement of the above
+#
+# For undirected stores (`@directed = FALSE`) we store edges in canonical
+# `from_id <= to_id` form. All asymmetric slices OR both orientations
+# so the user-visible behavior matches an in-mem igraph on a symmetric
+# graph — the canonical-storage detail doesn't leak.
 
 # helper — translate a character or numeric vertex-id vector to the
 # int_id space used in the edges parquet, via sidecar lookup.
@@ -634,18 +643,49 @@ setMethod("storeRead", signature(store = "parquetEdgeStore"),
     as.integer(ns$int_id)
 }
 
-# helper — build an induced-subgraph filter op given an int vertex set.
+# helper — induced-subgraph filter (both endpoints in v_int).
+# Works for canonical undirected storage without OR because the AND
+# requirement catches both orientations regardless.
 .edge_induced_op <- function(v_int, negate = FALSE) {
     from_id <- to_id <- NULL  # NSE
-    expr <- if (isTRUE(negate)) {
-        bquote(!(from_id %in% .(v_int) & to_id %in% .(v_int)))
-    } else {
-        bquote(from_id %in% .(v_int) & to_id %in% .(v_int))
-    }
+    expr <- bquote(from_id %in% .(v_int) & to_id %in% .(v_int))
+    if (isTRUE(negate)) expr <- bquote(!(.(expr)))
     list(type = "filter", expr = expr)
 }
 
-# x[v_set]  — induced subgraph on character vertex names
+# helper — directed/undirected adjacency slice (x[v_a, v_b]).
+# For undirected canonical storage, also matches the swapped orientation.
+.edge_slice_op <- function(v_a_int, v_b_int, directed, negate = FALSE) {
+    from_id <- to_id <- NULL  # NSE
+    expr <- if (isTRUE(directed)) {
+        bquote(from_id %in% .(v_a_int) & to_id %in% .(v_b_int))
+    } else {
+        bquote(
+            (from_id %in% .(v_a_int) & to_id %in% .(v_b_int)) |
+            (from_id %in% .(v_b_int) & to_id %in% .(v_a_int))
+        )
+    }
+    if (isTRUE(negate)) expr <- bquote(!(.(expr)))
+    list(type = "filter", expr = expr)
+}
+
+# helper — single-endpoint filter (from = ... or to = ... alone).
+# For undirected, "edge has v as an endpoint" — match either side.
+.edge_endpoint_op <- function(v_int, side, directed, negate = FALSE) {
+    from_id <- to_id <- NULL  # NSE
+    expr <- if (!isTRUE(directed)) {
+        bquote(from_id %in% .(v_int) | to_id %in% .(v_int))
+    } else if (side == "from") {
+        bquote(from_id %in% .(v_int))
+    } else {
+        bquote(to_id %in% .(v_int))
+    }
+    if (isTRUE(negate)) expr <- bquote(!(.(expr)))
+    list(type = "filter", expr = expr)
+}
+
+# --- single-arg forms: x[v_set] = induced subgraph ----------------
+
 setMethod("[",
     signature(x = "parquetEdgeStore", i = "character",
               j = "missing", drop = "missing"),
@@ -656,7 +696,6 @@ setMethod("[",
     }
 )
 
-# x[v_set]  — induced subgraph on integer vertex ids
 setMethod("[",
     signature(x = "parquetEdgeStore", i = "numeric",
               j = "missing", drop = "missing"),
@@ -667,24 +706,81 @@ setMethod("[",
     }
 )
 
-# x[from = ..., to = ..., negate = ...]  — endpoint filter
+# --- two-arg forms: x[i, j] = from/to slice -----------------------
+# Register all four char/num combinations so dispatch is unambiguous.
+
+.parquetedge_slice_method <- function(x, i, j, ..., negate = FALSE, drop) {
+    v_a <- .edge_vset_to_int(x, i)
+    v_b <- .edge_vset_to_int(x, j)
+    x@ops <- c(x@ops, list(.edge_slice_op(
+        v_a, v_b, directed = x@directed, negate = negate
+    )))
+    x
+}
+
+setMethod("[",
+    signature(x = "parquetEdgeStore", i = "character",
+              j = "character", drop = "missing"),
+    .parquetedge_slice_method)
+setMethod("[",
+    signature(x = "parquetEdgeStore", i = "numeric",
+              j = "numeric", drop = "missing"),
+    .parquetedge_slice_method)
+setMethod("[",
+    signature(x = "parquetEdgeStore", i = "character",
+              j = "numeric", drop = "missing"),
+    .parquetedge_slice_method)
+setMethod("[",
+    signature(x = "parquetEdgeStore", i = "numeric",
+              j = "character", drop = "missing"),
+    .parquetedge_slice_method)
+
+# --- x[, j] = to-endpoint filter ----------------------------------
+
+.parquetedge_to_method <- function(x, i, j, ..., negate = FALSE, drop) {
+    v_int <- .edge_vset_to_int(x, j)
+    x@ops <- c(x@ops, list(.edge_endpoint_op(
+        v_int, side = "to", directed = x@directed, negate = negate
+    )))
+    x
+}
+
+setMethod("[",
+    signature(x = "parquetEdgeStore", i = "missing",
+              j = "character", drop = "missing"),
+    .parquetedge_to_method)
+setMethod("[",
+    signature(x = "parquetEdgeStore", i = "missing",
+              j = "numeric", drop = "missing"),
+    .parquetedge_to_method)
+
+# --- x[from = ..., to = ...] = explicit named form ----------------
+# Same observable behavior as x[i, j], routed through named args for
+# callers who prefer the explicit shape.
+
 setMethod("[",
     signature(x = "parquetEdgeStore", i = "missing",
               j = "missing", drop = "missing"),
     function(x, i, j, ..., from = NULL, to = NULL,
              negate = FALSE, drop) {
-        from_id <- to_id <- NULL  # NSE
         f_int <- .edge_vset_to_int(x, from)
         t_int <- .edge_vset_to_int(x, to)
-        clauses <- list()
-        if (!is.null(f_int)) clauses <- c(clauses,
-            list(bquote(from_id %in% .(f_int))))
-        if (!is.null(t_int)) clauses <- c(clauses,
-            list(bquote(to_id %in% .(t_int))))
-        if (length(clauses) == 0L) return(x)
-        expr <- Reduce(function(a, b) bquote(.(a) & .(b)), clauses)
-        if (isTRUE(negate)) expr <- bquote(!(.(expr)))
-        x@ops <- c(x@ops, list(list(type = "filter", expr = expr)))
+        if (is.null(f_int) && is.null(t_int)) return(x)
+        if (!is.null(f_int) && !is.null(t_int)) {
+            x@ops <- c(x@ops, list(.edge_slice_op(
+                f_int, t_int, directed = x@directed, negate = negate
+            )))
+        } else if (!is.null(f_int)) {
+            x@ops <- c(x@ops, list(.edge_endpoint_op(
+                f_int, side = "from", directed = x@directed,
+                negate = negate
+            )))
+        } else {
+            x@ops <- c(x@ops, list(.edge_endpoint_op(
+                t_int, side = "to", directed = x@directed,
+                negate = negate
+            )))
+        }
         x
     }
 )
