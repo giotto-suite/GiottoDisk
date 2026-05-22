@@ -136,6 +136,103 @@ setMethod("sourceWrite", signature("gDirSource", "ANY"),
     }
 })
 
+#' @rdname sourceWrite-gDirSource
+#' @export
+# In-memory network → parquetEdgeStore. Used by GiottoClass's network
+# setters when a giotto object has a gsource backend attached.
+setMethod("sourceWrite", signature("gDirSource", "igraph"),
+    function(src, data, meta = NULL, ...) {
+        .gdsrc_write_artifact(src@path,
+            data = data,
+            store_type = "parquetEdgeStore",
+            meta = meta,
+            ...
+        )
+    })
+
+#' @rdname sourceWrite-gDirSource
+#' @export
+#' @description
+#' giotto dispatch: promotes an in-memory `giotto` object to a
+#' disk-backed one. Builds a fresh `giotto` with `src` attached as the
+#' backend, then re-attaches every data subobject via [setGiotto()].
+#' Each backend-aware setter (setExpression / setPolygonInfo /
+#' setFeatureInfo / setNearestNetwork / setSpatialNetwork) routes its
+#' in-memory subobject to the corresponding disk-backed store
+#' (parquetExprStore / parquetGeomStore / parquetEdgeStore).
+#'
+#' Subobjects whose setters don't (yet) have backend-aware write
+#' logic stay in-memory but are still attached to the new gobject.
+#' @return `giotto` with `@source = src` and backable subobjects
+#'   disk-backed.
+setMethod("sourceWrite", signature("gDirSource", "giotto"),
+    function(src, data, ...) {
+        # Cross-source warning: if `data` is already backed by a
+        # different gsource, the rebuild flow will re-attach existing
+        # disk-backed subobjects to `src` (because each setter's
+        # `inherits(dataStore)` guard skips re-writing them), but those
+        # references still point at the old vault.
+        if (!is.null(data@source)) {
+            same_src <- tryCatch(
+                identical(
+                    normalizePath(data@source@path, mustWork = FALSE),
+                    normalizePath(src@path, mustWork = FALSE)
+                ),
+                error = function(e) FALSE
+            )
+            if (!isTRUE(same_src)) {
+                warning(
+                    "[sourceWrite(gDirSource, giotto)] data is already ",
+                    "backed by a different source. Disk-backed ",
+                    "subobjects will be re-attached without moving ",
+                    "artifacts — references may be stale.\n",
+                    "  data@source: ", data@source@path, "\n",
+                    "  src:          ", src@path,
+                    call. = FALSE
+                )
+            }
+        }
+
+        # Idempotency is handled at the subobject level: every
+        # backend-aware setter checks `inherits(x@<slot>, "dataStore")`
+        # and skips re-writing if already disk-backed. So a fully-backed
+        # input gobject round-trips unchanged. If a subobject snuck
+        # through in-memory (e.g. because some setter didn't yet have
+        # auto-write at the time), it gets disk-backed on this pass.
+
+        # Flat list of every data subobject. Mirrors sliceGiotto's
+        # pattern — `[[slot_names]]` returns a list of subobjects from
+        # the requested giotto slots.
+        dataslots <- c(
+            "spatial_info", "spatial_locs", "spatial_network",
+            "feat_info", "expression", "cell_metadata",
+            "feat_metadata", "spatial_enrichment", "nn_network",
+            "dimension_reduction", "multiomics"
+        )
+        datalist <- data[[dataslots]]
+
+        # Fresh gobject — copy static slots over, attach src as backend.
+        # Avoids @h5_file (deprecated) and @misc (transient).
+        g_new <- GiottoClass::giotto(
+            expression_feat = data@expression_feat,
+            images          = data@images,
+            parameters      = data@parameters,
+            instructions    = data@instructions,
+            offset_file     = data@offset_file,
+            versions        = data@versions,
+            join_info       = data@join_info,
+            source          = src
+        )
+
+        # Re-attach all subobjects. Backend-aware setters (expression,
+        # polygon, points, NN net, spatial net) auto-write through to
+        # the gsource'd vault on the way in.
+        g_new <- GiottoClass::setGiotto(g_new, datalist,
+            initialize = FALSE, verbose = FALSE)
+
+        methods::initialize(g_new)
+    })
+
 
 # internals ####
 

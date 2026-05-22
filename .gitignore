@@ -12,3 +12,7 @@ pkgdown
 cell_rna*
 README_files
 README.html
+# rendered vignettes (build artifacts; only the .Rmd is tracked)
+vignettes/articles/*.html
+vignettes/articles/*_files/
+vignettes/articles/*_cache/

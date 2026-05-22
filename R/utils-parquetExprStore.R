@@ -165,9 +165,9 @@ mtx_to_parquetExprStore <- function(
 
         if (use_dir) {
             file_name <- sprintf("chunk_%010d.parquet", batch_idx)
-            arrow::write_parquet(out, file.path(output_path, file_name))
+            .write_parquet_file(out, file.path(output_path, file_name))
         } else {
-            arrow::write_parquet(out, output_path)
+            .write_parquet_file(out, output_path)
         }
 
         lines_remaining <- lines_remaining - length(raw_batch)
@@ -341,9 +341,9 @@ h5_to_parquetExprStore <- function(
 
         if (use_dir) {
             file_name <- sprintf("chunk_%010d.parquet", batch_idx)
-            arrow::write_parquet(out, file.path(output_path, file_name))
+            .write_parquet_file(out, file.path(output_path, file_name))
         } else {
-            arrow::write_parquet(out, output_path)
+            .write_parquet_file(out, output_path)
         }
 
         c_lo <- c_hi + 1L
@@ -523,7 +523,7 @@ cellbin_gef_to_parquetExprStore <- function(
             file.path(output_path, sprintf("chunk_%010d.parquet", batch_idx))
         else
             output_path
-        arrow::write_parquet(out, target)
+        .write_parquet_file(out, target)
     }
 
     parquetExprStore(
@@ -715,7 +715,7 @@ bin_gef_to_parquetExprStore <- function(
             file.path(output_path, sprintf("chunk_%010d.parquet", batch_idx))
         else
             output_path
-        arrow::write_parquet(out, target)
+        .write_parquet_file(out, target)
     }
 
     cell_ids <- paste0("bin_", seq_len(n_bins))
@@ -868,7 +868,7 @@ csv_to_parquetExprStore <- function(
                     value  = as.double(feat_mat[nz])
                 )
                 data.table::setorder(out, row_id, col_id)
-                arrow::write_parquet(
+                .write_parquet_file(
                     out,
                     file.path(output_path,
                               sprintf("chunk_%010d.parquet", batch_idx))

@@ -1,4 +1,59 @@
 
+# Global arrow writer compression settings -------------------------------
+#
+# Option `giottodisk.parquet_compression`: codec passed to arrow's parquet
+# writer. One of "snappy" (default), "zstd", "gzip", "lz4", "brotli", or
+# "uncompressed". Snappy keeps reads fast on local NVMe; zstd buys ~30-40%
+# smaller files at a small CPU cost — better when disk space matters or
+# when shipping artifacts.
+# Option `giottodisk.parquet_compression_level`: numeric. Codec-specific
+# level. For zstd, 1-22 (default 3 if unset); for gzip, 0-9. Ignored for
+# snappy / uncompressed.
+# Both options registered in zzz.R via init_option().
+.parquet_compression <- function() {
+    codec <- getOption("giottodisk.parquet_compression", default = "snappy")
+    checkmate::assert_string(codec)
+    codec
+}
+
+.parquet_compression_level <- function() {
+    lvl <- getOption("giottodisk.parquet_compression_level", default = NULL)
+    if (is.null(lvl)) return(NULL)
+    checkmate::assert_number(lvl)
+    as.integer(lvl)
+}
+
+# Internal wrapper: arrow::write_parquet that honors the GiottoDisk-global
+# compression options. Direct callers should use this instead of
+# arrow::write_parquet so the codec is consistent across the package.
+.write_parquet_file <- function(x, sink, ...) {
+    args <- list(...)
+    if (is.null(args$compression)) {
+        args$compression <- .parquet_compression()
+    }
+    lvl <- .parquet_compression_level()
+    if (is.null(args$compression_level) && !is.null(lvl)) {
+        args$compression_level <- lvl
+    }
+    do.call(arrow::write_parquet, c(list(x = x, sink = sink), args))
+}
+
+# Internal wrapper: arrow::write_dataset honoring the global compression.
+.write_dataset <- function(dataset, path, ...) {
+    args <- list(...)
+    if (is.null(args$compression)) {
+        args$compression <- .parquet_compression()
+    }
+    lvl <- .parquet_compression_level()
+    if (is.null(args$compression_level) && !is.null(lvl)) {
+        args$compression_level <- lvl
+    }
+    if (is.null(args$format)) args$format <- "parquet"
+    do.call(arrow::write_dataset,
+            c(list(dataset = dataset, path = path), args))
+}
+
+
 # Open a GiottoDisk-managed DuckDB connection and apply package-level settings.
 # Option giottodisk.duckdb_memory_limit: character string passed to
 # SET memory_limit (e.g. "8GB", "32GiB"). Defaults to "8GB", raising
