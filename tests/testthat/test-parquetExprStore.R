@@ -105,21 +105,17 @@ test_that("storeRead returns an Arrow Dataset (lazy, not materialized)", {
 })
 
 
-# ---- Streaming mtx_to_parquetExprStore -----------------------------------
+# ---- Streaming mtxInput + storeWrite -------------------------------------
 
-test_that("mtx_to_parquetExprStore on a synthetic 10x triple is lossless", {
+test_that("mtxInput + storeWrite on a synthetic 10x triple is lossless", {
     mat     <- .tiny_mat(n_genes = 6, n_cells = 10, density = 0.5, seed = 3)
     src_dir <- .write_mtx_triple(mat, file.path(tempdir(), "tiny_10x"))
-    out     <- file.path(tempdir(), "tiny_10x_out.parquet")
+    out     <- file.path(tempdir(), "tiny_10x_out")
 
-    pe <- mtx_to_parquetExprStore(
-        mtx_path      = file.path(src_dir, "matrix.mtx"),
-        barcodes_path = file.path(src_dir, "barcodes.tsv"),
-        features_path = file.path(src_dir, "features.tsv"),
-        output_path   = out,
-        feature_id_col = 2L,
-        overwrite      = TRUE
-    )
+    inp <- mtxInput(mtx_path = file.path(src_dir, "matrix.mtx"),
+                    feature_id_col = 2L)
+    pe  <- storeWrite(parquetExprStore(path = out), inp)
+
     expect_s4_class(pe, "parquetExprStore")
     expect_equal(pe@n_genes, nrow(mat))
     expect_equal(pe@n_cells, ncol(mat))
@@ -139,26 +135,24 @@ test_that("mtx_to_parquetExprStore on a synthetic 10x triple is lossless", {
     unlink(out, recursive = TRUE)
 })
 
-test_that("mtx_to_parquetExprStore writes a directory when nnz > batch_lines", {
+test_that("mtxInput + storeWrite produces multiple chunks when batch_lines is small", {
     mat     <- .tiny_mat(n_genes = 4, n_cells = 20, density = 0.6, seed = 4)
     src_dir <- .write_mtx_triple(mat, file.path(tempdir(), "tiny_10x_b"))
     out     <- file.path(tempdir(), "tiny_10x_b_out")
 
-    # Force directory mode by setting a tiny batch_lines
-    pe <- mtx_to_parquetExprStore(
-        mtx_path       = file.path(src_dir, "matrix.mtx"),
-        barcodes_path  = file.path(src_dir, "barcodes.tsv"),
-        features_path  = file.path(src_dir, "features.tsv"),
-        output_path    = out,
-        feature_id_col = 2L,
-        batch_lines    = 5L,                       # forces multi-batch
-        overwrite      = TRUE
-    )
+    # Force multi-batch by setting a tiny batch_lines
+    inp <- mtxInput(mtx_path = file.path(src_dir, "matrix.mtx"),
+                    feature_id_col = 2L,
+                    batch_lines    = 5L)
+    pe  <- storeWrite(parquetExprStore(path = out), inp)
+
     expect_true(dir.exists(out))
-    chunks <- list.files(out, pattern = "\\.parquet$", full.names = TRUE)
+    # storeWrite lays chunks under <out>/source_id=<uid>/part-*.parquet
+    chunks <- list.files(out, pattern = "\\.parquet$",
+                         full.names = TRUE, recursive = TRUE)
     expect_gt(length(chunks), 1L)
 
-    # Aggregate read still works (Arrow handles directory transparently)
+    # Aggregate read still works (Arrow handles hive partitioning)
     df <- as.data.frame(dplyr::collect(storeRead(pe)))
     expect_equal(nrow(df), Matrix::nnzero(mat))
     rt <- Matrix::sparseMatrix(
@@ -171,22 +165,20 @@ test_that("mtx_to_parquetExprStore writes a directory when nnz > batch_lines", {
     unlink(out,     recursive = TRUE)
 })
 
-test_that("mtx_to_parquetExprStore rejects mismatched barcode / feature counts", {
+test_that("mtxInput + storeWrite rejects mismatched barcode / mtx header counts", {
     mat     <- .tiny_mat(n_genes = 4, n_cells = 6, seed = 5)
     src_dir <- .write_mtx_triple(mat, file.path(tempdir(), "tiny_10x_mm"))
-    # corrupt barcodes file: too few lines
+    # corrupt barcodes file: too few lines (mtx header still says 6 cells)
     writeLines(colnames(mat)[1:3], file.path(src_dir, "barcodes.tsv"))
-    out <- file.path(tempdir(), "tiny_10x_mm_out.parquet")
+    out <- file.path(tempdir(), "tiny_10x_mm_out")
 
+    # mtxInput happily reads the truncated sidecar (n_cells = 3); the
+    # disagreement is caught when storeRead opens the mtx header.
+    inp <- mtxInput(mtx_path = file.path(src_dir, "matrix.mtx"),
+                    feature_id_col = 2L)
     expect_error(
-        mtx_to_parquetExprStore(
-            mtx_path      = file.path(src_dir, "matrix.mtx"),
-            barcodes_path = file.path(src_dir, "barcodes.tsv"),
-            features_path = file.path(src_dir, "features.tsv"),
-            output_path   = out,
-            overwrite     = TRUE
-        ),
-        "number of barcodes"
+        storeWrite(parquetExprStore(path = out), inp),
+        "disagrees with sidecar metadata"
     )
     unlink(src_dir, recursive = TRUE)
 })
