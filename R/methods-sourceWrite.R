@@ -136,6 +136,20 @@ setMethod("sourceWrite", signature("gDirSource", "ANY"),
     }
 })
 
+#' @rdname sourceWrite-gDirSource
+#' @export
+# In-memory network → parquetEdgeStore. Used by GiottoClass's network
+# setters when a giotto object has a gsource backend attached.
+setMethod("sourceWrite", signature("gDirSource", "igraph"),
+    function(src, data, meta = NULL, ...) {
+        .gdsrc_write_artifact(src@path,
+            data = data,
+            store_type = "parquetEdgeStore",
+            meta = meta,
+            ...
+        )
+    })
+
 
 # internals ####
 

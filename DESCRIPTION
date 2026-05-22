@@ -27,6 +27,7 @@ Imports:
     Giotto,
     GiottoClass,
     GiottoUtils,
+    igraph,
     jsonlite,
     Matrix,
     methods,

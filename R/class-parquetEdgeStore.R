@@ -412,6 +412,44 @@ setMethod("storeWrite",
 )
 
 
+#' @rdname storeWrite
+#' @description
+#' igraph dispatch: extracts edges via `igraph::as_data_frame()` and the
+#' vertex universe via `V(g)$name`, then delegates to the data.table
+#' path. Directedness defaults to `igraph::is_directed(data)` if not
+#' explicitly passed. Used by GiottoClass's network setters when a
+#' giotto object has a gsource backend.
+setMethod("storeWrite",
+    signature(store = "parquetEdgeStore", data = "igraph"),
+    function(store, data,
+             type = c("kNN", "sNN", "spatial"),
+             directed = NULL,
+             node_universe = NULL,
+             node_meta = NULL,
+             ...) {
+        type <- match.arg(type)
+        if (is.null(directed)) directed <- igraph::is_directed(data)
+
+        edge_dt <- data.table::as.data.table(
+            igraph::as_data_frame(data, what = "edges")
+        )
+        # Preserve isolated vertices: full vertex set comes from V(g),
+        # not just unique(c(from, to)).
+        if (is.null(node_universe)) {
+            node_universe <- igraph::V(data)$name %null%
+                as.character(seq_len(igraph::vcount(data)))
+        }
+
+        storeWrite(store, edge_dt,
+            type = type,
+            directed = directed,
+            node_universe = node_universe,
+            node_meta = node_meta,
+            ...)
+    }
+)
+
+
 # Core write logic shared by edgeInput + data.table storeWrite paths.
 # Assumes:
 #   - `edges` has columns "from"/"to" with character node IDs, plus any
