@@ -202,6 +202,8 @@ bpcMatrixStore <- function(
 #' * `"parquet"`
 #' * `"parquetGeom"`
 #' * `"parquetGeomTile"`
+#' * `"parquetExpr"`
+#' * `"parquetEdge"`
 #' * `"h5"`
 #' * `"bpcells"`
 #' * `"tiledb"`
@@ -214,6 +216,7 @@ storeCreate <- function(path = .dump_tempfile(), type = "parquet", ...) {
       "parquetgeom"     = "parquetgeomstore",
       "parquetgeomtile" = "parquetgeomtilestore",
       "parquetexpr"     = "parquetexprstore",
+      "parquetedge"     = "parquetedgestore",
       "file"            = "filestore",
       "h5"              = "h5arraystore",
       "bpcells"         = "bpcmatrixstore",
@@ -228,6 +231,7 @@ storeCreate <- function(path = .dump_tempfile(), type = "parquet", ...) {
             "parquetgeomstore",
             "parquetgeomtilestore",
             "parquetexprstore",
+            "parquetedgestore",
             "filestore",
             "h5arraystore",
             "bpcmatrixstore",
@@ -239,6 +243,7 @@ storeCreate <- function(path = .dump_tempfile(), type = "parquet", ...) {
         "parquetgeomstore" = parquetGeomStore(path = path, ...),
         "parquetgeomtilestore" = parquetGeomTileStore(path = path, ...),
         "parquetexprstore" = parquetExprStore(path = path, ...),
+        "parquetedgestore" = parquetEdgeStore(path = path, ...),
         "filestore" = fileStore(path = path, ...),
         "h5arraystore" = h5ArrayStore(path = path, ...),
         "bpcmatrixstore" = bpcMatrixStore(path = path, ...),

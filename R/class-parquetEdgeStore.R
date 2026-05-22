@@ -73,7 +73,7 @@ NULL
 NULL
 
 setClass("parquetEdgeStore",
-    contains = "queryableStore",
+    contains = c("queryableStore", "parquetBase"),
     slots = list(
         n_cells  = "numeric",
         n_edges  = "numeric",
@@ -344,82 +344,136 @@ setMethod("storeWrite",
     signature(store = "parquetEdgeStore", data = "edgeInput"),
     function(store, data,
              type = c("kNN", "sNN", "spatial"),
-             directed = FALSE, ...) {
+             directed = FALSE,
+             node_universe = NULL,
+             ...) {
         type <- match.arg(type)
 
-        # --- (i) coerce input ---------------------------------------
+        # Coerce input -> (edges DT, node universe). Caller is expected
+        # to have produced canonical edges (e.g. .undirected_unique on
+        # the Giotto side for sNN/Delaunay) before reaching here.
         ext <- .edge_input_to_dt(data)
-        edges <- ext$edges       # data.table: <from_col>, <to_col>, [weight, distance]
-        nodes <- ext$node_ids    # character vector — full vertex universe
+        edges <- ext$edges
+        nodes <- node_universe %null% ext$node_ids
 
-        # --- (ii) build node sidecar -------------------------------
-        nodes_dt <- data.table::data.table(
-            node_id = as.character(nodes),
-            int_id  = seq_along(nodes)
+        # Rename input's endpoint cols to canonical names so the core
+        # writer can be column-agnostic across input markers.
+        if (data@from_col != "from") {
+            data.table::setnames(edges, data@from_col, "from")
+        }
+        if (data@to_col != "to") {
+            data.table::setnames(edges, data@to_col, "to")
+        }
+        if (!is.null(data@weight_col) && data@weight_col %in% names(edges) &&
+            data@weight_col != "weight") {
+            data.table::setnames(edges, data@weight_col, "weight")
+        }
+        if (!is.null(data@distance_col) && data@distance_col %in% names(edges) &&
+            data@distance_col != "distance") {
+            data.table::setnames(edges, data@distance_col, "distance")
+        }
+
+        .edge_storewrite_core(
+            store = store, edges = edges, nodes = nodes,
+            node_meta = data@node_meta,
+            type = type, directed = directed
         )
-        # join optional writer-supplied metadata onto sidecar
-        if (!is.null(data@node_meta)) {
-            meta <- data.table::as.data.table(data@node_meta)
-            nodes_dt <- merge(nodes_dt, meta, by = "node_id",
-                              all.x = TRUE, sort = FALSE)
-        }
-
-        # Materialize the directory layout under store@path. Edges +
-        # nodes live in their own subdirs so future hive partitions
-        # (source_id=<uid>/...) drop in without API change.
-        edge_dir <- file.path(store@path, "edges")
-        node_dir <- file.path(store@path, "nodes")
-        dir.create(edge_dir, recursive = TRUE, showWarnings = FALSE)
-        dir.create(node_dir, recursive = TRUE, showWarnings = FALSE)
-        node_path <- file.path(node_dir, "nodes.parquet")
-        edge_path <- file.path(edge_dir, "edges.parquet")
-        arrow::write_parquet(nodes_dt, sink = node_path)
-
-        # --- (iii) char -> int via match() (faster than named-vec) -
-        edges[, from_id := match(as.character(get(data@from_col)),
-                                  nodes_dt$node_id)]
-        edges[, to_id   := match(as.character(get(data@to_col)),
-                                  nodes_dt$node_id)]
-
-        # --- (iv) canonicalize -------------------------------------
-        if (!isTRUE(directed)) {
-            swap <- edges$from_id > edges$to_id
-            tmp  <- edges$from_id[swap]
-            edges$from_id[swap] <- edges$to_id[swap]
-            edges$to_id[swap]   <- tmp
-            edges <- unique(edges, by = c("from_id", "to_id"))
-        }
-        data.table::setorder(edges, from_id, to_id)
-
-        # --- (v) write edge parquet --------------------------------
-        keep_cols <- c("from_id", "to_id")
-        if (!is.null(data@weight_col) && data@weight_col %in% names(edges)) {
-            data.table::setnames(edges, data@weight_col, "weight",
-                                  skip_absent = TRUE)
-            keep_cols <- c(keep_cols, "weight")
-        }
-        if (!is.null(data@distance_col) && data@distance_col %in% names(edges)) {
-            data.table::setnames(edges, data@distance_col, "distance",
-                                  skip_absent = TRUE)
-            keep_cols <- c(keep_cols, "distance")
-        }
-        arrow::write_parquet(edges[, ..keep_cols], sink = edge_path)
-
-        # --- assemble store handle ---------------------------------
-        # @nodes was already created by initialize() pointing at
-        # <path>/nodes/. The file just landed there — handle is valid.
-        # Re-initialize the nodes handle so its lazy n_cells / metadata
-        # picks up the freshly-written file.
-        store@nodes    <- parquetStore(path = node_dir)
-        store@n_cells  <- as.numeric(nrow(nodes_dt))
-        store@n_edges  <- as.numeric(nrow(edges))
-        store@type     <- type
-        store@directed <- as.logical(directed)
-        # @path stays the store root — read_fun knows to read
-        # <path>/edges/. Caller can roundtrip via parquetEdgeStore(path).
-        store
     }
 )
+
+
+#' @rdname storeWrite
+#' @description
+#' Direct data.table dispatch: the in-memory caller (e.g. Giotto's
+#' `.finalize_network`) hands a pre-canonicalized edge data.table with
+#' character `from` / `to` columns plus optional `weight` / `distance` /
+#' `shared`. Trusts the caller for canonical form — no swap, no dedup.
+setMethod("storeWrite",
+    signature(store = "parquetEdgeStore", data = "data.table"),
+    function(store, data,
+             type = c("kNN", "sNN", "spatial"),
+             directed = FALSE,
+             node_universe = NULL,
+             node_meta = NULL,
+             ...) {
+        type <- match.arg(type)
+        if (!all(c("from", "to") %in% names(data))) {
+            stop("[storeWrite(parquetEdgeStore, data.table)] `data` must ",
+                 "have `from` and `to` columns.", call. = FALSE)
+        }
+        nodes <- node_universe %null%
+            as.character(unique(c(data$from, data$to)))
+        .edge_storewrite_core(
+            store = store, edges = data, nodes = nodes,
+            node_meta = node_meta,
+            type = type, directed = directed
+        )
+    }
+)
+
+
+# Core write logic shared by edgeInput + data.table storeWrite paths.
+# Assumes:
+#   - `edges` has columns "from"/"to" with character node IDs, plus any
+#     optional payload cols (weight, distance, shared, ...).
+#   - `nodes` is the full vertex universe (character).
+#   - Caller is responsible for canonicalization. `directed` here is
+#     pure metadata — recorded on @directed for readers, never gates
+#     processing.
+.edge_storewrite_core <- function(store, edges, nodes, node_meta,
+        type, directed) {
+    from <- to <- NULL  # NSE
+
+    # --- node sidecar build (int auto-promotion at 2^31 boundary) ---
+    n <- length(nodes)
+    int_ids <- if (n > .Machine$integer.max) {
+        # seq_len(n) returns double for long vectors; Arrow writes int64
+        # when the schema declares it. No bit64 dependency.
+        arrow::Array$create(seq_len(n), type = arrow::int64())
+    } else {
+        seq_len(n)
+    }
+    nodes_dt <- data.table::data.table(
+        row_index = seq_len(n),  # parquetStore contract; hidden via specialCols
+        node_id   = as.character(nodes),
+        int_id    = int_ids
+    )
+    if (!is.null(node_meta)) {
+        meta <- data.table::as.data.table(node_meta)
+        nodes_dt <- merge(nodes_dt, meta, by = "node_id",
+                          all.x = TRUE, sort = FALSE)
+        data.table::setorder(nodes_dt, row_index)
+    }
+
+    # --- directory layout ------------------------------------------
+    edge_dir <- file.path(store@path, "edges")
+    node_dir <- file.path(store@path, "nodes")
+    dir.create(edge_dir, recursive = TRUE, showWarnings = FALSE)
+    dir.create(node_dir, recursive = TRUE, showWarnings = FALSE)
+    node_path <- file.path(node_dir, "nodes.parquet")
+    edge_path <- file.path(edge_dir, "edges.parquet")
+    arrow::write_parquet(nodes_dt, sink = node_path)
+
+    # --- substitute char -> int via match() ------------------------
+    edges <- data.table::copy(edges)
+    edges[, from_id := match(as.character(from), nodes_dt$node_id)]
+    edges[, to_id   := match(as.character(to),   nodes_dt$node_id)]
+    edges[, c("from", "to") := NULL]
+    data.table::setcolorder(edges, c("from_id", "to_id"))
+    # Sort once on storage-canonical key.
+    data.table::setorder(edges, from_id, to_id)
+
+    # --- write edge parquet ----------------------------------------
+    arrow::write_parquet(edges, sink = edge_path)
+
+    # --- assemble store handle -------------------------------------
+    store@nodes    <- parquetStore(path = node_dir)
+    store@n_cells  <- as.numeric(nrow(nodes_dt))
+    store@n_edges  <- as.numeric(nrow(edges))
+    store@type     <- type
+    store@directed <- as.logical(directed)
+    store
+}
 
 
 # helper — pull edges out of any edgeInput subclass
@@ -480,9 +534,13 @@ setMethod("storeRead", signature(store = "parquetEdgeStore"),
              ...) {
         output <- match.arg(output)
 
-        # apply @ops via inherited queryableStore path; pass through
-        # as "query" then take over for the materialization modes
+        # Open the edges dataset via inherited queryableStore path,
+        # then apply @ops manually (we don't extend parquetStore, so
+        # .pbase_storeread_processing isn't in our dispatch chain).
         ds <- callNextMethod(store, output = "query", ...)
+        for (op in store@ops) {
+            ds <- .do_op(ds, op)
+        }
 
         if (output == "arrow") return(ds)
 
@@ -541,8 +599,14 @@ setMethod("storeRead", signature(store = "parquetEdgeStore"),
         dplyr::collect() |>
         data.table::as.data.table()
     data.table::setkey(names_dt, int_id)
-    v_df <- data.frame(name = names_dt[J(used_ints), node_id],
-                       stringsAsFactors = FALSE)
+    # vertices DF: first col is the vertex identifier (the ranks
+    # 1..V that we just substituted into edges_dt). `name` is an
+    # attribute igraph sets on V(g)$name automatically.
+    v_df <- data.frame(
+        id   = seq_along(used_ints),
+        name = names_dt[J(used_ints), node_id],
+        stringsAsFactors = FALSE
+    )
 
     igraph::graph_from_data_frame(edges_dt,
                                   directed = directed,
@@ -557,38 +621,61 @@ setMethod("storeRead", signature(store = "parquetEdgeStore"),
 #   x[from = v_set]                   # endpoint filter
 #   x[from = v_set, to = u_set, negate = TRUE]
 
-setMethod("[", signature(x = "parquetEdgeStore"),
-    function(x, i, j, ...,
-             from = NULL, to = NULL,
-             negate = FALSE, drop = FALSE) {
-        from_id <- to_id <- int_id <- node_id <- NULL  # NSE
+# helper — translate a character or numeric vertex-id vector to the
+# int_id space used in the edges parquet, via sidecar lookup.
+.edge_vset_to_int <- function(x, ids) {
+    int_id <- node_id <- NULL  # NSE
+    if (is.null(ids)) return(NULL)
+    if (is.numeric(ids)) return(as.integer(ids))
+    ns <- storeRead(x@nodes) |>
+        dplyr::filter(node_id %in% ids) |>
+        dplyr::select(int_id) |>
+        dplyr::collect()
+    as.integer(ns$int_id)
+}
 
-        as_int <- function(ids) {
-            if (is.null(ids)) return(NULL)
-            if (is.numeric(ids)) return(as.integer(ids))
-            # character -> sidecar lookup
-            ns <- storeRead(x@nodes) |>
-                dplyr::filter(node_id %in% ids) |>
-                dplyr::select(int_id) |>
-                dplyr::collect()
-            as.integer(ns$int_id)
-        }
+# helper — build an induced-subgraph filter op given an int vertex set.
+.edge_induced_op <- function(v_int, negate = FALSE) {
+    from_id <- to_id <- NULL  # NSE
+    expr <- if (isTRUE(negate)) {
+        bquote(!(from_id %in% .(v_int) & to_id %in% .(v_int)))
+    } else {
+        bquote(from_id %in% .(v_int) & to_id %in% .(v_int))
+    }
+    list(type = "filter", expr = expr)
+}
 
-        # induced subgraph: i = vertex set, both endpoints in set
-        if (!missing(i) && is.null(from) && is.null(to)) {
-            v_int <- as_int(i)
-            expr <- if (isTRUE(negate)) {
-                bquote(!(from_id %in% .(v_int) & to_id %in% .(v_int)))
-            } else {
-                bquote(from_id %in% .(v_int) & to_id %in% .(v_int))
-            }
-            x@ops <- c(x@ops, list(list(type = "filter", expr = expr)))
-            return(x)
-        }
+# x[v_set]  — induced subgraph on character vertex names
+setMethod("[",
+    signature(x = "parquetEdgeStore", i = "character",
+              j = "missing", drop = "missing"),
+    function(x, i, j, ..., negate = FALSE, drop) {
+        v_int <- .edge_vset_to_int(x, i)
+        x@ops <- c(x@ops, list(.edge_induced_op(v_int, negate = negate)))
+        x
+    }
+)
 
-        # endpoint filter
-        f_int <- as_int(from)
-        t_int <- as_int(to)
+# x[v_set]  — induced subgraph on integer vertex ids
+setMethod("[",
+    signature(x = "parquetEdgeStore", i = "numeric",
+              j = "missing", drop = "missing"),
+    function(x, i, j, ..., negate = FALSE, drop) {
+        v_int <- .edge_vset_to_int(x, i)
+        x@ops <- c(x@ops, list(.edge_induced_op(v_int, negate = negate)))
+        x
+    }
+)
+
+# x[from = ..., to = ..., negate = ...]  — endpoint filter
+setMethod("[",
+    signature(x = "parquetEdgeStore", i = "missing",
+              j = "missing", drop = "missing"),
+    function(x, i, j, ..., from = NULL, to = NULL,
+             negate = FALSE, drop) {
+        from_id <- to_id <- NULL  # NSE
+        f_int <- .edge_vset_to_int(x, from)
+        t_int <- .edge_vset_to_int(x, to)
         clauses <- list()
         if (!is.null(f_int)) clauses <- c(clauses,
             list(bquote(from_id %in% .(f_int))))
