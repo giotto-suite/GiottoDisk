@@ -490,7 +490,7 @@ setMethod("storeWrite",
     dir.create(node_dir, recursive = TRUE, showWarnings = FALSE)
     node_path <- file.path(node_dir, "nodes.parquet")
     edge_path <- file.path(edge_dir, "edges.parquet")
-    arrow::write_parquet(nodes_dt, sink = node_path)
+    .write_parquet_file(nodes_dt, sink = node_path)
 
     # --- substitute char -> int via match() ------------------------
     edges <- data.table::copy(edges)
@@ -502,7 +502,7 @@ setMethod("storeWrite",
     data.table::setorder(edges, from_id, to_id)
 
     # --- write edge parquet ----------------------------------------
-    arrow::write_parquet(edges, sink = edge_path)
+    .write_parquet_file(edges, sink = edge_path)
 
     # --- assemble store handle -------------------------------------
     store@nodes    <- parquetStore(path = node_dir)

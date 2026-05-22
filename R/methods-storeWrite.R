@@ -975,10 +975,9 @@ setMethod(
     if (!is.null(tile_idx)) {
         path <- file.path(path, .hive_part_col("tile_index", tile_idx))
     }
-    arrow::write_dataset(
+    .write_dataset(
         dataset = data,
         path = path,
-        format = "parquet",
         ...
     )
 }

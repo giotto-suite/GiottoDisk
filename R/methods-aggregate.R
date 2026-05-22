@@ -318,7 +318,7 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
         )
 
         if (!dir.exists(write_dir)) dir.create(write_dir, recursive = TRUE)
-        arrow::write_parquet(
+        .write_parquet_file(
             result_df,
             file.path(write_dir, sprintf("tile_%04d.parquet", .I))
         )
@@ -414,7 +414,7 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
         )
 
         if (!dir.exists(write_dir)) dir.create(write_dir, recursive = TRUE)
-        arrow::write_parquet(
+        .write_parquet_file(
             result_df,
             file.path(write_dir, sprintf("tile_%04d.parquet", .I))
         )
@@ -798,7 +798,7 @@ setMethod("overlapToMatrix", signature("parquetStore"),
         if (is.null(batch)) break
         if (batch$num_rows == 0L) next
         batch_idx <- batch_idx + 1L
-        arrow::write_parquet(
+        .write_parquet_file(
             batch,
             file.path(partition_dir,
                       sprintf("part-%d.parquet", batch_idx - 1L))
@@ -814,7 +814,7 @@ setMethod("overlapToMatrix", signature("parquetStore"),
             col_id = integer(0L),
             value  = double(0L)
         )
-        arrow::write_parquet(empty,
+        .write_parquet_file(empty,
             file.path(partition_dir, "part-0.parquet"))
     }
 

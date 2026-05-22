@@ -442,7 +442,7 @@ setMethod(
             if (is.null(dt)) break
             if (nrow(dt) == 0L) next   # skip empty batches (no on-disk chunk)
             batch_idx <- batch_idx + 1L
-            arrow::write_parquet(
+            .write_parquet_file(
                 dt,
                 file.path(partition_dir,
                           sprintf("part-%d.parquet", batch_idx - 1L))
