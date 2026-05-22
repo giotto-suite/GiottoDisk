@@ -82,7 +82,7 @@ using the recorded indices, so chained subsets stay cheap.
 }
 
 \seealso{
-\code{\link[=parquetExprStore]{parquetExprStore()}}, \code{\link[=mtx_to_parquetExprStore]{mtx_to_parquetExprStore()}}
+\code{\link[=parquetExprStore]{parquetExprStore()}}, \code{\link[=mtxInput]{mtxInput()}}
 
 Other store types: 
 \code{\link{binGefInput-class}},

@@ -27,9 +27,10 @@ setMethod("storeRead", signature("parquetExprStore"), function(store, ...) {
 
 # storeWrite ####
 # from a dgCMatrix / Matrix / matrix.  Convenience path: useful for tests
-# and small datasets that already live in memory.  The streaming converter
-# `mtx_to_parquetExprStore()` is the production entry point for raw inputs
-# (10x / Xenium MatrixMarket) -- that path never materializes a dgCMatrix.
+# and small datasets that already live in memory.  The streaming Input
+# classes (e.g. `mtxInput()`, `tenxH5Input()`) plus
+# `storeWrite(parquetExprStore, exprInput)` are the production entry
+# point for raw inputs — that path never materializes a dgCMatrix.
 
 #' @rdname storeWrite
 #' @export

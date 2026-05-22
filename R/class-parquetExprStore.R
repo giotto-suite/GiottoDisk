@@ -51,7 +51,7 @@ NULL
 #' @slot chunk_size numeric. Default Arrow read-chunk size in cells
 #'   (default 250,000).
 #' @family store types
-#' @seealso [parquetExprStore()], [mtx_to_parquetExprStore()]
+#' @seealso [parquetExprStore()], [mtxInput()]
 NULL
 
 # definitions ####
@@ -100,8 +100,8 @@ setClass("parquetExprStore",
 #' file or directory.  The Parquet must contain `row_id`, `col_id`, `value`
 #' columns and be sorted by `row_id`.
 #'
-#' To create the Parquet from a 10x / Xenium MatrixMarket triple, use
-#' [mtx_to_parquetExprStore()].
+#' To populate the Parquet from a 10x / Xenium MatrixMarket triple, build
+#' an [mtxInput()] and pass it to [storeWrite()].
 #'
 #' @param path character. Path to a Parquet file or directory of Parquet
 #'   chunks.

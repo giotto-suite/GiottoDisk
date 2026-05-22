@@ -42,8 +42,8 @@ Construct a \linkS4class{parquetExprStore} handle around a long-format Parquet
 file or directory.  The Parquet must contain \code{row_id}, \code{col_id}, \code{value}
 columns and be sorted by \code{row_id}.
 
-To create the Parquet from a 10x / Xenium MatrixMarket triple, use
-\code{\link[=mtx_to_parquetExprStore]{mtx_to_parquetExprStore()}}.
+To populate the Parquet from a 10x / Xenium MatrixMarket triple, build
+an \code{\link[=mtxInput]{mtxInput()}} and pass it to \code{\link[=storeWrite]{storeWrite()}}.
 }
 \seealso{
 Other store constructors: 
