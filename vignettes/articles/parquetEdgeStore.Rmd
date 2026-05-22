@@ -1,0 +1,268 @@
+---
+title: "Disk-backed networks with parquetEdgeStore"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Disk-backed networks with parquetEdgeStore}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = FALSE
+)
+```
+
+`parquetEdgeStore` is the disk-backed counterpart to in-memory networks
+(`nnNetObj@network`, `spatialNetworkObj@network`). It stores edges in
+long-format parquet plus a small node-ID sidecar, supports lazy filter
+pushdown via `[`, and materializes back to `igraph` / `data.table` /
+`arrow` on demand. It is the storage layer that `createNetwork()` writes
+into when called with `output = "parquet"`.
+
+This article walks through the common patterns. For the architectural
+rationale see the proposal at
+`scstream_prototype/proposals/parquetEdgeStore.md`.
+
+## Quick start — via `createNetwork()`
+
+The primary entry point is `Giotto::createNetwork()` with a
+`networkParam` whose `output` slot is `"parquet"`:
+
+```{r}
+library(Giotto)
+library(GiottoDisk)
+
+# kNN over PCA scores, output as a disk-backed network store
+p <- networkParam("kNN", k = 30, output = "parquet")
+edge_store <- createNetwork(my_pca_obj, param = p)
+
+edge_store
+#> <parquetEdgeStore> type=kNN directed=TRUE
+#>   n_cells: 76,952  n_edges: 2,308,560
+#>   path:    /tmp/.../gdisk_dump/file...
+```
+
+If your project lives under a `gDirSource`, point `createNetwork()` at
+the backend so the artifacts land in the vault instead of a tempdir:
+
+```{r}
+src <- gDirSource(path = "~/projects/my_atlas")
+edge_store <- createNetwork(my_pca_obj, param = p, backend = src)
+```
+
+The resulting `parquetEdgeStore` slots directly into a `nnNetObj`
+without conversion — `@network` is type `ANY`:
+
+```{r}
+nn <- new("nnNetObj", network = edge_store, nn_type = "kNN")
+g <- setGiotto(g, nn)
+```
+
+## Reading back
+
+Three output modes:
+
+```{r}
+# Lazy Arrow query (zero RAM, streaming downstream)
+ds <- storeRead(edge_store, output = "arrow")
+
+# Collected data.table with character node IDs (joined from sidecar)
+dt <- storeRead(edge_store, output = "tibble")
+
+# In-memory igraph (vertex names preserved via V(g)$name)
+g <- storeRead(edge_store, output = "igraph")
+```
+
+The `igraph` materialization ranks node ints down to a dense `1..V` range
+over the subsetted edges before construction — so the in-memory igraph
+only ever sees small int IDs, regardless of how large the source
+universe is. `V(g)$name` carries the original character barcodes.
+
+## Subsetting
+
+`[` follows igraph's adjacency semantics, with one-arg shorthand for
+the common induced-subgraph case:
+
+```{r}
+# Induced subgraph on a vertex set (both endpoints in the set)
+sub <- edge_store[c("cell_A", "cell_B", "cell_C")]
+
+# Adjacency slice — edges from one set to another
+slice <- edge_store[from_cells, to_cells]
+
+# Endpoint filter
+incoming <- edge_store[, "cell_X"]      # edges ending at cell_X
+outgoing <- edge_store[from = "cell_X"] # edges starting at cell_X
+
+# Explicit named form
+slice <- edge_store[from = from_cells, to = to_cells]
+
+# Negate any of the above
+not_this <- edge_store[from = "cell_X", negate = TRUE]
+```
+
+All `[` calls are lazy — they append a filter to the store's `@ops` and
+return a new handle. No I/O happens until `storeRead()`. You can chain:
+
+```{r}
+storeRead(edge_store[v_set][weight > 0.5], output = "igraph")
+```
+
+### Undirected vs directed semantics
+
+For `@directed = FALSE` stores (sNN, spatial, undirected Delaunay), edges
+are stored once in canonical form (`from_id <= to_id`). The `[` methods
+make this transparent — asymmetric filters automatically OR both
+orientations:
+
+```{r}
+# Undirected store: orientation-agnostic
+g <- networkParam("sNN", k = 30, output = "parquet") |> createNetwork(pca)
+g[, "cell_X"]        # matches edges where cell_X is either endpoint
+g[v_a, v_b]          # matches both v_a -> v_b and v_b -> v_a edges
+```
+
+For `@directed = TRUE` stores (kNN), slices stay strict — the original
+orientation is preserved.
+
+```{r}
+g <- networkParam("kNN", k = 30, output = "parquet") |> createNetwork(pca)
+g[, "cell_X"]        # only edges directed TO cell_X
+g["cell_A", "cell_B"] # only the cell_A -> cell_B edge
+```
+
+## Tile-and-loop iteration
+
+For per-tile spatial work (Moran's I, neighborhood enrichment), the
+right shape is to load one tile's worth of edges into an in-memory
+graph, then run the inner algorithm in a loop within that tile:
+
+```{r}
+plan <- tilework::quadtreePlan(geom_store, threshold = 50000)
+
+results <- lapply(seq_along(plan), function(i) {
+    v_set <- storeRead(geom_store[plan[i]], output = "tibble")$cell_id
+    g_tile <- storeRead(edge_store[v_set], output = "igraph")
+    # ... inner per-cell loop on g_tile ...
+})
+```
+
+One materialization per tile, amortized over many inner ops. The rank
+step inside `storeRead(output = "igraph")` is cheap at typical chunk
+sizes (~30 ms at 100k edges) and invisible at the algorithm level.
+
+## Node-ID sidecar
+
+The sidecar is a small parquet at `<store_root>/nodes/` that maps
+character node IDs (cell barcodes, point IDs) to dense integer IDs used
+inside the edge file. It's auto-generated at write time.
+
+```{r}
+storeRead(edge_store@nodes, output = "tibble")
+#>    row_index    node_id int_id
+#>        <int>     <char>  <int>
+#> 1:         1     cell_1      1
+#> 2:         2     cell_2      2
+#> ...
+```
+
+You don't normally interact with it — `[` and `storeRead` handle the
+char ↔ int translation transparently. It exists so that the in-memory
+class doesn't carry a billion-element character vector for the vertex
+universe; instead the universe lives on disk and is joined when needed.
+
+### Writer-supplied node metadata
+
+When constructing the store directly via `storeWrite()`, an optional
+`node_universe` argument preserves isolated vertices:
+
+```{r}
+all_cells <- pDataDT(g)$cell_ID   # full universe, including isolates
+storeWrite(
+    storeCreate(type = "parquetEdgeStore"),
+    my_edge_dt,
+    type = "spatial",
+    directed = FALSE,
+    node_universe = all_cells
+)
+```
+
+Without `node_universe`, the sidecar derives from `unique(c(from, to))`
+on the edge table — vertices with no edges would not appear.
+
+## Direct construction (escape hatches)
+
+When the network is already in memory and you want to disk-back it
+without going through `createNetwork()`:
+
+```{r}
+# From an existing data.table of edges
+inp <- edgeDTInput(
+    my_edge_dt,
+    from_col = "source", to_col = "target",
+    weight_col = "weight"
+)
+edge_store <- sourceWrite(src, inp, store_type = "parquetEdgeStore")
+
+# From an existing in-memory igraph (round-trip / migration)
+inp <- igraphInput(g, weight_attr = "weight")
+edge_store <- sourceWrite(src, inp, store_type = "parquetEdgeStore")
+
+# From an RANN / dbscan kNN result
+nn <- dbscan::kNN(pca_scores, k = 30)
+inp <- nnSearchInput(nn, cell_ids = rownames(pca_scores))
+edge_store <- sourceWrite(src, inp, store_type = "parquetEdgeStore")
+```
+
+These input markers are escape hatches — the primary path is
+`createNetwork(..., output = "parquet")`. They exist for migration from
+existing pipelines, round-trip tests, and cases where the network was
+built outside Giotto's `createNetwork` machinery.
+
+## Snapshot integration
+
+`parquetEdgeStore` participates in `gDirSource` snapshot lifecycle the
+same as any other disk-backed store:
+
+```{r}
+src <- gDirSource(path = "~/projects/my_atlas")
+edge_store <- createNetwork(pca, param = p, backend = src)
+
+# saves the edge_store's artifact alongside the giotto snapshot
+snapshotSave(src, my_gobject)
+
+# later session
+g <- snapshotLoad(src)
+# edge_store handles are restored from manifest; no rebuild
+```
+
+The store directory contains `edges/` and `nodes/` subdirectories;
+future hive-partitioned writes (e.g. `edges/source_id=<uid>/...`) drop
+in without changing the read API.
+
+## When to use `parquetEdgeStore` vs in-memory igraph
+
+| Scenario | Recommendation |
+|---|---|
+| < 10k cells, single session | in-memory igraph |
+| 10k–500k cells, fits in RAM but heavy | either; parquet saves RAM during multi-step pipelines |
+| 500k–10M cells | parquet — in-memory becomes a real bottleneck |
+| 10M+ cells | parquet, tiled construction |
+| Pipelines that round-trip to disk between R sessions | parquet — survives `snapshotSave` |
+
+For Leiden clustering and other whole-graph compute, you can still
+`storeRead(edge_store, output = "igraph")` to get an in-memory graph
+when needed — the disk-backed store is the persistent canonical form,
+not a replacement for in-memory graph compute.
+
+## See also
+
+- [`createNetwork()`](https://drieslab.github.io/GiottoClass/) on
+  GiottoClass for the in-memory and parquet-output dispatch
+- `parquetExprStore` — disk-backed expression matrices, same pattern
+- `parquetGeomStore` — disk-backed spatial points / polygons
+- The architectural rationale at
+  `scstream_prototype/proposals/parquetEdgeStore.md`
