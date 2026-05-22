@@ -106,6 +106,45 @@ The auto-write fires when both:
 For gobjects without a backend, the setter is a no-op on storage
 shape: in-memory networks stay in memory.
 
+## Bulk promotion — `sourceWrite(src, gobject)`
+
+If you have an existing in-memory `giotto` (e.g. from an analysis that
+predates the backed-pipeline switch), the whole thing can be promoted
+in one shot:
+
+```{r bulk-promote, eval = requireNamespace("GiottoClass", quietly = TRUE)}
+# An in-memory gobject built the normal way
+g_inmem <- GiottoClass::createGiottoObject(expression = mat)
+g_inmem
+class(g_inmem@source)   # NULL — no backend
+
+# Promote to a backed project
+gdir_bulk <- file.path(tempdir(), "vignette_bulk_promote")
+unlink(gdir_bulk, recursive = TRUE)
+g_backed <- sourceWrite(gDirSource(path = gdir_bulk), g_inmem)
+class(g_backed@source)
+class(GiottoClass::getExpression(g_backed)[])
+```
+
+Internally this builds a fresh `giotto` with the gsource attached as
+the backend, then re-attaches every data subobject via
+[`GiottoClass::setGiotto()`]. Each setter's existing backend-aware
+write path handles the conversion: expression matrices land as
+`parquetExprStore`, polygons as `parquetGeomStore`, points as
+`parquetGeomStore`, NN and spatial networks as `parquetEdgeStore`.
+
+The operation is idempotent at the subobject level — every backend-
+aware setter checks `inherits(x@<slot>, "dataStore")` and skips re-
+writing if already on disk. Calling `sourceWrite(src, g_backed)`
+again with a fully-backed gobject doesn't grow the manifest or
+re-write artifacts. Useful if some subobject snuck through in-memory
+on a project that should be fully backed — re-running this call
+catches the stray.
+
+Subobjects whose setters don't yet have backend-aware write logic
+(e.g. some image variants) stay in-memory; this is a known limitation
+that doesn't affect correctness.
+
 ## Reading back
 
 Three output modes.
