@@ -256,3 +256,93 @@ test_that("sourceWrite(gDirSource, data.table, store_type='parquetEdgeStore')", 
     expect_s4_class(s, "parquetEdgeStore")
     expect_equal(s@n_cells, 5)
 })
+
+
+# ---- sourceWrite(gDirSource, giotto) — gobject promotion -----------------
+
+.tiny_gobject <- function(n_cells = 20) {
+    skip_if_not_installed("GiottoClass")
+    cells <- paste0("c_", sprintf("%02d", seq_len(n_cells)))
+    mat <- matrix(rpois(n_cells * 50, 2), nrow = 50, ncol = n_cells,
+                  dimnames = list(paste0("g_", seq_len(50)), cells))
+    sl_dt <- data.table::data.table(
+        cell_ID = cells, sdimx = runif(n_cells), sdimy = runif(n_cells)
+    )
+    sl <- GiottoClass::createSpatLocsObj(
+        coordinates = sl_dt, spat_unit = "cell", provenance = "cell"
+    )
+    g <- GiottoClass::createGiottoObject(expression = mat)
+    g <- GiottoClass::setSpatialLocations(g, sl, verbose = FALSE)
+
+    ig <- igraph::sample_gnm(n_cells, 60, directed = FALSE)
+    igraph::V(ig)$name <- cells
+    nn <- methods::new("nnNetObj", network = ig, nn_type = "sNN",
+        name = "sNN.test", spat_unit = "cell", feat_type = "rna",
+        provenance = "cell")
+    options("giotto.check_valid" = FALSE)
+    GiottoClass::setNearestNetwork(g, nn, verbose = FALSE)
+}
+
+test_that("sourceWrite(gDirSource, giotto) promotes in-mem -> disk-backed", {
+    skip_if_not_installed("GiottoClass")
+    g <- .tiny_gobject()
+    expect_null(g@source)
+
+    gdir <- file.path(tempdir(), paste0("gw_promote_", basename(tempfile())))
+    on.exit(unlink(gdir, recursive = TRUE), add = TRUE)
+    src <- gDirSource(path = gdir)
+    gb <- sourceWrite(src, g)
+
+    expect_s4_class(gb@source, "gDirSource")
+    nn_back <- GiottoClass::getNearestNetwork(gb, output = "nnNetObj",
+        spat_unit = "cell", feat_type = "rna",
+        nn_type = "sNN", name = "sNN.test")
+    expect_s4_class(nn_back@network, "parquetEdgeStore")
+})
+
+test_that("sourceWrite(gDirSource, giotto) is idempotent at subobject level", {
+    skip_if_not_installed("GiottoClass")
+    g <- .tiny_gobject()
+    gdir <- file.path(tempdir(), paste0("gw_idem_", basename(tempfile())))
+    on.exit(unlink(gdir, recursive = TRUE), add = TRUE)
+    src <- gDirSource(path = gdir)
+
+    # First write: in-mem -> disk-backed.
+    g1 <- sourceWrite(src, g)
+    nn_class_1 <- class(GiottoClass::getNearestNetwork(g1, output = "nnNetObj",
+        spat_unit = "cell", feat_type = "rna",
+        nn_type = "sNN", name = "sNN.test")@network)
+
+    # Second write: passes through setter dispatch again, but the
+    # backend-aware setters' inherits(dataStore) guards skip re-writing.
+    # No new manifest entries, same storage classes.
+    n_before <- length(list.files(file.path(gdir, "artifacts")))
+    g2 <- sourceWrite(src, g1)
+    n_after <- length(list.files(file.path(gdir, "artifacts")))
+    expect_equal(n_after, n_before)
+
+    nn_class_2 <- class(GiottoClass::getNearestNetwork(g2, output = "nnNetObj",
+        spat_unit = "cell", feat_type = "rna",
+        nn_type = "sNN", name = "sNN.test")@network)
+    expect_identical(nn_class_1, nn_class_2)
+
+    # Different gDirSource handle pointing at same path: same behavior
+    src2 <- gDirSource(path = gdir)
+    n_before <- length(list.files(file.path(gdir, "artifacts")))
+    g3 <- sourceWrite(src2, g1)
+    n_after <- length(list.files(file.path(gdir, "artifacts")))
+    expect_equal(n_after, n_before)
+})
+
+test_that("sourceWrite(gDirSource, giotto) warns on cross-source", {
+    skip_if_not_installed("GiottoClass")
+    g <- .tiny_gobject()
+    gdir1 <- file.path(tempdir(), paste0("gw_x1_", basename(tempfile())))
+    gdir2 <- file.path(tempdir(), paste0("gw_x2_", basename(tempfile())))
+    on.exit(unlink(c(gdir1, gdir2), recursive = TRUE), add = TRUE)
+    g_back <- sourceWrite(gDirSource(path = gdir1), g)
+    expect_warning(
+        sourceWrite(gDirSource(path = gdir2), g_back),
+        "already backed by a different source"
+    )
+})
