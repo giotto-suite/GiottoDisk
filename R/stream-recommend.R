@@ -11,8 +11,7 @@ NULL
 #' Estimates the optimal `chunk_size` for streaming reads of a
 #' [parquetExprStore-class] so that each pipeline pass stays within a
 #' target fraction of currently free RAM. Call this once before opening
-#' a dataset (or let [createGiottoFromParquet()] call it automatically)
-#' and pass the result to the store constructor.
+#' a dataset and pass the result to the store constructor.
 #'
 #' Prints a small comparison table across RAM budgets and returns the
 #' recommended value invisibly.
