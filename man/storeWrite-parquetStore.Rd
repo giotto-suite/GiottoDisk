@@ -57,7 +57,7 @@ batches with possible pre-processing via \code{callback}.
 }
 \seealso{
 Other storeWrite methods: 
-\code{\link{storeWrite}()},
+\code{\link{storeWrite,parquetExprStore,exprInput-method}},
 \code{\link{storeWrite-parquetGeomStore}},
 \code{\link{storeWrite-parquetGeomTileStore}}
 }

@@ -70,6 +70,7 @@ setMethod(
             flip_vertical = TRUE,
             dropcols = c(),
             qv_threshold = obj@qv,
+            cores = GiottoUtils::determine_cores(),
             output = c("giottoPoints", "store"),
             verbose = NULL,
             ...
@@ -82,6 +83,7 @@ setMethod(
                 flip_vertical = flip_vertical,
                 dropcols = dropcols,
                 qv_threshold = qv_threshold,
+                cores = cores,
                 output = output,
                 verbose = verbose,
                 ...
@@ -100,6 +102,7 @@ setMethod(
             split_geom_sourcename = "cell_poly_id",
             flip_vertical = TRUE,
             calc_centroids = TRUE,
+            cores = GiottoUtils::determine_cores(),
             output = c("giottoPolygon", "store"),
             verbose = NULL,
             ...
@@ -114,12 +117,38 @@ setMethod(
                 split_geom_sourcename = split_geom_sourcename,
                 flip_vertical = flip_vertical,
                 calc_centroids = calc_centroids,
+                cores = cores,
                 output = output,
                 verbose = verbose,
                 ...
             )
         }
         obj@calls$load_polys <- poly_fun
+
+        # expression (disk override). Signature mirrors parent's
+        # `load_expression` so the inherited `gobject_fun` (and the
+        # disk reader's own `create_gobject`) can pass the same args.
+        ex_fun <- function(
+            path = expr_path,
+            gene_ids = "symbols",
+            remove_zero_rows = TRUE,
+            split_by_type = TRUE,
+            output = c("exprObj", "store"),
+            verbose = NULL,
+            ...
+        ) {
+            .xenium_expression_disk(
+                path = path,
+                gsource = gsrc,
+                gene_ids = gene_ids,
+                remove_zero_rows = remove_zero_rows,
+                split_by_type = split_by_type,
+                output = output,
+                verbose = verbose,
+                ...
+            )
+        }
+        obj@calls$load_expression <- ex_fun
 
         # create_gobject (disk variant). Mirrors parent's gobject_fun
         # signature so `createGiottoXeniumObject(backend = gsrc, ...)` can
@@ -250,7 +279,7 @@ setMethod(
                     verbose = FALSE)
             }
 
-            # expression (in-mem; inherited closure)
+            # expression (disk; overridden closure)
             if (load_expression) {
                 ex <- funs$load_expression(
                     path = expression_path,
@@ -449,6 +478,7 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
     flip_vertical = TRUE,
     dropcols = c(),
     qv_threshold = 20,
+    cores = GiottoUtils::determine_cores(),
     output = c("giottoPoints", "store"),
     verbose = NULL,
     ...
@@ -543,6 +573,7 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
     split_geom_sourcename = "cell_poly_id",
     flip_vertical = TRUE,
     calc_centroids = TRUE,
+    cores = GiottoUtils::determine_cores(),
     output = c("giottoPolygon", "store"),
     verbose = NULL,
     ...
@@ -666,4 +697,195 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
         x = poly_store,
         name = name
     )
+}
+
+
+
+## expression ####
+
+# Disk-backed Xenium expression ingestion.
+#
+# Builds an `exprInput` marker (`mtxInput` for the 10x mtx triple,
+# `tenxH5Input` for cell_feature_matrix.h5) and routes it through
+# `sourceWrite(gsource, inp, store_type = "parquetExpr")` into the
+# project vault. tar.gz inputs are unpacked under `tempdir()` and the
+# resulting cell_feature_matrix/ directory feeds the mtx path.
+#
+# Xenium-specific post-processing matches Giotto's in-mem
+# `.xenium_expression`: drop zero-detection features (Arrow distinct on
+# col_id), split by feature class (features.tsv column 3, or
+# /features/feature_type on h5), and rename to Giotto feat_type
+# conventions ("Gene Expression" -> "rna", etc).
+.xenium_expression_disk <- function(
+    path,
+    gsource,
+    gene_ids = "symbols",
+    remove_zero_rows = TRUE,
+    split_by_type = TRUE,
+    output = c("exprObj", "store"),
+    verbose = NULL,
+    ...
+) {
+    if (missing(path)) {
+        stop("[xenium_expression_disk] no path provided", call. = FALSE)
+    }
+    checkmate::assert_class(gsource, "gsource")
+    output <- match.arg(output, choices = c("exprObj", "store"))
+
+    feature_id_col <- switch(gene_ids,
+        "ensembl" = 1L,
+        "symbols" = 2L,
+        stop("[xenium_expression_disk] unknown gene_ids: ", gene_ids,
+             call. = FALSE)
+    )
+
+    # Detect format
+    if (dir.exists(path)) {
+        fmt <- "mtx"
+    } else if (grepl("\\.tar\\.gz$", path, ignore.case = TRUE)) {
+        fmt <- "tar.gz"
+    } else {
+        ext <- tolower(tools::file_ext(path))
+        fmt <- switch(ext,
+            "h5"  = "h5",
+            "mtx" = "mtx",
+            "gz"  = "mtx",   # matrix.mtx.gz inside a 10x dir is handled below
+            stop("[xenium_expression_disk] unsupported expression format: ",
+                 path, call. = FALSE)
+        )
+    }
+
+    GiottoUtils::vmsg("[xenium_expression_disk] format:", fmt, .v = verbose)
+
+    # tar.gz -> unpack to tempdir, fall through to mtx path
+    if (fmt == "tar.gz") {
+        unpack_root <- file.path(
+            tempdir(),
+            paste0("xenium_expr_unpacked_",
+                   tools::file_path_sans_ext(
+                       tools::file_path_sans_ext(basename(path))))
+        )
+        dir.create(unpack_root, recursive = TRUE, showWarnings = FALSE)
+        utils::untar(path, exdir = unpack_root)
+        candidates <- list.dirs(unpack_root, recursive = FALSE)
+        unpacked <- candidates[grepl("cell_feature_matrix$", candidates)][1L]
+        if (is.na(unpacked) || !dir.exists(unpacked)) {
+            stop("[xenium_expression_disk] tarball did not contain a ",
+                 "cell_feature_matrix/ directory.", call. = FALSE)
+        }
+        path <- unpacked
+        fmt  <- "mtx"
+    }
+
+    # Construct exprInput marker + capture feat_classes (col 3 of features.tsv
+    # for mtx; /features/feature_type for h5). Must align 1:1 with inp@feat_ids
+    # in the original (pre-disambiguation) order; disambiguation only appends
+    # suffixes so positional alignment is preserved.
+    if (fmt == "mtx") {
+        inp <- mtxInput(path, feature_id_col = feature_id_col)
+        feat_classes_vec <- .tenx_feat_classes_mtx(path)
+    } else {
+        inp <- tenxH5Input(path, feature_id_col = feature_id_col)
+        feat_classes_vec <- .tenx_feat_classes_h5(path)
+    }
+
+    # Write to vault. sourceWrite(gDirSource, fileStore) is the dispatch
+    # entry; exprInput extends fileStore so it routes here. storeWrite
+    # internally consumes the iterator returned by storeRead(inp).
+    pe <- sourceWrite(gsource, inp, store_type = "parquetExpr",
+                      verbose = verbose, ...)
+
+    # remove_zero_rows: streaming Arrow distinct on col_id to find
+    # detected features; subset the store positionally.
+    if (isTRUE(remove_zero_rows)) {
+        col_id <- NULL  # NSE binding
+        ds <- storeRead(pe)
+        present <- ds |>
+            dplyr::distinct(col_id) |>
+            dplyr::collect()
+        keep_idx <- sort(as.integer(present$col_id))
+        if (length(keep_idx) > 0L &&
+            length(keep_idx) < length(feat_classes_vec)) {
+            pe <- pe[keep_idx, , drop = FALSE]
+            feat_classes_vec <- feat_classes_vec[keep_idx]
+        }
+    }
+
+    # split_by_type: group feat indices by feature class. If only one
+    # class is present, return a single-element list.
+    feat_class_to_name <- function(fc) {
+        switch(fc,
+            "Gene Expression"           = "rna",
+            "Protein Expression"        = "protein",
+            "Negative Control Codeword" = "NegControlCodeword",
+            "Negative Control Probe"    = "NegControlProbe",
+            "Blank Codeword"            = "UnassignedCodeword",
+            "Genomic Control"           = "GenomicControl",
+            "Unassigned Codeword"       = "UnassignedCodeword",
+            "Deprecated Codeword"       = "DeprecatedCodeword",
+            gsub(" ", "_", fc)
+        )
+    }
+    uniq_classes <- unique(feat_classes_vec)
+    if (length(uniq_classes) > 1L && isTRUE(split_by_type)) {
+        store_list <- lapply(uniq_classes, function(fc) {
+            idx <- which(feat_classes_vec == fc)
+            pe[idx, , drop = FALSE]
+        })
+        names(store_list) <- vapply(uniq_classes, feat_class_to_name,
+                                    character(1L))
+    } else {
+        # No split — single store, name from the (sole) class or default rna
+        nm <- if (length(uniq_classes) == 1L) feat_class_to_name(uniq_classes)
+              else "rna"
+        store_list <- stats::setNames(list(pe), nm)
+    }
+
+    if (output == "store") return(store_list)
+
+    # Build exprObjs directly (bypass createExprObj / .evaluate_expr_matrix
+    # since they don't recognize parquetExprStore).
+    lapply(seq_along(store_list), function(i) {
+        methods::new("exprObj",
+            name       = "raw",
+            exprMat    = store_list[[i]],
+            spat_unit  = "cell",
+            feat_type  = names(store_list)[[i]],
+            provenance = "cell"
+        )
+    })
+}
+
+
+# Feature class extractor: 10x mtx triple. Reads column 3 of features.tsv
+# (the canonical feature-type column written by 10x); falls back to
+# "Gene Expression" when only ID + name are present. Shared across 10x-
+# format readers (Xenium / VisiumHD).
+.tenx_feat_classes_mtx <- function(path) {
+    files_10X <- list.files(path)
+    features_file <- grep(files_10X, pattern = "features|genes",
+                          value = TRUE)[1L]
+    if (is.na(features_file)) {
+        stop("[tenx_feat_classes_mtx] features.tsv not found under ", path,
+             call. = FALSE)
+    }
+    featuresDT <- data.table::fread(
+        input  = file.path(path, features_file),
+        header = FALSE
+    )
+    if (ncol(featuresDT) >= 3L) as.character(featuresDT$V3)
+    else rep("Gene Expression", nrow(featuresDT))
+}
+
+
+# Feature class extractor: 10x h5. Reads /<root>/features/feature_type.
+# Opens its own h5 handle (separate from tenxH5Input's read); cheap since
+# feature_type is a small vector. Shared across 10x-format readers
+# (Xenium / VisiumHD).
+.tenx_feat_classes_h5 <- function(path) {
+    GiottoUtils::package_check("hdf5r")
+    h5 <- hdf5r::H5File$new(path, mode = "r")
+    on.exit(h5$close_all(), add = TRUE)
+    root <- names(h5)[1L]
+    as.character(h5[[paste0(root, "/features/feature_type")]][])
 }

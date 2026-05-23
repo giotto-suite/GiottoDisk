@@ -27,7 +27,9 @@ Imports:
     Giotto,
     GiottoClass,
     GiottoUtils,
+    igraph,
     jsonlite,
+    Matrix,
     methods,
     rlang,
     terra,
@@ -38,8 +40,10 @@ Suggests:
     duckdb,
     filelock (>= 1.0.2),
     HDF5Array,
+    hdf5r,
     nanoarrow,
     qs,
+    rhdf5,
     sedonadb,
     testthat,
     wk,
@@ -50,15 +54,23 @@ Collate:
     'pkg_imports.R'
     'utils.R'
     'class-dataStore.R'
+    'class-fileInputs.R'
     'class-gsource.R'
+    'class-parquetExprStore.R'
     'class-parquetStore.R'
+    'convenience-cosmx.R'
+    'convenience-stereoseq.R'
     'convenience-xenium.R'
+    'utils-parquetExprStore.R'
+    'createGiottoFromParquet.R'
     'methods-accessors.R'
     'methods-aggregate.R'
     'methods-combine.R'
     'methods-expanse.R'
+    'methods-fileInputs.R'
     'methods-giotto.R'
     'methods-ops.R'
+    'methods-parquetExprStore.R'
     'methods-plot.R'
     'methods-rasterize.R'
     'methods-show.R'
@@ -72,7 +84,14 @@ Collate:
     'methods-storeInspect.R'
     'methods-storeRead.R'
     'methods-storeWrite.R'
+    'methods-store_nostate.R'
     'methods-transforms.R'
+    'stream-filter.R'
+    'stream-hvf.R'
+    'stream-normalize.R'
+    'stream-pca.R'
+    'stream-qc.R'
+    'stream-recommend.R'
     'utils-spatial.R'
     'tilework.R'
     'utils-arrow.R'

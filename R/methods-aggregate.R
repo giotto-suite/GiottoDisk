@@ -318,7 +318,7 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
         )
 
         if (!dir.exists(write_dir)) dir.create(write_dir, recursive = TRUE)
-        arrow::write_parquet(
+        .write_parquet_file(
             result_df,
             file.path(write_dir, sprintf("tile_%04d.parquet", .I))
         )
@@ -414,7 +414,7 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
         )
 
         if (!dir.exists(write_dir)) dir.create(write_dir, recursive = TRUE)
-        arrow::write_parquet(
+        .write_parquet_file(
             result_df,
             file.path(write_dir, sprintf("tile_%04d.parquet", .I))
         )
@@ -671,6 +671,15 @@ setMethod("overlapToMatrix", signature("parquetStore"),
             dplyr::count(i, j)
     }
 
+    # parquetexpr destination: skip the Matrix Market intermediate entirely.
+    # The COO is already triplets — a transmute + arrange + streaming write
+    # produces a sorted parquetExprStore directly.
+    if (tolower(store_type) == "parquetexpr") {
+        vmsg(.v = verbose, "[overlapToMatrix] writing parquetExprStore...")
+        return(.coo_to_parquetexpr(coo_query, feat_ids, cell_ids,
+                                   path, verbose = verbose))
+    }
+
     vmsg(.v = verbose, "[overlapToMatrix] writing Matrix Market...")
     mtx_dir <- .write_overlap_mtx(coo_query, feat_ids, cell_ids, path)
     .mtx_to_store(mtx_dir, store_type = store_type,
@@ -747,4 +756,67 @@ setMethod("overlapToMatrix", signature("parquetStore"),
             call. = FALSE
         )
     )
+}
+
+# Stream a lazy (i, j, n) COO query into a sorted parquetExprStore. Skips
+# the Matrix Market intermediate — the COO is already triplets, so the
+# conversion is column-rename + arrange. The arrange is required by
+# parquetExprStore's sorted-by-row_id contract, which enables Arrow
+# row-group skipping on cell-banded streaming reads downstream.
+#
+# Column mapping: parquetExprStore stores (row_id = cell_idx,
+# col_id = gene_idx, value), so j -> row_id (cells), i -> col_id (feats).
+.coo_to_parquetexpr <- function(coo_query, feat_ids, cell_ids, path,
+                                verbose = NULL) {
+    # NSE bindings
+    i <- j <- n <- row_id <- col_id <- value <- NULL
+
+    if (!dir.exists(path)) dir.create(path, recursive = TRUE)
+
+    # Construct the parquetExprStore upfront so its auto-generated uid
+    # is available for the source_id partition path (.idpath helper).
+    pe <- parquetExprStore(
+        path     = normalizePath(path),
+        cell_ids = cell_ids,
+        feat_ids = feat_ids
+    )
+    partition_dir <- .idpath(pe@path, pe@uid)
+    dir.create(partition_dir, recursive = TRUE, showWarnings = FALSE)
+
+    pe_query <- coo_query |>
+        dplyr::transmute(
+            row_id = as.integer(j),
+            col_id = as.integer(i),
+            value  = as.double(n)
+        ) |>
+        dplyr::arrange(row_id, col_id)
+
+    reader <- arrow::as_record_batch_reader(pe_query)
+    batch_idx <- 0L
+    repeat {
+        batch <- reader$read_next_batch()
+        if (is.null(batch)) break
+        if (batch$num_rows == 0L) next
+        batch_idx <- batch_idx + 1L
+        .write_parquet_file(
+            batch,
+            file.path(partition_dir,
+                      sprintf("part-%d.parquet", batch_idx - 1L))
+        )
+    }
+
+    # Empty overlap: write a single zero-row chunk so the dataset is
+    # openable. parquetExprStore's read_fun (open_dataset) needs at
+    # least one file present to resolve the schema.
+    if (batch_idx == 0L) {
+        empty <- data.table::data.table(
+            row_id = integer(0L),
+            col_id = integer(0L),
+            value  = double(0L)
+        )
+        .write_parquet_file(empty,
+            file.path(partition_dir, "part-0.parquet"))
+    }
+
+    pe
 }
