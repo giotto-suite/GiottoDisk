@@ -456,6 +456,6 @@ setMethod(
         store@feat_ids <- itr$feat_ids()
         store@n_cells  <- as.numeric(itr$n_cells())
         store@n_genes  <- as.numeric(itr$n_genes())
-        store
+        .pestore_finalize_chunk_size(store)
     }
 )

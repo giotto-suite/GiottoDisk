@@ -68,7 +68,7 @@ setMethod(
             store@cell_ids <- as.character(colnames(data))
         if (length(store@feat_ids) == 0L && !is.null(rownames(data)))
             store@feat_ids <- as.character(rownames(data))
-        store
+        .pestore_finalize_chunk_size(store)
     }
 )
 

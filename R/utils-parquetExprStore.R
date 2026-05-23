@@ -20,6 +20,38 @@ NULL
 }
 
 
+# Approximate density (nnz / (n_cells * n_genes)) of a parquetExprStore.
+# Uses Arrow's count() — for an unfiltered store this resolves via
+# parquet footer metadata (num_rows per row-group), no data scan.
+# Subsetted stores pay a predicate-pushdown filter pass.
+.pestore_density <- function(pe) {
+    n_cells <- as.numeric(pe@n_cells)
+    n_genes <- as.numeric(pe@n_genes)
+    if (n_cells <= 0 || n_genes <= 0) return(0)
+    nnz <- storeRead(pe) |>
+        dplyr::count() |>
+        dplyr::collect() |>
+        dplyr::pull(n)
+    as.numeric(nnz) / (n_cells * n_genes)
+}
+
+# Finalizer: auto-tune store@chunk_size from dataset shape + density,
+# using sc_recommend_chunk's defaults (n_hvg = min(2000L, n_genes),
+# k = 50L, ram_frac = 0.25). Restores the auto-sizing legacy did via
+# createGiottoFromParquet, but applied at storeWrite time so every
+# Input pathway and the direct memoryMatrix path benefit.
+.pestore_finalize_chunk_size <- function(pe, verbose = FALSE) {
+    if (pe@n_cells <= 0 || pe@n_genes <= 0) return(pe)
+    pe@chunk_size <- sc_recommend_chunk(
+        n_cells = pe@n_cells,
+        n_genes = pe@n_genes,
+        density = .pestore_density(pe),
+        verbose = verbose
+    )
+    pe
+}
+
+
 # Build chunk boundaries that respect duplicate-name groups: never split
 # a run of raw geneDT rows that share the same name_to_row between two
 # chunks. Returns a list of c(g_lo, g_hi) integer pairs covering 1..n.
