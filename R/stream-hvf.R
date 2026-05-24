@@ -194,7 +194,11 @@ setMethod("analyzeData",
     }
 
     gene_mean <- gene_sum / n_cells
-    gene_var  <- pmax(gene_sumsq / n_cells - gene_mean * gene_mean, 0)
+    gene_var  <- if (n_cells > 1L) {
+        pmax((gene_sumsq - gene_sum * gene_sum / n_cells) / (n_cells - 1L), 0)
+    } else {
+        numeric(n_genes)
+    }
     gene_sd   <- sqrt(gene_var)
     gene_cov  <- ifelse(gene_mean > 0, gene_sd / gene_mean, NaN)
 
