@@ -354,9 +354,18 @@ Both dispatch paths produce a flat `parquetStore`:
 Both paths return `overlapPointDisk`. Internals return plain `parquetStore`.
 
 ### overlapToMatrix
-Groups by `(feat_ID, poly_ID)`, counts/sums, builds COO, writes Matrix Market + sidecar,
-returns matrix store (BPCells or HDF5). IDs sorted via `GiottoUtils::mixedsort()` before
-COO construction. `all_feat_ids`/`all_cell_ids` params preserve zero-overlap entries.
+Groups by `(feat_ID, poly_ID)`, counts/sums, builds COO on integer keys (string→int LUTs
+joined onto raw batches *before* aggregation — aggregating strings first leaves dangling
+utf8_view buffers at scale). IDs sorted via `GiottoUtils::mixedsort()` before COO
+construction. `all_feat_ids`/`all_cell_ids` params preserve zero-overlap entries.
+
+**Destination branches on `store_type`** (default: `getOption("giotto.gdsrc_matrix_format", "bpcells")`):
+- `"bpcells"` / `"hdf5"`: COO → `.write_overlap_mtx()` (streamed Matrix Market) →
+  `.mtx_to_store()` → BPCells or HDF5Array.
+- `"parquetexpr"`: COO → `.coo_to_parquetexpr()` directly. Transmutes
+  `(i, j, n)` → `(col_id, row_id, value)`, arranges by `row_id` for row-group skipping,
+  streams record batches to a `parquetExprStore` — **no MTX intermediate, no dgCMatrix
+  materialization**.
 
 ## Metadata
 
