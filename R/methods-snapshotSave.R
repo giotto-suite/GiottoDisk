@@ -12,7 +12,10 @@
 #'   snapshot of the same name exists.
 #' @param verbose verbosity
 #' @param ... additional params to pass (none implemented)
-#' @returns TRUE if save completed
+#' @returns the modified gobject (invisible). Mutated by the internal
+#'   adoption pass — captured by `snapshotSave(gDirSource, giottoMulti)`
+#'   so the multi-level `.rds` sees post-adoption file handles in each
+#'   child.
 NULL
 
 #' @rdname snapshotSave
@@ -96,18 +99,18 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     # tagging --------------------------------------------------- #
     vmsg(.v = verbose, "[GiottoDisk] tagging snapshot artifacts...")
     uids <- .ss_gdsrc_detect_uid(x)
-    if (length(uids) == 0L) return(invisible(TRUE))
-    
-    manifest <- as.data.frame(src)
-    for (uid_to_tag in uids) {
-        content <- manifest[uid == uid_to_tag, giottosave]
-        content <- c(content, name)
-        content <- unique(content[!is.na(content)])
-        src[uid_to_tag, "giottosave"] <- content
+    if (length(uids) > 0L) {
+        manifest <- as.data.frame(src)
+        for (uid_to_tag in uids) {
+            content <- manifest[uid == uid_to_tag, giottosave]
+            content <- c(content, name)
+            content <- unique(content[!is.na(content)])
+            src[uid_to_tag, "giottosave"] <- content
+        }
     }
-  
+
     vmsg(.v = verbose, "[GiottoDisk] done")
-    invisible(TRUE)
+    invisible(x)
 })
 
 # internals ####
