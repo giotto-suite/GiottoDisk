@@ -209,6 +209,30 @@ test_that("negate = TRUE returns complement", {
 })
 
 
+# ---- spatIDs -------------------------------------------------------------
+
+test_that("spatIDs(parquetEdgeStore) returns full node universe when no subset", {
+    s <- storeWrite(storeCreate(type = "parquetEdgeStore"),
+                    .tiny_undirected_dt(),
+                    type = "sNN", directed = FALSE)
+    expect_setequal(spatIDs(s), c("a", "b", "c", "d", "e"))
+})
+
+test_that("spatIDs respects active subset (induced subgraph drops isolates)", {
+    s <- storeWrite(storeCreate(type = "parquetEdgeStore"),
+                    .tiny_undirected_dt(),
+                    type = "sNN", directed = FALSE)
+    # induced on {a,b,c,d} drops vertex e (only edge d-e leaves the subset)
+    expect_setequal(spatIDs(s[c("a", "b", "c", "d")]),
+                    c("a", "b", "c", "d"))
+})
+
+test_that("spatIDs on an empty parquetEdgeStore returns character(0)", {
+    s <- parquetEdgeStore(path = tempfile())
+    expect_identical(spatIDs(s), character(0L))
+})
+
+
 # ---- sourceAdopt ----------------------------------------------------------
 
 test_that("sourceAdopt(parquetEdgeStore) updates both @path and @nodes@path", {
