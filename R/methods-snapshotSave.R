@@ -75,6 +75,12 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
         giottosave = name,
         verbose = verbose
     )
+
+    vmsg(.v = verbose, "[GiottoDisk] checking network stores...")
+    x <- .ss_gdsrc_register_external_network(x,
+        giottosave = name,
+        verbose = verbose
+    )
   
     vmsg(.v = verbose, "[GiottoDisk] writing snapshot")
     temp <- .dump_tempfile() # temp location for atomic writes
@@ -184,6 +190,8 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     uids <- c(uids, .ss_gdsrc_detect_uid_spatial_polygons(gobject))
     # overlaps
     uids <- c(uids, .ss_gdsrc_detect_uid_overlaps(gobject))
+    # networks (nn + spatial)
+    uids <- c(uids, .ss_gdsrc_detect_uid_networks(gobject))
     uids
 }
 
@@ -221,6 +229,23 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
             ovlp <- ovlps[[feat_name]]
             if (!inherits(ovlp, "overlapPointDisk")) next
             uids <- c(uids, ovlp@data@uid)
+        }
+    }
+    uids
+}
+
+# detect network store uids — networks land in @network on nnNetObj /
+# spatialNetworkObj. In-memory igraphs are skipped; only dataStore-backed
+# networks (typically parquetEdgeStore after a setter auto-write) carry
+# vault uids and need snapshot tagging to survive sourcePrune.
+.ss_gdsrc_detect_uid_networks <- function(gobject) {
+    uids <- c()
+    for (slot in c("nn_network", "spatial_network")) {
+        net_list <- gobject[[slot]]
+        for (net_obj in net_list) {
+            net <- net_obj@network
+            if (!inherits(net, "dataStore")) next
+            uids <- c(uids, .ss_store_uids(net))
         }
     }
     uids
@@ -294,6 +319,37 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
 
         if (modified) {
             gobject <- GiottoClass::setGiotto(gobject, poly_obj, verbose = FALSE)
+        }
+    }
+
+    gobject
+}
+
+# Mirror of the geom/overlap registrants for networks. The common path
+# is: user calls setNearestNetwork / setSpatialNetwork with an in-memory
+# igraph on a backed gobject → setter auto-writes via
+# sourceWrite(gDirSource, igraph) → network is already vault-resident
+# before snapshotSave runs. This helper covers the rarer case where a
+# parquetEdgeStore was attached externally (e.g. constructed manually,
+# or moved between projects). Walks both @nn_network and
+# @spatial_network slots uniformly.
+.ss_gdsrc_register_external_network <- function(gobject, giottosave, verbose = NULL) {
+    src <- gobject@source
+
+    for (slot in c("nn_network", "spatial_network")) {
+        net_list <- gobject[[slot]]
+        for (net_obj in net_list) {
+            net <- net_obj@network
+            if (!inherits(net, "dataStore")) next
+            if (sourceContains(src, net)) next
+
+            vmsg(.v = verbose, sprintf(
+                "[GiottoDisk] adopting external network '%s'",
+                GiottoClass::objName(net_obj)
+            ))
+
+            net_obj@network <- sourceAdopt(src, net, giottosave = giottosave)
+            gobject <- GiottoClass::setGiotto(gobject, net_obj, verbose = FALSE)
         }
     }
 
