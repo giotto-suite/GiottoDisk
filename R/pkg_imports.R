@@ -9,6 +9,5 @@
 #' @importClassesFrom terra SpatVector
 #' @importClassesFrom Matrix Matrix
 #' @importClassesFrom DelayedArray DelayedArray
-#' @importClassesFrom igraph igraph
 #' @import data.table
 NULL
