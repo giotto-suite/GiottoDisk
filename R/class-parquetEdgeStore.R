@@ -824,6 +824,51 @@ setMethod("[",
 )
 
 
+# spatIDs ####
+# Expose node IDs (character barcodes) for parquetEdgeStore. GiottoClass's
+# spatIDs methods on nnNetObj / spatialNetworkObj can delegate to this
+# method when the network's @network slot is a parquetEdgeStore instead
+# of an in-memory igraph (see GiottoClass `methods-IDs.R`).
+#
+# Active-subset semantics: when `@ops` is empty (no subset pending), all
+# node IDs come from the sidecar — preserves isolated vertices. With
+# @ops pending, only nodes referenced by surviving edges are returned,
+# matching how `igraph::V` behaves on a subgraph.
+
+#' @rdname spatIDs-generic
+#' @export
+setMethod("spatIDs", signature(x = "parquetEdgeStore"), function(x, ...) {
+    int_id <- node_id <- from_id <- to_id <- NULL  # NSE
+    if (is.null(x@nodes) || !storeExists(x@nodes)) return(character(0L))
+
+    if (length(x@ops) == 0L) {
+        ids <- storeRead(x@nodes) |>
+            dplyr::select(node_id) |>
+            dplyr::distinct() |>
+            dplyr::collect()
+        return(as.character(ids$node_id))
+    }
+
+    # Subset is pending — read active edges (storeRead applies @ops),
+    # collect referenced int IDs, look up character IDs in sidecar.
+    edges <- storeRead(x, output = "arrow")
+    used <- dplyr::union(
+        edges |> dplyr::select(int_id = from_id),
+        edges |> dplyr::select(int_id = to_id)
+    ) |>
+        dplyr::collect() |>
+        dplyr::pull(int_id)
+
+    if (length(used) == 0L) return(character(0L))
+
+    name_map <- storeRead(x@nodes) |>
+        dplyr::filter(int_id %in% !!used) |>
+        dplyr::select(node_id) |>
+        dplyr::collect()
+    as.character(unique(name_map$node_id))
+})
+
+
 # DIM / SHOW ####
 
 setMethod("dim", signature(x = "parquetEdgeStore"), function(x) {
