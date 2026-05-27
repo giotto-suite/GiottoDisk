@@ -375,7 +375,7 @@ for typical cell metadata sizes (up to ~1M cells × many cols). At transcript/fe
 
 ## Roadmap
 
-Future plans are documented in `vignettes/articles/roadmap.Rmd`. Key items:
+High-level public-facing direction is in `vignettes/articles/roadmap.Rmd`. Headline items:
 
 - **`parquetMutableStore`**: disk-backed metadata with main file + named sidecar files per
   column group. Sidecars joined lazily on `[, col]`; consolidated at `snapshotSave()`.
@@ -383,6 +383,16 @@ Future plans are documented in `vignettes/articles/roadmap.Rmd`. Key items:
 - **Partition hardlink utility**: creates hardlinks to existing parquet files under a new
   hive partition layout (e.g. `sample_id=s1/`) without copying data. Enables partition
   pushdown for logical groupings (e.g. per-sample blanket ops) added after initial write.
+- **`gSdataSource` (SpatialData adapter)**: read-only adapter over a published sdata Zarr
+  store. Implementation notes when starting work:
+  - sdata points/shapes are GeoParquet — `parquetGeomStore` already reads/writes
+    GeoParquet (`.arrow_meta_add_geoparquet()`). The points/shapes adapter is likely a
+    thin schema-conformance + column-rename layer, not a new store class.
+  - sdata coordinate transforms are 2D affine (translate/scale/rotate/affine). Map them
+    onto `parquetGeomBase @post_ops "transform"` via `affine2d` — the existing
+    composition path covers it; no new transform machinery needed.
+  - sdata tables (AnnData/Zarr) and OME-NGFF image pyramids are the heavier mappings;
+    points/shapes are the cheap wins to land first.
 
 ## Conventions
 - Internal helpers: `.` prefix, snake_case
