@@ -15,171 +15,31 @@ knitr::opts_chunk$set(
 )
 ```
 
-This article outlines planned additions to GiottoDisk. Items vary in maturity
-from fully designed to early concept.
+High-level direction for GiottoDisk. Specific features land in the
+[NEWS](../../news/index.html) when implemented.
 
----
+## In active design
 
-## `storeWrite(parquetGeomStore, sedonadb_dataframe)` — Direct Sedona Round-trip
+- **Disk-backed mutable metadata** — sidecar-based column groups for
+  cell/feature metadata at transcript scale (~50M+ rows).
+- **Cross-store query dispatch** — ephemeral SQL engines (DuckDB,
+  sedonadb) for joins, transforms, and spatial queries spanning multiple
+  on-disk artifacts, exposed through a read-only `giottoView` abstraction
+  on the GiottoClass side.
 
-**Status:** Blocked by Arrow R view-type limitations.
+## Backend variants
 
-The goal is a direct `sedonadb_dataframe → parquetGeomStore` write path so that a
-`storeRead(output = "sedona")` view can be fed back into a store without going through
-an in-memory materialisation:
+The `gsource` protocol is pluggable. Planned implementations beyond the
+current local `gDirSource`:
 
-```r
-src |> storeRead(output = "sedona") |> storeWrite(parquetGeomStore())
-```
+- **Cloud-native storage** — object storage (S3/GCS/ADLS) for parquet
+  artifacts with a remote catalog for metadata.
+- **SpatialData interop** — read-only adapter over a published SpatialData
+  Zarr store, exposing sdata elements through the gsource interface.
 
-### What was attempted
+## Other items
 
-The write direction works: `sd_write_parquet()` can persist a DataFusion view to disk.
-The blocker is reading the result back via Arrow R.
-
-DataFusion (sedonadb's engine) writes all string and binary columns as Arrow view types:
-
-- `Utf8View` for string columns (even after `CAST(col AS VARCHAR)` in the query — DataFusion
-  ignores the cast hint at write time in current versions)
-- `geoarrow.wkb<BinaryView>` for geometry — the `geoarrow.wkb` Arrow extension type with
-  `BinaryView` storage
-
-Arrow R 23 cannot execute compute kernels on view types. The `collect(head(0L))` call in
-`.pstore_cache_values()` fails immediately with `cannot handle Array of type <utf8_view>`.
-
-### Why the schema override doesn't fix it
-
-A `binary()` schema override passed to `open_dataset()` would normally retype the column.
-For `geoarrow.wkb<BinaryView>` it silently returns wrong bytes: when `geoarrow` is loaded
-it registers a global extension type hook that fires at the Arrow IPC decode layer before
-the schema override takes effect. Arrow R then reads the `BinaryView` view-struct memory
-(16-byte headers: length, 4-byte data prefix, buffer index, offset) as raw bytes instead
-of following the indirection to the actual data buffers. The physical Parquet `BYTE_ARRAY`
-bytes are valid WKB (DuckDB reads them correctly); the problem is entirely in Arrow R's
-decode path.
-
-### Why write-time fixes don't help
-
-Intercepting the write to strip view types or the geoarrow extension metadata requires
-either a DuckDB disk-to-disk rewrite (a second write operation) or materialising to
-`SpatVector` first — both unacceptable for an automated pipeline at scale.
-
-### Unblock condition
-
-When Arrow R implements compute kernels for `BinaryView` / `Utf8View` (tracking:
-apache/arrow#39146 and related), the `@datatype` slot mechanism already on `parquetBase`
-can be wired into `storeRead` to apply schema overrides, and the `storeWrite` method can
-be restored.
-
----
-
-## `parquetMutableStore` — Disk-backed Mutable Metadata
-
-**Status:** Designed, not yet implemented.
-
-Cell and feature metadata is currently stored as an in-memory `data.table`.
-This is sufficient up to ~1M cells but becomes a bottleneck at transcript scale
-(~50M rows). `parquetMutableStore` is a disk-backed metadata class that supports
-column addition without rewriting the main file.
-
-### Structure
-
-- **Main file**: `cell_ID` + `row_index` + `source_id` — identity and join keys
-  only; written once and never reordered
-- **Sidecar files**: each holds one column group + `row_index` + `source_id` as
-  join keys. Adding a column group means writing one sidecar and appending its
-  path to the R object — no rewrite of any existing file
-- **R object**: holds the main file path + a named list of sidecar paths, keyed
-  by column group name
-
-### Key behaviours
-
-- **Head cache**: a 6-row preview per sidecar is kept in-memory, populated at
-  write time. `colnames()` and `show()` are driven by this cache — no file reads
-  for inspection
-- **Lazy column access**: `[, col]` joins only the relevant sidecars, not all of
-  them. Related columns (e.g. `UMAP_1`/`UMAP_2`/`UMAP_3`, PC loadings) should
-  be written to the same sidecar to avoid an explosion of small files
-- **Consolidation**: at `snapshotSave()` or an explicit `consolidate()` call,
-  all sidecars are merged into a single wide parquet and the sidecar list is
-  cleared. This is a one-time cost that produces a compact, join-free file for
-  downstream use
-- **Join key stability**: `(source_id, row_index)` must remain stable for the
-  lifetime of the main file — guaranteed because the main file is written once
-  and never reordered
-
----
-
-## Partition Hardlink Utility — Lazy Virtual Partitioning
-
-**Status:** Early concept.
-
-Parquet hive partitioning encodes group membership in the directory structure
-(e.g. `source_id=<uid>/`, `tile_index=<n>/`). Arrow uses these directory names
-for partition pushdown, pruning entire directories without scanning their
-contents.
-
-The idea is a utility that creates hardlinks to existing parquet files under a
-new partition directory layout, without copying any data. This would allow a new
-logical partition column to be "applied" to a store purely through filesystem
-structure.
-
-### Motivating example
-
-A multi-sample experiment where cells from different samples share a single
-parquet store. Rather than rewriting the store with a `sample_id` column, the
-utility would:
-
-1. Determine which `cell_ID` values belong to each sample
-2. Create a new directory layout: `sample_id=sample1/`, `sample_id=sample2/`, ...
-3. Hardlink the relevant parquet files (or tile partitions) under each sample
-   directory
-4. Register the new partition column on the store object
-
-Arrow would then be able to use `sample_id` for partition pushdown — filtering
-to a single sample prunes all other directories before any row-level scanning.
-
-### Use cases
-
-- Blanket lazy operations scoped to a sample: `storeRead(store, sample = "s1")`
-  reads only that sample's partitions
-- Avoids the cost of adding a physical `sample_id` column to every row
-- Composable with existing `@crop`, `@ops`, and field projection
-
-### Open questions
-
-- Hardlinks require both paths to be on the same filesystem — cross-device or
-  remote stores would need copies or symlinks instead
-- Partition column cardinality: high-cardinality partitions (e.g. one directory
-  per cell) would defeat Arrow's pruning benefit
-- Integration with `sourceAdopt` / `gDirSource` artifact tracking
-
----
-
-## `"geom_filter"` Post-Op — Exact Polygon Masking
-
-**Status:** Designed, not yet implemented.
-
-Currently `crop(store, y)` extracts `ext(y)` and uses the AABB for Arrow
-filtering. When `y` is a non-rectangular polygon, this over-fetches. The
-`"geom_filter"` post-op would record the exact geometry and apply it
-post-materialization via `terra::intersect()` or `sf::st_intersection()`.
-
-### Pattern
-
-```r
-# crop() with a polygon y:
-x@crop <- .ext_to_num_vec(ext(y))           # AABB for Arrow pre-filter
-x@post_ops <- c(x@post_ops,                 # exact mask post-materialization
-    list(list(type = "geom_filter", geom = y)))
-```
-
-`.apply_post_ops()` dispatches on `op$type == "geom_filter"`:
-
-- `"terra"`: `terra::intersect(result, op$geom)` or `terra::crop(result, op$geom)`
-- `"sf"`: `sf::st_intersection(result, sf::st_as_sf(op$geom))`
-- `"tibble"`: point-in-polygon test on `x_index`/`y_index`
-
-This is composable with `"transform"` post-ops — the geometry would need to
-be in the same coordinate space as the materialized output (i.e., transformed
-space if a `"transform"` post-op precedes it).
+- Exact polygon masking as a post-materialization op (currently AABB-only).
+- Lazy virtual partitioning via filesystem hardlinks.
+- Direct sedona → parquet write path (blocked upstream on Arrow R view-type
+  compute kernels).
