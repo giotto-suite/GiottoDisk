@@ -71,7 +71,11 @@ test_that("storeWrite from dgCMatrix is lossless", {
     expect_equal(pe@cell_ids, colnames(mat))
 
     df <- as.data.frame(dplyr::collect(storeRead(pe)))
-    expect_setequal(names(df), c("row_id", "col_id", "value"))
+    # source_id is part of the schema -- it's the substore selector that
+    # makes (source_id, row_id) -> cell_ID lookup work across unions, where
+    # each substore has its own @cell_ids namespace. See the cbind / union
+    # tests below.
+    expect_setequal(names(df), c("row_id", "col_id", "value", "source_id"))
 
     # Reconstruct and compare element-wise
     rt <- Matrix::sparseMatrix(
@@ -83,11 +87,12 @@ test_that("storeWrite from dgCMatrix is lossless", {
     expect_equal(as.matrix(mat), as.matrix(rt))
 })
 
-test_that("Parquet payload has only row_id, col_id, value (sorted by row_id)", {
+test_that("Parquet payload has row_id, col_id, value, source_id (sorted by row_id)", {
     mat <- .tiny_mat(seed = 2)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
     df  <- as.data.frame(dplyr::collect(storeRead(pe)))
-    expect_equal(sort(names(df)), c("col_id", "row_id", "value"))
+    expect_equal(sort(names(df)),
+        c("col_id", "row_id", "source_id", "value"))
     expect_true(!is.unsorted(df$row_id))
 })
 
@@ -197,6 +202,94 @@ test_that("parquetExprStore can be embedded in an exprObj@exprMat slot", {
     expect_s4_class(eo, "exprObj")
     expect_s4_class(slot(eo, "exprMat"), "parquetExprStore")
 })
+
+# ---- cbind / unionParquetExprStore --------------------------------------
+# These tests lock the cbind semantics. They reflect the *current behavior*
+# rather than an ideal target -- the schema and key-uniqueness questions
+# are unresolved (see comment on each test for what the test is asserting
+# vs what an ideal contract would be).
+
+.tiny_distinct_mat <- function(n_genes = 3L, cell_prefix = "c1_",
+    cell_offset = 0L, value_offset = 0L, seed = 1L) {
+    n_cells <- 4L
+    set.seed(seed)
+    m <- Matrix::sparseMatrix(
+        i = c(1L, 2L, 3L, 1L),
+        j = c(1L, 2L, 3L, 4L),
+        x = as.double(c(10L, 20L, 30L, 40L) + value_offset),
+        dims = c(n_genes, n_cells)
+    )
+    rownames(m) <- paste0("gene", seq_len(n_genes))
+    colnames(m) <- paste0(cell_prefix, seq_len(n_cells) + cell_offset)
+    m
+}
+
+test_that("cbind2(parquetExprStore, parquetExprStore) returns unionParquetExprStore", {
+    pe1 <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_distinct_mat(cell_prefix = "a", seed = 1))
+    pe2 <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_distinct_mat(cell_prefix = "b", cell_offset = 4L,
+            value_offset = 100L, seed = 2))
+    u <- cbind2(pe1, pe2)
+    expect_s4_class(u, "unionParquetExprStore")
+    expect_equal(u@n_genes, 3)
+    expect_equal(u@n_cells, 8)
+    expect_equal(u@feat_ids, c("gene1", "gene2", "gene3"))
+    expect_equal(u@cell_ids, c("a1", "a2", "a3", "a4", "b5", "b6", "b7", "b8"))
+})
+
+test_that("union storeRead contains all rows from each substore", {
+    pe1 <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_distinct_mat(cell_prefix = "a", seed = 1))
+    pe2 <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_distinct_mat(cell_prefix = "b", cell_offset = 4L,
+            value_offset = 100L, seed = 2))
+    u <- cbind2(pe1, pe2)
+    df <- as.data.frame(dplyr::collect(storeRead(u)))
+    # Each substore contributes 4 non-zero entries; total = 8.
+    expect_equal(nrow(df), 8L)
+    # Values from both substores are present.
+    expect_setequal(df$value, c(10, 20, 30, 40, 110, 120, 130, 140))
+})
+
+test_that("union storeRead carries source_id for substore disambiguation", {
+    # NB: this locks the *current* behavior -- source_id is in the schema
+    # because (row_id, col_id) is only locally unique per substore, so the
+    # composite (source_id, row_id, col_id) is what uniquely identifies a
+    # (cell, gene) entry post-union. If parquetExprStore is later changed
+    # to re-number row_ids globally at union time, this test should be
+    # updated together with the schema contract.
+    pe1 <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_distinct_mat(cell_prefix = "a", seed = 1))
+    pe2 <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_distinct_mat(cell_prefix = "b", cell_offset = 4L,
+            value_offset = 100L, seed = 2))
+    u <- cbind2(pe1, pe2)
+    df <- as.data.frame(dplyr::collect(storeRead(u)))
+    expect_true("source_id" %in% names(df))
+    expect_setequal(unique(df$source_id), c(pe1@uid, pe2@uid))
+    # Composite key (source_id, row_id, col_id) is globally unique.
+    composite <- paste(df$source_id, df$row_id, df$col_id)
+    expect_equal(length(unique(composite)), nrow(df))
+})
+
+test_that("cbind2 is associative across multi-arity calls", {
+    pe1 <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_distinct_mat(cell_prefix = "a", seed = 1))
+    pe2 <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_distinct_mat(cell_prefix = "b", cell_offset = 4L, seed = 2))
+    pe3 <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_distinct_mat(cell_prefix = "c", cell_offset = 8L, seed = 3))
+    # cbind2(cbind2(pe1, pe2), pe3) is the left-fold form base R uses
+    u <- cbind2(cbind2(pe1, pe2), pe3)
+    expect_s4_class(u, "unionParquetExprStore")
+    expect_equal(u@n_cells, 12)
+    expect_equal(length(u@stores), 3L)
+    # all uids represented in the read
+    df <- as.data.frame(dplyr::collect(storeRead(u)))
+    expect_setequal(unique(df$source_id), c(pe1@uid, pe2@uid, pe3@uid))
+})
+
 
 test_that("parquetExprStore swaps into a giotto object via setExpression", {
     skip_if_not_installed("Giotto")
