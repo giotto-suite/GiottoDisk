@@ -238,22 +238,22 @@ setMethod("storeRead", signature("unionParquetExprStore"), function(store,
     duckdb_params = list(),
     ...) {
     output <- match.arg(output, choices = c("query", "tibble", "duckdb"))
-    wrapped <- lapply(store@stores, function(s) {
-        if (length(s@cell_idx) > 0L || length(s@gene_idx) > 0L) {
-            orig_rf <- s@read_fun
-            ci <- s@cell_idx
-            gi <- s@gene_idx
-            s@read_fun <- function(x, ...) {
-                row_id <- col_id <- NULL  # NSE bindings
-                ds <- orig_rf(x, ...)
-                if (length(ci) > 0L) ds <- dplyr::filter(ds, row_id %in% !!ci)
-                if (length(gi) > 0L) ds <- dplyr::filter(ds, col_id %in% !!gi)
-                ds
-            }
-        }
-        s
-    })
-    atab <- arrow::open_dataset(lapply(wrapped, .store_simple_read))
+
+    # Open each substore as a Dataset (no read_fun wrapping), then union
+    # them via `arrow::open_dataset(list(...))`. Per-substore
+    # `@cell_idx`/`@gene_idx` filters from `[`-subset are applied as a
+    # single composite source_id-aware expression below -- previously we
+    # wrapped each substore's read_fun with `dplyr::filter`, which
+    # converted Dataset to arrow_dplyr_query and broke the union step
+    # (open_dataset(list(...)) can't accept arrow_dplyr_query objects).
+    substore_dsets <- lapply(store@stores, .store_simple_read)
+    atab <- arrow::open_dataset(substore_dsets)
+
+    filt_expr <- .union_substore_filter_expr(store@stores)
+    if (!is.null(filt_expr)) {
+        atab <- dplyr::filter(atab, !!filt_expr)
+    }
+
     if (!is.null(fields)) atab <- dplyr::select(atab, dplyr::all_of(fields))
     if (!is.null(callback)) atab <- callback(atab)
     switch(output,
@@ -262,6 +262,58 @@ setMethod("storeRead", signature("unionParquetExprStore"), function(store,
         "duckdb" = .arrow_to_duckdb(atab, duckdb_params = duckdb_params)
     )
 })
+
+# Build the source_id-aware composite filter expression for a union read.
+#
+# Returns an unevaluated R call suitable for `dplyr::filter(atab, !!expr)`,
+# or NULL if no substore has a `@cell_idx`/`@gene_idx` subset (no filter
+# needed, all rows pass).
+#
+# Shape:
+#   (source_id == uid_a & row_id %in% ci_a & col_id %in% gi_a) |
+#   (source_id == uid_b & row_id %in% ci_b)                    |
+#   ...                                                        |
+#   (source_id %in% <no_subset_uids>)
+#
+# A substore without any subset contributes its uid to the trailing
+# `source_id %in% <...>` OR'd clause, so all rows from that substore pass.
+#
+# Efficiency: arrow's expression engine compiles `%in%` to `is_in()` (hash
+# set, O(1) per row) and applies parquet stats pushdown on `row_id` /
+# `col_id` row-group min/max, so the engine skips entire row groups that
+# can't contain a match. Cost scales with `length(@cell_idx) +
+# length(@gene_idx)` per substore (inline IN list size). The natural
+# ceiling is the cell/feature ID universe; for parquetExprStore the
+# slot-resident char-vector limit (~10^8 cells) keeps IN lists tractable.
+# Atlas-scale graphs (transcript edges, 10^9+) would need a sidecar
+# parquet for the ID universe + join -- not applicable to expr stores.
+.union_substore_filter_expr <- function(stores) {
+    needs_filter <- vapply(stores, function(s) {
+        length(s@cell_idx) > 0L || length(s@gene_idx) > 0L
+    }, logical(1L))
+    if (!any(needs_filter)) return(NULL)
+
+    no_subset_uids <- vapply(stores[!needs_filter],
+        function(s) s@uid, character(1L))
+
+    clauses <- list()
+    for (i in which(needs_filter)) {
+        s <- stores[[i]]
+        parts <- list(bquote(source_id == .(s@uid)))
+        if (length(s@cell_idx) > 0L) {
+            parts[[length(parts) + 1L]] <- bquote(row_id %in% .(s@cell_idx))
+        }
+        if (length(s@gene_idx) > 0L) {
+            parts[[length(parts) + 1L]] <- bquote(col_id %in% .(s@gene_idx))
+        }
+        clause <- Reduce(function(a, b) bquote(.(a) & .(b)), parts)
+        clauses[[length(clauses) + 1L]] <- clause
+    }
+    if (length(no_subset_uids) > 0L) {
+        clauses[[length(clauses) + 1L]] <- bquote(source_id %in% .(no_subset_uids))
+    }
+    Reduce(function(a, b) bquote(.(a) | .(b)), clauses)
+}
 
 # dim / dimnames / nrow / ncol — same conventions as parquetExprStore.
 

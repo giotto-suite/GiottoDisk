@@ -291,6 +291,89 @@ test_that("cbind2 is associative across multi-arity calls", {
 })
 
 
+# `[` subset + storeRead on a unionParquetExprStore ####
+# Previously broken: the union wrapped each substore's read_fun with
+# `dplyr::filter` for per-substore cell_idx/gene_idx, returning
+# arrow_dplyr_query -- which `arrow::open_dataset(list(...))` can't
+# accept. Fix: open each substore as a Dataset cleanly, then apply a
+# composite source_id-aware filter expression once at the union level.
+
+test_that("union [-subset on a single substore's cells reads correctly", {
+    pe1 <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_distinct_mat(cell_prefix = "a", seed = 1))
+    pe2 <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_distinct_mat(cell_prefix = "b", cell_offset = 4L, seed = 2))
+    u <- cbind2(pe1, pe2)
+
+    sub <- u[, "a1"]
+    expect_s4_class(sub, "unionParquetExprStore")
+    df <- as.data.frame(dplyr::collect(storeRead(sub)))
+    # Only rows from pe1, only with row_id == 1 (the first cell)
+    expect_setequal(unique(df$source_id), pe1@uid)
+    expect_true(all(df$row_id == 1L))
+})
+
+test_that("union [-subset across substores reads correctly", {
+    pe1 <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_distinct_mat(cell_prefix = "a", seed = 1))
+    pe2 <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_distinct_mat(cell_prefix = "b", cell_offset = 4L, seed = 2))
+    u <- cbind2(pe1, pe2)
+
+    # One cell from each substore
+    sub <- u[, c("a2", "b6")]
+    df <- as.data.frame(dplyr::collect(storeRead(sub)))
+    expect_setequal(unique(df$source_id), c(pe1@uid, pe2@uid))
+    # pe1 row_id should be 2 (a2 is its 2nd cell), pe2 row_id should be 2 (b6 is its 2nd cell)
+    pe1_rows <- df[df$source_id == pe1@uid, ]
+    pe2_rows <- df[df$source_id == pe2@uid, ]
+    expect_true(all(pe1_rows$row_id == 2L))
+    expect_true(all(pe2_rows$row_id == 2L))
+})
+
+test_that("union [-subset round-trips to a matrix matching in-mem cbind subset", {
+    m1 <- Matrix::sparseMatrix(
+        i = c(1, 2, 3), j = c(1, 2, 1), x = c(11, 12, 13),
+        dims = c(3, 2),
+        dimnames = list(c("g1", "g2", "g3"), c("c1", "c2"))
+    )
+    m2 <- Matrix::sparseMatrix(
+        i = c(1, 3), j = c(1, 2), x = c(21, 22),
+        dims = c(3, 2),
+        dimnames = list(c("g1", "g2", "g3"), c("c3", "c4"))
+    )
+    pe1 <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), m1)
+    pe2 <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), m2)
+    u <- cbind2(pe1, pe2)
+
+    reconstruct <- function(store) {
+        df <- as.data.frame(dplyr::collect(storeRead(store)))
+        uid_to_idx <- stats::setNames(
+            seq_along(store@stores),
+            vapply(store@stores, function(s) s@uid, character(1L))
+        )
+        offsets <- c(0L, cumsum(vapply(store@stores,
+            function(s) s@n_cells, numeric(1L))))
+        df$global_cell_idx <- df$row_id +
+            offsets[uid_to_idx[df$source_id]]
+        Matrix::sparseMatrix(
+            i = df$col_id, j = df$global_cell_idx, x = df$value,
+            dims = c(store@n_genes, store@n_cells),
+            dimnames = list(store@feat_ids, store@cell_ids)
+        )
+    }
+
+    ref_full <- as.matrix(cbind(m1, m2))
+    expect_equal(as.matrix(reconstruct(u)), ref_full)
+
+    ref_cross <- as.matrix(cbind(m1, m2)[, c("c1", "c3")])
+    expect_equal(as.matrix(reconstruct(u[, c("c1", "c3")])), ref_cross)
+
+    ref_sub2 <- as.matrix(cbind(m1, m2)[, c("c3", "c4")])
+    expect_equal(as.matrix(reconstruct(u[, c("c3", "c4")])), ref_sub2)
+})
+
+
 test_that("parquetExprStore swaps into a giotto object via setExpression", {
     skip_if_not_installed("Giotto")
     skip_if_not_installed("GiottoClass")
