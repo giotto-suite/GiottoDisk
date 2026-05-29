@@ -745,6 +745,29 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
             "filter"   = where_clauses <- c(where_clauses, .r_expr_to_sql(op$expr)),
             "head"     = limit_n <- op$n,
             "distinct" = distinct_cols <- op$cols,
+            "spat_relate" = {
+                if (!is.null(op$y_wkt)) {
+                    sql_pred <- .sql_relation_fn(op$relation)
+                    # escape single quotes in WKT defensively
+                    wkt_escaped <- gsub("'", "''", op$y_wkt, fixed = TRUE)
+                    # match the store's geom CRS (see .spatrelate_store_srid).
+                    srid <- .spatrelate_store_srid(store)
+                    geom_sql <- if (is.na(srid)) {
+                        sprintf("ST_GeomFromText('%s')", wkt_escaped)
+                    } else {
+                        sprintf("ST_GeomFromText('%s', %d)", wkt_escaped, srid)
+                    }
+                    where_clauses <- c(where_clauses, sprintf(
+                        "%s(geom, %s)", sql_pred, geom_sql
+                    ))
+                } else {
+                    warning(
+                        "[storeRead][sedona] spat_relate with stored y is not yet ",
+                        "implemented in the sedona compile; the op is skipped",
+                        call. = FALSE
+                    )
+                }
+            },
             "tail"     = ,
             "sample"   = ,
             "join"     = warning(sprintf(
@@ -1025,6 +1048,9 @@ sd_view_ref <- function(sdf) {
                 nm <- names(op$by)
                 if (is.null(nm)) op$by else nm
             },
+            # spat_relate needs the `geom` column materialized so the arrow
+            # path can build a SpatVector and call terra::relate.
+            "spat_relate" = "geom",
             character(0L)
         )
     })

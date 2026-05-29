@@ -284,6 +284,37 @@ setMethod("window<-", signature("parquetGeomBase"), function(x, ..., value) {
             join_fn <- if (op$nomatch == "inner") dplyr::inner_join else dplyr::left_join
             join_fn(atab, y_q, by = op$by)
         },
+        "spat_relate" = .do_op_spat_relate(atab, op),
         stop(sprintf("[.do_op] unknown op type: '%s'", type), call. = FALSE)
     )
+}
+
+# arrow path for spat_relate: materialize, build SpatVectors, terra::relate,
+# row-mask, re-coerce to arrow. This breaks laziness past the spat_relate op
+# -- acceptable since arrow has no native spatial. Callers wanting true
+# laziness should use output = "sedona" / "duckdb".
+.do_op_spat_relate <- function(atab, op) {
+    GiottoUtils::package_check("terra")
+    df <- dplyr::collect(atab)
+    if (nrow(df) == 0L) return(arrow::as_arrow_table(df))
+    if (!"geom" %in% names(df)) {
+        stop("[storeRead][spat_relate] `geom` column required for spatial filter",
+            call. = FALSE)
+    }
+    y_sv <- if (!is.null(op$y_wkt)) {
+        terra::vect(op$y_wkt)
+    } else if (!is.null(op$y_store)) {
+        storeRead(op$y_store, output = "terra")
+    } else {
+        stop("[storeRead][spat_relate] op missing y_wkt and y_store", call. = FALSE)
+    }
+    x_sv <- terra::vect(as.list(df$geom))
+    rel <- terra::relate(x_sv, y_sv,
+        relation = .terra_relation_name(op$relation))
+    keep <- if (is.matrix(rel)) {
+        as.logical(rowSums(rel, na.rm = TRUE) > 0L)
+    } else {
+        as.logical(rel)
+    }
+    arrow::as_arrow_table(df[keep, , drop = FALSE])
 }

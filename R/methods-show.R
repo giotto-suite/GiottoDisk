@@ -253,6 +253,15 @@ setMethod(".show_info", signature("unionParquetExprStore"), function(object, .pr
                 collapse = ", ")
             sprintf("%s on [%s]", type_str, keys_str)
         },
+        "spat_relate" = {
+            y_str <- if (!is.null(step$y_wkt)) {
+                wkt <- step$y_wkt
+                if (nchar(wkt) > 40L) paste0(substr(wkt, 1L, 37L), "...") else wkt
+            } else {
+                "<store>"
+            }
+            sprintf("%s [%s] %s", step$relation, step$form, y_str)
+        },
         "transform" = {
             aff <- step$affine2d
             parts <- character(0L)
