@@ -98,7 +98,7 @@ setMethod("storeRead", signature("parquetStore"), function(store,
     ...) {
     checkmate::assert_character(fields, null.ok = TRUE)
     output <- match.arg(output, choices = c("query", "tibble", "duckdb", "sedona"))
-    if (output == "sedona") return(.pstore_to_sedona(store, ...))
+    if (output == "sedona") return(.pstore_to_sedona(store, fields = fields, ...))
     fields <- .pstore_fields_requested(store, fields)
     lazy_fields <- .pstore_lazy_fields(store, fields, output)
 
@@ -141,7 +141,7 @@ setMethod("storeRead", signature("unionParquetStore"), function(store,
     ...) {
     checkmate::assert_character(fields, null.ok = TRUE)
     output <- match.arg(output, choices = c("query", "tibble", "duckdb", "sedona"))
-    if (output == "sedona") return(.pstore_to_sedona(store, ...))
+    if (output == "sedona") return(.pstore_to_sedona(store, fields = fields, ...))
     fields <- .pstore_fields_requested(store, fields)
     lazy_fields <- .pstore_lazy_fields(store, fields, output)
 
@@ -189,7 +189,7 @@ setMethod("storeRead", signature("unionParquetGeomStore"), function(store,
     omit_internals = TRUE,
     ...) {
     output <- match.arg(output, choices = c("query", "tibble", "terra", "sf", "duckdb", "sedona"))
-    if (output == "sedona") return(.pstore_to_sedona(store, extent = extent, ...))
+    if (output == "sedona") return(.pstore_to_sedona(store, fields = fields, extent = extent, ...))
     fields <- .pstore_fields_requested(store, fields)
     lazy_fields <- .pstore_lazy_fields(store, fields, output)
 
@@ -267,6 +267,18 @@ setMethod("storeRead", signature("unionParquetGeomStore"), function(store,
         atab <- .do_op(atab, op)
     }
 
+    # Narrow back to caller-requested fields. The upstream projection may
+    # have widened the schema with op-referenced cols (so filter exprs
+    # could resolve); drop them now. Keep specialCols since materialization
+    # paths (.pstore_to_tibble, .pgstore_to_spatial) need row_index for
+    # ordering and other specials for geom rebuild; specials get cleaned
+    # later via `dropcols` / `omit_internals`. `any_of` is defensive
+    # against schema changes by distinct() or other ops.
+    if (!is.null(fields)) {
+        keep <- unique(c(fields, specialCols(store)))
+        atab <- dplyr::select(atab, dplyr::any_of(keep))
+    }
+
     dropcols <- character(0L)
     if (!is.null(fields)) {
         # remove undesired special inject cols
@@ -294,7 +306,7 @@ setMethod("storeRead", signature("parquetGeomStore"), function(store,
     omit_internals = TRUE,
     ...) {
     output <- match.arg(output, choices = c("query", "tibble", "terra", "sf", "duckdb", "sedona"))
-    if (output == "sedona") return(.pstore_to_sedona(store, extent = extent, ...))
+    if (output == "sedona") return(.pstore_to_sedona(store, fields = fields, extent = extent, ...))
     fields <- .pstore_fields_requested(store, fields)
     lazy_fields <- .pstore_lazy_fields(store, fields, output)
 
@@ -367,7 +379,7 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
     omit_internals = TRUE,
     ...) {
     output <- match.arg(output, choices = c("query", "tibble", "terra", "sf", "duckdb", "sedona"))
-    if (output == "sedona") return(.pstore_to_sedona(store, extent = extent, tile_idx = tile_idx, ...))
+    if (output == "sedona") return(.pstore_to_sedona(store, fields = fields, extent = extent, tile_idx = tile_idx, ...))
     fields <- .pstore_fields_requested(store, fields)
     lazy_fields <- .pstore_lazy_fields(store, fields, output)
 
@@ -629,18 +641,33 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
 # original on-disk parquet files. SedonaDB reads the files directly via DataFusion,
 # preserving GeoParquet metadata so geometry columns are natively recognised.
 #
+# Hive partition columns (`source_id`, `tile_index`) require special handling:
+# the sedonadb R binding hard-codes `GeoParquetReadOptions::default()` and does
+# not expose `table_partition_cols`, so DataFusion does not auto-promote hive
+# directory segments to columns. Without them, `row_index` collides across tiles
+# and source provenance is lost. We compensate at the R/SQL layer by registering
+# each `tile_index=<n>/` directory as its own sub-view and reconstructing the
+# partition cols via SQL literal injection. Per-tile SELECTs are UNION ALL'd
+# into a single base view that downstream WHERE/projection/affine SQL targets.
+#
 # Pipeline:
-#   1. sd_read_parquet(paths) + sd_to_view() — DataFusion reads files directly;
-#      GeoParquet metadata intact, no WKB conversion needed
-#   2. SQL WHERE from: @crop/@window AABB on x_index/y_index (parquet stats pushdown),
-#      @tile_filter as tile_index IN (...), @ops filter exprs via .r_expr_to_sql()
-#   3. SELECT DISTINCT / LIMIT for distinct/head ops; tail/sample/join warn and skip
-#   4. If an affine transform is pending: wrap in outer SELECT with ST_Affine
-#      (one LIMIT 0 schema probe to enumerate non-geom columns)
+#   1. Resolve tile specs (`.pstore_sedona_tile_specs`): one entry per
+#      surviving `source_id=<uid>/tile_index=<n>/` directory. Honors
+#      `tile_idx` arg and `@tile_filter` via file-level pruning — the pruned
+#      tile dirs never reach DataFusion.
+#   2. Register each tile dir as a sub-view; build per-tile
+#      `SELECT *, '<uid>' AS source_id, <n> AS tile_index FROM <tile_view>`.
+#      UNION ALL the per-tile SELECTs as the base view.
+#   3. SQL WHERE from: @crop/@window AABB on x_index/y_index (parquet stats
+#      pushdown), @ops filter exprs via .r_expr_to_sql().
+#   4. SELECT DISTINCT / LIMIT for distinct/head ops; tail/sample/join warn
+#      and skip.
+#   5. If an affine transform is pending: wrap in outer SELECT with ST_Affine
+#      (one LIMIT 0 schema probe to enumerate non-geom columns).
 #
 # x_index/y_index are NOT updated after a transform — use SedonaDB spatial
 # predicates for geometry-based filtering post-transform.
-.pstore_to_sedona <- function(store, ...) {
+.pstore_to_sedona <- function(store, fields = NULL, ...) {
     GiottoUtils::package_check("sedonadb",
         repository = "github:apache/sedona-db/r/sedonadb")
 
@@ -648,22 +675,53 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
     extent_arg <- extra_args$extent
     tile_idx_arg <- extra_args$tile_idx
 
+    # Resolve fields the same way the arrow/duckdb path does — combines the
+    # caller's `fields` arg with `store@fields` (set by `[, j]`), then expands
+    # to include geom-store specials required by the sedona output.
+    fields <- .pstore_fields_requested(store, fields)
+    lazy_fields <- .pstore_lazy_fields(store, fields, output = "sedona")
+
     aff <- if (inherits(store, "parquetGeomBase")) .pgeom_pending_transform(store) else NULL
 
-    # --- 1. Register base parquet paths ---
-    # View name must be all lowercase: DataFusion normalises unquoted identifiers
+    # --- 1. Resolve tile specs + register per-tile sub-views ---
+    specs <- .pstore_sedona_tile_specs(store, tile_idx_arg = tile_idx_arg)
+    if (length(specs) == 0L) {
+        stop("[storeRead][sedona] no tile directories match the requested filter\n",
+            "  store path: ", toString(storePaths(store)), call. = FALSE)
+    }
+    # View names must be lowercase: DataFusion normalises unquoted identifiers
     # to lowercase at registration time, which would break double-quoted SQL refs.
-    view_name <- tolower(paste0("gd_", .make_uid()))
+    base_view_name <- tolower(paste0("gd_", .make_uid()))
+    union_sqls <- vapply(seq_along(specs), function(i) {
+        spec <- specs[[i]]
+        tile_view_name <- sprintf("%s_t%d", base_view_name, i)
+        sedonadb::sd_to_view(
+            sedonadb::sd_read_parquet(spec$dir_path),
+            tile_view_name, overwrite = TRUE
+        )
+        # Per-tile SELECT with SQL literal injection of partition columns.
+        # `'%s'` single-quote-escape the uid defensively even though `.make_uid`
+        # only produces alphanumerics + underscores.
+        uid_lit <- gsub("'", "''", spec$uid, fixed = TRUE)
+        literal_cols <- if (spec$has_tile_index) {
+            sprintf("'%s' AS source_id, %d AS tile_index", uid_lit, spec$tile_index)
+        } else {
+            sprintf("'%s' AS source_id", uid_lit)
+        }
+        sprintf('SELECT *, %s FROM "%s"', literal_cols, tile_view_name)
+    }, FUN.VALUE = character(1L))
+    base_sql <- paste(union_sqls, collapse = " UNION ALL ")
     sedonadb::sd_to_view(
-        sedonadb::sd_read_parquet(.pstore_sedona_paths(store)),
-        view_name, overwrite = TRUE
+        sedonadb::sd_sql(base_sql),
+        base_view_name, overwrite = TRUE
     )
 
     # --- 2. Build WHERE clause ---
     where_clauses <- character(0L)
 
-    # Crop/window AABB — float range on centroid columns; parquet stats pushdown
-    e <- .pstore_active_extent(store)
+    # Crop/window AABB — float range on centroid columns; parquet stats pushdown.
+    # `@crop`/`@window` only exist on geom-base stores; flat parquetStore skips.
+    e <- if (inherits(store, "parquetGeomBase")) .pstore_active_extent(store) else NULL
     if (!is.null(extent_arg)) {
         e <- if (!is.null(e)) terra::intersect(e, ext(extent_arg)) else ext(extent_arg)
     }
@@ -675,18 +733,8 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
         ))
     }
 
-    # Tile partition filter
-    eff_tile_idx <- if (!is.null(tile_idx_arg)) {
-        as.integer(tile_idx_arg)
-    } else if (inherits(store, "parquetGeomTileStore") && length(store@tile_filter) > 0L) {
-        store@tile_filter
-    } else {
-        NULL
-    }
-    if (!is.null(eff_tile_idx)) {
-        where_clauses <- c(where_clauses,
-            .sql_in_clause("tile_index", eff_tile_idx))
-    }
+    # Tile filter is enforced by file-level pruning in `.pstore_sedona_tile_specs`
+    # above; no SQL `tile_index IN (...)` clause needed.
 
     # @ops — filter (including half-plane exprs), head, distinct translated to SQL;
     # tail/sample/join have no clean SQL equivalent and are skipped with a warning
@@ -707,18 +755,22 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
         )
     }
 
-    # --- 3. Build inner SQL ---
+    # --- 3. Build outer SQL targeting the unioned base view ---
     where_sql <- if (length(where_clauses) > 0L) {
         paste("WHERE", paste(where_clauses, collapse = " AND "))
     } else {
         ""
     }
+    # Column projection — DISTINCT op wins (it specifies its own cols); otherwise
+    # honor `lazy_fields` if the caller narrowed via `[, j]` or `fields = ...`.
     select_sql <- if (!is.null(distinct_cols)) {
         paste("DISTINCT", paste(sprintf('"%s"', distinct_cols), collapse = ", "))
+    } else if (!is.null(lazy_fields)) {
+        paste(sprintf('"%s"', lazy_fields), collapse = ", ")
     } else {
         "*"
     }
-    inner_sql <- trimws(sprintf('SELECT %s FROM "%s" %s', select_sql, view_name, where_sql))
+    inner_sql <- trimws(sprintf('SELECT %s FROM "%s" %s', select_sql, base_view_name, where_sql))
     if (!is.null(limit_n)) inner_sql <- paste(inner_sql, "LIMIT", limit_n)
 
     # --- 4. Wrap with ST_Affine if transform is pending ---
@@ -746,7 +798,7 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
     }
 
     sdf <- sedonadb::sd_sql(inner_sql)
-    attr(sdf, "view_name") <- view_name
+    attr(sdf, "view_name") <- base_view_name
     sdf
 }
 
@@ -769,18 +821,77 @@ sd_view_ref <- function(sdf) {
     sprintf('"%s"', nm)
 }
 
-# Collect all parquet file paths for a store for sd_read_parquet().
-# For directory-based stores (hive-partitioned tile stores), recursively
-# finds all .parquet files under each base path.
-.pstore_sedona_paths <- function(store) {
-    base_paths <- storePaths(store)
-    unlist(lapply(base_paths, function(p) {
-        if (dir.exists(p)) {
-            list.files(p, pattern = "\\.parquet$", recursive = TRUE, full.names = TRUE)
-        } else {
-            p
+# Resolve the per-tile directories that should back the sedona view.
+#
+# Returns a list of specs, each:
+#   list(uid, tile_index, dir_path, has_tile_index)
+#
+# - `uid`: source uid for the substore (becomes `source_id` literal).
+# - `tile_index`: integer index parsed from `tile_index=<n>/` (or 0L for stores
+#   without a tile_index partition layer; in that case `has_tile_index = FALSE`
+#   and tile_index is unused).
+# - `dir_path`: filesystem directory passed to `sd_read_parquet`; always ends
+#   with `/` so DataFusion lists files under it rather than treating it as a
+#   single file path.
+# - `has_tile_index`: TRUE for `parquetGeomBase`-inheriting stores (flat geom +
+#   tiled geom both write a `tile_index=<n>` partition); FALSE for flat tabular
+#   `parquetStore` which only has the `source_id=<uid>` partition.
+#
+# Pruning rules:
+#   - If `tile_idx_arg` is supplied: keep only matching `tile_index=<n>` dirs.
+#   - Else if `store@tile_filter` is set (parquetGeomTileStore only): keep
+#     those.
+#   - Else: include all tile dirs.
+#
+# `unionParquetStore` substores are walked in order — one spec per substore
+# tile directory.
+.pstore_sedona_tile_specs <- function(store, tile_idx_arg = NULL) {
+    substores <- if (inherits(store, "unionParquetStore")) {
+        store@stores
+    } else {
+        list(store)
+    }
+    has_tile_index <- inherits(store, "parquetGeomBase")
+
+    # Only parquetGeomTileStore exposes @tile_filter — flat geom stores have a
+    # single tile_index=0 and no filter.
+    eff_tile_idx <- if (!is.null(tile_idx_arg)) {
+        as.integer(tile_idx_arg)
+    } else if (inherits(store, "parquetGeomTileStore") &&
+               length(store@tile_filter) > 0L) {
+        store@tile_filter
+    } else {
+        NULL
+    }
+
+    unlist(lapply(substores, function(s) {
+        uid <- s@uid
+        source_dir <- file.path(s@path, paste0("source_id=", uid))
+        if (!has_tile_index) {
+            return(list(list(
+                uid = uid,
+                tile_index = 0L,
+                dir_path = paste0(source_dir, "/"),
+                has_tile_index = FALSE
+            )))
         }
-    }), use.names = FALSE)
+        tile_dirs <- list.files(source_dir, pattern = "^tile_index=",
+            full.names = TRUE)
+        if (length(tile_dirs) == 0L) return(list())
+        tile_idxs <- as.integer(sub("^tile_index=", "", basename(tile_dirs)))
+        if (!is.null(eff_tile_idx)) {
+            keep <- tile_idxs %in% eff_tile_idx
+            tile_dirs <- tile_dirs[keep]
+            tile_idxs <- tile_idxs[keep]
+        }
+        if (length(tile_dirs) == 0L) return(list())
+        Map(function(n, p) list(
+            uid = uid,
+            tile_index = n,
+            dir_path = paste0(p, "/"),
+            has_tile_index = TRUE
+        ), tile_idxs, tile_dirs)
+    }), recursive = FALSE)
 }
 
 # Translate an inlined R call expression to a SQL WHERE fragment.
@@ -856,13 +967,33 @@ sd_view_ref <- function(sdf) {
 .pstore_lazy_fields <- function(store, fields, output) {
     if (is.null(fields)) return(NULL)
     if (isTRUE(attr(fields, "lazy"))) return(fields)
-    lazy <- fields
+
+    # Restrict user fields to upstream-available (on-disk) cols. Any
+    # requested fields that come from queued join ops' y-stores will be
+    # materialized post-join by `.do_op` and narrowed back via the final
+    # select in `.pbase_storeread_processing` -- they must NOT appear in
+    # the upstream parquet projection.
+    disk <- .pstore_disk_fields(store) %||% character(0L)
+    lazy <- intersect(fields, disk)
+
+    # Widen with cols referenced by queued ops -- arrow/dplyr's `select`
+    # strips cols from the lazy schema, so filter predicates referencing
+    # `[, j]`-dropped cols would fail at compile time. SQL engines (sedona)
+    # reference cols via FROM regardless of SELECT projection, so no
+    # widening is needed there. Final narrowing back to `fields` happens
+    # in `.pbase_storeread_processing` after ops apply.
+    if (output != "sedona") {
+        op_refs <- .pstore_op_referenced_cols(store)
+        if (length(op_refs) > 0L) {
+            lazy <- unique(c(op_refs, lazy))
+        }
+    }
 
     # store requirements
     if (inherits(store, "parquetGeomBase")) {
         lazy <- unique(c("x_index", "y_index", "tile_index", lazy))
     }
-  
+
     # output requirements
     if (!output %in% c("query", "duckdb", "sedona")) { # if a materialized format...
         lazy <- unique(c("source_id", "row_index", lazy))
@@ -872,6 +1003,56 @@ sd_view_ref <- function(sdf) {
     }
     attr(lazy, "lazy") <- TRUE
     lazy
+}
+
+# Cols referenced by queued ops that downstream filter compile needs visible
+# in the lazy schema. Intersected with disk_fields so synthetic / undeclared
+# symbols (already inlined by `.inline_local_vars`) don't leak through, and
+# so that y-side cols referenced by post-join filters don't get projected
+# from the upstream (x-only) parquet -- those come in naturally via the
+# join op's .do_op handler.
+.pstore_op_referenced_cols <- function(store) {
+    if (length(store@ops) == 0L) return(character(0L))
+    refs <- lapply(store@ops, function(op) {
+        switch(op$type %||% "",
+            "filter"   = all.vars(op$expr),
+            "distinct" = op$cols,
+            # Join keys must be visible in the upstream projection so
+            # `.do_op`'s dplyr::inner_join can find them on the x side.
+            # `op$by` follows data.table syntax: names() = x cols, values
+            # = y cols (or unnamed for same-name joins).
+            "join"     = {
+                nm <- names(op$by)
+                if (is.null(nm)) op$by else nm
+            },
+            character(0L)
+        )
+    })
+    refs <- unique(unlist(refs))
+    disk <- .pstore_disk_fields(store)
+    if (is.null(disk)) return(refs)
+    intersect(refs, disk)
+}
+
+# Effective schema of a store at the point downstream code is about to add
+# the next op. Equals on-disk cols plus any cols recursively brought in by
+# already-queued join ops. y's specials (row_index, source_id, etc.) are
+# dropped except for the join keys, mirroring `.do_op`'s join compile.
+#
+# Used to decide what symbols in `subset()` predicates and `[, j]` selectors
+# are legitimate column references vs local R variables to inline. Computed
+# JIT from `@ops` rather than cached on the store, so direct `@ops`
+# manipulation (a supported pattern per AGENTS.md) stays correct.
+.pstore_effective_schema <- function(store) {
+    base <- .pstore_disk_fields(store) %||% character(0L)
+    for (op in store@ops) {
+        if (identical(op$type, "join")) {
+            y_eff <- .pstore_effective_schema(op$y)
+            y_drop <- setdiff(specialCols(op$y), unname(op$by))
+            base <- unique(c(base, setdiff(y_eff, y_drop)))
+        }
+    }
+    base
 }
 
 # Emit a SQL IN clause, switching to a VALUES subquery above the threshold to

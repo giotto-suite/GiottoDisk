@@ -46,15 +46,22 @@ setMethod("subset", signature("parquetBase"), function(x, subset, select,
     negate = FALSE, quote = TRUE, ...) {
       
     if (!missing(subset)) {
-        if (quote) {                                        
-            q <- rlang::enquo(subset)                               
-            expr <- rlang::quo_get_expr(q)  
-            env <- rlang::quo_get_env(q)                              
-            expr <- .inline_local_vars(expr, c(colnames(x), specialCols(x)), env)
-        } else {                                                       
-            expr <- subset  # pre-quoted expression passed directly    
-        }                                                              
-        if (negate) expr <- call("!", expr)                            
+        if (quote) {
+            q <- rlang::enquo(subset)
+            expr <- rlang::quo_get_expr(q)
+            env <- rlang::quo_get_env(q)
+            # Use effective_schema (NOT colnames(x) or disk_fields) as the
+            # col universe -- a prior `[, j]` may have narrowed @fields,
+            # and queued join ops bring in y-side cols. Filter exprs need
+            # to reference any of these without being treated as local
+            # vars. The lazy_fields path re-widens at storeRead time so
+            # the upstream projection includes referenced cols, and
+            # .do_op's join handler materializes y-side cols post-join.
+            expr <- .inline_local_vars(expr, .pstore_effective_schema(x), env)
+        } else {
+            expr <- subset  # pre-quoted expression passed directly
+        }
+        if (negate) expr <- call("!", expr)
         x@ops <- c(x@ops, list(list(type = "filter", expr = expr)))
     }
   
