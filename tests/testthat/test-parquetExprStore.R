@@ -374,6 +374,171 @@ test_that("union [-subset round-trips to a matrix matching in-mem cbind subset",
 })
 
 
+# ---- union subset gaps -------------------------------------------------
+
+.cbind_pair <- function() {
+    m1 <- Matrix::sparseMatrix(
+        i = c(1, 2, 3), j = c(1, 2, 1), x = c(11, 12, 13),
+        dims = c(3, 2),
+        dimnames = list(c("g1", "g2", "g3"), c("c1", "c2"))
+    )
+    m2 <- Matrix::sparseMatrix(
+        i = c(1, 3), j = c(1, 2), x = c(21, 22),
+        dims = c(3, 2),
+        dimnames = list(c("g1", "g2", "g3"), c("c3", "c4"))
+    )
+    pe1 <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), m1)
+    pe2 <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), m2)
+    list(m1 = m1, m2 = m2, pe1 = pe1, pe2 = pe2, u = cbind2(pe1, pe2))
+}
+
+# Reconstruct a sparse Matrix from union storeRead output, resolving
+# (source_id, row_id_local) -> global cell position via per-substore offsets.
+.reconstruct_from_union <- function(u) {
+    df <- as.data.frame(dplyr::collect(storeRead(u)))
+    uids <- vapply(u@stores, function(s) s@uid, character(1L))
+    offsets <- c(0L, cumsum(vapply(u@stores, function(s) s@n_cells,
+        numeric(1L))))
+    uid_to_idx <- stats::setNames(seq_along(uids), uids)
+    df$global_row <- df$row_id + offsets[uid_to_idx[df$source_id]]
+    Matrix::sparseMatrix(
+        i = df$col_id, j = df$global_row, x = df$value,
+        dims = c(u@n_genes, u@n_cells),
+        dimnames = list(u@feat_ids, u@cell_ids)
+    )
+}
+
+
+test_that("union [-subset: gene-only subset reads correctly", {
+    s <- .cbind_pair()
+    sub <- s$u["g1", ]
+    expect_equal(sub@n_genes, 1L)
+    expect_equal(sub@n_cells, 4L)
+    expect_equal(sub@feat_ids, "g1")
+    df <- as.data.frame(dplyr::collect(storeRead(sub)))
+    # g1 corresponds to col_id 1 in originals; after subset that's still
+    # the only col_id present
+    expect_true(all(df$col_id == 1L))
+    # cells c1 (val 11, src pe1), c3 (val 21, src pe2) have g1
+    expect_setequal(df$value, c(11, 21))
+})
+
+test_that("union [-subset: combined gene + cell subset reads correctly", {
+    s <- .cbind_pair()
+    sub <- s$u["g1", c("c1", "c3")]
+    expect_equal(sub@n_genes, 1L)
+    expect_equal(sub@n_cells, 2L)
+    df <- as.data.frame(dplyr::collect(storeRead(sub)))
+    expect_equal(nrow(df), 2L)
+    expect_setequal(df$value, c(11, 21))
+})
+
+test_that("union [-subset: cell selection that zeroes a substore drops it", {
+    s <- .cbind_pair()
+    sub <- s$u[, c("c1", "c2")]  # only pe1's cells
+    expect_equal(length(sub@stores), 1L)
+    expect_equal(sub@stores[[1L]]@uid, s$pe1@uid)
+    expect_equal(sub@n_cells, 2L)
+})
+
+
+# ---- storeWrite from a (possibly subset) parquetExprStore / union --------
+
+test_that("storeWrite from single-store subset round-trips to a new store", {
+    mat <- Matrix::sparseMatrix(
+        i = c(1, 2, 3, 1), j = c(1, 2, 3, 4), x = c(11, 12, 13, 14),
+        dims = c(3, 4),
+        dimnames = list(c("g1", "g2", "g3"), c("c1", "c2", "c3", "c4"))
+    )
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+    sub <- pe[, c("c2", "c3")]
+    out <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), sub)
+    expect_equal(out@n_cells, 2L)
+    expect_equal(out@cell_ids, c("c2", "c3"))
+    # Reconstruct as matrix from the new store's read; compare to in-mem subset
+    df <- as.data.frame(dplyr::collect(storeRead(out)))
+    rt <- Matrix::sparseMatrix(
+        i = df$col_id, j = df$row_id, x = df$value,
+        dims = c(out@n_genes, out@n_cells),
+        dimnames = list(out@feat_ids, out@cell_ids)
+    )
+    expect_equal(as.matrix(rt), as.matrix(mat[, c("c2", "c3")]))
+})
+
+test_that("storeWrite from full union round-trips to a new flat store", {
+    s <- .cbind_pair()
+    out <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), s$u)
+    expect_equal(out@n_cells, 4L)
+    expect_equal(out@cell_ids, c("c1", "c2", "c3", "c4"))
+    df <- as.data.frame(dplyr::collect(storeRead(out)))
+    rt <- Matrix::sparseMatrix(
+        i = df$col_id, j = df$row_id, x = df$value,
+        dims = c(out@n_genes, out@n_cells),
+        dimnames = list(out@feat_ids, out@cell_ids)
+    )
+    expect_equal(as.matrix(rt), as.matrix(cbind(s$m1, s$m2)))
+})
+
+test_that("storeWrite from union subset (cross-substore) round-trips correctly", {
+    s <- .cbind_pair()
+    u_sub <- s$u[, c("c1", "c3")]
+    out <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), u_sub)
+    df <- as.data.frame(dplyr::collect(storeRead(out)))
+    rt <- Matrix::sparseMatrix(
+        i = df$col_id, j = df$row_id, x = df$value,
+        dims = c(out@n_genes, out@n_cells),
+        dimnames = list(out@feat_ids, out@cell_ids)
+    )
+    expect_equal(as.matrix(rt), as.matrix(cbind(s$m1, s$m2)[, c("c1", "c3")]))
+})
+
+test_that("storeWrite from union with combined gene+cell subset", {
+    s <- .cbind_pair()
+    u_sub <- s$u[c("g1", "g3"), c("c1", "c3", "c4")]
+    out <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), u_sub)
+    df <- as.data.frame(dplyr::collect(storeRead(out)))
+    rt <- Matrix::sparseMatrix(
+        i = df$col_id, j = df$row_id, x = df$value,
+        dims = c(out@n_genes, out@n_cells),
+        dimnames = list(out@feat_ids, out@cell_ids)
+    )
+    expect_equal(as.matrix(rt),
+        as.matrix(cbind(s$m1, s$m2)[c("g1", "g3"), c("c1", "c3", "c4")]))
+})
+
+
+# ---- saveRDS roundtrip of a union store ----------------------------------
+
+test_that("saveRDS roundtrip of unionParquetExprStore preserves slots + read", {
+    s <- .cbind_pair()
+    tmp <- tempfile(fileext = ".rds")
+    on.exit(unlink(tmp), add = TRUE)
+    saveRDS(s$u, tmp)
+    rt <- readRDS(tmp)
+    expect_s4_class(rt, "unionParquetExprStore")
+    expect_equal(rt@n_cells, s$u@n_cells)
+    expect_equal(rt@cell_ids, s$u@cell_ids)
+    expect_equal(rt@feat_ids, s$u@feat_ids)
+    # storeRead post-roundtrip yields same matrix
+    expect_equal(
+        as.matrix(.reconstruct_from_union(rt)),
+        as.matrix(cbind(s$m1, s$m2))
+    )
+})
+
+
+# ---- error path: duplicate cell_ids across substores --------------------
+
+test_that("union construction rejects substores with duplicate cell_ids", {
+    mat <- Matrix::sparseMatrix(i = 1, j = 1, x = 1, dims = c(1, 2),
+        dimnames = list("g1", c("c1", "c2")))
+    pe1 <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+    pe2 <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+    # Both have cell_ids c("c1", "c2") -- union must reject
+    expect_error(cbind2(pe1, pe2), "duplicate cell_ids")
+})
+
+
 test_that("parquetExprStore swaps into a giotto object via setExpression", {
     skip_if_not_installed("Giotto")
     skip_if_not_installed("GiottoClass")

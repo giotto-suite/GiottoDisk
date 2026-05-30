@@ -34,6 +34,137 @@ setMethod("storeRead", signature("parquetExprStore"), function(store, ...) {
 
 #' @rdname storeWrite
 #' @export
+# storeWrite from a (possibly subset) parquetExprStore ####
+# Direct parquet -> parquet path. Reads the input's lazy triplet stream
+# (with `[`-subset filters already applied), remaps row_id / col_id from
+# original-substore positions to local positions in the input's narrowed
+# universe via a small in-mem arrow lookup, then streams to the output's
+# `source_id=<new_uid>/` hive partition. No matrix materialization.
+
+#' @rdname storeWrite
+#' @export
+setMethod(
+    "storeWrite",
+    signature("parquetExprStore", "parquetExprStore"),
+    function(store, data, ...) {
+        .pestore_write_from_parquet_input(store, data)
+    }
+)
+
+#' @rdname storeWrite
+#' @export
+setMethod(
+    "storeWrite",
+    signature("parquetExprStore", "unionParquetExprStore"),
+    function(store, data, ...) {
+        .pestore_write_from_parquet_input(store, data)
+    }
+)
+
+# Shared body for both signatures above. `data` is the input store; `store`
+# is the fresh target parquetExprStore (path + uid).
+.pestore_write_from_parquet_input <- function(store, data) {
+    if (file.exists(store@path) && !dir.exists(store@path)) {
+        stop("[storeWrite] output path exists as a file: ", store@path,
+            "\n  pre-allocated store path must be a directory or absent.",
+            call. = FALSE)
+    }
+    q <- .pestore_remap_query(data)
+    .write_parquet(store, q)
+
+    # Slots copied from input -- already correctly narrowed by any
+    # `[`-subset. `cell_idx`/`gene_idx` stay empty on the fresh output
+    # (no subset queued).
+    store@cell_ids <- data@cell_ids
+    store@feat_ids <- data@feat_ids
+    store@n_cells  <- as.numeric(data@n_cells)
+    store@n_genes  <- as.numeric(data@n_genes)
+    .pestore_finalize_chunk_size(store)
+}
+
+# Build the lazy remapped triplet query for a (possibly subset) input.
+# Returns an arrow_dplyr_query whose schema is (row_id, col_id, value),
+# row_id / col_id renumbered to local positions in the input's narrowed
+# `@cell_ids` / `@feat_ids` universe, sorted by (row_id, col_id).
+.pestore_remap_query <- function(pe) {
+    is_union <- inherits(pe, "unionParquetExprStore")
+
+    # ---- row_id (cell) remap table ----
+    # Use data.table for LUT construction: data.table::rbindlist over the
+    # per-substore frames is materially faster than do.call(rbind, ...) when
+    # the union has many substores. Same constructor style as the
+    # (parquetExprStore, memoryMatrix) write path above.
+    if (is_union) {
+        n_per <- vapply(pe@stores, function(s) as.integer(s@n_cells),
+            integer(1L))
+        offsets <- c(0L, cumsum(n_per)[-length(n_per)])
+        cell_remap_dt <- data.table::rbindlist(lapply(seq_along(pe@stores),
+            function(k) {
+                s <- pe@stores[[k]]
+                local_orig <- if (length(s@cell_idx) > 0L) {
+                    s@cell_idx
+                } else {
+                    seq_len(s@n_cells)
+                }
+                data.table::data.table(
+                    source_id   = s@uid,
+                    row_id_orig = as.integer(local_orig),
+                    row_id_new  = as.integer(seq_along(local_orig) +
+                        offsets[k])
+                )
+            }))
+    } else {
+        local_orig <- if (length(pe@cell_idx) > 0L) {
+            pe@cell_idx
+        } else {
+            seq_len(pe@n_cells)
+        }
+        cell_remap_dt <- data.table::data.table(
+            row_id_orig = as.integer(local_orig),
+            row_id_new  = as.integer(seq_along(local_orig))
+        )
+    }
+    cell_remap <- arrow::as_arrow_table(cell_remap_dt)
+
+    # ---- col_id (gene) remap table ----
+    # Gene-axis subset applies uniformly across union substores (the union's
+    # `[` method calls `s[i, ]` on each substore), so any substore's
+    # `@gene_idx` is representative.
+    gene_idx <- if (is_union) pe@stores[[1L]]@gene_idx else pe@gene_idx
+    do_gene_remap <- length(gene_idx) > 0L
+    if (do_gene_remap) {
+        gene_remap <- arrow::as_arrow_table(data.table::data.table(
+            col_id_orig = as.integer(gene_idx),
+            col_id_new  = as.integer(seq_along(gene_idx))
+        ))
+    }
+
+    # ---- join + remap ----
+    # `by` must be fully named -- arrow's dplyr join handler trips on the
+    # mixed-named form `c("source_id", "row_id" = "row_id_orig")` because
+    # the unnamed element parses with an empty name on the right side.
+    q <- storeRead(pe)
+    if (is_union) {
+        q <- dplyr::left_join(q, cell_remap,
+            by = c("source_id" = "source_id",
+                   "row_id" = "row_id_orig"))
+    } else {
+        q <- dplyr::left_join(q, cell_remap,
+            by = c("row_id" = "row_id_orig"))
+    }
+    q <- dplyr::mutate(q, row_id = row_id_new)
+    q <- dplyr::select(q, -dplyr::any_of(c("row_id_new", "source_id")))
+    if (do_gene_remap) {
+        q <- dplyr::left_join(q, gene_remap,
+            by = c("col_id" = "col_id_orig"))
+        q <- dplyr::mutate(q, col_id = col_id_new)
+        q <- dplyr::select(q, -col_id_new)
+    }
+    q <- dplyr::arrange(q, row_id, col_id)
+    dplyr::select(q, row_id, col_id, value)
+}
+
+
 setMethod(
     "storeWrite",
     signature("parquetExprStore", "memoryMatrix"),
