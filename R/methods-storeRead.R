@@ -99,6 +99,8 @@ setMethod("storeRead", signature("parquetStore"), function(store,
     checkmate::assert_character(fields, null.ok = TRUE)
     output <- match.arg(output, choices = c("query", "tibble", "duckdb", "sedona"))
     if (output == "sedona") return(.pstore_to_sedona(store, fields = fields, ...))
+    if (output == "duckdb") return(.pstore_to_duckdb(store,
+        fields = fields, duckdb_params = duckdb_params, ...))
     fields <- .pstore_fields_requested(store, fields)
     lazy_fields <- .pstore_lazy_fields(store, fields, output)
 
@@ -142,6 +144,8 @@ setMethod("storeRead", signature("unionParquetStore"), function(store,
     checkmate::assert_character(fields, null.ok = TRUE)
     output <- match.arg(output, choices = c("query", "tibble", "duckdb", "sedona"))
     if (output == "sedona") return(.pstore_to_sedona(store, fields = fields, ...))
+    if (output == "duckdb") return(.pstore_to_duckdb(store,
+        fields = fields, duckdb_params = duckdb_params, ...))
     fields <- .pstore_fields_requested(store, fields)
     lazy_fields <- .pstore_lazy_fields(store, fields, output)
 
@@ -323,6 +327,9 @@ setMethod("storeRead", signature("parquetGeomStore"), function(store,
     ...) {
     output <- match.arg(output, choices = c("query", "tibble", "terra", "sf", "duckdb", "sedona"))
     if (output == "sedona") return(.pstore_to_sedona(store, fields = fields, extent = extent, ...))
+    if (output == "duckdb") return(.pstore_to_duckdb(store,
+        fields = fields, extent = extent,
+        duckdb_params = duckdb_params, ...))
     fields <- .pstore_fields_requested(store, fields)
     lazy_fields <- .pstore_lazy_fields(store, fields, output)
 
@@ -396,6 +403,9 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
     ...) {
     output <- match.arg(output, choices = c("query", "tibble", "terra", "sf", "duckdb", "sedona"))
     if (output == "sedona") return(.pstore_to_sedona(store, fields = fields, extent = extent, tile_idx = tile_idx, ...))
+    if (output == "duckdb") return(.pstore_to_duckdb(store,
+        fields = fields, extent = extent, tile_idx = tile_idx,
+        duckdb_params = duckdb_params, ...))
     fields <- .pstore_fields_requested(store, fields)
     lazy_fields <- .pstore_lazy_fields(store, fields, output)
 
@@ -667,7 +677,7 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
 # into a single base view that downstream WHERE/projection/affine SQL targets.
 #
 # Pipeline:
-#   1. Resolve tile specs (`.pstore_sedona_tile_specs`): one entry per
+#   1. Resolve tile specs (`.pstore_tile_specs`): one entry per
 #      surviving `source_id=<uid>/tile_index=<n>/` directory. Honors
 #      `tile_idx` arg and `@tile_filter` via file-level pruning — the pruned
 #      tile dirs never reach DataFusion.
@@ -700,7 +710,7 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
     aff <- if (inherits(store, "parquetGeomBase")) .pgeom_pending_transform(store) else NULL
 
     # --- 1. Resolve tile specs + register per-tile sub-views ---
-    specs <- .pstore_sedona_tile_specs(store, tile_idx_arg = tile_idx_arg)
+    specs <- .pstore_tile_specs(store, tile_idx_arg = tile_idx_arg)
     if (length(specs) == 0L) {
         stop("[storeRead][sedona] no tile directories match the requested filter\n",
             "  store path: ", toString(storePaths(store)), call. = FALSE)
@@ -749,7 +759,7 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
         ))
     }
 
-    # Tile filter is enforced by file-level pruning in `.pstore_sedona_tile_specs`
+    # Tile filter is enforced by file-level pruning in `.pstore_tile_specs`
     # above; no SQL `tile_index IN (...)` clause needed.
 
     # @ops — filter (including half-plane exprs), head, distinct translated to SQL;
@@ -883,7 +893,216 @@ sd_view_ref <- function(sdf) {
     sprintf('"%s"', nm)
 }
 
-# Resolve the per-tile directories that should back the sedona view.
+
+# .pstore_to_duckdb ####
+#
+# Translate a store's full state into a DuckDB lazy `tbl_dbi` backed by the
+# original on-disk parquet files via DuckDB's `read_parquet` scanner.
+# Mirrors `.pstore_to_sedona`: per-tile UNION ALL with `source_id` /
+# `tile_index` SQL literal injection, WHERE for @crop/@window AABB + @ops
+# filter exprs, DISTINCT / LIMIT for distinct/head, spatial extension's
+# ST_* for spat_relate, ST_Affine wrap for pending transforms.
+#
+# Connection lifecycle:
+#   - If `duckdb_params$conn` is supplied, the user owns it; we just register
+#     temp views on it and return a tbl_dbi pointing at them.
+#   - Otherwise an ephemeral in-memory connection is created. dbplyr::tbl
+#     holds a reference (via the tbl_dbi's $src$con), so the connection
+#     stays alive as long as the returned tbl is referenced and is gc'd
+#     with it.
+#
+# `id_filter` ops (injected by `.spat_relate_narrow` for multi-spat_relate
+# chains) are translated to a correlated EXISTS subquery against a duckdb
+# temp table registered from the cached id arrow Table via
+# `duckdb_register_arrow`.
+.pstore_to_duckdb <- function(store, fields = NULL, duckdb_params = list(),
+    ...) {
+    GiottoUtils::package_check("duckdb")
+    GiottoUtils::package_check("dbplyr")
+    GiottoUtils::package_check("DBI")
+    checkmate::assert_list(duckdb_params)
+
+    extra_args <- list(...)
+    extent_arg <- extra_args$extent
+    tile_idx_arg <- extra_args$tile_idx
+
+    # Connection: user-supplied or ephemeral. tbl_dbi holds a reference to
+    # conn, so ephemeral connections are kept alive as long as the returned
+    # tbl is referenced.
+    conn <- duckdb_params$conn
+    if (is.null(conn)) {
+        conn <- DBI::dbConnect(duckdb::duckdb())
+    }
+
+    # Spatial extension is required for any geom-base store (ST_*, ST_Affine).
+    # `INSTALL` is idempotent + cached after first run; `LOAD` per-connection.
+    if (inherits(store, "parquetGeomBase")) {
+        DBI::dbExecute(conn, "INSTALL spatial; LOAD spatial;")
+    }
+
+    # SQL paths (sedona / duckdb-native) don't need op_referenced col widening
+    # in lazy_fields — WHERE references FROM scope regardless of SELECT
+    # projection. Pass "sedona" to the helper to share that branch.
+    fields <- .pstore_fields_requested(store, fields)
+    lazy_fields <- .pstore_lazy_fields(store, fields, output = "sedona")
+
+    aff <- if (inherits(store, "parquetGeomBase")) .pgeom_pending_transform(store) else NULL
+
+    # --- 1. Resolve tile specs + register base view ---
+    specs <- .pstore_tile_specs(store, tile_idx_arg = tile_idx_arg)
+    if (length(specs) == 0L) {
+        stop("[storeRead][duckdb] no tile directories match the requested filter\n",
+            "  store path: ", toString(storePaths(store)), call. = FALSE)
+    }
+    base_view_name <- tolower(paste0("gd_dd_", .make_uid()))
+    union_sqls <- vapply(seq_along(specs), function(i) {
+        spec <- specs[[i]]
+        uid_lit <- gsub("'", "''", spec$uid, fixed = TRUE)
+        literal_cols <- if (spec$has_tile_index) {
+            sprintf("'%s' AS source_id, %d AS tile_index", uid_lit, spec$tile_index)
+        } else {
+            sprintf("'%s' AS source_id", uid_lit)
+        }
+        # `read_parquet('dir/*.parquet')` with hive_partitioning disabled
+        # — we inject source_id / tile_index as SQL literals (mirrors the
+        # sedona path) and want to avoid duckdb auto-promoting them from
+        # the directory layout (which would also coerce them to integers
+        # in a way that may not match our typing).
+        path_escaped <- gsub("'", "''", spec$dir_path, fixed = TRUE)
+        sprintf("SELECT *, %s FROM read_parquet('%s*.parquet', hive_partitioning=false)",
+            literal_cols, path_escaped)
+    }, FUN.VALUE = character(1L))
+    base_sql <- paste(union_sqls, collapse = " UNION ALL ")
+    DBI::dbExecute(conn,
+        sprintf('CREATE OR REPLACE TEMP VIEW "%s" AS %s',
+            base_view_name, base_sql))
+
+    # --- 2. Build WHERE clause ---
+    where_clauses <- character(0L)
+
+    # Crop/window AABB on centroid columns; parquet stats pushdown.
+    e <- if (inherits(store, "parquetGeomBase")) .pstore_active_extent(store) else NULL
+    if (!is.null(extent_arg)) {
+        e <- if (!is.null(e)) terra::intersect(e, ext(extent_arg)) else ext(extent_arg)
+    }
+    if (!is.null(e)) {
+        ev <- .ext_to_num_vec(e)
+        where_clauses <- c(where_clauses, sprintf(
+            "x_index >= %.17g AND x_index <= %.17g AND y_index >= %.17g AND y_index <= %.17g",
+            ev[[1L]], ev[[2L]], ev[[3L]], ev[[4L]]
+        ))
+    }
+
+    # @ops translation — same dialect of SQL as sedona for the most part
+    # (DuckDB and DataFusion share ANSI SQL roots + spatial extension uses
+    # the same `ST_*` function names).
+    distinct_cols <- NULL
+    limit_n <- NULL
+    for (op in store@ops) {
+        switch(op$type,
+            "filter"   = where_clauses <- c(where_clauses, .r_expr_to_sql(op$expr)),
+            "head"     = limit_n <- op$n,
+            "distinct" = distinct_cols <- op$cols,
+            "spat_relate" = {
+                if (!is.null(op$y_wkt)) {
+                    sql_pred <- .sql_relation_fn(op$relation)
+                    wkt_escaped <- gsub("'", "''", op$y_wkt, fixed = TRUE)
+                    # DuckDB spatial's ST_GeomFromText doesn't take an SRID
+                    # (signature: (VARCHAR [, BOOLEAN])). It also doesn't
+                    # enforce CRS — geometries are just GEOMETRY — so the
+                    # predicate works regardless of the store's CRS spec.
+                    geom_sql <- sprintf("ST_GeomFromText('%s')", wkt_escaped)
+                    where_clauses <- c(where_clauses, sprintf(
+                        "%s(geom, %s)", sql_pred, geom_sql
+                    ))
+                } else {
+                    warning(
+                        "[storeRead][duckdb] spat_relate with stored y is not yet ",
+                        "implemented in the duckdb compile; the op is skipped",
+                        call. = FALSE
+                    )
+                }
+            },
+            "id_filter" = {
+                # Register the cached id arrow Table as a duckdb virtual
+                # table, then add a correlated EXISTS subquery on the keys
+                # (matches sedona's pattern; duckdb supports tuple-IN but
+                # EXISTS is uniformly compatible and engine-optimisable).
+                id_table_name <- tolower(paste0("gd_idf_", .make_uid()))
+                duckdb::duckdb_register_arrow(conn, id_table_name, op$ids_tab)
+                keys <- unname(op$by)
+                join_conds <- vapply(keys, function(k) {
+                    sprintf('"%s"."%s" = "%s"."%s"',
+                        id_table_name, k, base_view_name, k)
+                }, FUN.VALUE = character(1L))
+                where_clauses <- c(where_clauses, sprintf(
+                    'EXISTS (SELECT 1 FROM "%s" WHERE %s)',
+                    id_table_name, paste(join_conds, collapse = " AND ")
+                ))
+            },
+            "tail"     = ,
+            "sample"   = ,
+            "join"     = warning(sprintf(
+                "[storeRead][duckdb] op '%s' cannot be expressed as SQL and is skipped",
+                op$type), call. = FALSE),
+            warning(sprintf("[storeRead][duckdb] unknown op type '%s' skipped", op$type),
+                call. = FALSE)
+        )
+    }
+
+    # --- 3. Build outer SQL targeting the base view ---
+    where_sql <- if (length(where_clauses) > 0L) {
+        paste("WHERE", paste(where_clauses, collapse = " AND "))
+    } else {
+        ""
+    }
+    select_sql <- if (!is.null(distinct_cols)) {
+        paste("DISTINCT", paste(sprintf('"%s"', distinct_cols), collapse = ", "))
+    } else if (!is.null(lazy_fields)) {
+        paste(sprintf('"%s"', lazy_fields), collapse = ", ")
+    } else {
+        "*"
+    }
+    inner_sql <- trimws(sprintf('SELECT %s FROM "%s" %s',
+        select_sql, base_view_name, where_sql))
+    if (!is.null(limit_n)) inner_sql <- paste(inner_sql, "LIMIT", limit_n)
+
+    # --- 4. Wrap with ST_Affine if transform is pending ---
+    if (!is.null(aff)) {
+        schema_df <- DBI::dbGetQuery(conn,
+            sprintf("SELECT * FROM (%s) AS _probe LIMIT 0", inner_sql))
+        other_cols <- setdiff(names(schema_df), "geom")
+        m <- aff@affine
+        affine_expr <- sprintf(
+            "ST_Affine(geom, %.17g, %.17g, %.17g, %.17g, %.17g, %.17g) AS geom",
+            m[1L, 1L], m[2L, 1L], m[1L, 2L], m[2L, 2L], m[3L, 1L], m[3L, 2L]
+        )
+        outer_select <- if (length(other_cols) > 0L) {
+            paste(c(paste(sprintf('"%s"', other_cols), collapse = ", "), affine_expr),
+                collapse = ", ")
+        } else {
+            affine_expr
+        }
+        inner_sql <- sprintf("SELECT %s FROM (%s) AS _t", outer_select, inner_sql)
+    }
+
+    # Register final view + return a lazy tbl. Final-view registration lets
+    # the user reference it via plain `tbl(conn, name)` and gives dbplyr a
+    # stable handle.
+    final_view_name <- tolower(paste0("gd_dd_final_", .make_uid()))
+    DBI::dbExecute(conn,
+        sprintf('CREATE OR REPLACE TEMP VIEW "%s" AS %s',
+            final_view_name, inner_sql))
+    tbl <- dplyr::tbl(conn, final_view_name)
+    attr(tbl, "view_name") <- base_view_name
+    tbl
+}
+
+
+# Resolve the per-tile directories that should back a SQL backend's base
+# view. Used by both `.pstore_to_sedona` and `.pstore_to_duckdb`; the
+# returned spec list is engine-neutral (just directory paths + partition
+# metadata).
 #
 # Returns a list of specs, each:
 #   list(uid, tile_index, dir_path, has_tile_index)
@@ -892,9 +1111,9 @@ sd_view_ref <- function(sdf) {
 # - `tile_index`: integer index parsed from `tile_index=<n>/` (or 0L for stores
 #   without a tile_index partition layer; in that case `has_tile_index = FALSE`
 #   and tile_index is unused).
-# - `dir_path`: filesystem directory passed to `sd_read_parquet`; always ends
-#   with `/` so DataFusion lists files under it rather than treating it as a
-#   single file path.
+# - `dir_path`: filesystem directory passed to the engine's parquet reader
+#   (`sd_read_parquet` / `read_parquet`); always ends with `/` so the engine
+#   lists files under it rather than treating it as a single file path.
 # - `has_tile_index`: TRUE for `parquetGeomBase`-inheriting stores (flat geom +
 #   tiled geom both write a `tile_index=<n>` partition); FALSE for flat tabular
 #   `parquetStore` which only has the `source_id=<uid>` partition.
@@ -907,7 +1126,7 @@ sd_view_ref <- function(sdf) {
 #
 # `unionParquetStore` substores are walked in order — one spec per substore
 # tile directory.
-.pstore_sedona_tile_specs <- function(store, tile_idx_arg = NULL) {
+.pstore_tile_specs <- function(store, tile_idx_arg = NULL) {
     substores <- if (inherits(store, "unionParquetStore")) {
         store@stores
     } else {
