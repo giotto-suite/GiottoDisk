@@ -181,11 +181,13 @@ injection must happen at the **topmost** level before the first `callNextMethod`
   `source_id`/`row_index` for materialized outputs; `geom` for `"terra"`/`"sf"`
 
 ### [i, on] join op
-`x[y, on = c(...), nomatch = NULL]` records a join against `y` (`parquetBase`) as a `"join"`
-op in `x@ops`. `x` drives the result; `y` provides columns.
+`x[y, on = c(...)]` records a join against `y` (`parquetBase`) as a `"join"` op
+in `x@ops`. `x` drives the result; `y` provides columns.
 
 - `on`: named character vector — names are `x` columns, values are `y` columns
-- `nomatch = NULL` (inner) stored as string `"inner"` — `NULL` is lost in R lists
+- `nomatch` follows data.table convention: default (or `NA`) = left join (preserve
+  `x`, NA fill on miss); `NULL` = inner (drop unmatched). Any other value errors.
+  Stored as `"inner"`/`"left"` strings — `NULL` is lost in R lists.
 - `rbind2`/`storeWrite` blocked while join pending
 
 ### subset() NSE

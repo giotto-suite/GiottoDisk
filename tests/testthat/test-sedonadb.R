@@ -99,3 +99,117 @@ test_that("sedonadb: pending affine applies via ST_Affine", {
     expect_equal(sort(coords[, "x"]), seq_len(5) * 2, tolerance = 1e-6)
     expect_equal(sort(coords[, "y"]), seq_len(5),     tolerance = 1e-6)
 })
+
+
+# hive partition cols (source_id, tile_index) ####
+# These cols don't live in-file — they're hive directory partitions. The
+# sedonadb R binding doesn't expose `table_partition_cols`, so the sedona
+# pipeline reconstructs them via per-tile-dir view registration + SQL literal
+# injection. Tests lock both the presence of the reconstructed cols and the
+# downstream invariants (row_index disambiguation, file-level pruning).
+
+.make_tile_pts_sdb <- function() {
+    coords <- data.frame(
+        x = rep(seq(5, 45, by = 10), 5),
+        y = rep(seq(5, 45, by = 10), each = 5)
+    )
+    terra::vect(
+        data.frame(coords, id = seq_len(nrow(coords))),
+        geom = c("x", "y"), crs = ""
+    )
+}
+
+test_that("sedonadb: flat parquetStore injects source_id only (no tile_index)", {
+    skip_if_not_installed("sedonadb")
+    ps <- parquetStore() |> storeWrite(mtcars)
+    sdf <- storeRead(ps, output = "sedona")
+    df <- sedonadb::sd_collect(sdf)
+    expect_true("source_id" %in% names(df))
+    expect_false("tile_index" %in% names(df))
+    expect_equal(length(unique(df$source_id)), 1L)
+})
+
+test_that("sedonadb: parquetGeomStore injects source_id and tile_index=0", {
+    skip_if_not_installed("sedonadb")
+    pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb(5))
+    sdf <- storeRead(pgs, output = "sedona")
+    df <- sedonadb::sd_collect(sdf)
+    expect_true(all(c("source_id", "tile_index") %in% names(df)))
+    expect_equal(length(unique(df$source_id)), 1L)
+    expect_equal(unique(df$tile_index), 0L)
+})
+
+test_that("sedonadb: parquetGeomTileStore unions all tiles, (tile_index, row_index) is unique", {
+    skip_if_not_installed("sedonadb")
+    pgs <- parquetGeomStore() |> storeWrite(.make_tile_pts_sdb())
+    pgts <- parquetGeomTileStore() |> storeWrite(pgs, threshold = 4L)
+    sdf <- storeRead(pgts, output = "sedona")
+    df <- sedonadb::sd_collect(sdf)
+    expect_equal(nrow(df), 25L)
+    # row_index alone collides across tiles -- composite must disambiguate
+    expect_lt(length(unique(df$row_index)), 25L)
+    composite <- paste(df$tile_index, df$row_index)
+    expect_equal(length(unique(composite)), 25L)
+})
+
+test_that("sedonadb: @tile_filter prunes at file level", {
+    skip_if_not_installed("sedonadb")
+    pgs <- parquetGeomStore() |> storeWrite(.make_tile_pts_sdb())
+    pgts <- parquetGeomTileStore() |> storeWrite(pgs, threshold = 4L)
+    pgts_cropped <- crop(pgts, terra::ext(0, 25, 0, 25))
+    expect_gt(length(pgts_cropped@tile_filter), 0L)
+    sdf <- storeRead(pgts_cropped, output = "sedona")
+    df <- sedonadb::sd_collect(sdf)
+    expect_lt(nrow(df), 25L)
+    expect_true(all(unique(df$tile_index) %in% pgts_cropped@tile_filter))
+})
+
+test_that("sedonadb: tile_idx arg overrides filter, selects only that tile", {
+    skip_if_not_installed("sedonadb")
+    pgs <- parquetGeomStore() |> storeWrite(.make_tile_pts_sdb())
+    pgts <- parquetGeomTileStore() |> storeWrite(pgs, threshold = 4L)
+    sdf <- storeRead(pgts, output = "sedona", tile_idx = 1L)
+    df <- sedonadb::sd_collect(sdf)
+    expect_equal(unique(df$tile_index), 1L)
+})
+
+test_that("sedonadb: tile_idx with no matching tile errors clearly", {
+    skip_if_not_installed("sedonadb")
+    pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb(5))
+    expect_error(
+        storeRead(pgs, output = "sedona", tile_idx = 999L),
+        "no tile directories match"
+    )
+})
+
+
+# fields narrowing via sedona ####
+# `[, j]` sets `@fields` which the sedona pipeline projects through SQL;
+# direct `fields = ...` arg behaves the same.
+
+test_that("sedonadb: [, j] column selection narrows projection", {
+    skip_if_not_installed("sedonadb")
+    ps <- parquetStore() |> storeWrite(mtcars)
+    sdf <- ps[, c("mpg", "cyl")] |> storeRead(output = "sedona")
+    df <- sedonadb::sd_collect(sdf)
+    expect_setequal(names(df), c("mpg", "cyl"))
+})
+
+test_that("sedonadb: fields= arg narrows projection", {
+    skip_if_not_installed("sedonadb")
+    ps <- parquetStore() |> storeWrite(mtcars)
+    sdf <- storeRead(ps, output = "sedona", fields = c("mpg", "hp"))
+    df <- sedonadb::sd_collect(sdf)
+    expect_setequal(names(df), c("mpg", "hp"))
+})
+
+test_that("sedonadb: col-select + filter on different col composes", {
+    # Same composition as test-parquetStore.R but through the SQL path --
+    # WHERE references a col not in SELECT; sedona's FROM scope covers it.
+    skip_if_not_installed("sedonadb")
+    ps <- parquetStore() |> storeWrite(mtcars)
+    sdf <- ps[, "mpg"] |> subset(cyl == 4) |> storeRead(output = "sedona")
+    df <- sedonadb::sd_collect(sdf)
+    expect_setequal(names(df), "mpg")
+    expect_equal(nrow(df), sum(mtcars$cyl == 4))
+})
