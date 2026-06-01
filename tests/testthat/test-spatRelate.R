@@ -467,3 +467,47 @@ test_that("spatRelate(): auto engine resolves to an installed backend", {
     )
     expect_setequal(tbl$id, c("a", "b"))
 })
+
+
+# Combined-AABB pre-cull across queued spat_relate ops ####
+# `.spat_relate_narrow` calls `crop(trim_store, .combined_spatrelate_aabb(@ops))`
+# before each engine dispatch so the engine sees a store that's already AABB-
+# pruned by the intersection of every monotone spat_relate op's bbox. Two
+# chained spatRelates therefore get tighter tile_filter than per-op pruning,
+# without the user calling `crop()` first.
+
+test_that(".combined_spatrelate_aabb: intersects multiple monotone ops; skips disjoint", {
+    ops <- list(
+        list(type = "spat_relate", y_wkt = "POLYGON((0 0, 10 0, 10 10, 0 10, 0 0))",
+            relation = "intersects"),
+        list(type = "spat_relate", y_wkt = "POLYGON((5 5, 20 5, 20 20, 5 20, 5 5))",
+            relation = "within"),
+        list(type = "spat_relate", y_wkt = "POLYGON((-100 -100, 100 -100, 100 100, -100 100, -100 -100))",
+            relation = "disjoint")  # excluded — not AABB-monotone
+    )
+    ext_result <- .combined_spatrelate_aabb(ops)
+    expect_s4_class(ext_result, "SpatExtent")
+    # Intersection of (0..10, 0..10) and (5..20, 5..20) = (5..10, 5..10).
+    # The disjoint op contributes no bbox to the intersection.
+    expect_equal(unname(as.vector(ext_result)), c(5, 10, 5, 10))
+})
+
+test_that(".combined_spatrelate_aabb: returns NULL with no monotone ops", {
+    ops <- list(
+        list(type = "filter", expr = quote(x > 0)),
+        list(type = "spat_relate", y_wkt = "POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))",
+            relation = "disjoint")
+    )
+    expect_null(.combined_spatrelate_aabb(ops))
+})
+
+test_that(".combined_spatrelate_aabb: returns NULL for empty intersection", {
+    ops <- list(
+        list(type = "spat_relate", y_wkt = "POLYGON((0 0, 5 0, 5 5, 0 5, 0 0))",
+            relation = "intersects"),
+        list(type = "spat_relate", y_wkt = "POLYGON((10 10, 15 10, 15 15, 10 15, 10 10))",
+            relation = "intersects")
+    )
+    # Disjoint extents — intersection yields NULL.
+    expect_null(.combined_spatrelate_aabb(ops))
+})
