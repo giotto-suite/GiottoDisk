@@ -142,21 +142,17 @@ rotation/shear is pending — a plain Arrow filter op injected by
 
 ### Lazy spatial transforms (`@post_ops` `"transform"` type on `parquetGeomBase`)
 
-`affine(store, affine2d)` records the transform lazily. At `storeRead(output = "tibble"/"terra"/"sf")`, `.apply_post_ops()` applies it. `output = "query"` is unaffected.
+`affine(store, affine2d)` records the transform lazily; `.apply_post_ops()`
+applies it at `storeRead(output = "tibble"/"terra"/"sf")`. `output = "query"`
+is unaffected. Composition auto-collapses to one `affine2d`; convention is
+post-multiply (`xy_out = xy_in %*% A + t`). When a transform is pending,
+`crop()`/`window<-` back-project the query extent through the inverse affine
+into intrinsic space and inject a half-plane filter op for rotation/shear.
 
-- `affine2d@affine` is a **3×3 homogeneous matrix** (GiottoClass `initialize()` converts 2×2 input → 3×3). `@anchor` = intrinsic-space extent (numeric(4)). `@translate` = decomposed translation.
-- Transform composition: `affine(store, aff2)` after `affine(store, aff1)` auto-collapses — `affine(existing_affine2d, aff2@affine)` dispatches to `affine(affine2d, matrix)` which composes via centroid-shift method.
-- Convention: **post-multiply** (`xy_out = xy_in %*% A + t`), matching GiottoClass's `pre_multiply = FALSE` default.
-- `@anchor` is a **composition scaffold only** — used by `affine(affine2d, matrix)` for centroid-shift calculation when composing transforms. NOT read when applying a transform to actual coordinates (`affine(SpatVector, affine2d)` uses only `@affine`). Only `spin()` and `rescale()` need the centroid; callers build the `affine2d` with the correct extent set externally before passing to `affine(store, aff)`. `affine(parquetGeomBase, affine2d)` sets the anchor via `.pgeom_ext_intrinsic(x)` only when `y@anchor` is still at the prototype default — avoids redundant scans on composition chains while ensuring a valid pivot on first use.
-
-**crop/window back-projection when transform pending:**
-1. Back-project query extent to intrinsic space: `affine(as.polygons(ext(y)), aff, inv = TRUE)`
-2. If rotation/shear: append exact parallelogram half-plane filter to `@ops` (Arrow-native: `a*x_index + b*y_index >= c`)
-3. AABB of back-projected corners stored in `@crop`/`@window` for display and AABB pre-filter
-4. Axis-aligned transforms (scale/translate only): back-projected extent is already a rectangle, no extra filter needed
-
-Utilities: `.affine_has_rotation()`, `.affine_halfplane_expr()`, `.affine_aabb()`, `.apply_post_ops()`, `.aff_linear_2d()` — all in `utils-spatial.R`.
-Transform helpers: `.pgeom_pending_transform()`, `.pgeom_get_transform()`, `.pgeom_set_transform()` — in `methods-transforms.R`.
+Helpers: `.pgeom_pending_transform`, `.affine_halfplane_expr`, `.apply_post_ops`
+(in `utils-spatial.R` / `methods-transforms.R`). See **design.Rmd:
+Spatial Transforms are Post-Ops** for the affine composition convention,
+`@anchor` semantics, and the full back-projection algorithm.
 
 ### @crop vs @window (parquetGeomBase)
 - `@crop`: permanent composable spatial subset (numeric(4): xmin, xmax, ymin, ymax)
@@ -166,26 +162,20 @@ Transform helpers: `.pgeom_pending_transform()`, `.pgeom_get_transform()`, `.pge
 
 ### ext() semantics and fast path
 
-`ext(x, exact = TRUE)` (default): **always scans** coordinate columns with all
-Arrow-phase filter ops applied (crop AABB pre-filters, half-plane filters). Reflects
-the true data extent including effects of any spatial subset ops.
-- **No transform pending**: `.dplyr_ext(q)` — scan `x_index`/`y_index` min/max
-- **Transform pending**: `.dplyr_ext_affine(q, aff)` — scan affine-projected coordinates;
-  works for all transform types (axis-aligned cross-terms collapse to 0)
+Three helpers, picked by `exact` and call site:
 
-`ext(x, exact = FALSE)`: always returns `.pgeom_ext_estimate()` without scanning.
-Used for display — `show()` always calls `ext(x, exact = FALSE)`. Half-plane filter
-effects are NOT reflected (uses `@crop`/`disk_extent` AABB).
+- `ext(x, exact = TRUE)` (default) — **scans** with all Arrow-phase filters
+  applied. `.dplyr_ext` for no-transform; `.dplyr_ext_affine` for pending
+  transform (scans affine-projected coords).
+- `ext(x, exact = FALSE)` — no scan; returns `.pgeom_ext_estimate` (tightest
+  metadata bound from `@crop`/`disk_extent` ∩ `@window`, projected through
+  any pending affine). `show()` uses this.
+- `.pgeom_ext_intrinsic(x)` — internal helper that always live-scans
+  intrinsic (on-disk) space, ignoring any pending transform. Used by
+  `crop()`, `window<-`, `affine()` where intrinsic bounds are required.
 
-`.pgeom_ext_estimate(x, aff)`: tightest metadata upper bound.
-- Intrinsic base: `@crop` (already ⊆ disk_extent) > `disk_extent` > live scan fallback
-- Applies `@window` intersection on top
-- Projects 4 AABB corners through affine if pending — exact for axis-aligned, AABB
-  overestimate for rotation/shear
-
-`.pgeom_ext_intrinsic(x)`: always live scan in intrinsic (on-disk) space, ignoring
-any pending transform. Used internally by `crop()`, `window<-`, `affine()` where
-exact intrinsic bounds are required.
+See **design.Rmd: Spatial Extent Tracking** for the layered cache /
+runtime / live-query rationale and edge cases.
 
 ### Spatial param provenance (`@params` on `parquetGeomBase`)
 
