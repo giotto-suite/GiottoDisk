@@ -8,25 +8,55 @@ Provides lazy/query-based access to tabular and spatial data in Apache Parquet f
 ```
 R/
   AllGenerics.R          # S4 generic definitions
+  pkg_imports.R          # roxygen import/export package-level tags
+  zzz.R                  # .onLoad / .onAttach hooks
   class-dataStore.R      # fileStore, queryableStore, h5ArrayStore, etc.
-  class-parquetStore.R   # parquetStore, parquetGeomStore, unionParquetStore hierarchy
-  class-gsource.R        # gsource class
+  class-parquetStore.R   # parquetBase / parquetGeomBase virtuals; parquetStore /
+                         # parquetGeomStore / parquetGeomTileStore; union variants
+  class-parquetExprStore.R  # parquetExprStore, unionParquetExprStore (long-format
+                            # expression: row_id, col_id, value, source_id)
+  class-parquetEdgeStore.R  # parquetEdgeStore (graph edges) + edgeInput hierarchy
+  class-fileInputs.R     # exprInput, mtxInput, tenxH5Input, cellbinGefInput, etc.
+  class-gsource.R        # gsource, gDirSource
   methods-accessors.R    # [,j] indexing, [i, on] join, colnames, nrow, dim, ext, window
-  methods-ops.R          # subset, rowSample, head, tail, crop, window<-; .do_op()
+  methods-ops.R          # subset, rowSample, head, tail, unique, crop, window<-; .do_op()
   methods-transforms.R   # affine, spin, rescale, shear, spatShift, t, flip; transform helpers
-  methods-storeRead.R    # storeRead; as.data.frame, as.terra
+  methods-spatRelate.R   # spat_relate op + engine dispatch (sedona/duckdb/terra)
+  methods-storeRead.R    # storeRead + .pstore_to_sedona / .pstore_to_duckdb /
+                         # .pgstore_to_spatial; shared SQL builders
   methods-storeWrite.R   # storeWrite methods
   methods-storeInspect.R # storeExists, storePaths methods
-  methods-sourceAdopt.R  # sourceContains, sourceAdopt; .move_path in utils.R
-  methods-combine.R      # rbind2 methods
+  methods-store_nostate.R # store-state strip for read-only checks
+  methods-combine.R      # rbind2 methods (parquet + union variants)
   methods-show.R         # show methods
   methods-specialCols.R  # specialCols — columns enforced on disk per store type
+  methods-expanse.R      # expanse() / centroid extraction
+  methods-plot.R         # plot methods (parquetGeomBase)
   methods-aggregate.R    # calculateOverlap, overlapToMatrix, overlapPointDisk class
-  methods-giotto.R       # createGiottoPoints, createGiottoPolygon for parquetGeomBase
   methods-rasterize.R    # terra::rasterize, terra::centroids for parquetGeomBase
-  utils.R                # .dplyr_nrow, .dump_tempfile, etc.
+  methods-giotto.R       # createGiottoPoints, createGiottoPolygon for parquetGeomBase
+  methods-parquetExprStore.R  # subset / union / storeWrite / generic dispatch
+                              # for parquetExprStore
+  methods-fileInputs.R   # readers for the *Input file-input types
+  methods-sourceWrite.R  # sourceWrite (allocate uid → write → register)
+  methods-sourceAdopt.R  # sourceContains, sourceAdopt
+  methods-sourcePrune.R  # sourcePrune
+  methods-snapshotSave.R # snapshotSave (giottosave snapshot lifecycle)
+  methods-snapshotLoad.R # snapshotLoad
+  methods-snapshotDelete.R # snapshotDelete
+  stream-filter.R        # filterData(parquetExprStore, ...)
+  stream-normalize.R     # processData(parquetExprStore, libraryNormParam/logNormParam)
+  stream-hvf.R           # processData(parquetExprStore, varParam) HVF selection
+  stream-pca.R           # reduceData(parquetExprStore, randomPcaParam)
+  stream-qc.R            # processData(parquetExprStore, cellStatsParam/featStatsParam)
+  stream-recommend.R     # streaming recommender utilities
+  convenience-cosmx.R    # CosMx import convenience
+  convenience-stereoseq.R # Stereo-seq import convenience
+  convenience-xenium.R   # Xenium import convenience
+  utils.R                # .dplyr_nrow, .dump_tempfile, .move_path, etc.
   utils-arrow.R          # .arrow_sample_max_rows, .dplyr_ext, .dplyr_crop, etc.
-  utils-spatial.R        # spatial helpers
+  utils-spatial.R        # affine half-plane helpers, AABB, etc.
+  utils-parquetExprStore.R # .pestore_* helpers (LUT remap, finalize, etc.)
   tilework.R             # tile plan integration
 ```
 
@@ -39,12 +69,17 @@ dataStore (VIRTUAL)
         └── parquetStore              # extends c("queryableStore", "parquetBase")
             └── parquetGeomStore      # extends c("parquetStore", "parquetGeomBase")
                 └── parquetGeomTileStore  # adds @tiles (tilePlan) + @tile_filter (integer) slots
+        └── parquetExprStore          # long-format triplet expression
+                                      # (row_id, col_id, value, source_id)
+        └── parquetEdgeStore          # graph edges + @nodes parquetStore sidecar
 
 parquetBase (VIRTUAL)                 # @fields, @ops — shared by parquet + union
 parquetGeomBase (VIRTUAL)             # @window, @crop, @geomtype
 
 unionParquetStore                     # extends "parquetBase" — multi-store union
 └── unionParquetGeomStore             # extends c("unionParquetStore", "parquetGeomBase")
+
+unionParquetExprStore                 # multi-store union of parquetExprStores
 ```
 
 `parquetBase` is used for shared dispatch (colnames, [,j], subset, rowSample, nrow, show ops)
@@ -78,17 +113,32 @@ Handles counts up to 2^53. Arrow COUNT(*) returns int64 → `as.numeric()` conve
 Always queries via COUNT(*) — no caching.
 
 ### Lazy ops via @ops slot
-Operations recorded lazily as a list of steps: `filter`, `head`, `tail`, `sample`, `join`.
-Applied in order at `storeRead()` time via `.do_op()`. `arrange` deferred to
-`.pstore_to_tibble()` to avoid breaking sample/count ops.
+Operations recorded lazily as a list of steps. User-facing op types:
+`filter`, `head`, `tail`, `sample`, `distinct`, `join`, `spat_relate`. Applied
+in order at `storeRead()` time. `arrange` deferred to `.pstore_to_tibble()` to
+avoid breaking sample/count ops.
 
 `crop` and `window` are NOT ops — they use dedicated slots on `parquetGeomBase`.
 
-`@ops` contains Arrow-executable ops only. `.do_op()` dispatches each type to its dplyr/Arrow equivalent.
+Most ops are arrow-evaluable via `.do_op()` (filter / head / tail / sample /
+distinct / join / id_filter). Two ops route through specialized handlers:
 
-`@post_ops` holds R-level post-materialization ops with no Arrow equivalent. Currently one type: `"transform"` (affine2d). Planned: `"geom_filter"` (exact polygon mask; AABB pre-filter goes to `@ops`, exact polygon test in `@post_ops`).
+- **`spat_relate`** is engine-evaluated (sedona / duckdb / terra) — see
+  *spat_relate op + engine dispatch* below. `.pbase_storeread_processing()`
+  intercepts spat_relate ops in the op loop and calls `.spat_relate_narrow()`,
+  which returns an arrow Table of surviving ids; arrow then `semi_join`s the
+  main query. Never reaches `.do_op`.
+- **`id_filter`** is an internal op type created ephemerally by the spat_relate
+  narrow path to cache surviving ids across chained spat_relate ops. Has both
+  an arrow handler (`.do_op` "id_filter" → `semi_join`) and a SQL handler
+  (`.pstore_sql_inner` "id_filter" → correlated `EXISTS` subquery).
 
-`crop()`/`window<-` may inject a `"filter"` half-plane op into `@ops` when rotation/shear is pending — a plain Arrow filter op injected by `.pgeom_resolve_extent()`, not a post-op.
+`@post_ops` holds R-level post-materialization ops with no Arrow equivalent.
+Currently one type: `"transform"` (affine2d).
+
+`crop()`/`window<-` may inject a `"filter"` half-plane op into `@ops` when
+rotation/shear is pending — a plain Arrow filter op injected by
+`.pgeom_resolve_extent()`, not a post-op.
 
 ### Lazy spatial transforms (`@post_ops` `"transform"` type on `parquetGeomBase`)
 
@@ -190,6 +240,35 @@ in `x@ops`. `x` drives the result; `y` provides columns.
   Stored as `"inner"`/`"left"` strings — `NULL` is lost in R lists.
 - `rbind2`/`storeWrite` blocked while join pending
 
+### spat_relate op + engine dispatch
+`spatRelate(x, y, relation, engine = NULL)` records a `"spat_relate"` op carrying
+the predicate (`"intersects"`/`"within"`/etc.), the query geometry (as `y_wkt` or
+`y_store`), and an optional per-call `engine`. The op is evaluated at
+`storeRead()` time by one of three engines:
+
+- **`sedona`** — DataFusion via `{sedonadb}`; emits `ST_<pred>(geom, ...)` SQL.
+- **`duckdb`** — DuckDB spatial extension via `{duckdb}` + `{dbplyr}`; same SQL
+  shape, no SRID (DuckDB has no CRS concept).
+- **`terra`** — deps-free fallback. Tile stores stream per-tile via
+  `tilework::tileApply`; non-tile stores materialize the trim and run
+  `terra::relate`.
+
+Engine selection precedence: per-call `engine` arg > option
+`giottodisk.spatial_query_engine` > `"auto"` (sedona > duckdb > terra). When
+"auto" falls through to terra, `rlang::inform` fires once per session.
+
+**Narrow path** (`.spat_relate_narrow`): builds a trim store of ops *before* this
+spat_relate (any earlier spat_relate ops swapped for internal `id_filter` ops
+carrying cached surviving ids), runs the engine to collect surviving
+`(source_id, row_index[, tile_index])` as an arrow Table, then `semi_join`s the
+main arrow query — arrow stays lazy past the spatial step.
+
+**`id_filter` is an internal op type** (`.do_op` "id_filter" + `.pstore_sql_inner`
+"id_filter") used only inside the trim store during narrow eval; never reaches
+the user's `@ops`. SQL form is a correlated `EXISTS` subquery against a temp
+view registered from the cached id arrow Table — DataFusion doesn't support
+tuple-IN subqueries.
+
 ### subset() NSE
 Uses `rlang::enquo()`. `.inline_local_vars()` walks AST inlining non-column symbols.
 When calling `subset()` programmatically (e.g. from within `mapply`), S4 dispatch may
@@ -206,7 +285,17 @@ Tiled stores write the top-level extent to each tile file (intentional — files
 ## Output Formats
 - `"query"`: Arrow lazy dataset (default)
 - `"tibble"`: collected data.table, arranged by source_id/tile_index/row_index
-- `"duckdb"`: DuckDB connection
+- `"duckdb"`: lazy `tbl_dbi` over a duckdb `TEMP VIEW` of the parquet dataset.
+  Native compile path via `.pstore_to_duckdb` — `read_parquet` SQL with
+  per-tile UNION ALL, `@ops` translated to WHERE/SELECT/LIMIT/EXISTS, spatial
+  extension's `ST_*` for any pending transforms or spat_relate ops. User-
+  supplied connection honoured via `duckdb_params$conn`; otherwise an
+  ephemeral in-memory connection is created and kept alive by the returned
+  `tbl_dbi`.
+- `"sedona"`: lazy `sedonadb_dataframe` (DataFusion via sedonadb) — same
+  shape as duckdb path: per-tile UNION ALL, `@ops` translated, `ST_*` for
+  spatial. Built by `.pstore_to_sedona`. Shares the @ops translation
+  builder `.pstore_sql_inner` with the duckdb path.
 - `"terra"`: SpatVector (`parquetGeomBase` only)
 - `"sf"`: sf object (`parquetGeomBase` only)
 
