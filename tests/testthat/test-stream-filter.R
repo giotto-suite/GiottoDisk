@@ -13,7 +13,7 @@
 }
 
 
-test_that("processData(parquetExprStore, filterParam) matches in-memory masks", {
+test_that("filterData(parquetExprStore, filterParam) matches in-memory masks", {
     skip_if_not_installed("Giotto")
 
     mat <- .tiny_mat()
@@ -24,8 +24,8 @@ test_that("processData(parquetExprStore, filterParam) matches in-memory masks", 
         feat_det_in_min_cells  = 5,
         min_det_feats_per_cell = 3)
 
-    masks_pq  <- GiottoClass::processData(pe,  fp)
-    masks_mem <- GiottoClass::processData(mat, fp)
+    masks_pq  <- GiottoClass::filterData(pe,  fp)
+    masks_mem <- GiottoClass::filterData(mat, fp)
 
     expect_setequal(masks_pq$feats_keep, masks_mem$feats_keep)
     expect_setequal(masks_pq$cells_keep, masks_mem$cells_keep)
@@ -50,8 +50,8 @@ test_that("two-stage logic — streaming recounts after gene mask is applied", {
         feat_det_in_min_cells  = 30,
         min_det_feats_per_cell = 8)
 
-    masks_pq  <- GiottoClass::processData(pe,  fp)
-    masks_mem <- GiottoClass::processData(mat, fp)
+    masks_pq  <- GiottoClass::filterData(pe,  fp)
+    masks_mem <- GiottoClass::filterData(mat, fp)
 
     expect_setequal(masks_pq$feats_keep, masks_mem$feats_keep)
     expect_setequal(masks_pq$cells_keep, masks_mem$cells_keep)
@@ -68,7 +68,7 @@ test_that("empty-result branches return empty character vectors", {
         expression_threshold   = 1000,    # no value reaches this
         feat_det_in_min_cells  = 1,
         min_det_feats_per_cell = 1)
-    masks <- GiottoClass::processData(pe, fp)
+    masks <- GiottoClass::filterData(pe, fp)
     expect_length(masks$feats_keep, 0L)
     expect_length(masks$cells_keep, 0L)
 })
