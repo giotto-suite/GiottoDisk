@@ -16,7 +16,12 @@ setMethod("[", signature("parquetBase", ".index", "missing", "missing"),
 
 setMethod("[", signature("parquetBase", "missing", "character", "missing"),
     function(x, i, j, ..., drop) {
-    sdiff <- setdiff(j, .pstore_disk_fields(x))
+    # Universe is the effective schema (on-disk + cols brought in by queued
+    # join ops), not just disk_fields -- otherwise narrowing to a y-side col
+    # after a join would error here. The final post-ops select in
+    # `.pbase_storeread_processing` enforces this narrowing on the
+    # materialized result.
+    sdiff <- setdiff(j, .pstore_effective_schema(x))
     if (length(sdiff) > 0L) {
         stop(sprintf("[parquetStore] cols %s do not exist on disk",
             toString(sdiff)), call. = FALSE)
@@ -48,13 +53,22 @@ setMethod("[", signature("parquetBase", "parquetBase", "missing"),
     function(x, i, j, ..., drop) {
     dots <- list(...)
     on <- dots$on
-    # nomatch = NULL (inner join, data.table convention) is indistinguishable
-    # from "not passed" via dots$nomatch -- check names explicitly.
-    # Store as "inner"/"left" string to survive list storage (NULL is lost).
+    # data.table convention: default `nomatch = NA` preserves x rows with NA
+    # fill for unmatched y; explicit `nomatch = NULL` drops unmatched rows
+    # (inner). NULL is lost when stored in a list -- recode as "inner"/"left"
+    # for the queued op.
     nomatch <- if ("nomatch" %in% names(dots)) {
-        if (is.null(dots$nomatch)) "inner" else "left"
+        nm <- dots$nomatch
+        if (is.null(nm)) {
+            "inner"
+        } else if (length(nm) == 1L && is.na(nm)) {
+            "left"
+        } else {
+            stop("[parquetStore] `nomatch` must be `NULL` (inner) or `NA` (left)",
+                call. = FALSE)
+        }
     } else {
-        "inner"  # default: inner join -- unmatched rows indicate a data problem
+        "left"  # data.table default: preserve x with NA fill on miss
     }
     checkmate::assert_character(on, min.len = 1L,
         .var.name = "on", null.ok = FALSE)
@@ -105,7 +119,10 @@ setMethod("ncol", signature("fileStore"), function(x) {
 # * colnames ####
 #' @export
 setMethod("colnames", signature("parquetBase"), function(x) {
-    fields <- .pstore_disk_fields(x) # get on-disk state
+    # Effective schema: on-disk cols + cols recursively brought in by
+    # queued join ops. Lets `colnames()` reflect what will be available at
+    # the point downstream code is about to read or add another op.
+    fields <- .pstore_effective_schema(x)
     if (!is.null(x@fields)) fields <- intersect(fields, x@fields)
     fields <- setdiff(fields, specialCols(x))
     fields

@@ -171,7 +171,7 @@ setMethod("sourceAdopt", signature("gDirSource", "SpatRaster"),
                 call. = FALSE)
         }
         file.copy(f, savepath)
-        r <- terra::rast(savepath)
+        r <- .create_terra_spatraster(savepath)
     }
 
     capture.output(show(r)) # ping before hashing -- terra hash changes on first access

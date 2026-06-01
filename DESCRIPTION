@@ -36,6 +36,7 @@ Imports:
     tilework
 Suggests:
     BPCells,
+    DBI,
     dbplyr,
     duckdb,
     filelock (>= 1.0.2),
@@ -80,6 +81,7 @@ Collate:
     'methods-sourceWrite.R'
     'methods-sourceAdopt.R'
     'methods-sourcePrune.R'
+    'methods-spatRelate.R'
     'methods-specialCols.R'
     'methods-storeInspect.R'
     'methods-storeRead.R'

@@ -118,6 +118,111 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     vmsg(.v = verbose, "[GiottoDisk] done")
     invisible(x)
 })
+#' @rdname snapshotSave
+#' @export
+setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, x,
+    name = format(Sys.time(), "%Y%m%d_giottosave"),
+    method = c("rds", "qs"),
+    method_params = list(),
+    overwrite = FALSE,
+    export_image = TRUE,
+    verbose = NULL,
+    ...) {
+    method <- match.arg(tolower(method), choices = c("rds", "qs"))
+    checkmate::assert_list(method_params)
+    checkmate::assert_flag(overwrite)
+    .adopt_session_reset()
+
+    p <- x@source@path
+    vmsg(.v = verbose, "[GiottoDisk] Saving giottoMulti...")
+    print_list(list(
+        backend  = sprintf("`%s`", class(src)),
+        path     = p,
+        children = length(x@objects)
+    ), pre = "  ")
+
+    gsdir <- .gdsrc_giottosave_dir(p)
+    if (!dir.exists(gsdir)) dir.create(gsdir, recursive = TRUE)
+    if (!methods::hasArg(name)) {
+        name <- .ss_gdsrc_find_autoname(gsdir, name)
+    }
+    if (name %in% .gdsrc_detect_gsavename(gsdir) && !overwrite) {
+        stop("[snapshotSave] giottoMulti snapshot of this name already exists.\n",
+            "Change 'name' or set 'overwrite = TRUE'", call. = FALSE)
+    }
+
+    # Recurse into sourced children. Per-child snapshots in each child's
+    # own vault are what protect that child's artifacts from sourcePrune;
+    # the multi's own .rds re-references those artifacts via embedded
+    # file handles. Naming "<multi_name>_<child_name>" makes the
+    # provenance visible in each child's giottosave/ listing.
+    for (child_name in names(x@objects)) {
+        child <- x@objects[[child_name]]
+        if (is.null(child@source)) next
+        vmsg(.v = verbose, sprintf(
+            "[GiottoDisk] saving child '%s' snapshot...", child_name
+        ))
+        x@objects[[child_name]] <- snapshotSave(child@source, child,
+            name           = paste0(name, "_", child_name),
+            method         = method,
+            method_params  = method_params,
+            overwrite      = overwrite,
+            export_image   = export_image,
+            verbose        = verbose,
+            ...
+        )
+    }
+
+    # Multi-level adoption — shared-domain expression slots may hold
+    # in-memory matrices that need to land in the multi's vault.
+    vmsg(.v = verbose, "[GiottoDisk] checking multi-level expression values...")
+    x <- .ss_gdsrc_register_external_expr(x,
+        giottosave = name,
+        verbose    = verbose
+    )
+
+    # Write the multi-level .rds. Children are embedded with their
+    # (post-adoption) file handles; loading the multi .rds reconstitutes
+    # the whole federation without needing a separate manifest.
+    vmsg(.v = verbose, "[GiottoDisk] writing multi snapshot")
+    temp <- .dump_tempfile()
+    switch(method,
+        "rds" = {
+            fullpath <- file.path(gsdir, paste0(name, ".rds"))
+            a <- c(list(object = x, file = temp), method_params)
+            do.call(saveRDS, a)
+        },
+        "qs" = {
+            package_check(pkg_name = "qs", repository = "CRAN")
+            qsave_fun <- get("qsave", asNamespace("qs"))
+            fullpath <- file.path(gsdir, paste0(name, ".qs"))
+            a <- c(list(x = x, file = temp), method_params)
+            do.call(qsave_fun, a)
+        }
+    )
+    res <- file.rename(from = temp, to = fullpath)
+    if (!res) stop("[snapshotSave] save failed\n", call. = FALSE)
+
+    # Tag multi-level artifacts only — child-level uids were tagged in
+    # their respective child snapshotSave calls above.
+    vmsg(.v = verbose, "[GiottoDisk] tagging multi-level artifacts...")
+    uids <- .ss_gdsrc_detect_uid_matrices(x, as.data.frame(src))
+    if (length(uids) > 0L) {
+        manifest <- as.data.frame(src)
+        for (uid_to_tag in uids) {
+            content <- manifest[uid == uid_to_tag, giottosave]
+            content <- c(content, name)
+            content <- unique(content[!is.na(content)])
+            src[uid_to_tag, "giottosave"] <- content
+        }
+    }
+
+    vmsg(.v = verbose, "[GiottoDisk] done")
+    invisible(x)
+})
+
+
+
 
 # internals ####
 

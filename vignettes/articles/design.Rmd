@@ -179,6 +179,93 @@ parameters with defaults of `"x_index"`/`"y_index"` before forwarding to the
 `queryableStore` method. This prevents a duplicate-argument error when callers (such as
 `storeWrite`) already pass these params via `get_params_x`.
 
+## Spatial Predicates (`spat_relate`)
+
+`spatRelate(x, y, relation = "intersects")` queues a `"spat_relate"` op on
+`parquetGeomBase` stores. Unlike the simple `@ops` types, spat_relate is
+evaluated by a pluggable engine and threads a small cached id table through
+the rest of the arrow pipeline so that downstream ops stay lazy.
+
+### Engines
+
+Three engines all return the same shape (an arrow Table of surviving
+`(source_id, row_index[, tile_index])`):
+
+| Engine | Path | Deps | Notes |
+|--------|------|------|-------|
+| `sedona` | DataFusion via `sedonadb::sd_sql` against a registered view | `{sedonadb}` | Lazy parquet scan; stats pushdown; SRID-aware `ST_GeomFromText` |
+| `duckdb` | DuckDB spatial extension via `read_parquet` SQL | `{duckdb}`, `{dbplyr}` | Same SQL shape as sedona; no CRS concept (no SRID arg) |
+| `terra`  | `terra::relate` on tiles streamed via `tilework::tileApply` (tile stores) or whole materialization (non-tile) | `{terra}` (hard import) | Deps-free fallback; bounded memory per tile |
+
+The two SQL engines share a builder
+(`.pstore_sql_inner(store, base_view, extent, lazy_fields,
+geom_sql_fn, register_id_fn, engine)`) for the `@crop`/`@window` AABB clause,
+`@ops` translation, outer SELECT, and LIMIT. The two engine-specific callbacks
+account for the dialect deltas (sedona includes SRID; duckdb uses
+`duckdb_register_arrow` for id_filter views).
+
+### Engine selection
+
+Precedence (highest first):
+
+1. Per-call `engine` arg on `spatRelate()`. Stored on the op as
+   `op$engine`.
+2. `getOption("giottodisk.spatial_query_engine", "auto")`.
+3. `"auto"` — resolves to the best available: sedona > duckdb > terra.
+
+When auto falls through to terra (neither SQL engine installed), a one-shot
+`rlang::inform` nudges toward installing `{sedonadb}` or `{duckdb}` for
+performance. The nudge fires only when the user is on `"auto"`; explicit
+engine choices (arg or option) are treated as deliberate and stay quiet.
+
+A small `.spat_engine_available(pkg)` indirection lets
+`testthat::local_mocked_bindings` simulate "no engines installed" without
+touching `base::requireNamespace`.
+
+### Narrow path with cached `id_filter` ops
+
+`.spat_relate_narrow(store, i, cache)` is the entry point. For the i-th
+`spat_relate` op in `@ops`:
+
+1. Build a `trim_store` carrying `@ops[1:(i-1)]`, with any prior
+   `spat_relate` ops swapped for internal `id_filter` ops that hold the
+   previously-computed surviving ids as an arrow Table.
+2. `@fields` is set to `NULL` on the trim — internal evaluation needs
+   `geom` regardless of what the caller projected.
+3. Engine evaluates `trim_store + this op's predicate`, returns the
+   surviving ids as an arrow Table.
+4. The main arrow query `semi_join`s on those ids by composite key
+   (`source_id`, `row_index`, and `tile_index` for tile stores). Arrow
+   stays lazy past the spatial step.
+
+The cache is local to one `storeRead` call. Never written to `store@ops`;
+`saveRDS(store)` sees no `id_filter`.
+
+`id_filter` is engine-aware:
+
+- Arrow side (`.do_op` "id_filter") → `dplyr::semi_join(atab, op$ids_tab,
+  by = op$by)`.
+- SQL side (`.pstore_sql_inner` "id_filter") → register cached ids as an
+  engine-side view, emit
+  `EXISTS (SELECT 1 FROM "<view>" WHERE <key conds>)`. DataFusion doesn't
+  support tuple-IN subqueries; correlated `EXISTS` is equivalent and
+  works uniformly across DataFusion and DuckDB.
+
+### Performance shape
+
+Each spat_relate is a "checkpoint" — engine eval, then arrow continues. For a
+single spat_relate this is equivalent to a global plan. For chains the
+`id_filter` cache means each subsequent eval starts narrowed by prior survivor
+ids (DataFusion / DuckDB push the `EXISTS` down as a semi-join), so per-eval
+scans shrink geometrically with selectivity. id payload between checkpoints is
+small (~8 bytes per surviving row).
+
+The terra engine's tile-streaming bounds peak memory by one tile's data;
+persistent accumulation across tiles is just `(row_index, tile_index)` for
+surviving rows, merged via `data.table::rbindlist` into a single arrow Table
+at the end (5×–275× faster than per-tile arrow + `concat_tables` across
+typical tile counts in benchmarking).
+
 ## Spatial Extent Tracking
 
 Spatial location information for `parquetGeomBase`-inheriting stores is maintained
