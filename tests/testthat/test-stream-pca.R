@@ -1,5 +1,5 @@
 # Tests for streaming Halko PCA dispatch:
-#   processData(parquetExprStore, randomPcaParam)
+#   reduceData(parquetExprStore, randomPcaParam)
 #       -> list(u, d, v, sdev, eigenvalues)
 
 .tiny_mat <- function(n_genes = 80L, n_cells = 400L,
@@ -36,7 +36,7 @@ test_that("randomPcaParam errors without normalize recipe", {
     mat <- .tiny_mat()
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
     expect_error(
-        GiottoClass::processData(pe,
+        GiottoClass::reduceData(pe,
             Giotto::pcaParam("random", ncp = 5,
                               feats_to_use = rownames(mat)[1:20])),
         "no normalization recipe"
@@ -50,7 +50,7 @@ test_that("randomPcaParam requires feats_to_use", {
     pe  <- .setup_normalized_pe(mat)
     # scale = FALSE so the feats_to_use check fires (scale check is earlier)
     expect_error(
-        GiottoClass::processData(pe,
+        GiottoClass::reduceData(pe,
             Giotto::pcaParam("random", ncp = 5, scale = FALSE)),
         "feats_to_use is required"
     )
@@ -62,7 +62,7 @@ test_that("randomPcaParam errors with scale = TRUE", {
     mat <- .tiny_mat(seed = 3)
     pe  <- .setup_normalized_pe(mat)
     expect_error(
-        GiottoClass::processData(pe,
+        GiottoClass::reduceData(pe,
             Giotto::pcaParam("random", ncp = 5,
                               feats_to_use = rownames(mat)[1:20],
                               scale = TRUE)),
@@ -92,7 +92,7 @@ test_that("streaming Halko top-k singular values match irlba (Pearson r > 0.99)"
     NCP <- 10
     ir <- irlba::irlba(t(mat_hvg), nv = NCP, nu = NCP, center = hvg_means)
 
-    pca_pq <- GiottoClass::processData(pe,
+    pca_pq <- GiottoClass::reduceData(pe,
         Giotto::pcaParam("random", ncp = NCP,
                           feats_to_use = hvg,
                           center = TRUE, scale = FALSE,
@@ -120,12 +120,12 @@ test_that("irlba and exact pcaParam variants error on parquet backend", {
     hvg <- rownames(mat)[1:30]
 
     expect_error(
-        GiottoClass::processData(pe,
+        GiottoClass::reduceData(pe,
             Giotto::pcaParam("irlba", ncp = 5, feats_to_use = hvg)),
         "not supported for streaming"
     )
     expect_error(
-        GiottoClass::processData(pe,
+        GiottoClass::reduceData(pe,
             Giotto::pcaParam("exact", ncp = 5, feats_to_use = hvg)),
         "not supported for streaming"
     )

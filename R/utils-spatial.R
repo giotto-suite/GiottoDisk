@@ -234,10 +234,24 @@
         col_meta$geometry_types <- list()
     }
 
-    # omit crs field entirely if not set (valid per spec)
-    if (!is.null(crs) && nzchar(crs)) {
-        col_meta$crs <- crs
-    }
+    # GeoParquet spec: an omitted `crs` field defaults to OGC:CRS84 (the spec's
+    # default for absent CRS), which causes spatial-predicate engines like
+    # sedonadb to assume crs84 -- mismatching `ST_GeomFromText()`'s default of
+    # Crs::None and breaking `ST_Intersects()` etc. For biology data without a
+    # geographic CRS, the right encoding is an explicit `crs: null`, meaning
+    # "no/unknown CRS." Set it explicitly so engines read as None.
+    col_meta$crs <- if (!is.null(crs) && nzchar(crs)) crs else NA
+    # jsonlite serializes `NA` -> `null`, which is the JSON null literal the
+    # GeoParquet spec uses for "no CRS."
+
+    # Set edges explicitly to "planar" so engines never infer spherical/
+    # geodesic math. Biology data is euclidean; spat_relate predicates and
+    # downstream ops (ST_Area, ST_Distance, etc.) must operate on raw
+    # planar coordinates regardless of any CRS label assigned by the
+    # reader (some engines hardcode OGC:CRS84 for null-CRS GeoParquet,
+    # which could in principle trigger spherical math via an unguarded
+    # operator).
+    col_meta$edges <- "planar"
 
     # terra/store@extent order: xmin, xmax, ymin, ymax
     # GeoParquet bbox order: [xmin, ymin, xmax, ymax]
