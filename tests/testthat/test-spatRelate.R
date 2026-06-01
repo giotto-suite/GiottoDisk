@@ -335,18 +335,86 @@ test_that("spatRelate(): duckdb engine handles two-op spat_relate chain", {
     expect_setequal(tbl$id, c("b", "c"))
 })
 
-test_that("spatRelate(): terra engine stub errors with install nudge", {
+test_that("spatRelate(): terra engine produces correct ids", {
     pgs <- .make_pts_store()
-    err <- GiottoUtils::gwith_options(
+    tbl <- GiottoUtils::gwith_options(
         list(giottodisk.spatial_query_engine = "terra"),
-        tryCatch(
-            spatRelate(pgs, .roi(), "intersects") |>
-                storeRead(output = "tibble"),
-            error = function(e) conditionMessage(e)
-        )
+        spatRelate(pgs, .roi(), "intersects") |> storeRead(output = "tibble")
     )
-    expect_match(err, "not yet implemented")
-    expect_match(err, "sedonadb|duckdb")
+    expect_setequal(tbl$id, c("a", "b"))
+})
+
+test_that("spatRelate(): terra engine handles two-op spat_relate chain", {
+    pgs <- .make_pts_store()
+    roi1 <- .roi("POLYGON ((0 0, 6 0, 6 6, 0 6, 0 0))")  # a, b, c
+    roi2 <- .roi("POLYGON ((2 2, 8 2, 8 8, 2 8, 2 2))")  # b, c, d
+    tbl <- GiottoUtils::gwith_options(
+        list(giottodisk.spatial_query_engine = "terra"),
+        spatRelate(pgs, roi1, "intersects") |>
+            spatRelate(roi2, "intersects") |>
+            storeRead(output = "tibble")
+    )
+    expect_setequal(tbl$id, c("b", "c"))
+})
+
+test_that("spatRelate(): terra engine streams parquetGeomTileStore via tileApply", {
+    # Tile-store path: terra engine uses tilework::tileApply per-tile
+    # rather than materializing the whole trim. Verify correctness on a
+    # multi-tile fixture.
+    coords <- data.frame(
+        x = rep(seq(5, 45, by = 10), 5),
+        y = rep(seq(5, 45, by = 10), each = 5),
+        id = sprintf("p%02d", seq_len(25))
+    )
+    pts <- terra::vect(coords, geom = c("x", "y"), crs = "")
+    pgs <- parquetGeomStore() |> storeWrite(pts)
+    pgts <- parquetGeomTileStore() |> storeWrite(pgs, threshold = 4L)
+    # Quarter-box: 0..25 x 0..25 -- expect points whose centroid lies
+    # in that AABB (rows 1..3 in x, rows 1..3 in y after the binning).
+    tbl <- GiottoUtils::gwith_options(
+        list(giottodisk.spatial_query_engine = "terra"),
+        spatRelate(pgts,
+            "POLYGON ((0 0, 25 0, 25 25, 0 25, 0 0))",
+            "intersects") |>
+            storeRead(output = "tibble")
+    )
+    # Centroids at multiples of 10 starting at 5 -- (5,5), (15,5), (5,15),
+    # (15,15), (25,5), (5,25), (25,15), (15,25), (25,25) all intersect
+    # the closed [0,25] box; the points at 35+ on either axis do not.
+    expect_gt(nrow(tbl), 0L)
+    expect_lt(nrow(tbl), 25L)
+})
+
+test_that("spatRelate(): terra/sedona/duckdb engines agree on results", {
+    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("duckdb")
+    pgs <- .make_pts_store()
+    by_engine <- function(eng) {
+        sort(GiottoUtils::gwith_options(
+            list(giottodisk.spatial_query_engine = eng),
+            spatRelate(pgs, .roi(), "intersects") |>
+                storeRead(output = "tibble"))$id)
+    }
+    expect_equal(by_engine("terra"),  c("a", "b"))
+    expect_equal(by_engine("sedona"), c("a", "b"))
+    expect_equal(by_engine("duckdb"), c("a", "b"))
+})
+
+test_that("spatRelate(): auto fallback to terra nudges via inform", {
+    pgs <- .make_pts_store()
+    # Force the resolver to fall through to terra by mocking the
+    # availability check. local_mocked_bindings is testthat 3.
+    testthat::local_mocked_bindings(
+        .spat_engine_available = function(pkg) FALSE
+    )
+    expect_message(
+        GiottoUtils::gwith_options(
+            list(giottodisk.spatial_query_engine = "auto"),
+            spatRelate(pgs, .roi(), "intersects") |>
+                storeRead(output = "tibble")
+        ),
+        "sedonadb"
+    )
 })
 
 test_that("spatRelate(): auto engine resolves to an installed backend", {

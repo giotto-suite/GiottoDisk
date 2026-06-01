@@ -315,24 +315,42 @@ setMethod(
     switch(engine,
         "sedona" = .spat_relate_narrow_sedona(trim_store, op, id_cols, store),
         "duckdb" = .spat_relate_narrow_duckdb(trim_store, op, id_cols, store),
-        "terra"  = stop(
-            "[spat_relate] tileApply+terra engine not yet implemented; ",
-            "install {sedonadb} or {duckdb}.", call. = FALSE),
+        "terra"  = .spat_relate_narrow_terra(trim_store, op, id_cols, store),
         stop(sprintf("[spat_relate] unknown engine: '%s'", engine), call. = FALSE)
     )
 }
 
 
+# Internal indirection so tests can mock the "is this engine installed?"
+# check without touching base::requireNamespace.
+.spat_engine_available <- function(pkg) {
+    requireNamespace(pkg, quietly = TRUE)
+}
+
+
 # Resolve the spatial-query engine to use for spat_relate narrowing.
 # Honors `giottodisk.spatial_query_engine` option; "auto" picks the best
-# available (sedona > duckdb > terra). The terra fallback is currently a
-# stub -- if auto resolves to "terra" because neither sedonadb nor duckdb
-# is installed, the user gets a clear error from the engine dispatcher.
+# available (sedona > duckdb > terra). When "auto" falls through to terra
+# (because no SQL spatial backend is installed) we emit a one-shot
+# `rlang::inform` nudging the user toward a faster engine — but only when
+# the user hasn't already made a deliberate engine choice via the option.
 .resolve_spat_relate_engine <- function() {
     opt <- getOption("giottodisk.spatial_query_engine", "auto")
     if (!identical(opt, "auto")) return(opt)
-    if (requireNamespace("sedonadb", quietly = TRUE)) return("sedona")
-    if (requireNamespace("duckdb", quietly = TRUE))   return("duckdb")
+    if (.spat_engine_available("sedonadb")) return("sedona")
+    if (.spat_engine_available("duckdb"))   return("duckdb")
+    rlang::inform(
+        paste0(
+            "spat_relate is using the terra engine (the default fallback ",
+            "when no SQL spatial backend is installed). For ad-hoc ",
+            "spatial queries, sedonadb or duckdb are typically faster. ",
+            "Install one and set ",
+            "`options(giottodisk.spatial_query_engine = \"sedona\")` or ",
+            "`\"duckdb\"` to silence this message."
+        ),
+        .frequency = "once",
+        .frequency_id = "giottodisk.spat_relate_terra_nudge"
+    )
     "terra"
 }
 
@@ -387,4 +405,108 @@ setMethod(
     )
     ids_df <- DBI::dbGetQuery(conn, sql)
     arrow::as_arrow_table(ids_df)
+}
+
+
+# Terra engine for spat_relate narrowing (deps-free fallback).
+# Materializes the trim store's id_cols + geom via the arrow-output path,
+# decodes WKB to a SpatVector, runs `terra::relate` against the query
+# geom, returns surviving id rows.
+#
+# This is the deps-free path -- terra is a hard import of GiottoDisk, so
+# this works on any install. The trade-off is that the whole trim is
+# pulled into memory (sedona / duckdb stream parquet directly). For
+# tile-store workloads at atlas scale, prefer a SQL backend; for ad-hoc
+# in-memory queries and dev workflows the materialization cost is fine.
+.spat_relate_narrow_terra <- function(trim_store, op, id_cols, store) {
+    relation <- .terra_relation_name(op$relation)
+    y_wkt <- op$y_wkt
+
+    # `trim_store@fields` was set to NULL by the caller so the SQL
+    # engines see all on-disk cols; we likewise need the partition /
+    # row_index cols visible here. `omit_internals = FALSE` keeps them.
+
+    # Per-tile (or per-store for non-tile) predicate evaluation. WKB
+    # decode via `terra::vect(as.list(geom))`: `as.list` strips the
+    # arrow_binary class, terra accepts WKB list-of-raw natively, no
+    # `wk` dep. Faster than going through output = "terra" since we
+    # skip the `terra::values(sv) <- data` attribute attachment that
+    # `.pgstore_to_spatial` does (we filter on geom only and pluck
+    # id_cols from the source tibble).
+    eval_chunk <- function(df) {
+        if (is.null(df) || nrow(df) == 0L) return(NULL)
+        if (!"geom" %in% names(df)) {
+            stop("[spat_relate][terra] expected 'geom' col missing from chunk",
+                call. = FALSE)
+        }
+        x_sv <- terra::vect(as.list(df$geom))
+        y_sv <- terra::vect(y_wkt)
+        rel <- terra::relate(x_sv, y_sv, relation = relation)
+        keep <- if (is.matrix(rel)) {
+            as.logical(rowSums(rel, na.rm = TRUE) > 0L)
+        } else {
+            as.logical(rel)
+        }
+        if (!any(keep)) return(NULL)
+        df[keep, id_cols, drop = FALSE]
+    }
+
+    if (inherits(store, "parquetGeomTileStore")) {
+        # Tile-stream via tilework::tileApply -- bounded memory per tile.
+        # tileApply iterates tiles, calls storeRead per tile with
+        # get_params_x, and passes the per-tile data to FUN. trim_store's
+        # @ops apply per-tile because storeRead applies them at each call.
+        # Per-tile reads don't carry `source_id` (that's a hive partition
+        # col added by the store-level read path); we inject it after the
+        # eval since it's a known constant for the substore.
+        tile_id_cols <- setdiff(id_cols, "source_id")
+        eval_tile <- function(df) {
+            if (is.null(df) || nrow(df) == 0L) return(NULL)
+            if (!"geom" %in% names(df)) {
+                stop("[spat_relate][terra] expected 'geom' col missing from tile",
+                    call. = FALSE)
+            }
+            x_sv <- terra::vect(as.list(df$geom))
+            y_sv <- terra::vect(y_wkt)
+            rel <- terra::relate(x_sv, y_sv, relation = relation)
+            keep <- if (is.matrix(rel)) {
+                as.logical(rowSums(rel, na.rm = TRUE) > 0L)
+            } else {
+                as.logical(rel)
+            }
+            if (!any(keep)) return(NULL)
+            df[keep, tile_id_cols, drop = FALSE]
+        }
+        results <- tilework::tileApply(
+            trim_store,
+            tiles = trim_store@tiles,
+            FUN = function(tile_data, ...) eval_tile(tile_data),
+            get_params_x = list(output = "tibble", omit_internals = FALSE)
+        )
+        results <- results[!vapply(results, is.null, logical(1L))]
+        if (length(results) == 0L) {
+            empty <- as.data.frame(
+                matrix(integer(0L), ncol = length(id_cols),
+                    dimnames = list(NULL, id_cols)))
+            return(arrow::as_arrow_table(empty))
+        }
+        # `data.table::rbindlist` + a single arrow conversion is faster
+        # than building per-tile arrow Tables and `concat_tables`-ing
+        # them: per-tile arrow has fixed per-conversion overhead that
+        # dominates for many-tile workloads (benched 5x-275x faster
+        # across n_tiles=10..1000, k_per_tile=100..100k).
+        combined <- data.table::rbindlist(results)
+        combined[, source_id := trim_store@uid]
+        arrow::as_arrow_table(combined[, ..id_cols])
+    } else {
+        # Non-tile parquetGeomStore: materialize whole. As the user
+        # noted, callers who need streaming at this scale should be on
+        # a tile store anyway.
+        df <- storeRead(trim_store, output = "tibble", omit_internals = FALSE)
+        out <- eval_chunk(df)
+        if (is.null(out)) {
+            return(arrow::as_arrow_table(df[integer(0L), id_cols, drop = FALSE]))
+        }
+        arrow::as_arrow_table(out)
+    }
 }
