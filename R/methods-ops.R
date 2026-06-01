@@ -284,20 +284,18 @@ setMethod("window<-", signature("parquetGeomBase"), function(x, ..., value) {
             join_fn <- if (op$nomatch == "inner") dplyr::inner_join else dplyr::left_join
             join_fn(atab, y_q, by = op$by)
         },
-        "spat_relate" = .do_op_spat_relate(atab, op),
+        # `spat_relate` is handled at the `.pbase_storeread_processing`
+        # level (not via `.do_op`) so it can route through sedonadb.
+        # Reaching here means something bypassed the processing loop.
+        "spat_relate" = stop(
+            "[.do_op] 'spat_relate' must be handled by ",
+            ".pbase_storeread_processing; reached .do_op unexpectedly",
+            call. = FALSE),
+        # Internal op type created ephemerally by the spat_relate
+        # evaluation path to inject cached surviving ids without re-running
+        # the spatial predicate. Carries an arrow Table of id cols and the
+        # join keys. Not part of the public API.
+        "id_filter" = dplyr::semi_join(atab, op$ids_tab, by = op$by),
         stop(sprintf("[.do_op] unknown op type: '%s'", type), call. = FALSE)
-    )
-}
-
-# arrow has no native spatial predicates. A correct implementation would tile
-# the dataset and stream the predicate over batches; the previous one-shot
-# `collect()` + `terra::relate()` path would OOM on any atlas-scale store and
-# is not safe to expose. Error out and direct callers to the sedona backend.
-.do_op_spat_relate <- function(atab, op) {
-    stop(
-        "[storeRead][spat_relate] spatial predicates are not supported on the\n",
-        "  arrow backend. Re-read with `output = \"sedona\"` to evaluate the\n",
-        "  predicate as `ST_*` SQL against the parquet dataset.",
-        call. = FALSE
     )
 }

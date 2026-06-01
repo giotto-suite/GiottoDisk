@@ -251,3 +251,84 @@ setMethod(
             call. = FALSE)
     }
 )
+
+
+# Evaluation: trim + sedona + collect ids ####
+#
+# Called by `.pbase_storeread_processing` when it hits a `spat_relate` op.
+# Builds a trimmed copy of the store with @ops[1:i-1] (any prior spat_relate
+# ops swapped for `id_filter` ops carrying cached ids), runs sedonadb on
+# that to evaluate this op's predicate, and returns the surviving id rows
+# as an arrow Table. The caller then `semi_join`s the arrow query with
+# those ids -- arrow stays lazy past the spatial step.
+
+.spat_relate_narrow <- function(store, i, cache) {
+    GiottoUtils::package_check("sedonadb",
+        repository = "github:apache/sedona-db/r/sedonadb")
+
+    op <- store@ops[[i]]
+    if (is.null(op$y_wkt) && !is.null(op$y_store)) {
+        stop("[spat_relate] store-store form is not yet wired in the ",
+            "narrow path; use `output = \"sedona\"` directly for now.",
+            call. = FALSE)
+    }
+
+    # id cols: row_index is universal on parquetGeomBase; tile stores
+    # additionally need tile_index since row_index resets per tile.
+    id_cols <- if (inherits(store, "parquetGeomTileStore")) {
+        c("row_index", "tile_index")
+    } else {
+        "row_index"
+    }
+
+    # Trim @ops to everything before this op. Replace any prior spat_relate
+    # ops with id_filter ops carrying their cached ids, so the sedona compile
+    # doesn't re-evaluate spatial predicates we already have answers for.
+    prior_ops <- if (i > 1L) store@ops[seq_len(i - 1L)] else list()
+    prior_ops <- lapply(seq_along(prior_ops), function(j) {
+        op_j <- prior_ops[[j]]
+        if (identical(op_j$type, "spat_relate")) {
+            cached <- cache[[as.character(j)]]
+            list(type = "id_filter", ids_tab = cached, by = names(cached))
+        } else {
+            op_j
+        }
+    })
+
+    trim_store <- store
+    trim_store@ops <- prior_ops
+    # User-facing field narrowing (`[, j]` -> `store@fields`) must NOT
+    # apply to the internal sedona evaluation -- we need `geom` available
+    # to compute the spatial predicate regardless of what the caller asked
+    # for in the final output projection. Set @fields to NULL so
+    # `.pstore_lazy_fields` returns NULL and the underlying SELECT is `*`.
+    if (.hasSlot(trim_store, "fields")) trim_store@fields <- NULL
+
+    # Compile prior state to sedona, then layer this op's predicate via SQL.
+    # Using sd_sql against the trim store's registered view is symmetric with
+    # the existing `.pstore_to_sedona` SQL-building style and avoids the NSE
+    # gymnastics of sd_filter with a constructed call.
+    sdf <- storeRead(trim_store, output = "sedona")
+    # `sdf` already reflects the trim_store's WHERE/SELECT/affine. Register
+    # it under a fresh view name so the predicate we layer here applies on
+    # top of the trim_store's filtered result, not the underlying raw
+    # parquet union.
+    view_name <- tolower(paste0("gd_srnarrow_", .make_uid()))
+    sedonadb::sd_to_view(sdf, view_name, overwrite = TRUE)
+
+    sql_pred <- .sql_relation_fn(op$relation)
+    wkt_escaped <- gsub("'", "''", op$y_wkt, fixed = TRUE)
+    srid <- .spatrelate_store_srid(store)
+    geom_sql <- if (is.na(srid)) {
+        sprintf("ST_GeomFromText('%s')", wkt_escaped)
+    } else {
+        sprintf("ST_GeomFromText('%s', %d)", wkt_escaped, srid)
+    }
+    select_sql <- paste(sprintf('"%s"', id_cols), collapse = ", ")
+    sql <- sprintf(
+        'SELECT %s FROM "%s" WHERE %s(geom, %s)',
+        select_sql, view_name, sql_pred, geom_sql
+    )
+    ids_df <- sedonadb::sd_collect(sedonadb::sd_sql(sql))
+    arrow::as_arrow_table(ids_df)
+}

@@ -263,8 +263,24 @@ setMethod("storeRead", signature("unionParquetGeomStore"), function(store,
     omit_internals = TRUE,
     ...) {
 
-    for (op in store@ops) {
-        atab <- .do_op(atab, op)
+    # `spat_relate` ops are handled at this level (not via `.do_op`) so we
+    # can route the predicate through sedonadb and narrow the arrow query
+    # with the surviving id rows, keeping the rest of the chain lazy on
+    # the arrow side. The local `sr_cache` caches the id arrow Table per
+    # op position so subsequent `spat_relate`s in the same chain don't
+    # re-evaluate prior predicates; the cache lives only for this storeRead
+    # invocation and is never written to `store@ops`.
+    sr_cache <- list()
+    for (i in seq_along(store@ops)) {
+        op <- store@ops[[i]]
+        if (identical(op$type, "spat_relate")) {
+            ids_tab <- .spat_relate_narrow(store, i, sr_cache)
+            sr_cache[[as.character(i)]] <- ids_tab
+            id_cols <- names(ids_tab)
+            atab <- dplyr::semi_join(atab, ids_tab, by = id_cols)
+        } else {
+            atab <- .do_op(atab, op)
+        }
     }
 
     # Narrow back to caller-requested fields. The upstream projection may
@@ -767,6 +783,26 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
                         call. = FALSE
                     )
                 }
+            },
+            "id_filter" = {
+                # Internal op type — injected by `.spat_relate_narrow` when
+                # a chain has multiple spat_relate ops so we don't re-run
+                # earlier predicates. Registers the cached ids as a sedona
+                # view and adds a tuple-IN subquery on the join keys.
+                # `sd_to_view` accepts data.frame / nanoarrow, not arrow
+                # Table directly, so coerce here.
+                id_view_name <- tolower(paste0("gd_idf_", .make_uid()))
+                sedonadb::sd_to_view(
+                    as.data.frame(op$ids_tab),
+                    id_view_name, overwrite = TRUE
+                )
+                keys <- unname(op$by)
+                key_tuple_x <- paste(sprintf('"%s"', keys), collapse = ", ")
+                key_select  <- paste(sprintf('"%s"', keys), collapse = ", ")
+                where_clauses <- c(where_clauses, sprintf(
+                    '(%s) IN (SELECT %s FROM "%s")',
+                    key_tuple_x, key_select, id_view_name
+                ))
             },
             "tail"     = ,
             "sample"   = ,

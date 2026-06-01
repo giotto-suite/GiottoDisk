@@ -52,17 +52,103 @@ test_that("spatRelate(): rejects empty WKT", {
 })
 
 
-# Arrow path: spatial predicates are unsupported on arrow.
-# A correct arrow implementation would tile + stream the predicate;
-# the previous one-shot collect() approach was not safe at atlas scale.
+# Arrow path: spat_relate routes through sedonadb internally to evaluate
+# the predicate, then narrows the arrow query with a semi_join on
+# surviving row_index (+ tile_index for tile stores). The rest of the
+# chain stays lazy on the arrow side.
 
-test_that("spatRelate(): arrow storeRead errors with sedona nudge", {
+test_that("spatRelate(): arrow path -- intersects matches expected ids", {
+    skip_if_not_installed("sedonadb")
     pgs <- .make_pts_store()
-    expect_error(
-        spatRelate(pgs, .roi(), "intersects") |>
-            storeRead(output = "tibble"),
-        "sedona"
+    tbl <- spatRelate(pgs, .roi(), "intersects") |>
+        storeRead(output = "tibble")
+    expect_setequal(tbl$id, c("a", "b"))
+})
+
+test_that("spatRelate(): arrow path -- each predicate produces sane result", {
+    skip_if_not_installed("sedonadb")
+    pgs <- .make_pts_store()
+    roi <- .roi()
+    results <- lapply(
+        c("intersects", "within", "contains", "disjoint"),
+        function(rel) {
+            tbl <- spatRelate(pgs, roi, rel) |> storeRead(output = "tibble")
+            sort(tbl$id)
+        }
     )
+    expect_setequal(results[[1L]], c("a", "b"))  # intersects
+    expect_setequal(results[[2L]], c("a", "b"))  # within
+    expect_setequal(results[[3L]], character(0L))  # contains
+    expect_setequal(results[[4L]], c("c", "d", "e"))  # disjoint
+})
+
+test_that("spatRelate(): arrow path -- two spat_relate ops compose", {
+    # Caching path: the second spat_relate's trimmed-store evaluation
+    # narrows via the cached ids from the first (as an `id_filter` op),
+    # not re-evaluating the first's spatial predicate.
+    skip_if_not_installed("sedonadb")
+    pgs <- .make_pts_store()
+    roi1 <- .roi("POLYGON ((0 0, 6 0, 6 6, 0 6, 0 0))")  # hits a, b, c
+    roi2 <- .roi("POLYGON ((2 2, 8 2, 8 8, 2 8, 2 2))")  # hits b, c, d
+    tbl <- spatRelate(pgs, roi1, "intersects") |>
+        spatRelate(roi2, "intersects") |>
+        storeRead(output = "tibble")
+    expect_setequal(tbl$id, c("b", "c"))
+})
+
+test_that("spatRelate(): arrow path -- three spat_relate ops compose", {
+    skip_if_not_installed("sedonadb")
+    pgs <- .make_pts_store()
+    roi1 <- .roi("POLYGON ((0 0, 8 0, 8 8, 0 8, 0 0))")  # hits a, b, c, d
+    roi2 <- .roi("POLYGON ((2 2, 10 2, 10 10, 2 10, 2 2))")  # hits b..e
+    roi3 <- .roi("POLYGON ((4 4, 8 4, 8 8, 4 8, 4 4))")  # hits c, d
+    tbl <- spatRelate(pgs, roi1, "intersects") |>
+        spatRelate(roi2, "intersects") |>
+        spatRelate(roi3, "intersects") |>
+        storeRead(output = "tibble")
+    expect_setequal(tbl$id, c("c", "d"))  # intersection of all three
+})
+
+test_that("spatRelate(): arrow path -- spat_relate interleaved with filter", {
+    # An attribute filter sitting between two spat_relate ops shouldn't
+    # break the cache or change the row set.
+    skip_if_not_installed("sedonadb")
+    pgs <- .make_pts_store()
+    roi1 <- .roi("POLYGON ((0 0, 6 0, 6 6, 0 6, 0 0))")  # hits a, b, c
+    roi2 <- .roi("POLYGON ((2 2, 8 2, 8 8, 2 8, 2 2))")  # hits b, c, d
+    tbl <- spatRelate(pgs, roi1, "intersects") |>
+        subset(id != "c") |>
+        spatRelate(roi2, "intersects") |>
+        storeRead(output = "tibble")
+    expect_setequal(tbl$id, "b")
+})
+
+test_that("spatRelate(): arrow path -- different predicates compose", {
+    skip_if_not_installed("sedonadb")
+    pgs <- .make_pts_store()
+    big_box <- .roi("POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))")  # all 5
+    small_box <- .roi("POLYGON ((2 2, 4 2, 4 4, 2 4, 2 2))")    # contains b only
+    # intersects(big) AND disjoint(small) = all 5 minus b = a, c, d, e
+    tbl <- spatRelate(pgs, big_box, "intersects") |>
+        spatRelate(small_box, "disjoint") |>
+        storeRead(output = "tibble")
+    expect_setequal(tbl$id, c("a", "c", "d", "e"))
+})
+
+test_that("spatRelate(): arrow + sedona paths agree on two-op chain", {
+    skip_if_not_installed("sedonadb")
+    pgs <- .make_pts_store()
+    roi1 <- .roi("POLYGON ((0 0, 6 0, 6 6, 0 6, 0 0))")
+    roi2 <- .roi("POLYGON ((2 2, 8 2, 8 8, 2 8, 2 2))")
+    arrow_tbl <- spatRelate(pgs, roi1, "intersects") |>
+        spatRelate(roi2, "intersects") |>
+        storeRead(output = "tibble")
+    sedona_tbl <- sedonadb::sd_collect(
+        spatRelate(pgs, roi1, "intersects") |>
+            spatRelate(roi2, "intersects") |>
+            storeRead(output = "sedona")
+    )
+    expect_setequal(arrow_tbl$id, sedona_tbl$id)
 })
 
 
@@ -103,33 +189,28 @@ test_that("spatRelate(): sedona path -- each predicate produces sane result", {
 test_that("spatRelate(): composes with subset() on a different col", {
     skip_if_not_installed("sedonadb")
     pgs <- .make_pts_store()
-    sdf <- spatRelate(pgs, .roi(), "intersects") |>
+    tbl <- spatRelate(pgs, .roi(), "intersects") |>
         subset(id != "a") |>
-        storeRead(output = "sedona")
-    df <- sedonadb::sd_collect(sdf)
-    expect_equal(df$id, "b")
+        storeRead(output = "tibble")
+    expect_equal(tbl$id, "b")
 })
 
 test_that("spatRelate(): composes with [, j] narrowing", {
     skip_if_not_installed("sedonadb")
     pgs <- .make_pts_store()
-    sdf <- spatRelate(pgs, .roi(), "intersects")[, "id"] |>
-        storeRead(output = "sedona")
-    df <- sedonadb::sd_collect(sdf)
-    # sedona carries internal index cols; what matters is the user col is
-    # present and filters/values are correct.
-    expect_true("id" %in% names(df))
-    expect_setequal(df$id, c("a", "b"))
+    tbl <- spatRelate(pgs, .roi(), "intersects")[, "id"] |>
+        storeRead(output = "tibble")
+    expect_setequal(names(tbl), "id")
+    expect_setequal(tbl$id, c("a", "b"))
 })
 
 test_that("spatRelate(): composes with head()", {
     skip_if_not_installed("sedonadb")
     pgs <- .make_pts_store()
-    sdf <- spatRelate(pgs, .roi(), "intersects") |>
+    tbl <- spatRelate(pgs, .roi(), "intersects") |>
         head(1L) |>
-        storeRead(output = "sedona")
-    df <- sedonadb::sd_collect(sdf)
-    expect_equal(nrow(df), 1L)
+        storeRead(output = "tibble")
+    expect_equal(nrow(tbl), 1L)
 })
 
 
@@ -203,7 +284,7 @@ test_that("spatRelate(): saveRDS roundtrip preserves op + result", {
     skip_if_not_installed("sedonadb")
     pgs <- .make_pts_store()
     s <- spatRelate(pgs, .roi(), "intersects")
-    pre <- sedonadb::sd_collect(storeRead(s, output = "sedona"))
+    pre <- storeRead(s, output = "tibble")
 
     tmp <- tempfile(fileext = ".rds")
     on.exit(unlink(tmp), add = TRUE)
@@ -212,6 +293,6 @@ test_that("spatRelate(): saveRDS roundtrip preserves op + result", {
     expect_length(rt@ops, 1L)
     expect_equal(rt@ops[[1L]]$type, "spat_relate")
     expect_equal(rt@ops[[1L]]$y_wkt, s@ops[[1L]]$y_wkt)
-    post <- sedonadb::sd_collect(storeRead(rt, output = "sedona"))
+    post <- storeRead(rt, output = "tibble")
     expect_setequal(pre$id, post$id)
 })
