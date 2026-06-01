@@ -22,6 +22,16 @@ NULL
     "within", "contains", "covers", "covered_by", "disjoint"
 )
 
+# Relations for which an AABB pre-cull is safe: matching features must have
+# bboxes that overlap (or contain, for `contains`/`covers`) the query's
+# bbox. `disjoint` is the exception — features whose bbox does *not*
+# overlap the query are exactly the ones we want to KEEP, so AABB pruning
+# would invert the result.
+.AABB_MONOTONE_RELATIONS <- c(
+    "intersects", "touches", "crosses", "overlaps",
+    "within", "covered_by", "contains", "covers"
+)
+
 .validate_spatrelate_relation <- function(relation) {
     relation <- match.arg(relation, choices = .SPATRELATE_PREDICATES)
     relation
@@ -38,6 +48,30 @@ NULL
 # terra uses "coveredby" (no underscore); normalize from user-facing name.
 .terra_relation_name <- function(relation) {
     if (identical(relation, "covered_by")) "coveredby" else relation
+}
+
+# Compute the intersection bbox across every monotone spat_relate op in
+# `ops`. Returns a SpatExtent or NULL if no monotone op contributes (or
+# if the intersection is empty). Used by .spat_relate_narrow to pre-cull
+# trim_store via crop() once per call rather than per-op. Store-store
+# form ops (no `y_wkt`) are skipped — bbox extraction from y_store is
+# deferred.
+.combined_spatrelate_aabb <- function(ops) {
+    exts <- list()
+    for (op in ops) {
+        if (!identical(op$type, "spat_relate")) next
+        if (is.null(op$y_wkt)) next
+        if (!op$relation %in% .AABB_MONOTONE_RELATIONS) next
+        y_sv <- terra::vect(op$y_wkt)
+        exts <- c(exts, list(terra::ext(y_sv)))
+    }
+    if (length(exts) == 0L) return(NULL)
+    result <- exts[[1L]]
+    for (e in exts[-1L]) {
+        result <- terra::intersect(result, e)
+        if (is.null(result)) return(NULL)
+    }
+    result
 }
 
 # Choose the SRID literal for `ST_GeomFromText` to match the store's geom
@@ -341,6 +375,27 @@ setMethod(
     # for in the final output projection. Set @fields to NULL so
     # `.pstore_lazy_fields` returns NULL and the underlying SELECT is `*`.
     if (.hasSlot(trim_store, "fields")) trim_store@fields <- NULL
+
+    # AABB pre-cull: combine the AABBs of every monotone spat_relate op
+    # in @ops into a single intersection extent and apply via crop().
+    # crop() composes with the store's existing @crop (intersection),
+    # narrows @tile_filter so excluded tiles are never opened, and
+    # injects a half-plane filter when a transform is pending.
+    #
+    # Only applied at the FIRST spat_relate evaluation (no prior
+    # id_filter from an earlier spat_relate cache). Subsequent
+    # spat_relate ops already inherit the AABB-pruned row set via the
+    # prior id_filter on trim_store, so re-applying crop on a tight
+    # live extent can produce a degenerate empty intersection.
+    # `disjoint` ops and the store-store form contribute no bbox.
+    has_prior_idfilter <- any(vapply(prior_ops,
+        function(o) identical(o$type, "id_filter"), logical(1L)))
+    if (!has_prior_idfilter) {
+        combined_ext <- .combined_spatrelate_aabb(store@ops)
+        if (!is.null(combined_ext)) {
+            trim_store <- crop(trim_store, combined_ext)
+        }
+    }
 
     engine <- .resolve_spat_relate_engine(op$engine)
     switch(engine,
