@@ -279,8 +279,9 @@ In-depth docs live in `vignettes/articles/`:
   class hierarchy, lazy op system, transform back-projection, spatial
   predicates (`spat_relate`) and the multi-engine narrow path, manifest
   design, extent tracking, scale targets.
-- [`gsource.Rmd`](vignettes/articles/gsource.Rmd) — project-directory
-  walkthrough: source verbs (`sourceWrite` / `sourceContains` /
+- [`gsource.Rmd`](vignettes/articles/gsource.Rmd) — `gDirSource`
+  walkthrough (the directory-backed `gsource` backend, currently the
+  only one shipped): source verbs (`sourceWrite` / `sourceContains` /
   `sourceAdopt` / `sourcePrune`), snapshot lifecycle, deployment
   patterns (local, HPC/NFS, shared analyses).
 - [`roadmap.Rmd`](vignettes/articles/roadmap.Rmd) — public direction.

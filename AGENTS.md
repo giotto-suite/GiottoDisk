@@ -13,7 +13,7 @@ walkthroughs live in `vignettes/articles/`:
 |---|---|
 | `AGENTS.md` (this file) | Code navigation, constraints, invariants. Read first when modifying code. |
 | `vignettes/articles/design.Rmd` | Architectural rationale: class hierarchy, lazy op system, transform back-projection, manifest design, extent tracking, scale targets. |
-| `vignettes/articles/gsource.Rmd` | Project-directory walkthrough: source verbs (`sourceWrite`/`sourceContains`/`sourceAdopt`/`sourcePrune`), snapshot lifecycle, deployment patterns. |
+| `vignettes/articles/gsource.Rmd` | `gDirSource` walkthrough (the directory-backed `gsource` — the only backend currently shipped): source verbs (`sourceWrite`/`sourceContains`/`sourceAdopt`/`sourcePrune`), snapshot lifecycle, deployment patterns. |
 | `vignettes/articles/roadmap.Rmd` | Public-facing direction. Headline items: `parquetMutableStore`, partition hardlink utility, `gSdataSource`. |
 | `vignettes/articles/parquetEdgeStore.Rmd` | Edge-store (graph) specifics. |
 

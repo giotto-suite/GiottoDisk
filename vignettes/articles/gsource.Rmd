@@ -1,12 +1,12 @@
 ---
-title: "Project directories: gsource and the source verbs"
+title: "gDirSource: the directory-backed Giotto source"
 output:
     html_document:
         toc: true
         toc_depth: 3
         number_sections: false
 vignette: >
-    %\VignetteIndexEntry{Project directories: gsource and the source verbs}
+    %\VignetteIndexEntry{gDirSource: the directory-backed Giotto source}
     %\VignetteEngine{knitr::rmarkdown}
     %\VignetteEncoding{UTF-8}
 ---
@@ -15,14 +15,24 @@ vignette: >
 knitr::opts_chunk$set(eval = FALSE)
 ```
 
-A **gsource** is a managed project directory that gives GiottoDisk stores
-a stable home on disk. It tracks artifacts in a JSON manifest, provides a
-vault layout for storing files, and lets you snapshot a Giotto object to
-durable storage with the artifacts it depends on intact.
+**`gsource`** is the abstract Giotto backend type — the contract a
+Giotto object's stores can be attached to for managed, on-disk
+durability. The verbs `sourceWrite`, `sourceContains`, `sourceAdopt`,
+`sourcePrune`, and the `snapshot*` family all dispatch on this type, so
+new backends can plug in without changing call sites.
 
-This vignette walks through:
+The only `gsource` implementation currently shipped is
+**`gDirSource`** — a managed project directory on the local
+filesystem. It tracks artifacts in a JSON manifest, provides a vault
+layout for storing files, and lets you snapshot a Giotto object to
+durable storage with the artifacts it depends on intact. Future
+backends (e.g. a SpatialData adapter, a cloud-object-store backend)
+would implement the same verbs against different storage substrates;
+see `vignettes/articles/roadmap.Rmd` for the public direction.
 
-- the **project directory layout** a gsource manages
+This vignette is about `gDirSource` specifically. It walks through:
+
+- the **project directory layout** a `gDirSource` manages
 - the **`source*` verbs** for writing, locating, adopting, and pruning
   artifacts (`sourceWrite`, `sourceContains`, `sourceAdopt`,
   `sourcePrune`)
@@ -43,7 +53,7 @@ library(GiottoDisk)
 # Create / attach to a project directory
 src <- gDirSource("/path/to/my_project")
 
-# Write a store; gsource allocates a uid and records the artifact
+# Write a store; the source allocates a uid and records the artifact
 pts <- terra::vect(data.frame(x = 1:5, y = 1:5), geom = c("x", "y"))
 pgs <- parquetGeomStore() |> storeWrite(pts)
 pgs <- sourceWrite(src, pgs)   # now lives in the vault
@@ -90,7 +100,7 @@ as.data.frame(src)         # full manifest as a data.frame
 
 Allocates a fresh uid, writes the store under `artifacts/<uid>/`, hashes
 the contents, and queues a pending manifest entry. Subsequent reads
-through the gsource see the artifact.
+through the source see the artifact.
 
 ```r
 pgs <- parquetGeomStore() |> storeWrite(my_points)
@@ -115,7 +125,7 @@ Dispatch varies by store kind:
 
 ## `sourceAdopt(src, store)` — move/register an unmanaged store
 
-Brings a store under gsource management. The exact behaviour depends on
+Brings a store under source management. The exact behaviour depends on
 where the store currently lives and what type it is.
 
 **`fileStore` (parquet stores)**: preserves the store's existing
@@ -211,7 +221,7 @@ snapshot stays.
 ## `snapshotLoad(src, name)`
 
 Returns the giotto object snapshot. Stores inside the object retain
-their gsource backing — subsequent saves and prunes work the same way.
+their source backing — subsequent saves and prunes work the same way.
 
 ```r
 g <- snapshotLoad(src, "qc_pass")
@@ -231,9 +241,9 @@ sourcePrune(src)
 
 # Common patterns
 
-## Shared gsource across analyses
+## Shared `gDirSource` across analyses
 
-Multiple gobjects can share one gsource. This is the recommended
+Multiple gobjects can share one `gDirSource`. This is the recommended
 pattern when analyses share underlying data (same experiment, different
 processing pipelines):
 
@@ -253,14 +263,14 @@ the project.
 
 **Granularity:** per-experiment or per-sample-cohort. Large enough to
 get deduplication benefits across related analyses, small enough that
-`sourcePrune` keeps the manifest tidy. A single gsource shared across
+`sourcePrune` keeps the manifest tidy. A single `gDirSource` shared across
 an entire lab would accumulate artifacts unboundedly.
 
 ## HPC / NFS: persistent dump
 
 On HPC systems, the default `tempdir()`-based dump dies with the
 session, which is wrong for long-running jobs. Point the dump at the
-gsource's own vault:
+`gDirSource`'s own vault:
 
 ```r
 src <- gDirSource("/projects/visium_exp1")
@@ -274,8 +284,8 @@ setArtifactDumpDir(src)   # dump = artifacts/
 |---------|------------------|
 | Local / workstation | `tempdir()` (default) |
 | NFS / HPC (SLURM)   | `setArtifactDumpDir(src)` |
-| SLURM array jobs    | One gsource per sample (no shared-manifest contention) |
-| Multi-analysis      | Single shared gsource |
+| SLURM array jobs    | One `gDirSource` per sample (no shared-manifest contention) |
+| Multi-analysis      | Single shared `gDirSource` |
 
 ## What survives a crash?
 
