@@ -725,16 +725,8 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
             sedonadb::sd_read_parquet(spec$dir_path),
             tile_view_name, overwrite = TRUE
         )
-        # Per-tile SELECT with SQL literal injection of partition columns.
-        # `'%s'` single-quote-escape the uid defensively even though `.make_uid`
-        # only produces alphanumerics + underscores.
-        uid_lit <- gsub("'", "''", spec$uid, fixed = TRUE)
-        literal_cols <- if (spec$has_tile_index) {
-            sprintf("'%s' AS source_id, %d AS tile_index", uid_lit, spec$tile_index)
-        } else {
-            sprintf("'%s' AS source_id", uid_lit)
-        }
-        sprintf('SELECT *, %s FROM "%s"', literal_cols, tile_view_name)
+        sprintf('SELECT *, %s FROM "%s"',
+            .pstore_tile_literal_cols(spec), tile_view_name)
     }, FUN.VALUE = character(1L))
     base_sql <- paste(union_sqls, collapse = " UNION ALL ")
     sedonadb::sd_to_view(
@@ -742,132 +734,36 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
         base_view_name, overwrite = TRUE
     )
 
-    # --- 2. Build WHERE clause ---
-    where_clauses <- character(0L)
-
-    # Crop/window AABB — float range on centroid columns; parquet stats pushdown.
-    # `@crop`/`@window` only exist on geom-base stores; flat parquetStore skips.
-    e <- if (inherits(store, "parquetGeomBase")) .pstore_active_extent(store) else NULL
-    if (!is.null(extent_arg)) {
-        e <- if (!is.null(e)) terra::intersect(e, ext(extent_arg)) else ext(extent_arg)
+    # --- 2. Build inner SQL via shared helper ---
+    # geom_sql_fn handles the SRID-aware ST_GeomFromText (DataFusion).
+    sedona_geom_sql_fn <- function(op, store) {
+        wkt_esc <- gsub("'", "''", op$y_wkt, fixed = TRUE)
+        srid <- .spatrelate_store_srid(store)
+        if (is.na(srid)) {
+            sprintf("ST_GeomFromText('%s')", wkt_esc)
+        } else {
+            sprintf("ST_GeomFromText('%s', %d)", wkt_esc, srid)
+        }
     }
-    if (!is.null(e)) {
-        ev <- .ext_to_num_vec(e)
-        where_clauses <- c(where_clauses, sprintf(
-            "x_index >= %.17g AND x_index <= %.17g AND y_index >= %.17g AND y_index <= %.17g",
-            ev[[1L]], ev[[2L]], ev[[3L]], ev[[4L]]
+    sedona_register_id_fn <- function(ids_tab) {
+        name <- tolower(paste0("gd_idf_", .make_uid()))
+        # `sd_to_view` accepts data.frame / nanoarrow, not arrow Table.
+        sedonadb::sd_to_view(as.data.frame(ids_tab), name, overwrite = TRUE)
+        name
+    }
+    inner_sql <- .pstore_sql_inner(store, base_view_name, extent_arg,
+        lazy_fields,
+        geom_sql_fn = sedona_geom_sql_fn,
+        register_id_fn = sedona_register_id_fn,
+        engine = "sedona")
+
+    # --- 3. Wrap with ST_Affine if transform is pending ---
+    sedona_probe_fn <- function(sql) {
+        sedonadb::sd_collect(sedonadb::sd_sql(
+            sprintf("SELECT * FROM (%s) AS _probe LIMIT 0", sql)
         ))
     }
-
-    # Tile filter is enforced by file-level pruning in `.pstore_tile_specs`
-    # above; no SQL `tile_index IN (...)` clause needed.
-
-    # @ops — filter (including half-plane exprs), head, distinct translated to SQL;
-    # tail/sample/join have no clean SQL equivalent and are skipped with a warning
-    distinct_cols <- NULL
-    limit_n <- NULL
-    for (op in store@ops) {
-        switch(op$type,
-            "filter"   = where_clauses <- c(where_clauses, .r_expr_to_sql(op$expr)),
-            "head"     = limit_n <- op$n,
-            "distinct" = distinct_cols <- op$cols,
-            "spat_relate" = {
-                if (!is.null(op$y_wkt)) {
-                    sql_pred <- .sql_relation_fn(op$relation)
-                    # escape single quotes in WKT defensively
-                    wkt_escaped <- gsub("'", "''", op$y_wkt, fixed = TRUE)
-                    # match the store's geom CRS (see .spatrelate_store_srid).
-                    srid <- .spatrelate_store_srid(store)
-                    geom_sql <- if (is.na(srid)) {
-                        sprintf("ST_GeomFromText('%s')", wkt_escaped)
-                    } else {
-                        sprintf("ST_GeomFromText('%s', %d)", wkt_escaped, srid)
-                    }
-                    where_clauses <- c(where_clauses, sprintf(
-                        "%s(geom, %s)", sql_pred, geom_sql
-                    ))
-                } else {
-                    warning(
-                        "[storeRead][sedona] spat_relate with stored y is not yet ",
-                        "implemented in the sedona compile; the op is skipped",
-                        call. = FALSE
-                    )
-                }
-            },
-            "id_filter" = {
-                # Internal op type — injected by `.spat_relate_narrow` when
-                # a chain has multiple spat_relate ops so we don't re-run
-                # earlier predicates. Registers the cached ids as a sedona
-                # view and adds a correlated EXISTS subquery on the join
-                # keys (DataFusion does not support tuple-IN subqueries).
-                # `sd_to_view` accepts data.frame / nanoarrow, not arrow
-                # Table directly, so coerce here.
-                id_view_name <- tolower(paste0("gd_idf_", .make_uid()))
-                sedonadb::sd_to_view(
-                    as.data.frame(op$ids_tab),
-                    id_view_name, overwrite = TRUE
-                )
-                keys <- unname(op$by)
-                join_conds <- vapply(keys, function(k) {
-                    sprintf('"%s"."%s" = "%s"."%s"',
-                        id_view_name, k, base_view_name, k)
-                }, FUN.VALUE = character(1L))
-                where_clauses <- c(where_clauses, sprintf(
-                    'EXISTS (SELECT 1 FROM "%s" WHERE %s)',
-                    id_view_name, paste(join_conds, collapse = " AND ")
-                ))
-            },
-            "tail"     = ,
-            "sample"   = ,
-            "join"     = warning(sprintf(
-                "[storeRead][sedona] op '%s' cannot be expressed as SQL and is skipped",
-                op$type), call. = FALSE),
-            warning(sprintf("[storeRead][sedona] unknown op type '%s' skipped", op$type),
-                call. = FALSE)
-        )
-    }
-
-    # --- 3. Build outer SQL targeting the unioned base view ---
-    where_sql <- if (length(where_clauses) > 0L) {
-        paste("WHERE", paste(where_clauses, collapse = " AND "))
-    } else {
-        ""
-    }
-    # Column projection — DISTINCT op wins (it specifies its own cols); otherwise
-    # honor `lazy_fields` if the caller narrowed via `[, j]` or `fields = ...`.
-    select_sql <- if (!is.null(distinct_cols)) {
-        paste("DISTINCT", paste(sprintf('"%s"', distinct_cols), collapse = ", "))
-    } else if (!is.null(lazy_fields)) {
-        paste(sprintf('"%s"', lazy_fields), collapse = ", ")
-    } else {
-        "*"
-    }
-    inner_sql <- trimws(sprintf('SELECT %s FROM "%s" %s', select_sql, base_view_name, where_sql))
-    if (!is.null(limit_n)) inner_sql <- paste(inner_sql, "LIMIT", limit_n)
-
-    # --- 4. Wrap with ST_Affine if transform is pending ---
-    # Post-multiply convention: [x, y, 1] %*% M
-    #   x' = x*M[1,1] + y*M[2,1] + M[3,1],  y' = x*M[1,2] + y*M[2,2] + M[3,2]
-    # ST_Affine(geom, a, b, d, e, xoff, yoff):
-    #   x' = a*x + b*y + xoff,  y' = d*x + e*y + yoff
-    if (!is.null(aff)) {
-        schema_df <- sedonadb::sd_collect(
-            sedonadb::sd_sql(sprintf("SELECT * FROM (%s) AS _probe LIMIT 0", inner_sql))
-        )
-        other_cols <- setdiff(names(schema_df), "geom")
-        m <- aff@affine
-        affine_expr <- sprintf(
-            "ST_Affine(geom, %.17g, %.17g, %.17g, %.17g, %.17g, %.17g) AS geom",
-            m[1L, 1L], m[2L, 1L], m[1L, 2L], m[2L, 2L], m[3L, 1L], m[3L, 2L]
-        )
-        outer_select <- if (length(other_cols) > 0L) {
-            paste(c(paste(sprintf('"%s"', other_cols), collapse = ", "), affine_expr),
-                collapse = ", ")
-        } else {
-            affine_expr
-        }
-        inner_sql <- sprintf("SELECT %s FROM (%s) AS _t", outer_select, inner_sql)
-    }
+    inner_sql <- .pstore_sql_affine_wrap(inner_sql, aff, sedona_probe_fn)
 
     sdf <- sedonadb::sd_sql(inner_sql)
     attr(sdf, "view_name") <- base_view_name
@@ -957,134 +853,43 @@ sd_view_ref <- function(sdf) {
     base_view_name <- tolower(paste0("gd_dd_", .make_uid()))
     union_sqls <- vapply(seq_along(specs), function(i) {
         spec <- specs[[i]]
-        uid_lit <- gsub("'", "''", spec$uid, fixed = TRUE)
-        literal_cols <- if (spec$has_tile_index) {
-            sprintf("'%s' AS source_id, %d AS tile_index", uid_lit, spec$tile_index)
-        } else {
-            sprintf("'%s' AS source_id", uid_lit)
-        }
-        # `read_parquet('dir/*.parquet')` with hive_partitioning disabled
-        # — we inject source_id / tile_index as SQL literals (mirrors the
-        # sedona path) and want to avoid duckdb auto-promoting them from
-        # the directory layout (which would also coerce them to integers
-        # in a way that may not match our typing).
+        # `read_parquet('dir/*.parquet')` with hive_partitioning disabled —
+        # we inject source_id / tile_index as SQL literals (mirrors sedona)
+        # and want to avoid duckdb auto-promoting them from the directory
+        # layout (which would also coerce them to types that may not match).
         path_escaped <- gsub("'", "''", spec$dir_path, fixed = TRUE)
         sprintf("SELECT *, %s FROM read_parquet('%s*.parquet', hive_partitioning=false)",
-            literal_cols, path_escaped)
+            .pstore_tile_literal_cols(spec), path_escaped)
     }, FUN.VALUE = character(1L))
     base_sql <- paste(union_sqls, collapse = " UNION ALL ")
     DBI::dbExecute(conn,
         sprintf('CREATE OR REPLACE TEMP VIEW "%s" AS %s',
             base_view_name, base_sql))
 
-    # --- 2. Build WHERE clause ---
-    where_clauses <- character(0L)
+    # --- 2. Build inner SQL via shared helper ---
+    # DuckDB spatial's ST_GeomFromText takes (VARCHAR [, BOOLEAN]) — no
+    # SRID arg, and no CRS enforcement (geometries are just GEOMETRY).
+    duckdb_geom_sql_fn <- function(op, store) {
+        wkt_esc <- gsub("'", "''", op$y_wkt, fixed = TRUE)
+        sprintf("ST_GeomFromText('%s')", wkt_esc)
+    }
+    duckdb_register_id_fn <- function(ids_tab) {
+        name <- tolower(paste0("gd_idf_", .make_uid()))
+        duckdb::duckdb_register_arrow(conn, name, ids_tab)
+        name
+    }
+    inner_sql <- .pstore_sql_inner(store, base_view_name, extent_arg,
+        lazy_fields,
+        geom_sql_fn = duckdb_geom_sql_fn,
+        register_id_fn = duckdb_register_id_fn,
+        engine = "duckdb")
 
-    # Crop/window AABB on centroid columns; parquet stats pushdown.
-    e <- if (inherits(store, "parquetGeomBase")) .pstore_active_extent(store) else NULL
-    if (!is.null(extent_arg)) {
-        e <- if (!is.null(e)) terra::intersect(e, ext(extent_arg)) else ext(extent_arg)
+    # --- 3. Wrap with ST_Affine if transform is pending ---
+    duckdb_probe_fn <- function(sql) {
+        DBI::dbGetQuery(conn,
+            sprintf("SELECT * FROM (%s) AS _probe LIMIT 0", sql))
     }
-    if (!is.null(e)) {
-        ev <- .ext_to_num_vec(e)
-        where_clauses <- c(where_clauses, sprintf(
-            "x_index >= %.17g AND x_index <= %.17g AND y_index >= %.17g AND y_index <= %.17g",
-            ev[[1L]], ev[[2L]], ev[[3L]], ev[[4L]]
-        ))
-    }
-
-    # @ops translation — same dialect of SQL as sedona for the most part
-    # (DuckDB and DataFusion share ANSI SQL roots + spatial extension uses
-    # the same `ST_*` function names).
-    distinct_cols <- NULL
-    limit_n <- NULL
-    for (op in store@ops) {
-        switch(op$type,
-            "filter"   = where_clauses <- c(where_clauses, .r_expr_to_sql(op$expr)),
-            "head"     = limit_n <- op$n,
-            "distinct" = distinct_cols <- op$cols,
-            "spat_relate" = {
-                if (!is.null(op$y_wkt)) {
-                    sql_pred <- .sql_relation_fn(op$relation)
-                    wkt_escaped <- gsub("'", "''", op$y_wkt, fixed = TRUE)
-                    # DuckDB spatial's ST_GeomFromText doesn't take an SRID
-                    # (signature: (VARCHAR [, BOOLEAN])). It also doesn't
-                    # enforce CRS — geometries are just GEOMETRY — so the
-                    # predicate works regardless of the store's CRS spec.
-                    geom_sql <- sprintf("ST_GeomFromText('%s')", wkt_escaped)
-                    where_clauses <- c(where_clauses, sprintf(
-                        "%s(geom, %s)", sql_pred, geom_sql
-                    ))
-                } else {
-                    warning(
-                        "[storeRead][duckdb] spat_relate with stored y is not yet ",
-                        "implemented in the duckdb compile; the op is skipped",
-                        call. = FALSE
-                    )
-                }
-            },
-            "id_filter" = {
-                # Register the cached id arrow Table as a duckdb virtual
-                # table, then add a correlated EXISTS subquery on the keys
-                # (matches sedona's pattern; duckdb supports tuple-IN but
-                # EXISTS is uniformly compatible and engine-optimisable).
-                id_table_name <- tolower(paste0("gd_idf_", .make_uid()))
-                duckdb::duckdb_register_arrow(conn, id_table_name, op$ids_tab)
-                keys <- unname(op$by)
-                join_conds <- vapply(keys, function(k) {
-                    sprintf('"%s"."%s" = "%s"."%s"',
-                        id_table_name, k, base_view_name, k)
-                }, FUN.VALUE = character(1L))
-                where_clauses <- c(where_clauses, sprintf(
-                    'EXISTS (SELECT 1 FROM "%s" WHERE %s)',
-                    id_table_name, paste(join_conds, collapse = " AND ")
-                ))
-            },
-            "tail"     = ,
-            "sample"   = ,
-            "join"     = warning(sprintf(
-                "[storeRead][duckdb] op '%s' cannot be expressed as SQL and is skipped",
-                op$type), call. = FALSE),
-            warning(sprintf("[storeRead][duckdb] unknown op type '%s' skipped", op$type),
-                call. = FALSE)
-        )
-    }
-
-    # --- 3. Build outer SQL targeting the base view ---
-    where_sql <- if (length(where_clauses) > 0L) {
-        paste("WHERE", paste(where_clauses, collapse = " AND "))
-    } else {
-        ""
-    }
-    select_sql <- if (!is.null(distinct_cols)) {
-        paste("DISTINCT", paste(sprintf('"%s"', distinct_cols), collapse = ", "))
-    } else if (!is.null(lazy_fields)) {
-        paste(sprintf('"%s"', lazy_fields), collapse = ", ")
-    } else {
-        "*"
-    }
-    inner_sql <- trimws(sprintf('SELECT %s FROM "%s" %s',
-        select_sql, base_view_name, where_sql))
-    if (!is.null(limit_n)) inner_sql <- paste(inner_sql, "LIMIT", limit_n)
-
-    # --- 4. Wrap with ST_Affine if transform is pending ---
-    if (!is.null(aff)) {
-        schema_df <- DBI::dbGetQuery(conn,
-            sprintf("SELECT * FROM (%s) AS _probe LIMIT 0", inner_sql))
-        other_cols <- setdiff(names(schema_df), "geom")
-        m <- aff@affine
-        affine_expr <- sprintf(
-            "ST_Affine(geom, %.17g, %.17g, %.17g, %.17g, %.17g, %.17g) AS geom",
-            m[1L, 1L], m[2L, 1L], m[1L, 2L], m[2L, 2L], m[3L, 1L], m[3L, 2L]
-        )
-        outer_select <- if (length(other_cols) > 0L) {
-            paste(c(paste(sprintf('"%s"', other_cols), collapse = ", "), affine_expr),
-                collapse = ", ")
-        } else {
-            affine_expr
-        }
-        inner_sql <- sprintf("SELECT %s FROM (%s) AS _t", outer_select, inner_sql)
-    }
+    inner_sql <- .pstore_sql_affine_wrap(inner_sql, aff, duckdb_probe_fn)
 
     # Register final view + return a lazy tbl. Final-view registration lets
     # the user reference it via plain `tbl(conn, name)` and gives dbplyr a
@@ -1174,6 +979,149 @@ sd_view_ref <- function(sdf) {
         ), tile_idxs, tile_dirs)
     }), recursive = FALSE)
 }
+
+# Build the per-tile literal-column SQL fragment that injects
+# `source_id` (and `tile_index` when applicable) into a per-tile SELECT.
+# Shared by `.pstore_to_sedona` and `.pstore_to_duckdb`.
+.pstore_tile_literal_cols <- function(spec) {
+    uid_lit <- gsub("'", "''", spec$uid, fixed = TRUE)
+    if (spec$has_tile_index) {
+        sprintf("'%s' AS source_id, %d AS tile_index", uid_lit, spec$tile_index)
+    } else {
+        sprintf("'%s' AS source_id", uid_lit)
+    }
+}
+
+
+# Build the inner SELECT SQL for a parquet-backed SQL backend (sedona,
+# duckdb). Translates `@crop`/`@window` (AABB), `@ops` (filter / head /
+# distinct / spat_relate / id_filter), and final projection
+# (`lazy_fields` / DISTINCT / `*`) into a single SQL string against
+# `base_view_name`.
+#
+# Engine-specific bits are passed as functions:
+#   - `geom_sql_fn(op, store)` -> SQL for the WKT side of a spat_relate
+#     predicate (sedona includes SRID; duckdb omits it).
+#   - `register_id_fn(ids_tab)` -> registers a cached id arrow Table as an
+#     engine-side view, returns the view name (sedona uses sd_to_view,
+#     duckdb uses duckdb_register_arrow).
+# `engine` is a short label embedded in warning messages.
+.pstore_sql_inner <- function(store, base_view_name, extent_arg,
+        lazy_fields, geom_sql_fn, register_id_fn, engine) {
+    where_clauses <- character(0L)
+
+    # Crop/window AABB — float range on centroid columns; parquet stats
+    # pushdown. @crop/@window only exist on geom-base stores; flat
+    # parquetStore skips.
+    e <- if (inherits(store, "parquetGeomBase")) .pstore_active_extent(store) else NULL
+    if (!is.null(extent_arg)) {
+        e <- if (!is.null(e)) terra::intersect(e, ext(extent_arg)) else ext(extent_arg)
+    }
+    if (!is.null(e)) {
+        ev <- .ext_to_num_vec(e)
+        where_clauses <- c(where_clauses, sprintf(
+            "x_index >= %.17g AND x_index <= %.17g AND y_index >= %.17g AND y_index <= %.17g",
+            ev[[1L]], ev[[2L]], ev[[3L]], ev[[4L]]
+        ))
+    }
+
+    distinct_cols <- NULL
+    limit_n <- NULL
+    for (op in store@ops) {
+        switch(op$type,
+            "filter"   = where_clauses <- c(where_clauses, .r_expr_to_sql(op$expr)),
+            "head"     = limit_n <- op$n,
+            "distinct" = distinct_cols <- op$cols,
+            "spat_relate" = {
+                if (!is.null(op$y_wkt)) {
+                    sql_pred <- .sql_relation_fn(op$relation)
+                    geom_sql <- geom_sql_fn(op, store)
+                    where_clauses <- c(where_clauses, sprintf(
+                        "%s(geom, %s)", sql_pred, geom_sql
+                    ))
+                } else {
+                    warning(sprintf(
+                        "[storeRead][%s] spat_relate with stored y is not yet implemented in the %s compile; the op is skipped",
+                        engine, engine
+                    ), call. = FALSE)
+                }
+            },
+            "id_filter" = {
+                # Internal op type — injected by `.spat_relate_narrow` when
+                # a chain has multiple spat_relate ops so we don't re-run
+                # earlier predicates. Engine registers the cached ids as a
+                # view, returns its name; this helper builds the correlated
+                # EXISTS subquery on the join keys.
+                id_view_name <- register_id_fn(op$ids_tab)
+                keys <- unname(op$by)
+                join_conds <- vapply(keys, function(k) {
+                    sprintf('"%s"."%s" = "%s"."%s"',
+                        id_view_name, k, base_view_name, k)
+                }, FUN.VALUE = character(1L))
+                where_clauses <- c(where_clauses, sprintf(
+                    'EXISTS (SELECT 1 FROM "%s" WHERE %s)',
+                    id_view_name, paste(join_conds, collapse = " AND ")
+                ))
+            },
+            "tail"     = ,
+            "sample"   = ,
+            "join"     = warning(sprintf(
+                "[storeRead][%s] op '%s' cannot be expressed as SQL and is skipped",
+                engine, op$type), call. = FALSE),
+            warning(sprintf("[storeRead][%s] unknown op type '%s' skipped",
+                engine, op$type), call. = FALSE)
+        )
+    }
+
+    where_sql <- if (length(where_clauses) > 0L) {
+        paste("WHERE", paste(where_clauses, collapse = " AND "))
+    } else {
+        ""
+    }
+    # Column projection — DISTINCT op wins (it specifies its own cols);
+    # otherwise honor `lazy_fields` if the caller narrowed via `[, j]` or
+    # `fields = ...`; otherwise project everything.
+    select_sql <- if (!is.null(distinct_cols)) {
+        paste("DISTINCT", paste(sprintf('"%s"', distinct_cols), collapse = ", "))
+    } else if (!is.null(lazy_fields)) {
+        paste(sprintf('"%s"', lazy_fields), collapse = ", ")
+    } else {
+        "*"
+    }
+    inner_sql <- trimws(sprintf('SELECT %s FROM "%s" %s',
+        select_sql, base_view_name, where_sql))
+    if (!is.null(limit_n)) inner_sql <- paste(inner_sql, "LIMIT", limit_n)
+    inner_sql
+}
+
+
+# Wrap an inner SELECT in an outer SELECT that applies a pending affine
+# transform via ST_Affine. No-op when `aff` is NULL. The engine-specific
+# `schema_probe_fn(inner_sql)` returns a data.frame whose names enumerate
+# the projection's columns (used to emit non-geom cols verbatim and
+# replace geom with ST_Affine(geom, ...)).
+.pstore_sql_affine_wrap <- function(inner_sql, aff, schema_probe_fn) {
+    if (is.null(aff)) return(inner_sql)
+    schema_df <- schema_probe_fn(inner_sql)
+    other_cols <- setdiff(names(schema_df), "geom")
+    m <- aff@affine
+    # Post-multiply convention: [x, y, 1] %*% M
+    #   x' = x*M[1,1] + y*M[2,1] + M[3,1],  y' = x*M[1,2] + y*M[2,2] + M[3,2]
+    # ST_Affine(geom, a, b, d, e, xoff, yoff):
+    #   x' = a*x + b*y + xoff,  y' = d*x + e*y + yoff
+    affine_expr <- sprintf(
+        "ST_Affine(geom, %.17g, %.17g, %.17g, %.17g, %.17g, %.17g) AS geom",
+        m[1L, 1L], m[2L, 1L], m[1L, 2L], m[2L, 2L], m[3L, 1L], m[3L, 2L]
+    )
+    outer_select <- if (length(other_cols) > 0L) {
+        paste(c(paste(sprintf('"%s"', other_cols), collapse = ", "), affine_expr),
+            collapse = ", ")
+    } else {
+        affine_expr
+    }
+    sprintf("SELECT %s FROM (%s) AS _t", outer_select, inner_sql)
+}
+
 
 # Translate an inlined R call expression to a SQL WHERE fragment.
 # Handles operators produced by subset() after .inline_local_vars():
