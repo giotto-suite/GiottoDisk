@@ -4,9 +4,11 @@ NULL
 # spatRelate on parquetGeomBase: lazy filter via spatial predicate ####
 #
 # Queues a "spat_relate" op carrying the query geometry (inline WKT, or a
-# reference to another parquetGeomStore) and the predicate name. Materialized
-# at storeRead time by `.do_op` (arrow path) or by the SQL compile in
-# `.pstore_to_sedona` (sedona path).
+# reference to another parquetGeomStore) and the predicate name. Evaluated
+# at storeRead time by the SQL compile in `.pstore_to_sedona`. The arrow
+# backend has no native spatial predicates; storeRead errors loudly on that
+# path and directs callers to `output = "sedona"`. A tile-streaming arrow
+# implementation is possible but not implemented.
 #
 # Phase 4a scope: filter form only (semi-join semantic -- narrow x by whether
 # any feature of y satisfies the predicate). Store/store + form="join" is
@@ -80,9 +82,10 @@ NULL
 #'   `parquetGeomBase` for the store/store path.
 #' @details
 #' The `parquetGeomBase` methods queue a lazy `"spat_relate"` op on `@ops`.
-#' Compilation happens at [storeRead()] time per engine: terra path
-#' materializes via tile + `terra::relate()`; sedona / DuckDB paths emit
-#' `ST_<predicate>(geom, ...)` SQL.
+#' Evaluation happens at [storeRead()] time via the sedona path, which emits
+#' `ST_<predicate>(geom, ...)` SQL against the parquet dataset. The arrow
+#' backend has no native spatial predicates and errors loudly when a
+#' `spat_relate` op is present — use `output = "sedona"` for spatial filters.
 #'
 #' Inline geometry inputs (`SpatVector`, `sf`, single WKT) carry the query
 #' as a WKT string on the op. To keep ops compact and avoid pathological

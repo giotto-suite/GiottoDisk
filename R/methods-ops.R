@@ -289,32 +289,15 @@ setMethod("window<-", signature("parquetGeomBase"), function(x, ..., value) {
     )
 }
 
-# arrow path for spat_relate: materialize, build SpatVectors, terra::relate,
-# row-mask, re-coerce to arrow. This breaks laziness past the spat_relate op
-# -- acceptable since arrow has no native spatial. Callers wanting true
-# laziness should use output = "sedona" / "duckdb".
+# arrow has no native spatial predicates. A correct implementation would tile
+# the dataset and stream the predicate over batches; the previous one-shot
+# `collect()` + `terra::relate()` path would OOM on any atlas-scale store and
+# is not safe to expose. Error out and direct callers to the sedona backend.
 .do_op_spat_relate <- function(atab, op) {
-    GiottoUtils::package_check("terra")
-    df <- dplyr::collect(atab)
-    if (nrow(df) == 0L) return(arrow::as_arrow_table(df))
-    if (!"geom" %in% names(df)) {
-        stop("[storeRead][spat_relate] `geom` column required for spatial filter",
-            call. = FALSE)
-    }
-    y_sv <- if (!is.null(op$y_wkt)) {
-        terra::vect(op$y_wkt)
-    } else if (!is.null(op$y_store)) {
-        storeRead(op$y_store, output = "terra")
-    } else {
-        stop("[storeRead][spat_relate] op missing y_wkt and y_store", call. = FALSE)
-    }
-    x_sv <- terra::vect(as.list(df$geom))
-    rel <- terra::relate(x_sv, y_sv,
-        relation = .terra_relation_name(op$relation))
-    keep <- if (is.matrix(rel)) {
-        as.logical(rowSums(rel, na.rm = TRUE) > 0L)
-    } else {
-        as.logical(rel)
-    }
-    arrow::as_arrow_table(df[keep, , drop = FALSE])
+    stop(
+        "[storeRead][spat_relate] spatial predicates are not supported on the\n",
+        "  arrow backend. Re-read with `output = \"sedona\"` to evaluate the\n",
+        "  predicate as `ST_*` SQL against the parquet dataset.",
+        call. = FALSE
+    )
 }
