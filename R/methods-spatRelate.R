@@ -27,6 +27,14 @@ NULL
     relation
 }
 
+# Accepted values for the `engine` arg / option. NULL passes through
+# (caller-supplied default; resolver handles option + auto fallback).
+.SPATRELATE_ENGINES <- c("sedona", "duckdb", "terra", "auto")
+.validate_spatrelate_engine <- function(engine) {
+    if (is.null(engine)) return(NULL)
+    match.arg(engine, choices = .SPATRELATE_ENGINES)
+}
+
 # terra uses "coveredby" (no underscore); normalize from user-facing name.
 .terra_relation_name <- function(relation) {
     if (identical(relation, "covered_by")) "coveredby" else relation
@@ -80,12 +88,31 @@ NULL
 #'   a `SpatVector` (up to ~1000 features, see below), an `sf`/`sfc`, a
 #'   `giottoPolygon`/`giottoPoints`/`spatLocsObj`, or another
 #'   `parquetGeomBase` for the store/store path.
+#' @param engine `character(1)` or `NULL`. Spatial-query engine to use for
+#'   the predicate evaluation. One of `"sedona"`, `"duckdb"`, `"terra"`, or
+#'   `"auto"`. `NULL` (default) defers to the package option (see Details).
 #' @details
 #' The `parquetGeomBase` methods queue a lazy `"spat_relate"` op on `@ops`.
-#' Evaluation happens at [storeRead()] time via the sedona path, which emits
-#' `ST_<predicate>(geom, ...)` SQL against the parquet dataset. The arrow
-#' backend has no native spatial predicates and errors loudly when a
-#' `spat_relate` op is present — use `output = "sedona"` for spatial filters.
+#' At [storeRead()] time the op is evaluated by one of three engines:
+#'
+#' * `"sedona"` — emits `ST_<predicate>(geom, ...)` SQL against parquet via
+#'   SedonaDB; lazy, parquet-stats pushdown applies. Requires `{sedonadb}`.
+#' * `"duckdb"` — same shape via DuckDB's spatial extension; lazy. Requires
+#'   `{duckdb}` + `{dbplyr}`.
+#' * `"terra"` — deps-free fallback. Tile stores stream per-tile via
+#'   `tilework::tileApply`; non-tile stores materialize the trim and run
+#'   `terra::relate`. Slower than the SQL engines at scale but always
+#'   available since `terra` is a hard import.
+#'
+#' Engine selection precedence (highest first):
+#'
+#' 1. `engine` arg on the `spatRelate()` call. Wins over the option.
+#' 2. `getOption("giottodisk.spatial_query_engine")` — set globally or
+#'    via `GiottoUtils::gwith_options(...)`.
+#' 3. Default `"auto"`: picks the best available — sedona > duckdb > terra.
+#'    If auto falls through to terra (no SQL engine installed), a one-shot
+#'    `rlang::inform` message suggests installing `{sedonadb}` or
+#'    `{duckdb}` for performance.
 #'
 #' Inline geometry inputs (`SpatVector`, `sf`, single WKT) carry the query
 #' as a WKT string on the op. To keep ops compact and avoid pathological
@@ -103,15 +130,17 @@ NULL
 setMethod(
     "spatRelate",
     signature(x = "parquetGeomBase", y = "character"),
-    function(x, y, relation = "intersects", ...) {
+    function(x, y, relation = "intersects", engine = NULL, ...) {
         relation <- .validate_spatrelate_relation(relation)
         checkmate::assert_string(y, min.chars = 1L)
+        engine <- .validate_spatrelate_engine(engine)
         x@ops <- c(x@ops, list(list(
             type     = "spat_relate",
             y_wkt    = y,
             y_store  = NULL,
             relation = relation,
-            form     = "filter"
+            form     = "filter",
+            engine   = engine
         )))
         x
     }
@@ -219,9 +248,10 @@ setMethod(
     "spatRelate",
     signature(x = "parquetGeomBase", y = "parquetGeomBase"),
     function(x, y, relation = "intersects",
-             form = c("filter", "join"), ...) {
+             form = c("filter", "join"), engine = NULL, ...) {
         relation <- .validate_spatrelate_relation(relation)
         form <- match.arg(form)
+        engine <- .validate_spatrelate_engine(engine)
         if (form == "join") {
             stop("[spatRelate] form='join' (store/store join with attribute carry) is not yet implemented.",
                 call. = FALSE)
@@ -231,7 +261,8 @@ setMethod(
             y_wkt    = NULL,
             y_store  = y,
             relation = relation,
-            form     = form
+            form     = form,
+            engine   = engine
         )))
         x
     }
@@ -311,7 +342,7 @@ setMethod(
     # `.pstore_lazy_fields` returns NULL and the underlying SELECT is `*`.
     if (.hasSlot(trim_store, "fields")) trim_store@fields <- NULL
 
-    engine <- .resolve_spat_relate_engine()
+    engine <- .resolve_spat_relate_engine(op$engine)
     switch(engine,
         "sedona" = .spat_relate_narrow_sedona(trim_store, op, id_cols, store),
         "duckdb" = .spat_relate_narrow_duckdb(trim_store, op, id_cols, store),
@@ -329,14 +360,18 @@ setMethod(
 
 
 # Resolve the spatial-query engine to use for spat_relate narrowing.
-# Honors `giottodisk.spatial_query_engine` option; "auto" picks the best
-# available (sedona > duckdb > terra). When "auto" falls through to terra
-# (because no SQL spatial backend is installed) we emit a one-shot
-# `rlang::inform` nudging the user toward a faster engine — but only when
-# the user hasn't already made a deliberate engine choice via the option.
-.resolve_spat_relate_engine <- function() {
-    opt <- getOption("giottodisk.spatial_query_engine", "auto")
-    if (!identical(opt, "auto")) return(opt)
+# Honors (in precedence order):
+#   1. `op_engine` — per-call engine passed to `spatRelate(..., engine = ...)`
+#   2. `giottodisk.spatial_query_engine` option — user / session default
+#   3. "auto" — best available (sedona > duckdb > terra)
+# When "auto" falls through to terra (because no SQL spatial backend is
+# installed) we emit a one-shot `rlang::inform` nudging the user toward a
+# faster engine -- but only when the user hasn't already made a
+# deliberate engine choice via the arg or the option.
+.resolve_spat_relate_engine <- function(op_engine = NULL) {
+    # Per-call engine arg wins over the option.
+    eff <- op_engine %||% getOption("giottodisk.spatial_query_engine", "auto")
+    if (!identical(eff, "auto")) return(eff)
     if (.spat_engine_available("sedonadb")) return("sedona")
     if (.spat_engine_available("duckdb"))   return("duckdb")
     rlang::inform(

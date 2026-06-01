@@ -299,11 +299,47 @@ test_that("spatRelate(): saveRDS roundtrip preserves op + result", {
 
 
 # Engine selection ####
-# The narrow path resolves an engine per call:
-#   1. `giottodisk.spatial_query_engine` option (specific or "auto")
-#   2. auto: sedona > duckdb > terra
-# Tests pin via GiottoUtils::gwith_options so they don't depend on what's
-# globally installed.
+# Resolver precedence:
+#   1. `engine` arg on spatRelate()  (per-call override)
+#   2. `giottodisk.spatial_query_engine` option (session default)
+#   3. auto: sedona > duckdb > terra
+# Tests pin via GiottoUtils::gwith_options or the call-level arg so they
+# don't depend on what's globally installed.
+
+test_that("spatRelate(): `engine` arg on spatRelate() pins the engine", {
+    skip_if_not_installed("duckdb")
+    pgs <- .make_pts_store()
+    s <- spatRelate(pgs, .roi(), "intersects", engine = "duckdb")
+    expect_equal(s@ops[[1L]]$engine, "duckdb")
+    tbl <- storeRead(s, output = "tibble")
+    expect_setequal(tbl$id, c("a", "b"))
+})
+
+test_that("spatRelate(): per-call `engine` overrides the option", {
+    skip_if_not_installed("duckdb")
+    pgs <- .make_pts_store()
+    # Pin option to "terra"; per-call engine = "duckdb" should win and
+    # leave op$engine = "duckdb" on the queued op.
+    s <- GiottoUtils::gwith_options(
+        list(giottodisk.spatial_query_engine = "terra"),
+        spatRelate(pgs, .roi(), "intersects", engine = "duckdb")
+    )
+    expect_equal(s@ops[[1L]]$engine, "duckdb")
+})
+
+test_that("spatRelate(): `engine` arg rejects unknown values", {
+    pgs <- .make_pts_store()
+    expect_error(
+        spatRelate(pgs, .roi(), "intersects", engine = "nonsense"),
+        "should be one of"
+    )
+})
+
+test_that("spatRelate(): `engine` defaults to NULL on the op (option-driven)", {
+    pgs <- .make_pts_store()
+    s <- spatRelate(pgs, .roi(), "intersects")
+    expect_null(s@ops[[1L]]$engine)
+})
 
 test_that("spatRelate(): explicit duckdb engine produces same ids as sedona", {
     skip_if_not_installed("sedonadb")
