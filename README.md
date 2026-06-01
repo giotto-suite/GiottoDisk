@@ -271,6 +271,28 @@ sourceWrite(src, my_matrix)
 3. **Lazy evaluation**: Keep data as arrow queries until final `collect()`
 4. **Use callbacks**: Apply custom filtering within `storeRead()` to stay lazy
 
+## Documentation
+
+In-depth docs live in `vignettes/articles/`:
+
+- [`design.Rmd`](vignettes/articles/design.Rmd) — architectural rationale:
+  class hierarchy, lazy op system, transform back-projection, spatial
+  predicates (`spat_relate`) and the multi-engine narrow path, manifest
+  design, extent tracking, scale targets.
+- [`gsource.Rmd`](vignettes/articles/gsource.Rmd) — project-directory
+  walkthrough: source verbs (`sourceWrite` / `sourceContains` /
+  `sourceAdopt` / `sourcePrune`), snapshot lifecycle, deployment
+  patterns (local, HPC/NFS, shared analyses).
+- [`roadmap.Rmd`](vignettes/articles/roadmap.Rmd) — public direction.
+- [`parquetEdgeStore.Rmd`](vignettes/articles/parquetEdgeStore.Rmd) —
+  edge-store (graph) specifics.
+
+For contributors and LLM-assisted work,
+[`AGENTS.md`](AGENTS.md) is the navigation entry point — package
+structure, class hierarchy, constraints and invariants, op-type
+dispatch, output formats, conventions. It links out to the vignettes
+for architectural deep dives.
+
 ## See Also
 
 - [Giotto Suite](https://github.com/drieslab/Giotto) - Spatial genomics analysis
