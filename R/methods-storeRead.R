@@ -677,7 +677,7 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
 # into a single base view that downstream WHERE/projection/affine SQL targets.
 #
 # Pipeline:
-#   1. Resolve tile specs (`.pstore_sedona_tile_specs`): one entry per
+#   1. Resolve tile specs (`.pstore_tile_specs`): one entry per
 #      surviving `source_id=<uid>/tile_index=<n>/` directory. Honors
 #      `tile_idx` arg and `@tile_filter` via file-level pruning — the pruned
 #      tile dirs never reach DataFusion.
@@ -710,7 +710,7 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
     aff <- if (inherits(store, "parquetGeomBase")) .pgeom_pending_transform(store) else NULL
 
     # --- 1. Resolve tile specs + register per-tile sub-views ---
-    specs <- .pstore_sedona_tile_specs(store, tile_idx_arg = tile_idx_arg)
+    specs <- .pstore_tile_specs(store, tile_idx_arg = tile_idx_arg)
     if (length(specs) == 0L) {
         stop("[storeRead][sedona] no tile directories match the requested filter\n",
             "  store path: ", toString(storePaths(store)), call. = FALSE)
@@ -759,7 +759,7 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
         ))
     }
 
-    # Tile filter is enforced by file-level pruning in `.pstore_sedona_tile_specs`
+    # Tile filter is enforced by file-level pruning in `.pstore_tile_specs`
     # above; no SQL `tile_index IN (...)` clause needed.
 
     # @ops — filter (including half-plane exprs), head, distinct translated to SQL;
@@ -949,7 +949,7 @@ sd_view_ref <- function(sdf) {
     aff <- if (inherits(store, "parquetGeomBase")) .pgeom_pending_transform(store) else NULL
 
     # --- 1. Resolve tile specs + register base view ---
-    specs <- .pstore_sedona_tile_specs(store, tile_idx_arg = tile_idx_arg)
+    specs <- .pstore_tile_specs(store, tile_idx_arg = tile_idx_arg)
     if (length(specs) == 0L) {
         stop("[storeRead][duckdb] no tile directories match the requested filter\n",
             "  store path: ", toString(storePaths(store)), call. = FALSE)
@@ -1099,7 +1099,10 @@ sd_view_ref <- function(sdf) {
 }
 
 
-# Resolve the per-tile directories that should back the sedona view.
+# Resolve the per-tile directories that should back a SQL backend's base
+# view. Used by both `.pstore_to_sedona` and `.pstore_to_duckdb`; the
+# returned spec list is engine-neutral (just directory paths + partition
+# metadata).
 #
 # Returns a list of specs, each:
 #   list(uid, tile_index, dir_path, has_tile_index)
@@ -1108,9 +1111,9 @@ sd_view_ref <- function(sdf) {
 # - `tile_index`: integer index parsed from `tile_index=<n>/` (or 0L for stores
 #   without a tile_index partition layer; in that case `has_tile_index = FALSE`
 #   and tile_index is unused).
-# - `dir_path`: filesystem directory passed to `sd_read_parquet`; always ends
-#   with `/` so DataFusion lists files under it rather than treating it as a
-#   single file path.
+# - `dir_path`: filesystem directory passed to the engine's parquet reader
+#   (`sd_read_parquet` / `read_parquet`); always ends with `/` so the engine
+#   lists files under it rather than treating it as a single file path.
 # - `has_tile_index`: TRUE for `parquetGeomBase`-inheriting stores (flat geom +
 #   tiled geom both write a `tile_index=<n>` partition); FALSE for flat tabular
 #   `parquetStore` which only has the `source_id=<uid>` partition.
@@ -1123,7 +1126,7 @@ sd_view_ref <- function(sdf) {
 #
 # `unionParquetStore` substores are walked in order — one spec per substore
 # tile directory.
-.pstore_sedona_tile_specs <- function(store, tile_idx_arg = NULL) {
+.pstore_tile_specs <- function(store, tile_idx_arg = NULL) {
     substores <- if (inherits(store, "unionParquetStore")) {
         store@stores
     } else {
