@@ -296,3 +296,70 @@ test_that("spatRelate(): saveRDS roundtrip preserves op + result", {
     post <- storeRead(rt, output = "tibble")
     expect_setequal(pre$id, post$id)
 })
+
+
+# Engine selection ####
+# The narrow path resolves an engine per call:
+#   1. `giottodisk.spatial_query_engine` option (specific or "auto")
+#   2. auto: sedona > duckdb > terra
+# Tests pin via GiottoUtils::gwith_options so they don't depend on what's
+# globally installed.
+
+test_that("spatRelate(): explicit duckdb engine produces same ids as sedona", {
+    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("duckdb")
+    pgs <- .make_pts_store()
+    sedona_tbl <- GiottoUtils::gwith_options(
+        list(giottodisk.spatial_query_engine = "sedona"),
+        spatRelate(pgs, .roi(), "intersects") |> storeRead(output = "tibble")
+    )
+    duckdb_tbl <- GiottoUtils::gwith_options(
+        list(giottodisk.spatial_query_engine = "duckdb"),
+        spatRelate(pgs, .roi(), "intersects") |> storeRead(output = "tibble")
+    )
+    expect_setequal(sedona_tbl$id, duckdb_tbl$id)
+})
+
+test_that("spatRelate(): duckdb engine handles two-op spat_relate chain", {
+    # Cached id_filter handling works against the duckdb compile path too.
+    skip_if_not_installed("duckdb")
+    pgs <- .make_pts_store()
+    roi1 <- .roi("POLYGON ((0 0, 6 0, 6 6, 0 6, 0 0))")
+    roi2 <- .roi("POLYGON ((2 2, 8 2, 8 8, 2 8, 2 2))")
+    tbl <- GiottoUtils::gwith_options(
+        list(giottodisk.spatial_query_engine = "duckdb"),
+        spatRelate(pgs, roi1, "intersects") |>
+            spatRelate(roi2, "intersects") |>
+            storeRead(output = "tibble")
+    )
+    expect_setequal(tbl$id, c("b", "c"))
+})
+
+test_that("spatRelate(): terra engine stub errors with install nudge", {
+    pgs <- .make_pts_store()
+    err <- GiottoUtils::gwith_options(
+        list(giottodisk.spatial_query_engine = "terra"),
+        tryCatch(
+            spatRelate(pgs, .roi(), "intersects") |>
+                storeRead(output = "tibble"),
+            error = function(e) conditionMessage(e)
+        )
+    )
+    expect_match(err, "not yet implemented")
+    expect_match(err, "sedonadb|duckdb")
+})
+
+test_that("spatRelate(): auto engine resolves to an installed backend", {
+    skip_if_not(
+        requireNamespace("sedonadb", quietly = TRUE) ||
+        requireNamespace("duckdb", quietly = TRUE),
+        "no SQL spatial engine installed"
+    )
+    pgs <- .make_pts_store()
+    # Default (auto) should produce results, not error out
+    tbl <- GiottoUtils::gwith_options(
+        list(giottodisk.spatial_query_engine = "auto"),
+        spatRelate(pgs, .roi(), "intersects") |> storeRead(output = "tibble")
+    )
+    expect_setequal(tbl$id, c("a", "b"))
+})

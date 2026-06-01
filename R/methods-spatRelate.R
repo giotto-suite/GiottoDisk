@@ -253,19 +253,23 @@ setMethod(
 )
 
 
-# Evaluation: trim + sedona + collect ids ####
+# Evaluation: trim + run engine + collect ids ####
 #
 # Called by `.pbase_storeread_processing` when it hits a `spat_relate` op.
 # Builds a trimmed copy of the store with @ops[1:i-1] (any prior spat_relate
-# ops swapped for `id_filter` ops carrying cached ids), runs sedonadb on
-# that to evaluate this op's predicate, and returns the surviving id rows
-# as an arrow Table. The caller then `semi_join`s the arrow query with
-# those ids -- arrow stays lazy past the spatial step.
+# ops swapped for `id_filter` ops carrying cached ids), runs the selected
+# engine on that to evaluate this op's predicate, and returns the surviving
+# id rows as an arrow Table. The caller then `semi_join`s the arrow query
+# with those ids -- arrow stays lazy past the spatial step.
+#
+# Engine is resolved per call:
+#   1. If `getOption("giottodisk.spatial_query_engine")` is set to a
+#      specific engine, use it.
+#   2. If set to "auto" (or unset), pick the best available:
+#      sedona > duckdb > terra.
+# Tests can pin a specific engine via `withr::with_options(...)`.
 
 .spat_relate_narrow <- function(store, i, cache) {
-    GiottoUtils::package_check("sedonadb",
-        repository = "github:apache/sedona-db/r/sedonadb")
-
     op <- store@ops[[i]]
     if (is.null(op$y_wkt) && !is.null(op$y_store)) {
         stop("[spat_relate] store-store form is not yet wired in the ",
@@ -274,10 +278,10 @@ setMethod(
     }
 
     # id cols: source_id is included as a safety backstop for any future
-    # union / multi-source geom store (it's free -- sedona injects it as a
-    # per-tile literal, arrow auto-promotes from the hive partition).
-    # row_index is the universal per-store identifier; tile stores
-    # additionally need tile_index since row_index resets per tile.
+    # union / multi-source geom store (it's free -- the SQL engines inject
+    # it as a per-tile literal, arrow auto-promotes from the hive
+    # partition). row_index is the universal per-store identifier; tile
+    # stores additionally need tile_index since row_index resets per tile.
     id_cols <- if (inherits(store, "parquetGeomTileStore")) {
         c("source_id", "row_index", "tile_index")
     } else {
@@ -285,8 +289,8 @@ setMethod(
     }
 
     # Trim @ops to everything before this op. Replace any prior spat_relate
-    # ops with id_filter ops carrying their cached ids, so the sedona compile
-    # doesn't re-evaluate spatial predicates we already have answers for.
+    # ops with id_filter ops carrying their cached ids, so the engine does
+    # not re-evaluate spatial predicates we already have answers for.
     prior_ops <- if (i > 1L) store@ops[seq_len(i - 1L)] else list()
     prior_ops <- lapply(seq_along(prior_ops), function(j) {
         op_j <- prior_ops[[j]]
@@ -301,24 +305,48 @@ setMethod(
     trim_store <- store
     trim_store@ops <- prior_ops
     # User-facing field narrowing (`[, j]` -> `store@fields`) must NOT
-    # apply to the internal sedona evaluation -- we need `geom` available
-    # to compute the spatial predicate regardless of what the caller asked
+    # apply to the internal evaluation -- we need `geom` available to
+    # compute the spatial predicate regardless of what the caller asked
     # for in the final output projection. Set @fields to NULL so
     # `.pstore_lazy_fields` returns NULL and the underlying SELECT is `*`.
     if (.hasSlot(trim_store, "fields")) trim_store@fields <- NULL
 
-    # Compile prior state to sedona, then layer this op's predicate via SQL.
-    # Using sd_sql against the trim store's registered view is symmetric with
-    # the existing `.pstore_to_sedona` SQL-building style and avoids the NSE
-    # gymnastics of sd_filter with a constructed call.
+    engine <- .resolve_spat_relate_engine()
+    switch(engine,
+        "sedona" = .spat_relate_narrow_sedona(trim_store, op, id_cols, store),
+        "duckdb" = .spat_relate_narrow_duckdb(trim_store, op, id_cols, store),
+        "terra"  = stop(
+            "[spat_relate] tileApply+terra engine not yet implemented; ",
+            "install {sedonadb} or {duckdb}.", call. = FALSE),
+        stop(sprintf("[spat_relate] unknown engine: '%s'", engine), call. = FALSE)
+    )
+}
+
+
+# Resolve the spatial-query engine to use for spat_relate narrowing.
+# Honors `giottodisk.spatial_query_engine` option; "auto" picks the best
+# available (sedona > duckdb > terra). The terra fallback is currently a
+# stub -- if auto resolves to "terra" because neither sedonadb nor duckdb
+# is installed, the user gets a clear error from the engine dispatcher.
+.resolve_spat_relate_engine <- function() {
+    opt <- getOption("giottodisk.spatial_query_engine", "auto")
+    if (!identical(opt, "auto")) return(opt)
+    if (requireNamespace("sedonadb", quietly = TRUE)) return("sedona")
+    if (requireNamespace("duckdb", quietly = TRUE))   return("duckdb")
+    "terra"
+}
+
+
+# Sedona engine for spat_relate narrowing.
+# Compiles trim_store via `.pstore_to_sedona`, registers the resulting
+# sdf as a view, layers this op's predicate via raw SQL, collects only
+# the id cols.
+.spat_relate_narrow_sedona <- function(trim_store, op, id_cols, store) {
+    GiottoUtils::package_check("sedonadb",
+        repository = "github:apache/sedona-db/r/sedonadb")
     sdf <- storeRead(trim_store, output = "sedona")
-    # `sdf` already reflects the trim_store's WHERE/SELECT/affine. Register
-    # it under a fresh view name so the predicate we layer here applies on
-    # top of the trim_store's filtered result, not the underlying raw
-    # parquet union.
     view_name <- tolower(paste0("gd_srnarrow_", .make_uid()))
     sedonadb::sd_to_view(sdf, view_name, overwrite = TRUE)
-
     sql_pred <- .sql_relation_fn(op$relation)
     wkt_escaped <- gsub("'", "''", op$y_wkt, fixed = TRUE)
     srid <- .spatrelate_store_srid(store)
@@ -333,5 +361,30 @@ setMethod(
         select_sql, view_name, sql_pred, geom_sql
     )
     ids_df <- sedonadb::sd_collect(sedonadb::sd_sql(sql))
+    arrow::as_arrow_table(ids_df)
+}
+
+
+# DuckDB engine for spat_relate narrowing.
+# Mirrors the sedona path: compile trim_store via `.pstore_to_duckdb`
+# (which already returns a tbl_dbi over the trim state), then layer this
+# op's predicate via raw SQL against the underlying view name. DuckDB's
+# spatial extension's `ST_GeomFromText` takes (VARCHAR [, BOOLEAN]) and
+# has no CRS concept, so SRID is omitted.
+.spat_relate_narrow_duckdb <- function(trim_store, op, id_cols, store) {
+    GiottoUtils::package_check("duckdb")
+    GiottoUtils::package_check("dbplyr")
+    tbl <- storeRead(trim_store, output = "duckdb")
+    conn <- tbl$src$con
+    inner_view <- dbplyr::remote_name(tbl)
+    sql_pred <- .sql_relation_fn(op$relation)
+    wkt_escaped <- gsub("'", "''", op$y_wkt, fixed = TRUE)
+    geom_sql <- sprintf("ST_GeomFromText('%s')", wkt_escaped)
+    select_sql <- paste(sprintf('"%s"', id_cols), collapse = ", ")
+    sql <- sprintf(
+        'SELECT %s FROM "%s" WHERE %s(geom, %s)',
+        select_sql, inner_view, sql_pred, geom_sql
+    )
+    ids_df <- DBI::dbGetQuery(conn, sql)
     arrow::as_arrow_table(ids_df)
 }
