@@ -273,12 +273,15 @@ setMethod(
             call. = FALSE)
     }
 
-    # id cols: row_index is universal on parquetGeomBase; tile stores
+    # id cols: source_id is included as a safety backstop for any future
+    # union / multi-source geom store (it's free -- sedona injects it as a
+    # per-tile literal, arrow auto-promotes from the hive partition).
+    # row_index is the universal per-store identifier; tile stores
     # additionally need tile_index since row_index resets per tile.
     id_cols <- if (inherits(store, "parquetGeomTileStore")) {
-        c("row_index", "tile_index")
+        c("source_id", "row_index", "tile_index")
     } else {
-        "row_index"
+        c("source_id", "row_index")
     }
 
     # Trim @ops to everything before this op. Replace any prior spat_relate

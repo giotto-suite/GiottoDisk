@@ -788,7 +788,8 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
                 # Internal op type — injected by `.spat_relate_narrow` when
                 # a chain has multiple spat_relate ops so we don't re-run
                 # earlier predicates. Registers the cached ids as a sedona
-                # view and adds a tuple-IN subquery on the join keys.
+                # view and adds a correlated EXISTS subquery on the join
+                # keys (DataFusion does not support tuple-IN subqueries).
                 # `sd_to_view` accepts data.frame / nanoarrow, not arrow
                 # Table directly, so coerce here.
                 id_view_name <- tolower(paste0("gd_idf_", .make_uid()))
@@ -797,11 +798,13 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
                     id_view_name, overwrite = TRUE
                 )
                 keys <- unname(op$by)
-                key_tuple_x <- paste(sprintf('"%s"', keys), collapse = ", ")
-                key_select  <- paste(sprintf('"%s"', keys), collapse = ", ")
+                join_conds <- vapply(keys, function(k) {
+                    sprintf('"%s"."%s" = "%s"."%s"',
+                        id_view_name, k, base_view_name, k)
+                }, FUN.VALUE = character(1L))
                 where_clauses <- c(where_clauses, sprintf(
-                    '(%s) IN (SELECT %s FROM "%s")',
-                    key_tuple_x, key_select, id_view_name
+                    'EXISTS (SELECT 1 FROM "%s" WHERE %s)',
+                    id_view_name, paste(join_conds, collapse = " AND ")
                 ))
             },
             "tail"     = ,
