@@ -56,7 +56,7 @@ advance the iterator.
 \seealso{
 \link[tilework:tilePlan]{tilework::tilePlan}
 
-Other tile methods: 
-\code{\link{getBoundedData}()}
+Other tile methods:
+\code{\link{getBoundedData}}
 }
 \concept{tile methods}

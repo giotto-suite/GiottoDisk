@@ -19,7 +19,7 @@ meaning the first row will be assigned index \code{1}. Use non-zero offsets
 when appending to existing indexed data or processing tiles.}
 }
 \value{
-An arrow \link[arrow:RecordBatchReader]{arrow::RecordBatchReader} with the new index column added.
+An arrow \link[arrow:RecordBatchReader]{RecordBatchReader} with the new index column added.
 The indices continue sequentially across all batches.
 }
 \description{

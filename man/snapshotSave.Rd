@@ -3,9 +3,22 @@
 \name{snapshotSave}
 \alias{snapshotSave}
 \alias{snapshotSave,gDirSource,giotto-method}
+\alias{snapshotSave,gDirSource,giottoMulti-method}
 \title{Write Giotto Snapshot}
 \usage{
 \S4method{snapshotSave}{gDirSource,giotto}(
+  src,
+  x,
+  name = format(Sys.time(), "\%Y\%m\%d_giottosave"),
+  method = c("rds", "qs"),
+  method_params = list(),
+  overwrite = FALSE,
+  export_image = TRUE,
+  verbose = NULL,
+  ...
+)
+
+\S4method{snapshotSave}{gDirSource,giottoMulti}(
   src,
   x,
   name = format(Sys.time(), "\%Y\%m\%d_giottosave"),
@@ -39,7 +52,10 @@ external images in the project directory}
 \item{...}{additional params to pass (none implemented)}
 }
 \value{
-TRUE if save completed
+the modified gobject (invisible). Mutated by the internal
+adoption pass — captured by \code{snapshotSave(gDirSource, giottoMulti)}
+so the multi-level \code{.rds} sees post-adoption file handles in each
+child.
 }
 \description{
 Register a gobject snapshot into the source

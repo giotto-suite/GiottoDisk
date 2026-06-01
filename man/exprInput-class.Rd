@@ -6,7 +6,7 @@
 \description{
 Virtual base for raw expression-matrix sources. Subclasses describe a
 format-specific on-disk layout and expose a batch iterator via
-\code{\link[=storeRead]{storeRead()}}; \code{\link[=storeWrite]{storeWrite()}} on a \linkS4class{parquetExprStore} consumes
+\code{\link[=storeRead]{storeRead()}}; \code{\link[=storeWrite]{storeWrite()}} on a \link[=parquetExprStore-class]{parquetExprStore} consumes
 that iterator to materialise a sorted long-format parquet.
 
 Metadata slots (\code{cell_ids}, \code{feat_ids}, \code{n_cells}, \code{n_genes}) are
@@ -28,13 +28,15 @@ during the stream (e.g. wide CSV), the iterator returned by
 }}
 
 \seealso{
-Other store types: 
+Other store types:
 \code{\link{binGefInput-class}},
 \code{\link{cellbinGefInput-class}},
 \code{\link{csvWideInput-class}},
 \code{\link{dataStore-class}},
+\code{\link{edgeInput-class}},
 \code{\link{fileStore-class}},
 \code{\link{mtxInput-class}},
+\code{\link{parquetEdgeStore-class}},
 \code{\link{parquetExprStore-class}},
 \code{\link{parquetStore-class}},
 \code{\link{tenxH5Input-class}},

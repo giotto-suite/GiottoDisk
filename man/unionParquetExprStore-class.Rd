@@ -5,7 +5,7 @@
 \title{Virtual Union of Expression Stores}
 \description{
 Lazy column-wise (cell-wise) concatenation of N
-\linkS4class{parquetExprStore} objects. Substores must share an identical
+\link[=parquetExprStore-class]{parquetExprStore} objects. Substores must share an identical
 \code{feat_ids} vector (same panel, same ordering); \code{cell_ids} accumulate
 across substores and must be globally unique (caller pre-prefixes if
 needed).
@@ -17,7 +17,7 @@ No data is rewritten; substores remain independently usable.
 \section{Slots}{
 
 \describe{
-\item{\code{stores}}{list of \linkS4class{parquetExprStore} objects}
+\item{\code{stores}}{list of \link[=parquetExprStore-class]{parquetExprStore} objects}
 
 \item{\code{cell_ids}}{character. Concatenated cell barcodes.}
 
@@ -31,14 +31,16 @@ No data is rewritten; substores remain independently usable.
 }}
 
 \seealso{
-Other store types: 
+Other store types:
 \code{\link{binGefInput-class}},
 \code{\link{cellbinGefInput-class}},
 \code{\link{csvWideInput-class}},
 \code{\link{dataStore-class}},
+\code{\link{edgeInput-class}},
 \code{\link{exprInput-class}},
 \code{\link{fileStore-class}},
 \code{\link{mtxInput-class}},
+\code{\link{parquetEdgeStore-class}},
 \code{\link{parquetExprStore-class}},
 \code{\link{parquetStore-class}},
 \code{\link{tenxH5Input-class}}

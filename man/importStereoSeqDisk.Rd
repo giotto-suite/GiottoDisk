@@ -18,7 +18,7 @@ importStereoSeqDisk(
 \item{stereoseq_dir}{Stereo-seq output directory}
 
 \item{backend}{a \code{gsource} (typically \code{gDirSource}) project backend.
-Naming matches \code{\link[GiottoClass:create_giotto]{GiottoClass::createGiottoObject()}}'s \code{backend} param.}
+Naming matches \code{\link[GiottoClass:createGiottoObject]{GiottoClass::createGiottoObject()}}'s \code{backend} param.}
 
 \item{type, bin_size, gene_column, negative_y, gef_type}{passed through to
 the parent \code{StereoSeqReader} initializer.}

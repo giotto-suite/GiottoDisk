@@ -12,5 +12,5 @@ gDirSource(path, ...)
 \item{...}{additional params to pass (none implemented)}
 }
 \description{
-Create a \code{gDirSource} object. See \linkS4class{gDirSource} for more information.
+Create a \code{gDirSource} object. See \link[=gDirSource-class]{gDirSource} for more information.
 }

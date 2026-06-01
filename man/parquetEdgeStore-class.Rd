@@ -67,7 +67,7 @@ FALSE = canonical undirected form.}
 \seealso{
 \code{\link[=parquetEdgeStore]{parquetEdgeStore()}}
 
-Other store types: 
+Other store types:
 \code{\link{binGefInput-class}},
 \code{\link{cellbinGefInput-class}},
 \code{\link{csvWideInput-class}},

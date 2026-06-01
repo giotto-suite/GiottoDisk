@@ -6,6 +6,8 @@
 \alias{sourceWrite,gDirSource,SpatVector-method}
 \alias{sourceWrite,gDirSource,data.frame-method}
 \alias{sourceWrite,gDirSource,ANY-method}
+\alias{sourceWrite,gDirSource,igraph-method}
+\alias{sourceWrite,gDirSource,giotto-method}
 \title{Write Data to a \code{gDirSource}}
 \usage{
 \S4method{sourceWrite}{gDirSource,memoryMatrix}(src, data, meta = NULL, store_type = NULL, ...)
@@ -27,6 +29,10 @@
 )
 
 \S4method{sourceWrite}{gDirSource,ANY}(src, data, meta = NULL, ...)
+
+\S4method{sourceWrite}{gDirSource,igraph}(src, data, meta = NULL, ...)
+
+\S4method{sourceWrite}{gDirSource,giotto}(src, data, ...)
 }
 \arguments{
 \item{src}{\code{gsource} object. Used to provide default save locations
@@ -43,6 +49,9 @@ managed artifact.}
 }
 \value{
 written \code{store} object
+
+\code{giotto} with \verb{@source = src} and backable subobjects
+disk-backed.
 }
 \description{
 Write data to a \link{gDirSource} managed project directory. Defaults for
@@ -53,6 +62,17 @@ different data types are settable via global options:
 \item \emph{dataframes:} \code{"giotto.gdsrc_dataframe_format"} (default = "parquet")
 \item \emph{spatvector:} \code{"giotto.gdsrc_spatvector_format"} (default = "parquetGeom")
 }
+
+giotto dispatch: promotes an in-memory \code{giotto} object to a
+disk-backed one. Builds a fresh \code{giotto} with \code{src} attached as the
+backend, then re-attaches every data subobject via \code{\link[GiottoClass:setGiotto]{setGiotto()}}.
+Each backend-aware setter (setExpression / setPolygonInfo /
+setFeatureInfo / setNearestNetwork / setSpatialNetwork) routes its
+in-memory subobject to the corresponding disk-backed store
+(parquetExprStore / parquetGeomStore / parquetEdgeStore).
+
+Subobjects whose setters don't (yet) have backend-aware write
+logic stay in-memory but are still attached to the new gobject.
 }
 \examples{
 testdir <- file.path(tempdir(), "testdirsource")
@@ -75,7 +95,7 @@ storeRead(store) # default output is an arrow query
 storeRead(store, output = "tibble") # pull into memory as tibble
 }
 \seealso{
-Other sourceWrite methods: 
-\code{\link{sourceWrite}()}
+Other sourceWrite methods:
+\code{\link[=sourceWrite]{sourceWrite()}}
 }
 \concept{sourceWrite methods}

@@ -7,7 +7,7 @@
 \description{
 S4 class for \strong{disk-backed expression matrices} stored as long-format
 Apache Parquet, designed for streaming read access. Unlike
-\linkS4class{parquetStore} (which stores arbitrary tabular data with a
+\link[=parquetStore-class]{parquetStore} (which stores arbitrary tabular data with a
 \code{row_index} column), \code{parquetExprStore} represents a sparse cell x gene
 expression matrix using three integer / float columns:\tabular{lll}{
    Column \tab Type \tab Meaning \cr
@@ -84,14 +84,16 @@ using the recorded indices, so chained subsets stay cheap.
 \seealso{
 \code{\link[=parquetExprStore]{parquetExprStore()}}, \code{\link[=mtxInput]{mtxInput()}}
 
-Other store types: 
+Other store types:
 \code{\link{binGefInput-class}},
 \code{\link{cellbinGefInput-class}},
 \code{\link{csvWideInput-class}},
 \code{\link{dataStore-class}},
+\code{\link{edgeInput-class}},
 \code{\link{exprInput-class}},
 \code{\link{fileStore-class}},
 \code{\link{mtxInput-class}},
+\code{\link{parquetEdgeStore-class}},
 \code{\link{parquetStore-class}},
 \code{\link{tenxH5Input-class}},
 \code{\link{unionParquetExprStore-class}}

@@ -53,8 +53,8 @@ Aggregates the output of \code{\link[=calculateOverlap]{calculateOverlap()}} int
 count matrix, written as a Matrix Market (.mtx) directory. The directory
 layout is 10x-compatible (\code{matrix.mtx}, \code{barcodes.tsv}, \code{features.tsv}) and
 can be loaded directly by \code{\link[BPCells:import_matrix_market]{BPCells::import_matrix_market()}},
-\code{\link[Matrix:externalFormats]{Matrix::readMM()}}, or Python's \code{scipy.io.mmread}.
+\code{\link[Matrix:readMM]{Matrix::readMM()}}, or Python's \code{scipy.io.mmread}.
 
 To obtain a BPCells on-disk matrix pass the returned path to
-\code{\link[BPCells:import_matrix_market]{BPCells::import_matrix_market()}} followed by \code{\link[BPCells:matrix_io]{BPCells::write_matrix_dir()}}.
+\code{\link[BPCells:import_matrix_market]{BPCells::import_matrix_market()}} followed by \code{\link[BPCells:write_matrix_dir]{BPCells::write_matrix_dir()}}.
 }

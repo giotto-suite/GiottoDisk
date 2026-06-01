@@ -28,7 +28,7 @@ information.
 }
 }
 \seealso{
-Other sourceWrite methods: 
+Other sourceWrite methods:
 \code{\link{sourceWrite-gDirSource}}
 }
 \concept{sourceWrite methods}

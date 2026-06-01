@@ -14,26 +14,26 @@ nnSearchInput(nn, cell_ids, node_meta = NULL)
 \item{node_meta}{data.frame or NULL. Optional per-node sidecar.}
 }
 \value{
-\linkS4class{nnSearchInput} object.
+\link[=nnSearchInput-class]{nnSearchInput} object.
 }
 \description{
 Expects a list with \code{nn.idx} (n x k integer) and \code{nn.dists}
 (n x k float). Each input row expands to k edges at write time.
 }
 \seealso{
-Other store constructors: 
-\code{\link{binGefInput}},
-\code{\link{cellbinGefInput}},
-\code{\link{csvWideInput}},
-\code{\link{edgeDTInput}},
-\code{\link{fileStore}},
-\code{\link{igraphInput}},
-\code{\link{mtxInput}},
-\code{\link{parquetEdgeStore}},
-\code{\link{parquetExprStore}},
-\code{\link{parquetStore}},
-\code{\link{storeCreate}()},
-\code{\link{tenxH5Input}},
-\code{\link{unionParquetExprStore}}
+Other store constructors:
+\code{\link[=binGefInput]{binGefInput()}},
+\code{\link[=cellbinGefInput]{cellbinGefInput()}},
+\code{\link[=csvWideInput]{csvWideInput()}},
+\code{\link[=edgeDTInput]{edgeDTInput()}},
+\code{\link[=fileStore]{fileStore()}},
+\code{\link[=igraphInput]{igraphInput()}},
+\code{\link[=mtxInput]{mtxInput()}},
+\code{\link[=parquetEdgeStore]{parquetEdgeStore()}},
+\code{\link[=parquetExprStore]{parquetExprStore()}},
+\code{\link[=parquetStore]{parquetStore()}},
+\code{\link[=storeCreate]{storeCreate()}},
+\code{\link[=tenxH5Input]{tenxH5Input()}},
+\code{\link[=unionParquetExprStore]{unionParquetExprStore()}}
 }
 \concept{store constructors}
