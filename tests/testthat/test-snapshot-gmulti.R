@@ -103,6 +103,50 @@ test_that("snapshotSave on a multi with in-memory child writes only multi .rds",
 })
 
 
+test_that("snapshotDelete on a giottoMulti cascades to per-child snapshots", {
+    td <- tempfile("multi_delete_"); dir.create(td)
+    on.exit(unlink(td, recursive = TRUE), add = TRUE)
+
+    mg <- .mk_test_multi(td)
+    snapshotSave(mg@source, mg, name = "snap_v1", verbose = FALSE)
+
+    # Pre-condition: multi + per-child snapshots all exist on disk
+    multi_rds <- file.path(mg@source@path, "giottosave", "snap_v1.rds")
+    s1_rds <- file.path(mg@objects$s1@source@path, "giottosave", "snap_v1_s1.rds")
+    s2_rds <- file.path(mg@objects$s2@source@path, "giottosave", "snap_v1_s2.rds")
+    expect_true(all(file.exists(c(multi_rds, s1_rds, s2_rds))))
+
+    # Delete the multi → per-child snapshots are removed too
+    snapshotDelete(mg@source, "snap_v1")
+    expect_false(file.exists(multi_rds))
+    expect_false(file.exists(s1_rds))
+    expect_false(file.exists(s2_rds))
+})
+
+
+test_that("snapshotDelete cascade is best-effort: parent removed even if a child fails", {
+    td <- tempfile("multi_delete_be_"); dir.create(td)
+    on.exit(unlink(td, recursive = TRUE), add = TRUE)
+
+    mg <- .mk_test_multi(td)
+    snapshotSave(mg@source, mg, name = "snap_v1", verbose = FALSE)
+
+    # Pre-emptively delete one child snapshot to force a cascade failure
+    s1_rds <- file.path(mg@objects$s1@source@path, "giottosave", "snap_v1_s1.rds")
+    unlink(s1_rds)
+    multi_rds <- file.path(mg@source@path, "giottosave", "snap_v1.rds")
+    s2_rds <- file.path(mg@objects$s2@source@path, "giottosave", "snap_v1_s2.rds")
+    expect_true(file.exists(multi_rds))
+    expect_true(file.exists(s2_rds))
+
+    # Best-effort: warn on missing s1 cascade, still delete multi + s2
+    expect_warning(snapshotDelete(mg@source, "snap_v1"),
+                   "child snapshot 'snap_v1_s1'.*failed")
+    expect_false(file.exists(multi_rds))
+    expect_false(file.exists(s2_rds))
+})
+
+
 test_that("multi snapshotSave overwrite gate fires on name collision", {
     td <- tempfile("multi_overwrite_"); dir.create(td)
     on.exit(unlink(td, recursive = TRUE), add = TRUE)

@@ -32,12 +32,42 @@ setMethod("snapshotDelete", signature("gDirSource", "character"), function(src, 
         full.names = TRUE,
         recursive = FALSE
     )
-  if (length(save_path) == 0L) {
-      stop(
-          sprintf("[snapshotDelete] no snapshot found with name '%s'\n", name),
-          call. = FALSE
-      )
-  }
+    if (length(save_path) == 0L) {
+        stop(
+            sprintf("[snapshotDelete] no snapshot found with name '%s'\n", name),
+            call. = FALSE
+        )
+    }
+
+    # Cascade child deletes for giottoMulti snapshots. The multi save
+    # produces a snapshot per child under "<name>_<child_name>" in each
+    # child's own vault — without cascade, deleting the multi here would
+    # orphan all those child .rds files on disk and leave their
+    # protection tags pinning artifacts indefinitely.
+    #
+    # Loading a backed snapshot is cheap (gobjects hold file handles,
+    # not data). Best-effort: a child whose source is unreachable or
+    # whose snapshot was already deleted produces a warning, not a
+    # hard error — the multi delete always proceeds.
+    snap <- tryCatch(
+        .load_serialized(save_path[[1L]]),
+        error = function(e) NULL
+    )
+    if (inherits(snap, "giottoMulti")) {
+        for (child_name in names(snap@objects)) {
+            child <- snap@objects[[child_name]]
+            if (is.null(child@source)) next
+            child_snap_name <- paste0(name, "_", child_name)
+            tryCatch(
+                snapshotDelete(child@source, child_snap_name),
+                error = function(e) warning(sprintf(
+                    "[snapshotDelete] child snapshot '%s' delete failed: %s",
+                    child_snap_name, conditionMessage(e)
+                ), call. = FALSE)
+            )
+        }
+    }
+
     unlink(save_path, force = TRUE)
     invisible(TRUE)
 })
