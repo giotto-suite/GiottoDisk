@@ -37,7 +37,7 @@ Recommended chunk size (integer), returned invisibly.
 }
 \description{
 Estimates the optimal \code{chunk_size} for streaming reads of a
-\linkS4class{parquetExprStore} so that each pipeline pass stays within a
+\link[=parquetExprStore-class]{parquetExprStore} so that each pipeline pass stays within a
 target fraction of currently free RAM. Call this once before opening
 a dataset and pass the result to the store constructor.
 

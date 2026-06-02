@@ -2,12 +2,15 @@
 % Please edit documentation in R/methods-sourceAdopt.R
 \name{sourceAdopt}
 \alias{sourceAdopt}
+\alias{sourceAdopt,gDirSource,parquetEdgeStore-method}
 \alias{sourceAdopt,gDirSource,SpatRaster-method}
 \alias{sourceAdopt,gDirSource,unionParquetStore-method}
 \alias{sourceAdopt,gDirSource,ANY-method}
 \title{Adopt a Store into a Source}
 \usage{
 \S4method{sourceAdopt}{gDirSource,fileStore}(src, store, meta = NULL, giottosave = NULL, depends = NULL, ...)
+
+\S4method{sourceAdopt}{gDirSource,parquetEdgeStore}(src, store, meta = NULL, giottosave = NULL, depends = NULL, ...)
 
 \S4method{sourceAdopt}{gDirSource,SpatRaster}(src, store, meta = NULL, giottosave = NULL, ...)
 

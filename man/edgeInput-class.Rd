@@ -4,8 +4,8 @@
 \alias{edgeInput-class}
 \title{Base class for edge-table inputs}
 \description{
-Virtual parent of \linkS4class{edgeDTInput}, \linkS4class{igraphInput},
-\linkS4class{nnSearchInput}.
+Virtual parent of \link[=edgeDTInput-class]{edgeDTInput}, \link[=igraphInput-class]{igraphInput},
+\link[=nnSearchInput-class]{nnSearchInput}.
 }
 \section{Slots}{
 
@@ -20,7 +20,7 @@ column matching the input's vertex IDs.}
 }}
 
 \seealso{
-Other store types: 
+Other store types:
 \code{\link{binGefInput-class}},
 \code{\link{cellbinGefInput-class}},
 \code{\link{csvWideInput-class}},

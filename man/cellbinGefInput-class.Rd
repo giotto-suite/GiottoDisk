@@ -21,13 +21,15 @@ named gene groups intact.}
 }}
 
 \seealso{
-Other store types: 
+Other store types:
 \code{\link{binGefInput-class}},
 \code{\link{csvWideInput-class}},
 \code{\link{dataStore-class}},
+\code{\link{edgeInput-class}},
 \code{\link{exprInput-class}},
 \code{\link{fileStore-class}},
 \code{\link{mtxInput-class}},
+\code{\link{parquetEdgeStore-class}},
 \code{\link{parquetExprStore-class}},
 \code{\link{parquetStore-class}},
 \code{\link{tenxH5Input-class}},

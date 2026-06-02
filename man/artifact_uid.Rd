@@ -5,7 +5,7 @@
 \alias{uid}
 \title{Artifact Unique Identifier}
 \description{
-Artifacts are tracked in \linkS4class{gDirSource} using an unique identifier.
+Artifacts are tracked in \link[=gDirSource-class]{gDirSource} using an unique identifier.
 These are randomized alphanumeric strings of length 8 that can
 additionally be tagged with the process ID (pid) and node ID
 that generated it. Only the pid is tagged by default, but the
