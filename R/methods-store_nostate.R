@@ -95,6 +95,7 @@ setMethod(".store_nostate", "unionParquetGeomStore", function(x, ...) {
 # zeroed.
 setMethod(".store_nostate", "unionParquetExprStore", function(x, ...) {
     x@params <- list()
+    x@ops    <- list()
     x@stores <- lapply(x@stores, .store_nostate)
     x
 })

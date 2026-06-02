@@ -338,9 +338,19 @@ setMethod("[",
             } else {
                 x@gene_idx[i_int]
             }
-            x@feat_ids <- x@feat_ids[i_int]
+            new_feat_ids <- x@feat_ids[i_int]
+            x@feat_ids <- new_feat_ids
             x@gene_idx <- as.integer(new_gene_idx)
             x@n_genes  <- as.numeric(length(x@feat_ids))
+            # Slice gene-axis op tables. Current op kinds have no
+            # gene-axis tables; this is a no-op for norm_libsize_log but
+            # generic for future kinds (e.g. center_scale_genes).
+            if (length(x@ops) > 0L) {
+                surviving_genes <- data.table::data.table(
+                    feat_id = as.character(new_feat_ids))
+                x@ops <- .pe_slice_ops(x@ops, axis = "gene",
+                    surviving_keys = surviving_genes)
+            }
         }
         if (!missing(j)) {
             j_int <- .resolve_subset_idx(j, x@cell_ids, "col (cell)")
@@ -352,6 +362,17 @@ setMethod("[",
             x@cell_ids <- x@cell_ids[j_int]
             x@cell_idx <- as.integer(new_cell_idx)
             x@n_cells  <- as.numeric(length(x@cell_ids))
+            # Slice cell-axis op tables. Composite key (source_id,
+            # orig_row_id); source_id is constant (= x@uid) for a single
+            # store.
+            if (length(x@ops) > 0L) {
+                surviving_cells <- data.table::data.table(
+                    source_id   = rep_len(as.character(x@uid),
+                                          length(new_cell_idx)),
+                    orig_row_id = as.integer(new_cell_idx))
+                x@ops <- .pe_slice_ops(x@ops, axis = "cell",
+                    surviving_keys = surviving_cells)
+            }
         }
         x
     }
@@ -390,6 +411,12 @@ setMethod("storeRead", signature("unionParquetExprStore"), function(store,
     filt_expr <- .union_substore_filter_expr(store@stores)
     if (!is.null(filt_expr)) {
         atab <- dplyr::filter(atab, !!filt_expr)
+    }
+    # Apply union-level @ops chain. Composite (source_id, orig_row_id)
+    # cell-axis keys span all substores in a single join, identical to
+    # the single-store path. No per-substore dispatch needed.
+    if (length(store@ops) > 0L) {
+        atab <- .pe_apply_ops(atab, store@ops)
     }
 
     if (!is.null(fields)) atab <- dplyr::select(atab, dplyr::all_of(fields))
@@ -477,7 +504,9 @@ setMethod("dimnames", "unionParquetExprStore",
 # j (cells) — mapped from union positions to per-substore positions via
 # cumulative offsets; substores that get zero cells after the subset
 # are dropped. Result is rebuilt through the constructor for invariant
-# checks.
+# checks. Union-level @ops survive and get axis-sliced (cell axis uses
+# the composite (source_id, orig_row_id) key spanning surviving
+# substores; gene axis uses surviving feat_ids).
 
 #' @export
 setMethod("[",
@@ -508,7 +537,35 @@ setMethod("[",
             }
             new_stores <- kept
         }
-        unionParquetExprStore(new_stores)
+        new_union <- unionParquetExprStore(new_stores)
+
+        # Inherit + slice union-level @ops along the axes being narrowed.
+        # Substore @ops stay empty by constraint; only the union carries
+        # ops, and slicing applies on cell axis with the composite
+        # (source_id, orig_row_id) key spanning surviving substores.
+        new_union@ops <- x@ops
+        if (length(new_union@ops) > 0L) {
+            if (!missing(i)) {
+                surviving_genes <- data.table::data.table(
+                    feat_id = as.character(new_union@feat_ids))
+                new_union@ops <- .pe_slice_ops(new_union@ops,
+                    axis = "gene", surviving_keys = surviving_genes)
+            }
+            if (!missing(j)) {
+                surviving_cells <- data.table::rbindlist(lapply(
+                    new_stores, function(s) {
+                        ci <- if (length(s@cell_idx) > 0L) s@cell_idx
+                              else seq_len(as.integer(s@n_cells))
+                        data.table::data.table(
+                            source_id   = rep_len(as.character(s@uid),
+                                                  length(ci)),
+                            orig_row_id = as.integer(ci))
+                    }))
+                new_union@ops <- .pe_slice_ops(new_union@ops,
+                    axis = "cell", surviving_keys = surviving_cells)
+            }
+        }
+        new_union
     }
 )
 
