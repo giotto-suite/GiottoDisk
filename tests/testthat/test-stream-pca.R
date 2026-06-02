@@ -124,3 +124,33 @@ test_that("irlba and exact pcaParam variants error on parquet backend", {
         "not supported for streaming"
     )
 })
+
+
+test_that("PCA band loop dispatches via lapply_flex; sequential vs multisession produce identical output", {
+    skip_if_not_installed("Giotto")
+    skip_if_not_installed("future")
+    mat <- .tiny_mat(seed = 41)
+    pe  <- .setup_normalized_pe(mat)
+    hvg <- rownames(mat)[1:30]
+
+    # Sequential plan (default) — baseline.
+    future::plan(future::sequential)
+    ref <- suppressWarnings(GiottoClass::reduceData(pe,
+        Giotto::pcaParam("random", ncp = 8, feats_to_use = hvg,
+                          center = TRUE, scale = FALSE,
+                          set_seed = TRUE, seed_number = 42L,
+                          n_oversamples = 10L, n_power_iter = 2L)))
+
+    # multisession with 2 workers — same numerical output expected.
+    future::plan(future::multisession, workers = 2L)
+    on.exit(future::plan(future::sequential), add = TRUE)
+    par <- suppressWarnings(GiottoClass::reduceData(pe,
+        Giotto::pcaParam("random", ncp = 8, feats_to_use = hvg,
+                          center = TRUE, scale = FALSE,
+                          set_seed = TRUE, seed_number = 42L,
+                          n_oversamples = 10L, n_power_iter = 2L)))
+
+    expect_equal(ref$d, par$d, tolerance = 1e-10)
+    expect_equal(ref$u, par$u, tolerance = 1e-10)
+    expect_equal(ref$v, par$v, tolerance = 1e-10)
+})

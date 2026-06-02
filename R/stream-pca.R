@@ -162,51 +162,62 @@ setMethod("reduceData",
     }
 
     # ---- Forward: Y = (A_norm - 1·means^T) · M  --------------------------
+    # ---- band spec list (shared by forward + backward) -------------------
+    # Each band is independent — bands write to disjoint Y[band, ] slices in
+    # .forward and contribute additive (Z, G, cs_Y) reductions in .backward.
+    # Dispatched via GiottoUtils::lapply_flex so the user can opt in to
+    # parallel execution by setting `future::plan(multisession, ...)` (or
+    # similar) outside this call. With the default sequential plan, runs
+    # serially with no behavior change vs the original while-loop.
+    band_specs <- lapply(seq.int(1L, n_cells, by = chunk_size), function(cs) {
+        list(cs = cs, ce = min(cs + chunk_size - 1L, n_cells))
+    })
+
+    # ---- Forward: Y = (A_norm - 1·means^T) · M  --------------------------
     .forward <- function(M) {
         m <- ncol(M)
         correction <- if (center) as.numeric(means %*% M)
                        else numeric(m)
-        Y <- matrix(0.0, nrow = n_cells, ncol = m)
-        cs <- 1L
-        while (cs <= n_cells) {
-            ce <- min(cs + chunk_size - 1L, n_cells)
-            A  <- .read_chunk_norm_hvg(cs, ce)
-            chunk_n <- ce - cs + 1L
-            if (!is.null(A)) {
-                Yc <- as.matrix(A %*% M)
-                if (center) {
-                    Yc <- Yc - matrix(correction, nrow = chunk_n,
-                                      ncol = m, byrow = TRUE)
-                }
-                Y[cs:ce, ] <- Yc
-            } else if (center) {
-                Y[cs:ce, ] <- -matrix(correction, nrow = chunk_n,
-                                       ncol = m, byrow = TRUE)
+        # Each worker pins arrow to a single thread (avoids
+        # n_workers × arrow_cpu_count oversubscription).
+        parts <- GiottoUtils::lapply_flex(band_specs, function(spec) {
+            arrow::set_cpu_count(1L)
+            A <- .read_chunk_norm_hvg(spec$cs, spec$ce)
+            chunk_n <- spec$ce - spec$cs + 1L
+            Yc <- if (!is.null(A)) as.matrix(A %*% M) else {
+                if (center) matrix(0.0, chunk_n, m) else NULL
             }
-            cs <- ce + 1L
-        }
+            if (!is.null(Yc) && center) {
+                Yc <- Yc - matrix(correction, nrow = chunk_n,
+                                  ncol = m, byrow = TRUE)
+            }
+            list(cs = spec$cs, ce = spec$ce, Yc = Yc)
+        })
+        Y <- matrix(0.0, nrow = n_cells, ncol = m)
+        for (p in parts) if (!is.null(p$Yc)) Y[p$cs:p$ce, ] <- p$Yc
         Y
     }
 
     # ---- Backward: returns Z = A_norm^T · Y  +  Gram G = Y^T Y -----------
     .backward <- function(Y_mat) {
         m <- ncol(Y_mat)
-        Z <- matrix(0.0, nrow = P_hvg, ncol = m)
-        G <- matrix(0.0, nrow = m,     ncol = m)
-        cs_Y <- numeric(m)
-        cs <- 1L
-        while (cs <= n_cells) {
-            ce <- min(cs + chunk_size - 1L, n_cells)
-            A  <- .read_chunk_norm_hvg(cs, ce)
-            chunk_n <- ce - cs + 1L
-            Yc <- Y_mat[cs:ce, , drop = FALSE]
-            G  <- G + crossprod(Yc)
-            cs_Y <- cs_Y + colSums(Yc)
-            if (!is.null(A)) {
-                Z <- Z + as.matrix(Matrix::crossprod(A, Yc))
+        parts <- GiottoUtils::lapply_flex(band_specs, function(spec) {
+            arrow::set_cpu_count(1L)
+            A <- .read_chunk_norm_hvg(spec$cs, spec$ce)
+            Yc <- Y_mat[spec$cs:spec$ce, , drop = FALSE]
+            G_part    <- crossprod(Yc)
+            cs_Y_part <- colSums(Yc)
+            Z_part <- if (!is.null(A)) {
+                as.matrix(Matrix::crossprod(A, Yc))
+            } else {
+                matrix(0.0, P_hvg, m)
             }
-            cs <- ce + 1L
-        }
+            list(Z = Z_part, G = G_part, cs_Y = cs_Y_part)
+        })
+        # Reduce additive contributions across bands.
+        Z    <- Reduce(`+`, lapply(parts, `[[`, "Z"))
+        G    <- Reduce(`+`, lapply(parts, `[[`, "G"))
+        cs_Y <- Reduce(`+`, lapply(parts, `[[`, "cs_Y"))
         if (center) Z <- Z - tcrossprod(means, cs_Y)  # implicit centering
         list(Z = Z, G = G)
     }
