@@ -89,6 +89,7 @@ Collate:
     'stream-filter.R'
     'utils-pestore-ops.R'
     'stream-hvf.R'
+    'stream-labelProportions.R'
     'stream-normalize.R'
     'stream-pca.R'
     'stream-qc.R'
