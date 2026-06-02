@@ -38,8 +38,16 @@ NULL
 #' @slot uid character. Auto-generated unique ID for artifact tracking.
 #' @slot read_fun function. Preset to `arrow::open_dataset()`.
 #' @slot params list. Reserved for downstream pipeline metadata
-#'   (e.g. JIT scale factors after `sc_normalize`, HVG indices after
-#'   `sc_hvg`).
+#'   (e.g. HVG indices after `sc_hvg`). Not used for normalization recipes
+#'   anymore — those live on `@ops`.
+#' @slot ops list. Ordered chain of lazy arrow step recipes. Each entry
+#'   is a pure-data `list(type, ...params)` record (no closures). At
+#'   `storeRead()` time the executor `.pe_do_op()` translates each record
+#'   into composed arrow steps applied to the lazy query; the whole chain
+#'   compiles into one arrow plan executed once at collect / output
+#'   dispatch. Records survive `saveRDS` cleanly. Empty by default;
+#'   populated by `processData()` methods (libraryNorm, logNorm, ...).
+#'   See `R/utils-pestore-ops.R` for the op type registry.
 #' @slot n_cells numeric. Number of cells in the dataset
 #'   (length of `cell_ids`).
 #' @slot n_genes numeric. Number of genes / features
@@ -78,7 +86,8 @@ setClass("parquetExprStore",
         feat_ids   = "character",
         cell_idx   = "integer",
         gene_idx   = "integer",
-        chunk_size = "numeric"
+        chunk_size = "numeric",
+        ops        = "list"
     ),
     prototype = list(
         n_cells    = 0,
@@ -87,7 +96,8 @@ setClass("parquetExprStore",
         feat_ids   = character(0L),
         cell_idx   = integer(0L),
         gene_idx   = integer(0L),
-        chunk_size = 250000
+        chunk_size = 250000,
+        ops        = list()
     )
 )
 

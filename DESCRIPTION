@@ -87,6 +87,7 @@ Collate:
     'methods-store_nostate.R'
     'methods-transforms.R'
     'stream-filter.R'
+    'utils-pestore-ops.R'
     'stream-hvf.R'
     'stream-normalize.R'
     'stream-pca.R'

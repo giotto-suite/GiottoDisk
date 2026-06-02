@@ -37,8 +37,17 @@ handles both transparently.}
 \item{\code{read_fun}}{function. Preset to \code{arrow::open_dataset()}.}
 
 \item{\code{params}}{list. Reserved for downstream pipeline metadata
-(e.g. JIT scale factors after \code{sc_normalize}, HVG indices after
-\code{sc_hvg}).}
+(e.g. HVG indices after \code{sc_hvg}). Not used for normalization recipes
+anymore — those live on \verb{@ops}.}
+
+\item{\code{ops}}{list. Ordered chain of lazy arrow step recipes. Each entry
+is a pure-data \code{list(type, ...params)} record (no closures). At
+\code{storeRead()} time the executor \code{.pe_do_op()} translates each record
+into composed arrow steps applied to the lazy query; the whole chain
+compiles into one arrow plan executed once at collect / output
+dispatch. Records survive \code{saveRDS} cleanly. Empty by default;
+populated by \code{processData()} methods (libraryNorm, logNorm, ...).
+See \code{R/utils-pestore-ops.R} for the op type registry.}
 
 \item{\code{n_cells}}{numeric. Number of cells in the dataset
 (length of \code{cell_ids}).}

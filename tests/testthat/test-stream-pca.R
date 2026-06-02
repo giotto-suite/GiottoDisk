@@ -19,14 +19,8 @@
     # Apply normalize recipe to the store (matches in-memory math)
     libsz <- as.numeric(Matrix::colSums(mat))
     libsz[libsz == 0] <- 1
-    pe@params$norm <- list(
-        method        = "library_size",
-        scalefactor   = 1e4,
-        scale_factors = 1e4 / libsz,
-        log           = TRUE,
-        base          = 2,
-        offset        = 1
-    )
+    pe@ops <- list(GiottoDisk:::.pe_norm_libsize_log_record(
+        pe, scalef = 1e4 / libsz, log = TRUE, base = 2))
     pe
 }
 
