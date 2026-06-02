@@ -5,7 +5,7 @@
 \title{Virtual Union of Expression Stores}
 \description{
 Lazy column-wise (cell-wise) concatenation of N
-\linkS4class{parquetExprStore} objects. Substores must share an identical
+\link[=parquetExprStore-class]{parquetExprStore} objects. Substores must share an identical
 \code{feat_ids} vector (same panel, same ordering); \code{cell_ids} accumulate
 across substores and must be globally unique (caller pre-prefixes if
 needed).
@@ -17,7 +17,7 @@ No data is rewritten; substores remain independently usable.
 \section{Slots}{
 
 \describe{
-\item{\code{stores}}{list of \linkS4class{parquetExprStore} objects}
+\item{\code{stores}}{list of \link[=parquetExprStore-class]{parquetExprStore} objects}
 
 \item{\code{cell_ids}}{character. Concatenated cell barcodes.}
 
@@ -28,17 +28,26 @@ No data is rewritten; substores remain independently usable.
 \item{\code{n_genes}}{numeric. Shared feature count.}
 
 \item{\code{params}}{list. Reserved for downstream pipeline metadata.}
+
+\item{\code{ops}}{list. Ordered chain of lazy arrow step recipes. Mirrors
+\code{parquetExprStore@ops} — same op record schema, same \code{.pe_do_op}
+executor. Composite (source_id, orig_row_id) cell-axis keys let one
+op table span all substores in a single arrow join. Substores must
+have empty \verb{@ops} at union construction time (see constructor); the
+union's own \verb{@ops} carries any subsequent normalization recipes.}
 }}
 
 \seealso{
-Other store types: 
+Other store types:
 \code{\link{binGefInput-class}},
 \code{\link{cellbinGefInput-class}},
 \code{\link{csvWideInput-class}},
 \code{\link{dataStore-class}},
+\code{\link{edgeInput-class}},
 \code{\link{exprInput-class}},
 \code{\link{fileStore-class}},
 \code{\link{mtxInput-class}},
+\code{\link{parquetEdgeStore-class}},
 \code{\link{parquetExprStore-class}},
 \code{\link{parquetStore-class}},
 \code{\link{tenxH5Input-class}}

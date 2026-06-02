@@ -23,7 +23,7 @@ unionParquetExprStore(stores)
 \item{stores}{list of \code{parquetExprStore} objects}
 }
 \value{
-A \linkS4class{unionParquetExprStore} object.
+A \link[=unionParquetExprStore-class]{unionParquetExprStore} object.
 }
 \description{
 Validates that all substores share an identical \code{feat_ids} vector,
@@ -34,15 +34,19 @@ Equivalent to \code{cbind2()} over \code{parquetExprStore} objects — see also
 the \code{cbind2} methods.
 }
 \seealso{
-Other store constructors: 
-\code{\link{binGefInput}},
-\code{\link{cellbinGefInput}},
-\code{\link{csvWideInput}},
-\code{\link{fileStore}},
-\code{\link{mtxInput}},
-\code{\link{parquetExprStore}},
-\code{\link{parquetStore}},
-\code{\link{storeCreate}()},
-\code{\link{tenxH5Input}}
+Other store constructors:
+\code{\link[=binGefInput]{binGefInput()}},
+\code{\link[=cellbinGefInput]{cellbinGefInput()}},
+\code{\link[=csvWideInput]{csvWideInput()}},
+\code{\link[=edgeDTInput]{edgeDTInput()}},
+\code{\link[=fileStore]{fileStore()}},
+\code{\link[=igraphInput]{igraphInput()}},
+\code{\link[=mtxInput]{mtxInput()}},
+\code{\link[=nnSearchInput]{nnSearchInput()}},
+\code{\link[=parquetEdgeStore]{parquetEdgeStore()}},
+\code{\link[=parquetExprStore]{parquetExprStore()}},
+\code{\link[=parquetStore]{parquetStore()}},
+\code{\link[=storeCreate]{storeCreate()}},
+\code{\link[=tenxH5Input]{tenxH5Input()}}
 }
 \concept{store constructors}

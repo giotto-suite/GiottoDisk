@@ -183,6 +183,12 @@ setMethod(".show_info", signature("parquetExprStore"), function(object, .print =
         info[["subset"]] <- sprintf("cell_idx[%d] gene_idx[%d]",
             length(object@cell_idx), length(object@gene_idx))
     }
+    if (length(object@ops) > 0L) {
+        info[["jit_ops"]] <- paste(
+            vapply(object@ops, function(op) op$type, character(1L)),
+            collapse = " -> "
+        )
+    }
     info[["chunk"]] <- sprintf("%s cells",
         format(object@chunk_size, big.mark = ",", scientific = FALSE))
     if (.print) return(.print_show(object, info))
@@ -212,7 +218,7 @@ setMethod(".show_info", signature("unionParquetExprStore"), function(object, .pr
 .show_key_order <- c(
     "path", "uid", "substores", "geomtype", "extent",
     "columns", "nrows", "tiles", "name",
-    "dim", "feat_ids", "cell_ids", "subset", "chunk",
+    "dim", "feat_ids", "cell_ids", "subset", "jit_ops", "chunk",
     "status"
 )
 

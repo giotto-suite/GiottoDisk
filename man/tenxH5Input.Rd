@@ -23,15 +23,19 @@ Opens the h5 briefly to read \code{barcodes}, \verb{features/\{id,name\}}, and
 for streaming.
 }
 \seealso{
-Other store constructors: 
-\code{\link{binGefInput}},
-\code{\link{cellbinGefInput}},
-\code{\link{csvWideInput}},
-\code{\link{fileStore}},
-\code{\link{mtxInput}},
-\code{\link{parquetExprStore}},
-\code{\link{parquetStore}},
-\code{\link{storeCreate}()},
-\code{\link{unionParquetExprStore}}
+Other store constructors:
+\code{\link[=binGefInput]{binGefInput()}},
+\code{\link[=cellbinGefInput]{cellbinGefInput()}},
+\code{\link[=csvWideInput]{csvWideInput()}},
+\code{\link[=edgeDTInput]{edgeDTInput()}},
+\code{\link[=fileStore]{fileStore()}},
+\code{\link[=igraphInput]{igraphInput()}},
+\code{\link[=mtxInput]{mtxInput()}},
+\code{\link[=nnSearchInput]{nnSearchInput()}},
+\code{\link[=parquetEdgeStore]{parquetEdgeStore()}},
+\code{\link[=parquetExprStore]{parquetExprStore()}},
+\code{\link[=parquetStore]{parquetStore()}},
+\code{\link[=storeCreate]{storeCreate()}},
+\code{\link[=unionParquetExprStore]{unionParquetExprStore()}}
 }
 \concept{store constructors}

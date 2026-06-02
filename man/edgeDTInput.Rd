@@ -24,25 +24,25 @@ edgeDTInput(
 metadata; must have a \code{node_id} column.}
 }
 \value{
-\linkS4class{edgeDTInput} object.
+\link[=edgeDTInput-class]{edgeDTInput} object.
 }
 \description{
 Wrap an in-memory data.table as an edge input
 }
 \seealso{
-Other store constructors: 
-\code{\link{binGefInput}},
-\code{\link{cellbinGefInput}},
-\code{\link{csvWideInput}},
-\code{\link{fileStore}},
-\code{\link{igraphInput}},
-\code{\link{mtxInput}},
-\code{\link{nnSearchInput}},
-\code{\link{parquetEdgeStore}},
-\code{\link{parquetExprStore}},
-\code{\link{parquetStore}},
-\code{\link{storeCreate}()},
-\code{\link{tenxH5Input}},
-\code{\link{unionParquetExprStore}}
+Other store constructors:
+\code{\link[=binGefInput]{binGefInput()}},
+\code{\link[=cellbinGefInput]{cellbinGefInput()}},
+\code{\link[=csvWideInput]{csvWideInput()}},
+\code{\link[=fileStore]{fileStore()}},
+\code{\link[=igraphInput]{igraphInput()}},
+\code{\link[=mtxInput]{mtxInput()}},
+\code{\link[=nnSearchInput]{nnSearchInput()}},
+\code{\link[=parquetEdgeStore]{parquetEdgeStore()}},
+\code{\link[=parquetExprStore]{parquetExprStore()}},
+\code{\link[=parquetStore]{parquetStore()}},
+\code{\link[=storeCreate]{storeCreate()}},
+\code{\link[=tenxH5Input]{tenxH5Input()}},
+\code{\link[=unionParquetExprStore]{unionParquetExprStore()}}
 }
 \concept{store constructors}

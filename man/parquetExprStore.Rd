@@ -38,7 +38,7 @@ chunks.}
 A \code{parquetExprStore} S4 object.
 }
 \description{
-Construct a \linkS4class{parquetExprStore} handle around a long-format Parquet
+Construct a \link[=parquetExprStore-class]{parquetExprStore} handle around a long-format Parquet
 file or directory.  The Parquet must contain \code{row_id}, \code{col_id}, \code{value}
 columns and be sorted by \code{row_id}.
 
@@ -46,15 +46,19 @@ To populate the Parquet from a 10x / Xenium MatrixMarket triple, build
 an \code{\link[=mtxInput]{mtxInput()}} and pass it to \code{\link[=storeWrite]{storeWrite()}}.
 }
 \seealso{
-Other store constructors: 
-\code{\link{binGefInput}},
-\code{\link{cellbinGefInput}},
-\code{\link{csvWideInput}},
-\code{\link{fileStore}},
-\code{\link{mtxInput}},
-\code{\link{parquetStore}},
-\code{\link{storeCreate}()},
-\code{\link{tenxH5Input}},
-\code{\link{unionParquetExprStore}}
+Other store constructors:
+\code{\link[=binGefInput]{binGefInput()}},
+\code{\link[=cellbinGefInput]{cellbinGefInput()}},
+\code{\link[=csvWideInput]{csvWideInput()}},
+\code{\link[=edgeDTInput]{edgeDTInput()}},
+\code{\link[=fileStore]{fileStore()}},
+\code{\link[=igraphInput]{igraphInput()}},
+\code{\link[=mtxInput]{mtxInput()}},
+\code{\link[=nnSearchInput]{nnSearchInput()}},
+\code{\link[=parquetEdgeStore]{parquetEdgeStore()}},
+\code{\link[=parquetStore]{parquetStore()}},
+\code{\link[=storeCreate]{storeCreate()}},
+\code{\link[=tenxH5Input]{tenxH5Input()}},
+\code{\link[=unionParquetExprStore]{unionParquetExprStore()}}
 }
 \concept{store constructors}
