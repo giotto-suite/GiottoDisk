@@ -1,4 +1,5 @@
 #' @include class-parquetExprStore.R
+#' @include utils-pestore-ops.R
 NULL
 
 # stream-pca ####
@@ -20,9 +21,10 @@ NULL
 #   B      <- chol-QR(Z) -> Q^T A
 #   svd(B) -> recover U, d, V; sign-correct V
 #
-# Centering is implicit: column means of normalized data are stored on the
-# store via the HVG step (pe@params$norm_means_hvg) and subtracted
-# analytically inside the forward/backward passes — no densification.
+# Centering is implicit: column means of normalized data are computed by
+# .stream_norm_hvg_means() in a single streaming pass over the @ops chain,
+# then subtracted analytically inside the forward/backward passes — no
+# densification.
 #
 # irlbaPcaParam / exactPcaParam are NOT supported on parquetExprStore;
 # they require Lanczos-style iteration on the full sparse matrix and have
@@ -35,8 +37,7 @@ NULL
 setMethod("reduceData",
     signature(x = "parquetExprStore", param = "randomPcaParam"),
     function(x, param, ...) {
-        if (is.null(x@params$norm) ||
-            is.null(x@params$norm$scale_factors)) {
+        if (!.pe_has_norm_op(x@ops)) {
             stop("[reduceData(parquetExprStore, randomPcaParam)] ",
                  "expression backend has no normalization recipe. Run ",
                  "normalizeGiotto(g, scale_feats = FALSE, scale_cells = FALSE) ",
@@ -104,11 +105,6 @@ setMethod("reduceData",
                                 set_seed = TRUE, seed_number = 1234L) {
     if (set_seed) set.seed(seed_number)
 
-    norm     <- pe@params$norm
-    sf       <- norm$scale_factors
-    log_norm <- isTRUE(norm$log)
-    log_base <- norm$base %null% 2
-
     n_cells <- as.integer(pe@n_cells)
     chunk_size <- as.integer(pe@chunk_size %null% 250000L)
 
@@ -141,30 +137,28 @@ setMethod("reduceData",
     hvg_orig <- .pe_orig_col(hvg_idx, pe)
 
     # ---- Streaming chunk reader (cell-major) -----------------------------
+    # storeRead(pe) returns the arrow query with @ops composed in (v_norm
+    # already projected by the norm_libsize_log op). Tighten the query
+    # with the cell band + HVG col filter, then collect just this chunk.
     .read_chunk_norm_hvg <- function(cell_start, cell_end) {
-        ds <- pe@read_fun(pe@path)   # unfiltered Arrow dataset
-        row_id <- col_id <- value <- NULL  # NSE
-        # Original parquet row_ids for this subset cell band
+        row_id <- col_id <- NULL  # NSE
         orig_rows <- .pe_orig_row(cell_start:cell_end, pe)
-        df <- ds |>
+        df <- storeRead(pe, output = "query") |>
             dplyr::filter(row_id %in% !!orig_rows,
                            col_id %in% !!hvg_orig) |>
             dplyr::collect() |>
             data.table::as.data.table()
         if (nrow(df) == 0L) return(NULL)
-        chunk_n  <- cell_end - cell_start + 1L
-        # Map original col_id -> position in HVG vector
+        chunk_n <- cell_end - cell_start + 1L
+        # Map original col_id -> HVG position; original row_id -> within-band
+        # position. row_id values from the arrow query are still in
+        # original-parquet coords (sf join keyed off orig_row_id).
         gene_map <- match(df$col_id, hvg_orig)
-        # Map original row_id -> within-band position [1..chunk_n]
-        cell_map <- match(df$row_id, orig_rows)
-        A <- Matrix::sparseMatrix(
-            i = cell_map, j = gene_map, x = as.double(df$value),
+        i_within <- match(df$row_id, orig_rows)
+        Matrix::sparseMatrix(
+            i = i_within, j = gene_map, x = as.double(df$v_norm),
             dims = c(chunk_n, P_hvg), repr = "C"
         )
-        sf_chunk <- sf[cell_start:cell_end]
-        A@x <- A@x * sf_chunk[A@i + 1L]
-        if (log_norm) A@x <- log1p(A@x) / log(log_base)
-        A
     }
 
     # ---- Forward: Y = (A_norm - 1·means^T) · M  --------------------------
@@ -265,40 +259,29 @@ setMethod("reduceData",
 # Helper: per-HVG-gene mean of normalized data (one streaming pass).
 # Used for implicit centering inside .forward / .backward.
 .stream_norm_hvg_means <- function(pe, hvg_idx) {
-    norm     <- pe@params$norm
-    sf       <- norm$scale_factors
-    log_norm <- isTRUE(norm$log)
-    log_base <- norm$base %null% 2
     n_cells  <- as.integer(pe@n_cells)
     P_hvg    <- length(hvg_idx)
 
     g_sum <- numeric(P_hvg)
-    row_id <- col_id <- value <- v_norm <- s <- NULL  # NSE
+    col_id <- v_norm <- s <- NULL  # NSE
 
     # Translate hvg_idx (subset positions) to ORIGINAL parquet col_ids
     hvg_orig <- .pe_orig_col(hvg_idx, pe)
 
-    ds_base <- pe@read_fun(pe@path)
-    chunk_size <- as.integer(pe@chunk_size %null% 250000L)
-    for (cs in seq.int(1L, n_cells, by = chunk_size)) {
-        ce <- min(cs + chunk_size - 1L, n_cells)
-        # Original parquet row_ids for this subset cell band
-        orig_rows <- .pe_orig_row(cs:ce, pe)
-        df <- ds_base |>
-            dplyr::filter(row_id %in% !!orig_rows,
-                           col_id %in% !!hvg_orig) |>
-            dplyr::collect() |>
-            data.table::as.data.table()
-        if (nrow(df) == 0L) next
-        # Remap row_id (orig parquet) -> subset position so sf[row_id] works
-        df[, row_id := .pe_remap_row(row_id, pe)]
-        df[, v_norm := value * sf[row_id]]
-        if (log_norm) df[, v_norm := log1p(v_norm) / log(log_base)]
-        agg <- df[, .(s = sum(v_norm)), by = col_id]
-        # Map orig col_id -> position in HVG vector
+    # storeRead returns the arrow query with @ops composed in. Restrict to
+    # HVG cols, aggregate sum(v_norm) per gene at arrow layer, then map
+    # back to HVG positions.
+    agg <- storeRead(pe, output = "query") |>
+        dplyr::filter(col_id %in% !!hvg_orig) |>
+        dplyr::group_by(col_id) |>
+        dplyr::summarise(s = sum(v_norm, na.rm = TRUE)) |>
+        dplyr::collect() |>
+        data.table::as.data.table()
+
+    if (nrow(agg) > 0L) {
         g_idx <- match(agg$col_id, hvg_orig)
         keep <- !is.na(g_idx)
-        g_sum[g_idx[keep]] <- g_sum[g_idx[keep]] + agg$s[keep]
+        g_sum[g_idx[keep]] <- as.numeric(agg$s[keep])
     }
     g_sum / n_cells
 }

@@ -1,4 +1,5 @@
 #' @include class-parquetExprStore.R
+#' @include utils-pestore-ops.R
 NULL
 
 # stream-normalize ####
@@ -6,19 +7,48 @@ NULL
 # existing processData(x, param) dispatch via two setMethod calls:
 #
 #   processData(parquetExprStore, libraryNormParam)
-#       -> parquetExprStore with @params$norm$scale_factors set
+#       -> appends a `norm_libsize_log` op (log = FALSE) to pe@ops
 #   processData(parquetExprStore, logNormParam)
-#       -> parquetExprStore with @params$norm$log set
+#       -> if a `norm_libsize_log` op is already on the chain, flips its
+#          `log = TRUE` flag in place (libsize+log fuse into one op so the
+#          arrow translation does both transforms in a single pass).
+#          Otherwise errors — log-only on raw counts isn't a documented
+#          Giotto streaming path.
 #
-# Neither method rewrites the Parquet file. The recipe lives on the store
-# and is applied on-the-fly by downstream streaming readers (sc_hvg,
-# sc_pca dispatch in later Phase 2 steps). This preserves the JIT
-# normalization design from scstream.
+# Neither method rewrites the Parquet file. The recipe lives as a pure-data
+# record on @ops and is translated to lazy arrow steps at storeRead time
+# (see .pe_do_op).  The recipe survives saveRDS / load cycles without
+# special handling — no closures.
 #
 # zscoreScaleParam is intentionally NOT implemented for parquetExprStore:
 # per-cell / per-gene centering+scaling densifies the sparse matrix and
 # breaks the O(N*k) streaming guarantee. normalizeGiotto already errors
 # upstream when scale_cells / scale_feats = TRUE on a streaming backend.
+
+# Build a `norm_libsize_log` op record. `scalef` is the per-cell scale
+# factor vector in the SAME positional order as `pe@cell_idx` (or
+# 1..n_cells if no subset). The lookup table carries `(source_id,
+# orig_row_id, scalef)` so the same record can span all substores of a
+# union store via one composite-keyed join — row_id restarts per
+# substore so source_id is required to disambiguate. For a single store
+# source_id collapses to a constant (the store's @uid).
+.pe_norm_libsize_log_record <- function(pe, scalef, log = FALSE, base = 2) {
+    orig_row_id <- if (length(pe@cell_idx) > 0L) {
+        as.integer(pe@cell_idx)
+    } else {
+        seq_len(as.integer(pe@n_cells))
+    }
+    list(
+        type   = "norm_libsize_log",
+        scalef = data.table::data.table(
+            source_id   = rep_len(as.character(pe@uid), length(orig_row_id)),
+            orig_row_id = orig_row_id,
+            scalef      = as.numeric(scalef)
+        ),
+        log    = isTRUE(log),
+        base   = as.numeric(base)
+    )
+}
 
 # ---- libraryNormParam: compute & store JIT scale factors -------------------
 
@@ -31,13 +61,21 @@ setMethod("processData",
 
         libsizes <- .stream_colsums(x)
         libsizes[libsizes == 0] <- 1   # guard against div-by-zero
+        scalef <- as.numeric(scalefactor) / libsizes
 
-        norm <- x@params$norm %null% list()
-        norm$method        <- "library_size"
-        norm$scalefactor   <- as.numeric(scalefactor)
-        norm$scale_factors <- as.numeric(scalefactor) / libsizes
-
-        x@params$norm <- norm
+        # If a libsize-log op already exists (re-running normalize),
+        # preserve its log flag and base. Otherwise default to log=FALSE.
+        existing <- .pe_find_op_type(x@ops, "norm_libsize_log")
+        log_flag <- if (is.na(existing)) FALSE else
+                    isTRUE(x@ops[[existing]]$log)
+        log_base <- if (is.na(existing)) 2 else x@ops[[existing]]$base
+        new_op <- .pe_norm_libsize_log_record(x, scalef,
+            log = log_flag, base = log_base)
+        if (is.na(existing)) {
+            x@ops <- c(x@ops, list(new_op))
+        } else {
+            x@ops[[existing]] <- new_op
+        }
         x
     }
 )
@@ -59,11 +97,84 @@ setMethod("processData",
                  "(log1p) to preserve sparsity.", call. = FALSE)
         }
 
-        norm <- x@params$norm %null% list()
-        norm$log    <- TRUE
-        norm$base   <- as.numeric(base)
-        norm$offset <- 1
-        x@params$norm <- norm
+        existing <- .pe_find_op_type(x@ops, "norm_libsize_log")
+        if (is.na(existing)) {
+            stop("[processData(parquetExprStore, logNormParam)] no ",
+                 "library-size normalization op present. Run ",
+                 "processData(libraryNormParam) first; log-only on raw ",
+                 "counts is not a supported streaming path.",
+                 call. = FALSE)
+        }
+        # Fuse log flag onto the existing libsize op.
+        x@ops[[existing]]$log  <- TRUE
+        x@ops[[existing]]$base <- as.numeric(base)
+        x
+    }
+)
+
+
+# ---- libraryNormParam: union store -----------------------------------------
+# Same shape as the parquetExprStore method, but the libsize aggregation
+# spans substores. group_by(source_id, row_id) groups cells in the union
+# view; the resulting per-cell libsize directly produces the (source_id,
+# orig_row_id, scalef) lookup table that the op carries.
+
+#' @rdname processData
+#' @export
+setMethod("processData",
+    signature(x = "unionParquetExprStore", param = "libraryNormParam"),
+    function(x, param, ...) {
+        scalefactor <- param$scalefactor %null% 6e3
+
+        libsizes <- .stream_colsums_union(x)   # data.table(source_id, row_id, s)
+        libsizes[libsizes$s == 0, s := 1]      # guard div-by-zero
+
+        scalef_dt <- data.table::data.table(
+            source_id   = libsizes$source_id,
+            orig_row_id = as.integer(libsizes$row_id),
+            scalef      = as.numeric(scalefactor) / libsizes$s
+        )
+
+        existing <- .pe_find_op_type(x@ops, "norm_libsize_log")
+        log_flag <- if (is.na(existing)) FALSE else
+                    isTRUE(x@ops[[existing]]$log)
+        log_base <- if (is.na(existing)) 2 else x@ops[[existing]]$base
+        new_op <- list(
+            type   = "norm_libsize_log",
+            scalef = scalef_dt,
+            log    = log_flag,
+            base   = log_base
+        )
+        if (is.na(existing)) {
+            x@ops <- c(x@ops, list(new_op))
+        } else {
+            x@ops[[existing]] <- new_op
+        }
+        x
+    }
+)
+
+#' @rdname processData
+#' @export
+setMethod("processData",
+    signature(x = "unionParquetExprStore", param = "logNormParam"),
+    function(x, param, ...) {
+        base   <- param$base   %null% 2
+        offset <- param$offset %null% 1
+        if (!isTRUE(offset == 1)) {
+            stop("[processData(unionParquetExprStore, logNormParam)] ",
+                 "offset != 1 is not supported for streaming.",
+                 call. = FALSE)
+        }
+        existing <- .pe_find_op_type(x@ops, "norm_libsize_log")
+        if (is.na(existing)) {
+            stop("[processData(unionParquetExprStore, logNormParam)] no ",
+                 "library-size normalization op present. Run ",
+                 "processData(libraryNormParam) on the union first.",
+                 call. = FALSE)
+        }
+        x@ops[[existing]]$log  <- TRUE
+        x@ops[[existing]]$base <- as.numeric(base)
         x
     }
 )
@@ -92,6 +203,24 @@ setMethod("processData",
         cs[idx[keep]] <- as.numeric(agg$s[keep])
     }
     cs
+}
+
+
+# ---- internal: streaming per-cell libsize for unionParquetExprStore --------
+# Groups by (source_id, row_id) so each union-cell gets one libsize.
+# Returns a data.table(source_id, row_id, s) restricted to cells with
+# non-zero total expression (others get inserted at processData time
+# with a div-by-zero guard).
+
+.stream_colsums_union <- function(union) {
+    if (!inherits(union, "unionParquetExprStore"))
+        stop("[.stream_colsums_union] union must be a unionParquetExprStore.")
+    row_id <- source_id <- value <- s <- NULL  # NSE
+    storeRead(union, output = "query") |>
+        dplyr::group_by(source_id, row_id) |>
+        dplyr::summarise(s = sum(value, na.rm = TRUE)) |>
+        dplyr::collect() |>
+        data.table::as.data.table()
 }
 
 

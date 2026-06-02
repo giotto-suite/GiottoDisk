@@ -35,14 +35,22 @@
 
 \S4method{storeRead}{csvWideInput}(store, ...)
 
-\S4method{storeRead}{parquetExprStore}(store, ...)
+\S4method{storeRead}{parquetExprStore}(
+  store,
+  output = c("query", "tibble", "duckdb", "dgcmatrix"),
+  max_rows = NULL,
+  max_cols = NULL,
+  ...
+)
 
 \S4method{storeRead}{unionParquetExprStore}(
   store,
   fields = NULL,
-  output = c("query", "tibble", "duckdb"),
+  output = c("query", "tibble", "duckdb", "dgcmatrix"),
   callback = NULL,
   duckdb_params = list(),
+  max_rows = NULL,
+  max_cols = NULL,
   ...
 )
 
@@ -138,6 +146,14 @@ use SedonaDB spatial functions for geometry-based filtering.
 }}
 
 \item{...}{additional params to pass (if any implemented)}
+
+\item{max_rows, max_cols}{integer. Dimension guard for
+\code{output = "dgcmatrix"}. A materialized sparseMatrix must have at
+least one axis narrowed to within the cap — both unbounded errors.
+Defaults via \code{getOption("giottodisk.dgc_max_rows", 100L)} /
+\code{getOption("giottodisk.dgc_max_cols", 100L)}. Asymmetric so
+"narrow slice" usage (100 × Inf or Inf × 100) is allowed; the
+intent is \code{[}-subset along one axis before materializing.}
 
 \item{fields}{\code{character} (optional) specific fields/columns to read}
 

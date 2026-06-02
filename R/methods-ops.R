@@ -108,19 +108,40 @@ setMethod("unique", signature("parquetBase"), function(x, incomparables = FALSE,
     x
 })
 
-# head ####
+# head / tail ####
+# S3 methods, not S4. setMethod("head", "parquetBase", ...) against utils's
+# implicit S3 generic auto-promotes utils::head to S4 inside this namespace,
+# which produces "generic for X loaded with a different signature" warnings
+# whenever a downstream package that also touches utils::head loads. Bare
+# `head(pgs)` from user scope also doesn't dispatch through the S4 method
+# because utils::head is found first on the search path; it falls into
+# head.default → head.array → `[`, which errors on the S4 object.
+#
+# Following GiottoClass's pattern (head.giottoBinPoints + @exportS3Method
+# utils::head): S3 dispatch walks S4 class() inheritance, so a method on
+# parquetBase still fires for concrete subclasses (parquetGeomStore,
+# parquetGeomTileStore, parquetStore, parquetExprStore, ...).
 
-setMethod("head", signature("parquetBase"), function(x, n = 6, ...) {
+#' @title Head and tail
+#' @name parquet-headtail
+#' @description Queue a `head` or `tail` op on a lazy parquet store. The
+#'   op is applied at `storeRead()` time.
+#' @param x parquetBase-inheriting store
+#' @param n integer. Number of rows to keep.
+#' @param ... additional arguments (ignored)
+#' @returns the input store with a head / tail op queued on `@ops`
+#' @exportS3Method utils::head
+head.parquetBase <- function(x, n = 6L, ...) {
     x@ops <- c(x@ops, list(list(type = "head", n = n)))
     x
-})
+}
 
-# tail ####
-
-setMethod("tail", signature("parquetBase"), function(x, n = 6, ...) {
+#' @rdname parquet-headtail
+#' @exportS3Method utils::tail
+tail.parquetBase <- function(x, n = 6L, ...) {
     x@ops <- c(x@ops, list(list(type = "tail", n = n)))
     x
-})
+}
 
 # rowSample ####
 #' @name rowSample

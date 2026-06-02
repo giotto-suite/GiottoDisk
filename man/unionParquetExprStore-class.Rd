@@ -28,6 +28,13 @@ No data is rewritten; substores remain independently usable.
 \item{\code{n_genes}}{numeric. Shared feature count.}
 
 \item{\code{params}}{list. Reserved for downstream pipeline metadata.}
+
+\item{\code{ops}}{list. Ordered chain of lazy arrow step recipes. Mirrors
+\code{parquetExprStore@ops} — same op record schema, same \code{.pe_do_op}
+executor. Composite (source_id, orig_row_id) cell-axis keys let one
+op table span all substores in a single arrow join. Substores must
+have empty \verb{@ops} at union construction time (see constructor); the
+union's own \verb{@ops} carries any subsequent normalization recipes.}
 }}
 
 \seealso{
