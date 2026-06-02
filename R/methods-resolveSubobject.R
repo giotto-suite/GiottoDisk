@@ -183,52 +183,27 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
 #' @noRd
 .expr_store_gene_slice <- function(pe, feat_ids) {
     narrowed <- pe[feat_ids, , drop = FALSE]
-    long_dt <- data.table::as.data.table(
-        dplyr::collect(storeRead(narrowed)))
-    if ("source_id" %in% names(long_dt)) {
-        long_dt[, source_id := NULL]
-    }
-    n_cells_total <- length(narrowed@cell_ids)
+    n_rows <- length(narrowed@feat_ids)
 
-    # storeRead projects `v_norm` when @ops carries a norm op
-    # (e.g. norm_libsize_log); otherwise only raw `value` is present.
-    val_col <- if ("v_norm" %in% names(long_dt)) "v_norm" else "value"
-    wide_dt <- data.table::dcast(long_dt, row_id ~ col_id,
-        value.var = val_col, fill = 0)
+    # storeRead(output = "dgcmatrix") applies any pending @ops
+    # (norm_libsize_log etc.) inside the arrow query and materializes
+    # a gene x cell sparseMatrix with dimnames = (feat_ids, cell_ids).
+    # Zero-expression cells are already represented via the matrix's
+    # full cell_id dimnames — no backfill needed.
+    #
+    # Asymmetric guard: the feat axis is the narrow axis (the gene
+    # slice the caller asked for); cell axis is the full population.
+    # Override max_rows = n_rows so any requested feature count
+    # passes the guard regardless of n_cells.
+    m <- storeRead(narrowed, output = "dgcmatrix", max_rows = n_rows)
 
-    # Backfill cells whose expression for every requested gene is zero
-    # (they wouldn't appear in the long format). row_id values are
-    # 1..n_cells_total (no cell-axis subset here).
-    all_cells <- data.table::data.table(row_id = seq_len(n_cells_total))
-    wide_dt <- merge(all_cells, wide_dt, by = "row_id", all.x = TRUE)
-    gene_cols <- setdiff(names(wide_dt), "row_id")
-    for (col in gene_cols) {
-        v <- wide_dt[[col]]
-        v[is.na(v)] <- 0
-        data.table::set(wide_dt, j = col, value = v)
-    }
-
-    # row_id -> cell_ID
-    wide_dt[, cell_ID := narrowed@cell_ids[row_id]]
-    wide_dt[, row_id := NULL]
-
-    # col_id (original gene position) -> feat_ID, via @gene_idx mapping
-    # to narrowed positions. @gene_idx holds original positions of the
-    # kept genes; long_dt's col_id values are also original positions.
-    if (length(gene_cols) > 0L) {
-        col_int <- as.integer(gene_cols)
-        if (length(narrowed@gene_idx) > 0L) {
-            new_names <- narrowed@feat_ids[
-                match(col_int, narrowed@gene_idx)]
-        } else {
-            # No subset on the original store → col_id is the position
-            new_names <- narrowed@feat_ids[col_int]
-        }
-        data.table::setnames(wide_dt, old = gene_cols, new = new_names)
-    }
-    data.table::setcolorder(wide_dt,
-        c("cell_ID", setdiff(names(wide_dt), "cell_ID")))
-    wide_dt
+    # Pivot to cells x feats data.table. Densification is fine here:
+    # the plot / predicate consumer needs every cell's value, and the
+    # feat axis is bounded (typically a few dozen).
+    data.table::data.table(
+        cell_ID = colnames(m),
+        as.matrix(Matrix::t(m))
+    )
 }
 
 
