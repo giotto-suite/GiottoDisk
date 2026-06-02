@@ -113,6 +113,43 @@ test_that("normalizeGiotto end-to-end on parquet backend builds fused @ops", {
 })
 
 
+test_that("cell subset on parquetExprStore slices scalef table", {
+    skip_if_not_installed("Giotto")
+    mat <- .tiny_mat(seed = 7)
+    pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+    pe  <- GiottoClass::processData(pe,
+        Giotto::normParam("library", scalefactor = 1e4))
+    expect_equal(nrow(pe@ops[[1]]$scalef), ncol(mat))
+
+    pe2 <- pe[, 1:5]
+    expect_equal(nrow(pe2@ops[[1]]$scalef), 5L)
+    # source_id stays constant for single store
+    expect_setequal(unique(pe2@ops[[1]]$scalef$source_id), pe@uid)
+    expect_setequal(pe2@ops[[1]]$scalef$orig_row_id, 1:5)
+
+    # v_norm for surviving cells must match pre-subset values
+    v_full <- data.table::as.data.table(storeRead(pe,  output = "tibble"))
+    v_sub  <- data.table::as.data.table(storeRead(pe2, output = "tibble"))
+    common <- v_full[row_id %in% 1:5]
+    data.table::setorder(common, row_id, col_id)
+    data.table::setorder(v_sub, row_id, col_id)
+    expect_equal(common$v_norm, v_sub$v_norm)
+})
+
+
+test_that("gene subset on parquetExprStore preserves scalef table", {
+    skip_if_not_installed("Giotto")
+    mat <- .tiny_mat(seed = 8)
+    pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+    pe  <- GiottoClass::processData(pe,
+        Giotto::normParam("library", scalefactor = 1e4))
+    before <- nrow(pe@ops[[1]]$scalef)
+
+    pe2 <- pe[1:5, ]  # 5 of the n_genes
+    expect_equal(nrow(pe2@ops[[1]]$scalef), before)
+})
+
+
 test_that("normalizeGiotto with scale_feats=TRUE errors on parquet backend", {
     skip_if_not_installed("Giotto")
     mat <- .tiny_mat(seed = 5)

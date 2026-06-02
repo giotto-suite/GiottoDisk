@@ -27,8 +27,11 @@ NULL
 
 # Build a `norm_libsize_log` op record. `scalef` is the per-cell scale
 # factor vector in the SAME positional order as `pe@cell_idx` (or
-# 1..n_cells if no subset). orig_row_id keys the lookup against the
-# on-disk parquet row_id at storeRead time via a left_join.
+# 1..n_cells if no subset). The lookup table carries `(source_id,
+# orig_row_id, scalef)` so the same record can span all substores of a
+# union store via one composite-keyed join — row_id restarts per
+# substore so source_id is required to disambiguate. For a single store
+# source_id collapses to a constant (the store's @uid).
 .pe_norm_libsize_log_record <- function(pe, scalef, log = FALSE, base = 2) {
     orig_row_id <- if (length(pe@cell_idx) > 0L) {
         as.integer(pe@cell_idx)
@@ -38,6 +41,7 @@ NULL
     list(
         type   = "norm_libsize_log",
         scalef = data.table::data.table(
+            source_id   = rep_len(as.character(pe@uid), length(orig_row_id)),
             orig_row_id = orig_row_id,
             scalef      = as.numeric(scalef)
         ),
@@ -109,6 +113,73 @@ setMethod("processData",
 )
 
 
+# ---- libraryNormParam: union store -----------------------------------------
+# Same shape as the parquetExprStore method, but the libsize aggregation
+# spans substores. group_by(source_id, row_id) groups cells in the union
+# view; the resulting per-cell libsize directly produces the (source_id,
+# orig_row_id, scalef) lookup table that the op carries.
+
+#' @rdname processData
+#' @export
+setMethod("processData",
+    signature(x = "unionParquetExprStore", param = "libraryNormParam"),
+    function(x, param, ...) {
+        scalefactor <- param$scalefactor %null% 6e3
+
+        libsizes <- .stream_colsums_union(x)   # data.table(source_id, row_id, s)
+        libsizes[libsizes$s == 0, s := 1]      # guard div-by-zero
+
+        scalef_dt <- data.table::data.table(
+            source_id   = libsizes$source_id,
+            orig_row_id = as.integer(libsizes$row_id),
+            scalef      = as.numeric(scalefactor) / libsizes$s
+        )
+
+        existing <- .pe_find_op_type(x@ops, "norm_libsize_log")
+        log_flag <- if (is.na(existing)) FALSE else
+                    isTRUE(x@ops[[existing]]$log)
+        log_base <- if (is.na(existing)) 2 else x@ops[[existing]]$base
+        new_op <- list(
+            type   = "norm_libsize_log",
+            scalef = scalef_dt,
+            log    = log_flag,
+            base   = log_base
+        )
+        if (is.na(existing)) {
+            x@ops <- c(x@ops, list(new_op))
+        } else {
+            x@ops[[existing]] <- new_op
+        }
+        x
+    }
+)
+
+#' @rdname processData
+#' @export
+setMethod("processData",
+    signature(x = "unionParquetExprStore", param = "logNormParam"),
+    function(x, param, ...) {
+        base   <- param$base   %null% 2
+        offset <- param$offset %null% 1
+        if (!isTRUE(offset == 1)) {
+            stop("[processData(unionParquetExprStore, logNormParam)] ",
+                 "offset != 1 is not supported for streaming.",
+                 call. = FALSE)
+        }
+        existing <- .pe_find_op_type(x@ops, "norm_libsize_log")
+        if (is.na(existing)) {
+            stop("[processData(unionParquetExprStore, logNormParam)] no ",
+                 "library-size normalization op present. Run ",
+                 "processData(libraryNormParam) on the union first.",
+                 call. = FALSE)
+        }
+        x@ops[[existing]]$log  <- TRUE
+        x@ops[[existing]]$base <- as.numeric(base)
+        x
+    }
+)
+
+
 # ---- internal: streaming colSums for parquetExprStore ----------------------
 
 .stream_colsums <- function(pe) {
@@ -132,6 +203,24 @@ setMethod("processData",
         cs[idx[keep]] <- as.numeric(agg$s[keep])
     }
     cs
+}
+
+
+# ---- internal: streaming per-cell libsize for unionParquetExprStore --------
+# Groups by (source_id, row_id) so each union-cell gets one libsize.
+# Returns a data.table(source_id, row_id, s) restricted to cells with
+# non-zero total expression (others get inserted at processData time
+# with a div-by-zero guard).
+
+.stream_colsums_union <- function(union) {
+    if (!inherits(union, "unionParquetExprStore"))
+        stop("[.stream_colsums_union] union must be a unionParquetExprStore.")
+    row_id <- source_id <- value <- s <- NULL  # NSE
+    storeRead(union, output = "query") |>
+        dplyr::group_by(source_id, row_id) |>
+        dplyr::summarise(s = sum(value, na.rm = TRUE)) |>
+        dplyr::collect() |>
+        data.table::as.data.table()
 }
 
 
