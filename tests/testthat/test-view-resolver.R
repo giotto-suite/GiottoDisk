@@ -794,22 +794,6 @@ test_that("view filter on gene expression: in-mem dgCMatrix path matches manual 
     expect_setequal(surv_ids, expected)
 })
 
-test_that(".find_store_with_cols: parquetExprStore with norm recipe warns about raw values", {
-    skip_if_no_mini()
-    fx <- .mk_g_with_backed_expr()
-    # Fake a norm recipe on the parquetExprStore so the warning fires.
-    pe <- GiottoClass::getExpression(fx$g, output = "exprObj")@exprMat
-    pe@params$norm <- list(scale_factors = rep(1, pe@n_cells), log = TRUE)
-    eo <- GiottoClass::createExprObj(expression_data = pe, name = "raw",
-        spat_unit = "cell", feat_type = "rna")
-    g2 <- GiottoClass::setExpression(fx$g, eo, verbose = FALSE)
-    expect_warning(
-        .find_store_with_cols(g2, "MYC"),
-        "parquetExprStore.*normalization recipe.*RAW"
-    )
-})
-
-
 test_that("view filter on gene expression intersects with cellMeta predicate", {
     skip_if_no_mini()
     fx <- .mk_g_with_backed_expr()

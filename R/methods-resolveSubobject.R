@@ -134,21 +134,12 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
 
     if (!is.null(expr) && inherits(expr@exprMat, "parquetExprStore") &&
         all(cols %in% expr@exprMat@feat_ids)) {
-        # parquetExprStore-specific path: read long-format triplets,
-        # pivot to wide. ⚠️ Returns RAW values — does not currently
-        # apply normalization recipes recorded in @params$norm. This
-        # path is pending a uniform read-time contract on
-        # parquetExprStore. See TODO in `.expr_store_gene_slice`.
-        if (!is.null(expr@exprMat@params$norm)) {
-            warning("[.find_store_with_cols] parquetExprStore at ",
-                "[", expr@spat_unit, "][", expr@feat_type, "][",
-                expr@name, "] has a normalization recipe recorded ",
-                "(@params$norm) but storeRead does not yet apply it; ",
-                "predicate values reflect RAW counts. To get ",
-                "normalized values, switch the @exprMat backend to ",
-                "DelayedArray or BPCells until the parquetExprStore ",
-                "read contract lands.", call. = FALSE)
-        }
+        # parquetExprStore-specific path: read long-format triplets via
+        # storeRead, pivot to wide. storeRead applies any pending @ops
+        # (e.g. norm_libsize_log) inside the arrow query, so the long_dt
+        # carries a projected `v_norm` column when normalization is
+        # recorded — `.expr_store_gene_slice` picks v_norm if present,
+        # else raw `value`.
         wide_dt <- .expr_store_gene_slice(expr@exprMat, cols)
         return(.wrap(wide_dt, "cell_ID"))
     }
@@ -199,8 +190,11 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
     }
     n_cells_total <- length(narrowed@cell_ids)
 
+    # storeRead projects `v_norm` when @ops carries a norm op
+    # (e.g. norm_libsize_log); otherwise only raw `value` is present.
+    val_col <- if ("v_norm" %in% names(long_dt)) "v_norm" else "value"
     wide_dt <- data.table::dcast(long_dt, row_id ~ col_id,
-        value.var = "value", fill = 0)
+        value.var = val_col, fill = 0)
 
     # Backfill cells whose expression for every requested gene is zero
     # (they wouldn't appear in the long format). row_id values are
