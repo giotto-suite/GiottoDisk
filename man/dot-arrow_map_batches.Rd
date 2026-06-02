@@ -23,7 +23,7 @@ schema will be inferred from the first batch.}
 materializes all batches immediately.}
 }
 \value{
-An arrow \link[arrow:RecordBatchReader]{arrow::RecordBatchReader} with transformed batches
+An arrow \link[arrow:RecordBatchReader]{RecordBatchReader} with transformed batches
 }
 \description{
 Internal that applies a transformation function \code{FUN} to an arrow dataset

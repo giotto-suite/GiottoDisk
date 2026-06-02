@@ -10,7 +10,7 @@ importXeniumDisk(xenium_dir = NULL, backend, qv_threshold = 20)
 \item{xenium_dir}{Xenium output directory}
 
 \item{backend}{a \code{gsource} (typically \code{gDirSource}) project backend.
-Naming matches \code{\link[GiottoClass:create_giotto]{GiottoClass::createGiottoObject()}}'s \code{backend} param.}
+Naming matches \code{\link[GiottoClass:createGiottoObject]{GiottoClass::createGiottoObject()}}'s \code{backend} param.}
 
 \item{qv_threshold}{minimum Phred-scaled quality score retained}
 }

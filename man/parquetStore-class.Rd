@@ -7,7 +7,7 @@
 \alias{parquetGeomTileStore-class}
 \title{Parquet Store}
 \description{
-S4 Class extending \linkS4class{fileStore} for indexed storage of tabular data
+S4 Class extending \link[=fileStore-class]{fileStore} for indexed storage of tabular data
 in Apache Parquet format. \code{parquetStores} provide delayed/query-based
 access to data rather than loading into memory. They are not intended for
 in-place updates or edits. Create with \code{\link[=parquetStore]{parquetStore()}}.
@@ -33,7 +33,7 @@ partitioning.}
 \item{\code{fields}}{character. Cached column names from the parquet dataset.}
 
 \item{\code{read_fun}}{function. Preset to \code{arrow::open_dataset()} for standard
-parquet access. Can be customized for edge cases (see \linkS4class{fileStore}).}
+parquet access. Can be customized for edge cases (see \link[=fileStore-class]{fileStore}).}
 
 \item{\code{window}}{numeric(4). (\code{parquetGeomStore}-inheriting) Spatial window as
 xmin, xmax, ymin, ymax.}
@@ -73,14 +73,16 @@ head(ps_1, 2) |> storeRead(output = 'tibble')
 rowSample(ps_1, 4) |> storeRead(output = "tibble")
 }
 \seealso{
-Other store types: 
+Other store types:
 \code{\link{binGefInput-class}},
 \code{\link{cellbinGefInput-class}},
 \code{\link{csvWideInput-class}},
 \code{\link{dataStore-class}},
+\code{\link{edgeInput-class}},
 \code{\link{exprInput-class}},
 \code{\link{fileStore-class}},
 \code{\link{mtxInput-class}},
+\code{\link{parquetEdgeStore-class}},
 \code{\link{parquetExprStore-class}},
 \code{\link{tenxH5Input-class}},
 \code{\link{unionParquetExprStore-class}}

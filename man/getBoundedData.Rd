@@ -69,7 +69,7 @@ Get the region of the data defined by a bounding \code{SpatExtent}.
 but this function directly produces a usable interface.
 }
 \seealso{
-Other tile methods: 
-\code{\link{getTile}()}
+Other tile methods:
+\code{\link{getTile}}
 }
 \concept{tile methods}

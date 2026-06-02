@@ -19,7 +19,7 @@ importCosMxDisk(
 \item{cosmx_dir}{CosMx output directory}
 
 \item{backend}{a \code{gsource} (typically \code{gDirSource}) project backend.
-Naming matches \code{\link[GiottoClass:create_giotto]{GiottoClass::createGiottoObject()}}'s \code{backend} param.}
+Naming matches \code{\link[GiottoClass:createGiottoObject]{GiottoClass::createGiottoObject()}}'s \code{backend} param.}
 
 \item{slide, fovs, version, micron, px2um, poly_pref}{passed through to the
 parent \code{CosmxReader} initializer.}

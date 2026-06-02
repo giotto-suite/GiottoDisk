@@ -56,8 +56,8 @@ The \code{ANY} signature method is provided for writing lazily accessed data in
 batches with possible pre-processing via \code{callback}.
 }
 \seealso{
-Other storeWrite methods: 
-\code{\link{storeWrite,parquetExprStore,exprInput-method}},
+Other storeWrite methods:
+\code{\link{storeWrite,parquetEdgeStore,edgeInput-method}},
 \code{\link{storeWrite-parquetGeomStore}},
 \code{\link{storeWrite-parquetGeomTileStore}}
 }

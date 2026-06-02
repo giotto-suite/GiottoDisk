@@ -49,7 +49,6 @@ Suggests:
     testthat,
     wk,
     TileDBArray
-RoxygenNote: 7.3.3
 Collate: 
     'AllGenerics.R'
     'pkg_imports.R'
@@ -57,13 +56,12 @@ Collate:
     'class-dataStore.R'
     'class-fileInputs.R'
     'class-gsource.R'
-    'class-parquetExprStore.R'
     'class-parquetStore.R'
     'class-parquetEdgeStore.R'
+    'class-parquetExprStore.R'
     'convenience-cosmx.R'
     'convenience-stereoseq.R'
     'convenience-xenium.R'
-    'utils-parquetExprStore.R'
     'methods-accessors.R'
     'methods-aggregate.R'
     'methods-combine.R'
@@ -97,5 +95,7 @@ Collate:
     'utils-spatial.R'
     'tilework.R'
     'utils-arrow.R'
+    'utils-parquetExprStore.R'
     'zzz.R'
 Roxygen: list(markdown = TRUE)
+Config/roxygen2/version: 8.0.0
