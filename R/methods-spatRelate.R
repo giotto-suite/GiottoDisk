@@ -414,7 +414,7 @@ setMethod(
         select_sql, view_name, sql_pred, geom_sql
     )
     ids_df <- sedonadb::sd_collect(sedonadb::sd_sql(sql))
-    arrow::as_arrow_table(ids_df)
+    .coerce_id_tab_int32(arrow::as_arrow_table(ids_df))
 }
 
 
@@ -439,7 +439,23 @@ setMethod(
         select_sql, inner_view, sql_pred, geom_sql
     )
     ids_df <- DBI::dbGetQuery(conn, sql)
-    arrow::as_arrow_table(ids_df)
+    .coerce_id_tab_int32(arrow::as_arrow_table(ids_df))
+}
+
+
+# After collecting ids from a SQL engine, R-side reconstruction can promote
+# int32 columns to numeric (when the engine returns Int64 or when an
+# integer literal was injected without a CAST). The arrow Table then has
+# float64 where the on-disk schema has int32, breaking the semi_join in
+# `.pbase_storeread_processing`. Coerce `row_index` / `tile_index` back to
+# int32 here so the join keys line up regardless of engine quirks.
+.coerce_id_tab_int32 <- function(ids_tab) {
+    int32_cols <- intersect(c("row_index", "tile_index"), names(ids_tab))
+    if (length(int32_cols) == 0L) return(ids_tab)
+    for (col in int32_cols) {
+        ids_tab[[col]] <- ids_tab[[col]]$cast(arrow::int32())
+    }
+    ids_tab
 }
 
 
