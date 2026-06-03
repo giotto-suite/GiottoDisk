@@ -64,6 +64,24 @@ NULL
 
 # definitions ####
 
+# Virtual base for any cell x gene expression store backed by Parquet.
+# Used as a dispatch root so streaming pipeline methods (filter, normalize,
+# HVF, QC) can be written once for both the single-file `parquetExprStore`
+# and the multi-substore `unionParquetExprStore`. Per-substore iteration
+# is exposed via the `.exprbase_substores()` protocol (see
+# `R/utils-pestore-ops.R`); methods loop over substores, aggregate, and
+# resolve `(source, row_id)` or `col_id` back to union cell / feat
+# positions.
+#
+# Concrete subclasses (`parquetExprStore`, `unionParquetExprStore`) keep
+# their own slot declarations; this is a tag-only virtual to avoid any
+# slot-relocation churn or RDS deserialization risk.
+#' @rdname parquetExprStore-class
+#' @exportClass parquetExprBase
+setClass("parquetExprBase",
+    contains = "VIRTUAL"
+)
+
 #' @rdname parquetExprStore-class
 #' @section Subset semantics:
 #' `parquetExprStore` supports lightweight subsetting via the `[` operator.
@@ -78,7 +96,7 @@ NULL
 #' @slot gene_idx integer. Active gene positions in the original Parquet
 #'   (length 0 = no subset).
 setClass("parquetExprStore",
-    contains = "queryableStore",
+    contains = c("queryableStore", "parquetExprBase"),
     slots = list(
         n_cells    = "numeric",
         n_genes    = "numeric",
@@ -198,7 +216,7 @@ setMethod("initialize", signature("parquetExprStore"), function(.Object, ...) {
 NULL
 
 setClass("unionParquetExprStore",
-    contains = "dataStore",
+    contains = c("dataStore", "parquetExprBase"),
     slots = list(
         stores   = "list",
         cell_ids = "character",

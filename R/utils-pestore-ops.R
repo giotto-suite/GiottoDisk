@@ -82,6 +82,69 @@ NULL
 }
 
 
+# ---- parquetExprBase substore iteration protocol ---------------------------
+#
+# Stream-pipeline methods (filterData, processData, analyzeData, ...) that
+# work uniformly over both `parquetExprStore` and `unionParquetExprStore`
+# dispatch on the shared `parquetExprBase` virtual and iterate via this
+# protocol.
+#
+# Returns a list of substore-entry records. Each entry is a list:
+#
+#   $store        : the substore (always a parquetExprStore)
+#   $cell_offset  : 0-based offset of this substore's cells in the
+#                   union's `@cell_ids` axis (always 0 for a single
+#                   parquetExprStore; cumulative substore offset for a
+#                   unionParquetExprStore)
+#
+# Methods loop substores, aggregate via per-substore Arrow queries (so
+# `.pe_remap_col` / `.pe_remap_row` / `.pe_orig_col` continue to work
+# unchanged since they operate per substore), then concatenate or sum
+# the per-substore results into the union axis.
+#
+# For a single `parquetExprStore` the iterator yields one entry whose
+# store is `x` itself with offset 0 — same algorithm, no special case.
+
+# Project a parent (union) ops chain onto a single substore so its
+# `storeRead()` carries the same recipe restricted to this substore's
+# rows. Currently only `norm_libsize_log` carries source-keyed payload —
+# its `scalef` lookup is filtered to `source_id == sub@uid`. Op types
+# without source-keyed state pass through unchanged; future op types
+# with source-keyed payloads will need a case in the filter.
+#
+# No-op for single stores (parent_ops empty) so the iterator-driven
+# methods work uniformly across single and union.
+.exprbase_inject_parent_ops <- function(sub, parent_ops) {
+    if (length(parent_ops) == 0L) return(sub)
+    source_id <- NULL  # NSE
+    uid <- as.character(sub@uid)
+    proj_ops <- lapply(parent_ops, function(op) {
+        if (identical(op$type, "norm_libsize_log")) {
+            op$scalef <- op$scalef[source_id == uid]
+        }
+        op
+    })
+    sub@ops <- c(sub@ops, proj_ops)
+    sub
+}
+
+.exprbase_substores <- function(x) {
+    if (inherits(x, "unionParquetExprStore")) {
+        offsets <- c(0L, cumsum(vapply(x@stores,
+            function(s) as.integer(s@n_cells), integer(1L))))
+        return(lapply(seq_along(x@stores), function(i) {
+            list(store = x@stores[[i]],
+                 cell_offset = offsets[i])
+        }))
+    }
+    if (inherits(x, "parquetExprStore")) {
+        return(list(list(store = x, cell_offset = 0L)))
+    }
+    stop("[.exprbase_substores] expected a parquetExprBase, got ",
+        toString(class(x)), call. = FALSE)
+}
+
+
 # ---- introspection helpers -------------------------------------------------
 
 # Find the index of the first op of a given type in @ops. Returns NA_integer_
