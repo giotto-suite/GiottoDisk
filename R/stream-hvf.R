@@ -28,10 +28,10 @@ NULL
 #' @rdname analyzeData
 #' @export
 setMethod("analyzeData",
-    signature(x = "parquetExprStore", param = "covLoessParam"),
+    signature(x = "parquetExprBase", param = "covLoessParam"),
     function(x, param, ...) {
         if (!.pe_has_norm_op(x@ops)) {
-            stop("[analyzeData(parquetExprStore, covLoessParam)] ",
+            stop("[analyzeData(parquetExprBase, covLoessParam)] ",
                  "expression backend has no normalization recipe. Run ",
                  "normalizeGiotto(g, scale_feats = FALSE, scale_cells = FALSE) ",
                  "first to populate scale factors on the store.",
@@ -60,10 +60,10 @@ setMethod("analyzeData",
 #' @rdname analyzeData
 #' @export
 setMethod("analyzeData",
-    signature(x = "parquetExprStore", param = "covGroupsParam"),
+    signature(x = "parquetExprBase", param = "covGroupsParam"),
     function(x, param, ...) {
         if (!.pe_has_norm_op(x@ops)) {
-            stop("[analyzeData(parquetExprStore, covGroupsParam)] ",
+            stop("[analyzeData(parquetExprBase, covGroupsParam)] ",
                  "expression backend has no normalization recipe. Run ",
                  "normalizeGiotto(g, scale_feats = FALSE, scale_cells = FALSE) ",
                  "first to populate scale factors on the store.",
@@ -112,9 +112,9 @@ setMethod("analyzeData",
 #' @rdname analyzeData
 #' @export
 setMethod("analyzeData",
-    signature(x = "parquetExprStore", param = "varParam"),
+    signature(x = "parquetExprBase", param = "varParam"),
     function(x, param, ...) {
-        stop("[analyzeData(parquetExprStore, varParam)] per-feature ",
+        stop("[analyzeData(parquetExprBase, varParam)] per-feature ",
              "variance on a scaled (z-scored) matrix requires ",
              "materialising the dense matrix and is not supported for ",
              "streaming backends. Use covLoessParam or covGroupsParam.",
@@ -126,45 +126,60 @@ setMethod("analyzeData",
 # ---- Internal: streaming per-gene stats with JIT normalization ------------
 
 .stream_norm_gene_stats <- function(pe, expression_threshold = 0) {
-    if (!inherits(pe, "parquetExprStore"))
-        stop("[.stream_norm_gene_stats] pe must be a parquetExprStore.")
-
+    if (!inherits(pe, "parquetExprBase"))
+        stop("[.stream_norm_gene_stats] pe must be a parquetExprBase.")
     if (!.pe_has_norm_op(pe@ops))
         stop("[.stream_norm_gene_stats] pe has no norm op on @ops.")
-    thr <- as.numeric(expression_threshold)
 
+    thr     <- as.numeric(expression_threshold)
     n_cells <- as.integer(pe@n_cells)
     n_genes <- as.integer(pe@n_genes)
 
     # NSE bindings
     col_id <- value <- v_norm <- s <- s2 <- nz <- raw_total <- NULL
 
-    # storeRead returns the arrow query with @ops composed in — v_norm is
-    # already projected by the norm_libsize_log op. Per-gene aggregation
-    # runs at arrow layer; only n_genes-sized result transfers to R.
-    agg <- storeRead(pe, output = "query") |>
-        dplyr::group_by(col_id) |>
-        dplyr::summarise(
-            s         = sum(v_norm, na.rm = TRUE),
-            s2        = sum(v_norm * v_norm, na.rm = TRUE),
-            nz        = sum(v_norm > !!thr, na.rm = TRUE),
-            raw_total = sum(value, na.rm = TRUE)
-        ) |>
-        dplyr::collect() |>
-        data.table::as.data.table()
-
-    gene_sum   <- numeric(n_genes)
-    gene_sumsq <- numeric(n_genes)
-    gene_nnz   <- integer(n_genes)
+    gene_sum       <- numeric(n_genes)
+    gene_sumsq     <- numeric(n_genes)
+    gene_nnz       <- integer(n_genes)
     gene_total_raw <- numeric(n_genes)
 
-    if (nrow(agg) > 0L) {
-        idx <- .pe_remap_col(agg$col_id, pe)
-        keep <- !is.na(idx)
-        gene_sum[idx[keep]]       <- as.numeric(agg$s[keep])
-        gene_sumsq[idx[keep]]     <- as.numeric(agg$s2[keep])
-        gene_nnz[idx[keep]]       <- as.integer(agg$nz[keep])
-        gene_total_raw[idx[keep]] <- as.numeric(agg$raw_total[keep])
+    # Iterate substores; for union, project the union's @ops (norm scalef
+    # filtered by source_id) onto each substore so its storeRead carries
+    # the right per-cell scalef. For a single parquetExprStore the loop
+    # runs once with sub == pe (the iterator yields pe itself) and
+    # `.exprbase_inject_parent_ops` is a no-op given pe@ops is already
+    # on the same store.
+    parent_ops <- if (inherits(pe, "unionParquetExprStore")) pe@ops else list()
+    subs <- .exprbase_substores(pe)
+    for (sub_entry in subs) {
+        sub <- sub_entry$store
+        sub <- .exprbase_inject_parent_ops(sub, parent_ops)
+        agg <- storeRead(sub, output = "query") |>
+            dplyr::group_by(col_id) |>
+            dplyr::summarise(
+                s         = sum(v_norm, na.rm = TRUE),
+                s2        = sum(v_norm * v_norm, na.rm = TRUE),
+                nz        = sum(v_norm > !!thr, na.rm = TRUE),
+                raw_total = sum(value, na.rm = TRUE)
+            ) |>
+            dplyr::collect() |>
+            data.table::as.data.table()
+        if (nrow(agg) > 0L) {
+            # `.pe_remap_col` on the substore maps on-disk col_ids to
+            # local feat positions; feat_ids align across substores
+            # (union invariant), so the same local position indexes the
+            # union's @feat_ids axis.
+            idx <- .pe_remap_col(agg$col_id, sub)
+            keep <- !is.na(idx)
+            gene_sum[idx[keep]]       <- gene_sum[idx[keep]] +
+                as.numeric(agg$s[keep])
+            gene_sumsq[idx[keep]]     <- gene_sumsq[idx[keep]] +
+                as.numeric(agg$s2[keep])
+            gene_nnz[idx[keep]]       <- gene_nnz[idx[keep]] +
+                as.integer(agg$nz[keep])
+            gene_total_raw[idx[keep]] <- gene_total_raw[idx[keep]] +
+                as.numeric(agg$raw_total[keep])
+        }
     }
 
     gene_mean <- gene_sum / n_cells
