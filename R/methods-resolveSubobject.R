@@ -338,7 +338,7 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
 #' @keywords internal
 #' @noRd
 .surviving_cell_ids_arrow <- function(view, gobject, .cache,
-    space = NULL, spat_unit = NULL, feat_type = NULL) {
+    spat_unit = NULL, feat_type = NULL) {
     ck <- "surviving_cell_ids"
     if (!is.null(.cache) && exists(ck, envir = .cache, inherits = FALSE)) {
         return(get(ck, envir = .cache))
@@ -373,6 +373,13 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
     }
 
     if (length(crop_steps) > 0L) {
+        # Predicate frame is read from view@space (the frame the crop
+        # region was drawn in). Independent of any output space the
+        # caller may have requested -- output space is applied by
+        # `.apply_space_to_subobj` separately, on the actual subobject.
+        pred_space <- if (!is.na(view@space)) {
+            GiottoClass:::.resolve_space(gobject, view@space)
+        } else NULL
         sl <- tryCatch(GiottoClass::getSpatialLocations(gobject,
             output = "spatLocsObj", spat_unit = spat_unit),
             error = function(e) NULL)
@@ -382,7 +389,7 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
         } else {
             for (step in crop_steps) {
                 step_ids <- .cells_in_region_for_view(sl, gobject,
-                    space, step@region, step@relation)
+                    pred_space, step@region, step@relation)
                 step_tab <- arrow::arrow_table(data.frame(
                     cell_ID = step_ids, stringsAsFactors = FALSE))
                 surviving <- if (is.null(surviving)) {
@@ -468,10 +475,91 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
 #
 #' @keywords internal
 #' @noRd
+# Derive the composite 3x3 post-multiply affine matrix of a giottoSpace
+# for a given gobject by applying its transforms to three known basis
+# points. Returns NULL when the space has no steps applicable to this
+# gobject (no matching sample key, or empty step list).
+#
+# Post-multiply convention (matches GiottoClass affine2d): [x, y, 1] %*% M
+# yields [x', y', 1], so:
+#   M[1, 1] = coef on x in x';  M[1, 2] = coef on x in y'
+#   M[2, 1] = coef on y in x';  M[2, 2] = coef on y in y'
+#   M[3, 1] = tx;               M[3, 2] = ty
+# Derivation:
+#   (0,0) -> (tx, ty)
+#   (1,0) -> (M[1,1] + tx, M[1,2] + ty)
+#   (0,1) -> (M[2,1] + tx, M[2,2] + ty)
+#' @keywords internal
+#' @noRd
+.space_composite_affine <- function(space, gobject) {
+    if (is.null(space)) return(NULL)
+    key <- GiottoClass:::.space_sample_key_for(gobject, space)
+    if (is.null(key)) return(NULL)
+    steps <- space@samples[[key]]
+    if (length(steps) == 0L) return(NULL)
+    test_pts <- terra::vect(
+        matrix(c(0, 0, 1, 0, 0, 1), ncol = 2L, byrow = TRUE),
+        type = "points")
+    out_pts <- test_pts
+    for (step in steps) {
+        out_pts <- do.call(step@op, c(list(x = out_pts), step@args))
+    }
+    p <- terra::crds(out_pts)
+    M <- matrix(0, nrow = 3L, ncol = 3L)
+    M[1L, 1L] <- p[2L, 1L] - p[1L, 1L]
+    M[1L, 2L] <- p[2L, 2L] - p[1L, 2L]
+    M[2L, 1L] <- p[3L, 1L] - p[1L, 1L]
+    M[2L, 2L] <- p[3L, 2L] - p[1L, 2L]
+    M[3L, 1L] <- p[1L, 1L]
+    M[3L, 2L] <- p[1L, 2L]
+    M[3L, 3L] <- 1
+    M
+}
+
+# Project a SpatVector region from `from_space`'s frame to `to_space`'s
+# frame. Composition: y_native = inv(M_from) @ y_from;  y_to = M_to @ y_native.
+# Either space may be NULL -- a NULL space means "the gobject's native
+# frame," i.e. no transform on that side.
+#' @keywords internal
+#' @noRd
+.project_region_between_spaces <- function(y, gobject,
+    from_space = NULL, to_space = NULL) {
+    if (is.null(from_space) && is.null(to_space)) return(y)
+    if (!inherits(y, "SpatVector")) {
+        if (is.numeric(y))         y <- terra::as.polygons(terra::ext(y))
+        if (inherits(y, "SpatExtent")) y <- terra::as.polygons(y)
+    }
+    m_from <- .space_composite_affine(from_space, gobject)
+    m_to   <- .space_composite_affine(to_space,   gobject)
+    # If both affines collapse to the identical matrix the composition is
+    # identity -- skip the round-trip to avoid unnecessary float drift.
+    if (!is.null(m_from) && !is.null(m_to) &&
+        isTRUE(all.equal(m_from, m_to))) {
+        return(y)
+    }
+    if (!is.null(m_from)) {
+        y <- GiottoClass::affine(y, m_from, inv = TRUE)
+    }
+    if (!is.null(m_to)) {
+        y <- GiottoClass::affine(y, m_to)
+    }
+    y
+}
+
 .push_view_to_pstore <- function(store, view, gobject,
     target_key = NULL, space = NULL, spat_unit = NULL, feat_type = NULL,
     .cache = NULL) {
     if (is.null(view) || length(view@steps) == 0L) return(store)
+
+    # The `space` arg is the OUTPUT frame: when non-NULL the caller has
+    # already composed it into the store's @post_ops via
+    # .apply_space_to_subobj. The PREDICATE frame is read from view@space
+    # and used here to project any crop regions into the same frame as
+    # the geom column that will be tested -- i.e. into the OUTPUT frame,
+    # since that's what the geom column ends up in after @post_ops apply.
+    predicate_space <- if (!is.na(view@space)) {
+        GiottoClass:::.resolve_space(gobject, view@space)
+    } else NULL
 
     # Cache path: a single arrow Table holding cell_IDs that survive
     # ALL filter + crop steps in the view (via the in-mem coordinator's
@@ -484,7 +572,7 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
     # route viewCrop through spatRelate on the points' geom instead.
     if (!is.null(.cache)) {
         surv <- .surviving_cell_ids_arrow(view, gobject, .cache,
-            space = space, spat_unit = spat_unit, feat_type = feat_type)
+            spat_unit = spat_unit, feat_type = feat_type)
         if (!is.null(surv)) {
             join_by <- if (is.null(target_key) ||
                 identical(target_key, "cell_ID")) {
@@ -512,24 +600,6 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
                 feat_type = feat_type
             )
         } else if (inherits(step, "viewCrop")) {
-            # viewCrop pushdown on backed parquetGeomBase targets.
-            #
-            # Strategy: route everything through `spatRelate()`. The
-            # spatRelate compile path (`.spat_relate_narrow`) computes a
-            # combined AABB across all monotone spat_relate ops in
-            # @ops and applies it via `crop()` once before each engine
-            # dispatch — giving tile pruning, parquet-stats pushdown on
-            # x_index/y_index, half-plane filter for rotated regions,
-            # and inverse-affine back-projection automatically. The
-            # ST_<Predicate>(geom, ...) refinement then rides on top.
-            #
-            # For rectangular regions with `intersects` on a point store
-            # the predicate is technically redundant with the centroid
-            # AABB filter, but the cost is one cheap predicate evaluation
-            # per surviving row and keeps the dispatch uniform. For
-            # polygon targets the predicate is necessary (centroid-AABB
-            # is approximate; ST_Intersects with the geom column is
-            # exact).
             if (!inherits(store, "parquetGeomBase")) {
                 warning("[push_view_to_pstore] viewCrop step skipped: ",
                     "target store is not parquetGeomBase (no geom ",
@@ -546,6 +616,11 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
             } else if (inherits(region, "SpatExtent")) {
                 y <- terra::as.polygons(region)
             }
+            # Project region from predicate frame → output frame so the
+            # spat_relate eval (which runs against geom in the output
+            # frame, via @post_ops) sees both sides in the same frame.
+            y <- .project_region_between_spaces(y, gobject,
+                from_space = predicate_space, to_space = space)
             store <- spatRelate(store, y, relation = step@relation)
         }
         # viewSampleSelect / space transform pushdown follow
@@ -704,21 +779,22 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
 }
 
 
-# Walk a view's filter steps and apply each to a data.table target via the
-# arrow bridge. Other view step types (viewCrop, viewSampleSelect,
-# spaceTransform) follow the same pattern in future revisions.
+# Walk a view's filter + crop steps and apply each to a data.table target
+# via the arrow bridge (filters) or the cells-in-region helper (crops).
+# `viewSampleSelect` / `spaceTransform` follow the same pattern in future
+# revisions.
 #
 #' @keywords internal
 #' @noRd
 .push_view_to_dt <- function(dt, view, gobject, key = "cell_ID",
-    space = NULL, spat_unit = NULL, feat_type = NULL, .cache = NULL) {
+    spat_unit = NULL, feat_type = NULL, .cache = NULL) {
     if (is.null(view) || length(view@steps) == 0L) return(dt)
     if (is.null(dt) || nrow(dt) == 0L) return(dt)
 
     # Cache path: one semi_join against the view-wide intersection.
     if (!is.null(.cache)) {
         surv <- .surviving_cell_ids_arrow(view, gobject, .cache,
-            space = space, spat_unit = spat_unit, feat_type = feat_type)
+            spat_unit = spat_unit, feat_type = feat_type)
         if (is.null(surv)) return(dt)
         if (!identical(key, "cell_ID")) {
             stop("[push_view_to_dt] cache mode supports cell_ID-keyed ",
@@ -730,11 +806,43 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
         return(data.table::setDT(out))
     }
 
-    # No-cache path: per-step narrowing through the three-branch helper.
+    # No-cache path: per-step narrowing. Filter steps go through the
+    # arrow-bridge predicate helper. Crop steps narrow by cell_IDs whose
+    # centroid satisfies the predicate against the region -- the same
+    # semantics as the in-memory dataTableCoordinator path (centroid-in-
+    # region), and the cache path (.surviving_cell_ids_arrow). The
+    # predicate frame is `view@space`; the output frame (any `space=`
+    # arg on the getter) is applied separately by the resolveSubobject
+    # method via `.apply_space_to_subobj`.
+    crop_steps <- Filter(function(s) inherits(s, "viewCrop"), view@steps)
+    have_crops <- length(crop_steps) > 0L
+    if (have_crops && !identical(key, "cell_ID")) {
+        warning("[push_view_to_dt] viewCrop steps skipped on non-cell-",
+            "keyed target (key = '", key, "')", call. = FALSE)
+        have_crops <- FALSE
+    }
+    pred_space <- if (have_crops && !is.na(view@space)) {
+        GiottoClass:::.resolve_space(gobject, view@space)
+    } else NULL
+    sl <- if (have_crops) {
+        tryCatch(GiottoClass::getSpatialLocations(gobject,
+            output = "spatLocsObj", spat_unit = spat_unit),
+            error = function(e) NULL)
+    } else NULL
+    if (have_crops && is.null(sl)) {
+        warning("[push_view_to_dt] viewCrop steps skipped: no spatial ",
+            "locations available", call. = FALSE)
+        have_crops <- FALSE
+    }
+
     for (step in view@steps) {
         if (inherits(step, "viewFilter")) {
             dt <- .narrow_dt_via_arrow(dt, step@predicate, gobject,
                 key = key, spat_unit = spat_unit, feat_type = feat_type)
+        } else if (inherits(step, "viewCrop") && have_crops) {
+            step_ids <- .cells_in_region_for_view(sl, gobject, pred_space,
+                step@region, step@relation)
+            dt <- dt[cell_ID %in% step_ids]
         }
     }
     dt
@@ -771,7 +879,7 @@ setMethod("resolveSubobject",
                 .cache = .cache)
         } else {
             subobj@metaDT <- .push_view_to_dt(subobj@metaDT, view, gobject,
-                key = "cell_ID", space = space,
+                key = "cell_ID",
                 spat_unit = spat_unit, feat_type = feat_type,
                 .cache = .cache)
         }
@@ -796,7 +904,7 @@ setMethod("resolveSubobject",
                 .cache = .cache)
         } else {
             subobj@metaDT <- .push_view_to_dt(subobj@metaDT, view, gobject,
-                key = "feat_ID", space = space,
+                key = "feat_ID",
                 spat_unit = spat_unit, feat_type = feat_type,
                 .cache = .cache)
         }
@@ -810,11 +918,12 @@ setMethod("resolveSubobject",
     signature(subobj = "spatLocsObj",
               coordinator = "parquetCoordinator"),
     function(subobj, gobject, view, space, coordinator, ...) {
-        # Space transforms apply to spatial coordinates — propagates
-        # through spatLocsObj's affine/spin/etc. methods (eager, mutates
-        # @coordinates in-place for DT-backed; composes into @post_ops
-        # for backed parquetGeomBase). Steps accumulate via composition.
-        subobj <- .apply_space_to_subobj(subobj, gobject, space)
+        # OUTPUT-space transform: only applied when the caller explicitly
+        # passed `space=`. `view@space` is NOT consulted here -- it only
+        # affects the predicate frame inside the crop-step handlers.
+        if (!is.null(space)) {
+            subobj <- .apply_space_to_subobj(subobj, gobject, space)
+        }
         if (is.null(view) || length(view@steps) == 0L) return(subobj)
         .cache <- list(...)$.cache
         spat_unit <- GiottoClass::spatUnit(subobj)
@@ -825,7 +934,7 @@ setMethod("resolveSubobject",
         } else {
             subobj@coordinates <- .push_view_to_dt(
                 subobj@coordinates, view, gobject,
-                key = "cell_ID", space = space, spat_unit = spat_unit,
+                key = "cell_ID", spat_unit = spat_unit,
                 .cache = .cache)
         }
         subobj
@@ -850,7 +959,7 @@ setMethod("resolveSubobject",
                 .cache = .cache)
         } else {
             subobj@enrichDT <- .push_view_to_dt(subobj@enrichDT, view,
-                gobject, key = "cell_ID", space = space,
+                gobject, key = "cell_ID",
                 spat_unit = spat_unit, feat_type = feat_type,
                 .cache = .cache)
         }
@@ -881,21 +990,41 @@ setMethod("resolveSubobject",
             # (handles space + crop geometrically).
             return(callNextMethod())
         }
-        # Apply space transforms first so subsequent crops back-project
-        # through the pending @post_ops affine. Each step composes via
-        # matrix product (parquetGeomBase's affine method explicitly
-        # composes with @post_ops at line ~77 of methods-transforms.R),
-        # so multiple transforms accumulate into a single affine2d.
-        subobj <- .apply_space_to_subobj(subobj, gobject, space)
+        # OUTPUT-space transform: only applied when caller passed `space=`.
+        # `view@space` is consumed inside `.push_view_to_pstore` as the
+        # predicate frame -- the crop region is interpreted there before
+        # being projected into the output frame for the spat_relate eval.
+        if (!is.null(space)) {
+            subobj <- .apply_space_to_subobj(subobj, gobject, space)
+        }
         if (is.null(view) || length(view@steps) == 0L) return(subobj)
-        .cache <- list(...)$.cache
-        # viewCrop routes through spatRelate; .spat_relate_narrow's
-        # combined-AABB pre-cull respects the @post_ops affine via
-        # parquetGeomBase::crop()'s inverse-affine back-projection.
-        # Semantic note: the in-mem method narrows polygons by cells-in-
-        # region computed against spatial_locs centroids; here the
-        # polygon store's own centroids are used. Equal in typical
-        # workflows where spat_locs are derived from poly centroids.
+        # TODO: decouple semantic routing (centroid vs polygon-geom) from
+        # cache memoization in `.push_view_to_pstore`. The right routing
+        # decision is per-step, based on the predicate relation (centroid
+        # is approximately correct only for intersects/disjoint; within /
+        # contains / covers / overlaps / touches / crosses all require
+        # the geom). Target storage kind (DT vs parquet) is NOT the right
+        # discriminator -- a DT-target subobject can still narrow by a
+        # geom-mode predicate, because the geom evaluation runs on the
+        # gobject's polygon source and the resulting cell_ID set narrows
+        # the DT downstream. Cache is purely an optimization layer under
+        # the centroid path; it should not gate semantics. Once routed
+        # per-step, the two patches below (`force cache for polygons`
+        # here, and `force NULL cache for points` in the points
+        # resolveSubobject) both go away.
+        #
+        # Force the centroid-based cell_ID narrow path even when the
+        # caller didn't pass a cache. The polygon resolveSubobject is
+        # cell-aggregatable (poly_ID == cell_ID by convention) so the
+        # surviving cell_ID set computed from spatLocs centroids applies
+        # directly. Allocating a one-shot cache here routes
+        # `.push_view_to_pstore` through `.surviving_cell_ids_arrow` --
+        # the same path the batched `materialize(g, view)` takes -- so
+        # the polygon narrow always agrees with the spatLocs / cellMeta
+        # / expression narrow for the same view recipe. (The per-step
+        # spat_relate-on-geom path is the right default for giottoPoints
+        # below, where poly_ID == cell_ID does NOT hold.)
+        .cache <- list(...)$.cache %null% new.env(parent = emptyenv())
         subobj@spatVector <- .push_view_to_pstore(subobj@spatVector, view,
             gobject = gobject, target_key = "poly_ID", space = space,
             spat_unit = GiottoClass::spatUnit(subobj),
@@ -913,8 +1042,10 @@ setMethod("resolveSubobject",
         if (!inherits(subobj@spatVector, "parquetBase")) {
             return(callNextMethod())
         }
-        # Space transforms first, composing into @post_ops.
-        subobj <- .apply_space_to_subobj(subobj, gobject, space)
+        # OUTPUT-space transform: only applied when caller passed `space=`.
+        if (!is.null(space)) {
+            subobj <- .apply_space_to_subobj(subobj, gobject, space)
+        }
         if (is.null(view) || length(view@steps) == 0L) return(subobj)
         .cache <- list(...)$.cache
         # viewCrop reaches parity with in-mem via parquetGeomBase's crop().
@@ -973,7 +1104,7 @@ setMethod("resolveSubobject",
         spat_unit <- GiottoClass::spatUnit(subobj)
         feat_type <- GiottoClass::featType(subobj)
         surv <- .surviving_cell_ids_arrow(view, gobject, .cache,
-            space = space, spat_unit = spat_unit, feat_type = feat_type)
+            spat_unit = spat_unit, feat_type = feat_type)
         if (is.null(surv)) return(subobj)
 
         surv_ids <- dplyr::collect(surv)$cell_ID
