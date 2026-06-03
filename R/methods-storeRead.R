@@ -986,7 +986,15 @@ sd_view_ref <- function(sdf) {
 .pstore_tile_literal_cols <- function(spec) {
     uid_lit <- gsub("'", "''", spec$uid, fixed = TRUE)
     if (spec$has_tile_index) {
-        sprintf("'%s' AS source_id, %d AS tile_index", uid_lit, spec$tile_index)
+        # CAST AS INT keeps the literal at int32 so it matches the on-disk
+        # hive partition column type. Without the cast, DataFusion infers
+        # Int64 (default for integer literals); sd_collect then surfaces
+        # that as R `numeric`, and arrow::as_arrow_table() promotes it to
+        # float64 -- which then fails to semi_join against the int32
+        # tile_index column from the parquet schema. `INT` is the
+        # portable Int32 name across DataFusion / DuckDB.
+        sprintf("'%s' AS source_id, CAST(%d AS INT) AS tile_index",
+            uid_lit, spec$tile_index)
     } else {
         sprintf("'%s' AS source_id", uid_lit)
     }
