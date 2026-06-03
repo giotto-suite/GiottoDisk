@@ -391,7 +391,29 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     character(0L)
 }
 
-# detect matrix uid based on hash lookup in manifest
+# Detect manifest uids of the expression matrices currently held by a
+# gobject. Used by snapshotSave to know which artifacts to tag.
+#
+# Two-path dispatch:
+#
+#   * parquetExprStore / unionParquetExprStore carry a stable `@uid` slot
+#     assigned at construction and persisted as the vault directory name.
+#     We extract it directly via .ss_store_uids. Hash matching is unsuitable
+#     for these classes because `.ss_hash_expr_base` reaches them via
+#     `.hash(storeRead(.store_nostate(mat)))`, which digests an arrow
+#     `FileSystemDataset` R6 wrapper — base R `serialize()` doesn't invoke
+#     active bindings (so $files / $schema never enter the bytes) and
+#     stores externalptrs as a null placeholder. Result: every
+#     parquetExprStore digests to the same constant regardless of data,
+#     and the subsequent `manifest[!duplicated(hash)]` step collapses all
+#     of them onto a single arbitrary uid — wrong uids get tagged or none
+#     at all.
+#
+#   * IterableMatrix / HDF5Array don't carry a stable identity slot
+#     (BPCells assigns uid by manifest registration, not on the matrix
+#     handle). `.ss_hash_expr_base` digests S4 backends with real path /
+#     dim slots there, so hash matching is content-discriminating and
+#     stable across re-opens — keep the hash path for them.
 .ss_gdsrc_detect_uid_matrices <- function(gobject, manifest) {
     tracked_classes <- c("IterableMatrix", "HDF5Array",
                          "parquetExprStore", "unionParquetExprStore")
@@ -404,13 +426,27 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     mat_list <- mat_list[is_tracked_class]
     if (length(mat_list) == 0L) return(c())
 
-    # unlist+lapply (not vapply) because compound stores return multiple
-    # hashes per matrix.
-    protected_hash <- unlist(lapply(mat_list,
-        function(x) .ss_hash_expr_base(x[])
-    ))
-    manifest <- manifest[!duplicated(hash)]
-    manifest[hash %in% protected_hash, uid]
+    # Split between direct-uid (parquetExprStore family) and hash-match
+    # (BPCells / HDF5Array) — see header comment.
+    direct_uids <- character(0L)
+    hash_mats   <- list()
+    for (x in mat_list) {
+        m <- x[]
+        if (inherits(m, c("parquetExprStore", "unionParquetExprStore"))) {
+            direct_uids <- c(direct_uids, .ss_store_uids(m))
+        } else {
+            hash_mats <- c(hash_mats, list(m))
+        }
+    }
+
+    hash_uids <- character(0L)
+    if (length(hash_mats) > 0L) {
+        protected_hash <- unlist(lapply(hash_mats, .ss_hash_expr_base))
+        manifest_dedup <- manifest[!duplicated(hash)]
+        hash_uids <- manifest_dedup[hash %in% protected_hash, uid]
+    }
+
+    c(direct_uids, hash_uids)
 }
 
 # add numerical suffix to prevent file naming collision
