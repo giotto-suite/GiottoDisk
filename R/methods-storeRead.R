@@ -763,7 +763,8 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
             sprintf("SELECT * FROM (%s) AS _probe LIMIT 0", sql)
         ))
     }
-    inner_sql <- .pstore_sql_affine_wrap(inner_sql, aff, sedona_probe_fn)
+    inner_sql <- .pstore_sql_affine_wrap(inner_sql, aff, sedona_probe_fn,
+        engine = "sedona")
 
     sdf <- sedonadb::sd_sql(inner_sql)
     attr(sdf, "view_name") <- base_view_name
@@ -889,7 +890,8 @@ sd_view_ref <- function(sdf) {
         DBI::dbGetQuery(conn,
             sprintf("SELECT * FROM (%s) AS _probe LIMIT 0", sql))
     }
-    inner_sql <- .pstore_sql_affine_wrap(inner_sql, aff, duckdb_probe_fn)
+    inner_sql <- .pstore_sql_affine_wrap(inner_sql, aff, duckdb_probe_fn,
+        engine = "duckdb")
 
     # Register final view + return a lazy tbl. Final-view registration lets
     # the user reference it via plain `tbl(conn, name)` and gives dbplyr a
@@ -1108,18 +1110,38 @@ sd_view_ref <- function(sdf) {
 # `schema_probe_fn(inner_sql)` returns a data.frame whose names enumerate
 # the projection's columns (used to emit non-geom cols verbatim and
 # replace geom with ST_Affine(geom, ...)).
-.pstore_sql_affine_wrap <- function(inner_sql, aff, schema_probe_fn) {
+#
+# `engine` selects the ST_Affine argument convention:
+#   * "duckdb" (PostGIS) -- x' = a*x + b*y + xoff, y' = d*x + e*y + yoff
+#   * "sedona"           -- x' = a*x + d*y + xoff, y' = b*x + e*y + yoff
+# SedonaDB's ST_Affine uses the transposed convention relative to PostGIS;
+# verified empirically (sd_sql("ST_Affine(ST_Point(3622,-2142),
+# 0.866,0.5,-0.5,0.866,0,0)") returns (4207.65, -43.97) rather than
+# PostGIS's (2065.65, -3665.97)). Without this engine-aware swap, any
+# pending @post_ops rotation on a backed polygon store via the sedona
+# engine silently emits the wrong transform -- the geom never rotates,
+# ST_Intersects against the rotated-frame query returns nothing.
+.pstore_sql_affine_wrap <- function(inner_sql, aff, schema_probe_fn,
+    engine = c("duckdb", "sedona")) {
     if (is.null(aff)) return(inner_sql)
+    engine <- match.arg(engine)
     schema_df <- schema_probe_fn(inner_sql)
     other_cols <- setdiff(names(schema_df), "geom")
     m <- aff@affine
     # Post-multiply convention: [x, y, 1] %*% M
     #   x' = x*M[1,1] + y*M[2,1] + M[3,1],  y' = x*M[1,2] + y*M[2,2] + M[3,2]
-    # ST_Affine(geom, a, b, d, e, xoff, yoff):
-    #   x' = a*x + b*y + xoff,  y' = d*x + e*y + yoff
+    coefs <- if (engine == "sedona") {
+        # transposed arg order: ST_Affine(geom, a, b, d, e, ...) with
+        # x' = a*x + d*y, so we feed (M[1,1], M[1,2], M[2,1], M[2,2]).
+        c(m[1L, 1L], m[1L, 2L], m[2L, 1L], m[2L, 2L], m[3L, 1L], m[3L, 2L])
+    } else {
+        # PostGIS / duckdb: ST_Affine(geom, a, b, d, e, ...) with
+        # x' = a*x + b*y, so (M[1,1], M[2,1], M[1,2], M[2,2]).
+        c(m[1L, 1L], m[2L, 1L], m[1L, 2L], m[2L, 2L], m[3L, 1L], m[3L, 2L])
+    }
     affine_expr <- sprintf(
         "ST_Affine(geom, %.17g, %.17g, %.17g, %.17g, %.17g, %.17g) AS geom",
-        m[1L, 1L], m[2L, 1L], m[1L, 2L], m[2L, 2L], m[3L, 1L], m[3L, 2L]
+        coefs[1L], coefs[2L], coefs[3L], coefs[4L], coefs[5L], coefs[6L]
     )
     outer_select <- if (length(other_cols) > 0L) {
         paste(c(paste(sprintf('"%s"', other_cols), collapse = ", "), affine_expr),
