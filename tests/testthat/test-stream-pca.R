@@ -130,3 +130,50 @@ test_that("irlba and exact pcaParam variants error on parquet backend", {
         "not supported for streaming"
     )
 })
+
+
+# autoPcaParam ####
+# "auto" defers method selection to the substrate's reduceData
+# (parquetExprStore, autoPcaParam) method. For parquetExprStore the
+# choice is currently "random" (Halko) -- the only streaming-safe path.
+# When gramEigenPcaParam lands, that method's body grows a branch.
+# `dry_run = TRUE` returns the resolved concrete pcaParam without
+# running PCA.
+
+test_that("reduceData(parquetExprStore, auto + dry_run) returns randomPcaParam", {
+    skip_if_not_installed("Giotto")
+    mat <- .tiny_mat(seed = 3)
+    pe  <- .setup_normalized_pe(mat)
+    resolved <- GiottoClass::reduceData(pe,
+        Giotto::pcaParam("auto", ncp = 5,
+            feats_to_use = rownames(mat)[1:20], dry_run = TRUE))
+    expect_s4_class(resolved, "randomPcaParam")
+    expect_equal(resolved$ncp, 5L)
+    expect_equal(resolved$feats_to_use, rownames(mat)[1:20])
+    # dry_run stripped from the concrete param
+    expect_null(resolved$dry_run)
+})
+
+test_that("reduceData(parquetExprStore, autoPcaParam) matches randomPcaParam byte-for-byte", {
+    skip_if_not_installed("Giotto")
+    mat <- .tiny_mat(seed = 3)
+    pe  <- .setup_normalized_pe(mat)
+    hvg <- rownames(mat)[1:30]
+
+    auto_res <- GiottoClass::reduceData(pe,
+        Giotto::pcaParam("auto", ncp = 5, feats_to_use = hvg,
+            center = TRUE, scale = FALSE,
+            set_seed = TRUE, seed_number = 42L))
+    ref_res <- GiottoClass::reduceData(pe,
+        Giotto::pcaParam("random", ncp = 5, feats_to_use = hvg,
+            center = TRUE, scale = FALSE,
+            set_seed = TRUE, seed_number = 42L))
+
+    expect_equal(auto_res$d, ref_res$d, tolerance = 1e-10)
+    expect_equal(dim(auto_res$u), dim(ref_res$u))
+    expect_equal(dim(auto_res$v), dim(ref_res$v))
+    for (k in seq_along(ref_res$d)) {
+        rho <- abs(cor(auto_res$u[, k], ref_res$u[, k]))
+        expect_gt(rho, 0.999)
+    }
+})

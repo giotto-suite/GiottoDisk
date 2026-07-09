@@ -97,6 +97,36 @@ setMethod("reduceData",
 )
 
 
+# ---- autoPcaParam: substrate-driven method selection ---------------------
+# For parquetExprStore, "auto" currently resolves to "random" (Halko) --
+# the only streaming-safe PCA path today. When gramEigenPcaParam lands,
+# this method's body grows a branch that returns "gram-eigen" when P
+# (after HVG selection) is small enough that the Gram matrix fits within
+# the memory budget. Pass `dry_run = TRUE` on the param to inspect the
+# resolved concrete flavor without running PCA.
+
+#' @rdname reduceData
+#' @export
+setMethod("reduceData",
+    signature(x = "parquetExprStore", param = "autoPcaParam"),
+    function(x, param, ...) {
+        resolved <- Giotto::pcaParam(
+            method        = "random",
+            ncp           = param$ncp,
+            center        = param$center,
+            scale         = param$scale,
+            feats_to_use  = param$feats_to_use,
+            n_oversamples = param$n_oversamples,
+            n_power_iter  = param$n_power_iter,
+            set_seed      = param$set_seed,
+            seed_number   = param$seed_number
+        )
+        if (isTRUE(param$dry_run)) return(resolved)
+        reduceData(x, resolved, ...)
+    }
+)
+
+
 # ---- Streaming Halko core --------------------------------------------------
 
 .stream_random_svd <- function(pe, k, n_oversamples = 10L, n_power_iter = 2L,
