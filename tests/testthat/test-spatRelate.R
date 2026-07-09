@@ -467,3 +467,41 @@ test_that("spatRelate(): auto engine resolves to an installed backend", {
     )
     expect_setequal(tbl$id, c("a", "b"))
 })
+
+
+# .coerce_id_tab_int32: id-tab type invariant ####
+# After SQL engines return integer literals (Int64) or R promotes ints to
+# numeric during data.frame reconstruction, arrow::as_arrow_table gives
+# float64 where the on-disk parquet schema has int32. The downstream
+# semi_join in `.pbase_storeread_processing` then silently returns no
+# matches. The helper coerces `row_index` / `tile_index` back to int32.
+
+test_that(".coerce_id_tab_int32: promotes float64 row_index / tile_index to int32", {
+    ids_df <- data.frame(row_index = c(1, 2, 3), tile_index = c(0, 0, 1))
+    # data.frame -> arrow has these as float64 by default
+    tab <- arrow::as_arrow_table(ids_df)
+    expect_true(tab$row_index$type == arrow::float64())
+    expect_true(tab$tile_index$type == arrow::float64())
+
+    out <- GiottoDisk:::.coerce_id_tab_int32(tab)
+    expect_true(out$row_index$type == arrow::int32())
+    expect_true(out$tile_index$type == arrow::int32())
+    # Values preserved
+    expect_equal(as.integer(out$row_index$cast(arrow::int32())$as_vector()),
+        c(1L, 2L, 3L))
+})
+
+test_that(".coerce_id_tab_int32: no-op when neither col is present", {
+    tab <- arrow::as_arrow_table(data.frame(id = letters[1:3], x = c(1, 2, 3)))
+    out <- GiottoDisk:::.coerce_id_tab_int32(tab)
+    expect_identical(out, tab)
+})
+
+test_that(".coerce_id_tab_int32: coerces only the present int32 col", {
+    tab <- arrow::as_arrow_table(data.frame(row_index = c(1, 2, 3),
+        other = c(1.5, 2.5, 3.5)))
+    out <- GiottoDisk:::.coerce_id_tab_int32(tab)
+    expect_true(out$row_index$type == arrow::int32())
+    # `other` is not in the int32 whitelist -- must stay float64
+    expect_true(out$other$type == arrow::float64())
+})
