@@ -130,9 +130,9 @@ setMethod("analyzeData",
     if (!inherits(pe, "parquetExprStore"))
         stop("[.stream_norm_gene_stats] pe must be a parquetExprStore.")
 
-    norm <- pe@params$norm %null% list()
-    sf   <- norm$scale_factors
-    if (is.null(sf))
+    norm   <- pe@params$norm %null% list()
+    scalef <- norm$scale_factors
+    if (is.null(scalef))
         stop("[.stream_norm_gene_stats] no scale_factors on pe@params$norm.")
     log_norm <- isTRUE(norm$log)
     log_base <- norm$base %null% 2
@@ -169,11 +169,11 @@ setMethod("analyzeData",
         if (nrow(chunk) == 0L) next
 
         # Remap row_id from original parquet -> subset position so
-        # sf[row_id] works (sf is in subset coords)
+        # scalef[row_id] works (scalef is in subset coords)
         chunk[, row_id := .pe_remap_row(row_id, pe)]
 
         # Apply JIT recipe: scale per cell, then optional log
-        chunk[, v_norm := value * sf[row_id]]
+        chunk[, v_norm := value * scalef[row_id]]
         if (log_norm) chunk[, v_norm := log1p(v_norm) / log(log_base)]
 
         # Per-gene accumulators (use ORIGINAL col_id for grouping then

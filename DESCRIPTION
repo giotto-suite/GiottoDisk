@@ -86,6 +86,7 @@ Collate:
     'methods-storeWrite.R'
     'methods-store_nostate.R'
     'methods-transforms.R'
+    'pca-param.R'
     'stream-filter.R'
     'stream-hvf.R'
     'stream-labelProportions.R'

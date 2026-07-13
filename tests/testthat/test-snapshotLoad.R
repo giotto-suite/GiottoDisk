@@ -1,14 +1,7 @@
-# Tests for snapshotLoad error paths.
-#
-# The load routine wraps `list.files()` over the source's `giottosave/`
-# subdir. Prior to the fix, a typo in `name` returned NA and errored
-# unhelpfully inside `.load_serialized`. Now it errors up front with a
-# fuzzy-matched suggestion when possible, or lists available snapshots.
+# snapshotLoad: error paths (missing dir, unknown name w/ fuzzy match,
+# fallback listing) + success paths (valid name, NULL picks most recent).
 
-
-# Helper: build a gDirSource with an optional set of snapshot names.
-# Each name is saveRDS'd with a trivial object so `.load_serialized` can
-# read them back on the success path.
+# Helper: gDirSource with optional set of snapshot names on disk.
 .mk_snapshot_src <- function(names = character()) {
     td <- tempfile("snapLoad_"); dir.create(td)
     snaps_dir <- file.path(td, "giottosave")

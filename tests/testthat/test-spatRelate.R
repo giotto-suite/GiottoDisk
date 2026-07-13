@@ -469,12 +469,8 @@ test_that("spatRelate(): auto engine resolves to an installed backend", {
 })
 
 
-# .coerce_id_tab_int32: id-tab type invariant ####
-# After SQL engines return integer literals (Int64) or R promotes ints to
-# numeric during data.frame reconstruction, arrow::as_arrow_table gives
-# float64 where the on-disk parquet schema has int32. The downstream
-# semi_join in `.pbase_storeread_processing` then silently returns no
-# matches. The helper coerces `row_index` / `tile_index` back to int32.
+# .coerce_id_tab_int32: coerces row_index / tile_index float64 (from
+# SQL collect) back to int32 so downstream semi_joins line up.
 
 test_that(".coerce_id_tab_int32: promotes float64 row_index / tile_index to int32", {
     ids_df <- data.frame(row_index = c(1, 2, 3), tile_index = c(0, 0, 1))

@@ -31,43 +31,30 @@
 }
 
 
-test_that("randomPcaParam errors without normalize recipe", {
+test_that("randomPcaParam works on a store with no normalize recipe", {
     skip_if_not_installed("Giotto")
     mat <- .tiny_mat()
-    pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
-    expect_error(
-        GiottoClass::reduceData(pe,
-            Giotto::pcaParam("random", ncp = 5,
-                              feats_to_use = rownames(mat)[1:20])),
-        "no normalization recipe"
-    )
+    # Raw store, no @params$norm set — chunk reader treats values as-is.
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        mat)
+    res <- GiottoClass::reduceData(pe,
+        Giotto::pcaParam("random", ncp = 5,
+            feats_to_use = rownames(mat)[1:20], scale = FALSE))
+    expect_named(res, c("u", "d", "v", "sdev", "eigenvalues"),
+        ignore.order = TRUE)
+    expect_equal(length(res$d), 5L)
 })
 
 
-test_that("randomPcaParam requires feats_to_use", {
+test_that("randomPcaParam works with feats_to_use = NULL (all features)", {
     skip_if_not_installed("Giotto")
     mat <- .tiny_mat(seed = 2)
     pe  <- .setup_normalized_pe(mat)
-    # scale = FALSE so the feats_to_use check fires (scale check is earlier)
-    expect_error(
-        GiottoClass::reduceData(pe,
-            Giotto::pcaParam("random", ncp = 5, scale = FALSE)),
-        "feats_to_use is required"
-    )
-})
-
-
-test_that("randomPcaParam errors with scale = TRUE", {
-    skip_if_not_installed("Giotto")
-    mat <- .tiny_mat(seed = 3)
-    pe  <- .setup_normalized_pe(mat)
-    expect_error(
-        GiottoClass::reduceData(pe,
-            Giotto::pcaParam("random", ncp = 5,
-                              feats_to_use = rownames(mat)[1:20],
-                              scale = TRUE)),
-        "scale = TRUE"
-    )
+    res <- GiottoClass::reduceData(pe,
+        Giotto::pcaParam("random", ncp = 5, scale = FALSE,
+            set_seed = TRUE, seed_number = 42L))
+    # Loadings restricted to full feat set
+    expect_equal(nrow(res$v), nrow(mat))
 })
 
 
@@ -132,48 +119,186 @@ test_that("irlba and exact pcaParam variants error on parquet backend", {
 })
 
 
-# autoPcaParam ####
-# "auto" defers method selection to the substrate's reduceData
-# (parquetExprStore, autoPcaParam) method. For parquetExprStore the
-# choice is currently "random" (Halko) -- the only streaming-safe path.
-# When gramEigenPcaParam lands, that method's body grows a branch.
-# `dry_run = TRUE` returns the resolved concrete pcaParam without
-# running PCA.
+# autoPcaParam: substrate routes to gram-eigen or random depending on
+# Gram-fits-in-budget; dry_run = TRUE returns the resolved param.
 
-test_that("reduceData(parquetExprStore, auto + dry_run) returns randomPcaParam", {
+test_that("reduceData(parquetExprStore, auto + dry_run) resolves gram-eigen when P is small", {
     skip_if_not_installed("Giotto")
     mat <- .tiny_mat(seed = 3)
     pe  <- .setup_normalized_pe(mat)
+    hvg <- rownames(mat)[1:20]
+
+    # Default budget (4 GB); 20^2 * 8 = 3.2 KB -- easily fits, picks gram
     resolved <- GiottoClass::reduceData(pe,
-        Giotto::pcaParam("auto", ncp = 5,
-            feats_to_use = rownames(mat)[1:20], dry_run = TRUE))
-    expect_s4_class(resolved, "randomPcaParam")
+        Giotto::pcaParam("auto", ncp = 5, feats_to_use = hvg,
+            dry_run = TRUE))
+    expect_s4_class(resolved, "gramEigenPcaParam")
     expect_equal(resolved$ncp, 5L)
-    expect_equal(resolved$feats_to_use, rownames(mat)[1:20])
-    # dry_run stripped from the concrete param
-    expect_null(resolved$dry_run)
+    expect_equal(resolved$feats_to_use, hvg)
 })
 
-test_that("reduceData(parquetExprStore, autoPcaParam) matches randomPcaParam byte-for-byte", {
+test_that("reduceData(parquetExprStore, auto + dry_run) resolves random when budget too tight", {
     skip_if_not_installed("Giotto")
     mat <- .tiny_mat(seed = 3)
+    pe  <- .setup_normalized_pe(mat)
+    hvg <- rownames(mat)[1:20]
+
+    # Force a tiny budget so 20^2 * 8 = 3.2 KB exceeds it -> Halko
+    withr::with_options(list(giottodisk.pca_auto_budget_gb = 1e-9), {
+        resolved <- GiottoClass::reduceData(pe,
+            Giotto::pcaParam("auto", ncp = 5, feats_to_use = hvg,
+                dry_run = TRUE))
+        expect_s4_class(resolved, "randomPcaParam")
+    })
+})
+
+
+# gramEigenPcaParam: constructor lives in GiottoDisk, class inherits
+# from Giotto::pcaParam.
+
+test_that("gramEigenPcaParam() constructor populates all knobs", {
+    p <- gramEigenPcaParam(ncp = 30, feats_to_use = c("g1", "g2"),
+        center = TRUE, scale = FALSE, fallback_relerr = 0.005,
+        n_oversamples = 15L, n_power_iter = 3L, seed_number = 7L)
+    expect_s4_class(p, "gramEigenPcaParam")
+    expect_true(is(p, "pcaParam"))
+    expect_equal(p$method, "gram-eigen")
+    expect_equal(p$ncp, 30L)
+    expect_equal(p$feats_to_use, c("g1", "g2"))
+    expect_equal(p$fallback_relerr, 0.005)
+    expect_equal(p$n_oversamples, 15L)
+    expect_equal(p$seed_number, 7L)
+})
+
+
+# Streaming gram-eigen: parity against dense svd() on the same
+# normalized + centered data.
+
+test_that("streaming gram-eigen singular values match svd() to 1e-8", {
+    skip_if_not_installed("Giotto")
+    mat <- .tiny_mat(seed = 11)
     pe  <- .setup_normalized_pe(mat)
     hvg <- rownames(mat)[1:30]
 
-    auto_res <- GiottoClass::reduceData(pe,
-        Giotto::pcaParam("auto", ncp = 5, feats_to_use = hvg,
-            center = TRUE, scale = FALSE,
-            set_seed = TRUE, seed_number = 42L))
-    ref_res <- GiottoClass::reduceData(pe,
-        Giotto::pcaParam("random", ncp = 5, feats_to_use = hvg,
-            center = TRUE, scale = FALSE,
-            set_seed = TRUE, seed_number = 42L))
+    # Reference: apply the same normalization the streaming path sees,
+    # subset HVG rows, center columns, and run dense svd().
+    libsz <- as.numeric(Matrix::colSums(mat))
+    libsz[libsz == 0] <- 1
+    sf <- 1e4 / libsz
+    mat_norm <- log1p(t(t(mat) * sf)) / log(2)
+    A <- as.matrix(t(mat_norm[hvg, , drop = FALSE]))   # cells x HVG
+    A_c <- scale(A, center = TRUE, scale = FALSE)
+    ref <- svd(A_c, nu = 5, nv = 5)
 
-    expect_equal(auto_res$d, ref_res$d, tolerance = 1e-10)
-    expect_equal(dim(auto_res$u), dim(ref_res$u))
-    expect_equal(dim(auto_res$v), dim(ref_res$v))
-    for (k in seq_along(ref_res$d)) {
-        rho <- abs(cor(auto_res$u[, k], ref_res$u[, k]))
-        expect_gt(rho, 0.999)
+    stream_res <- GiottoClass::reduceData(pe,
+        gramEigenPcaParam(ncp = 5, feats_to_use = hvg,
+            center = TRUE, scale = FALSE))
+
+    # Gram-eigen on well-conditioned data matches svd() to machine
+    # precision (well under the CONVENTIONS 1% bar).
+    rel <- max(abs(stream_res$d - ref$d[seq_len(5)]) / ref$d[seq_len(5)])
+    expect_lt(rel, 1e-8)
+    expect_equal(nrow(stream_res$v), 30L)     # loadings restricted to HVG
+    expect_equal(rownames(stream_res$v), hvg)
+
+    # Per-PC score/loading correlation (allow sign flip)
+    ref_coords <- ref$u %*% diag(ref$d[seq_len(5)])
+    for (k in seq_len(5)) {
+        rho_v <- abs(cor(stream_res$v[, k], ref$v[, k]))
+        rho_u <- abs(cor(stream_res$u[, k], ref_coords[, k]))
+        expect_gt(rho_v, 0.999)
+        expect_gt(rho_u, 0.999)
     }
+})
+
+test_that("streaming gram-eigen top-k singular values match irlba", {
+    skip_if_not_installed("Giotto")
+    skip_if_not_installed("irlba")
+    set.seed(99)
+    mat <- .tiny_mat(n_genes = 100, n_cells = 500, density = 0.4, seed = 99)
+    pe  <- .setup_normalized_pe(mat)
+    libsz <- as.numeric(Matrix::colSums(mat))
+    libsz[libsz == 0] <- 1
+    sf <- 1e4 / libsz
+    mat_norm <- log1p(t(t(mat) * sf)) / log(2)
+    vars <- as.numeric(apply(as.matrix(mat_norm), 1, var))
+    hvg <- rownames(mat)[order(vars, decreasing = TRUE)][1:50]
+    mat_hvg <- mat_norm[hvg, , drop = FALSE]
+    hvg_means <- as.numeric(Matrix::rowMeans(mat_hvg))
+
+    NCP <- 10
+    ir <- irlba::irlba(t(mat_hvg), nv = NCP, nu = NCP, center = hvg_means)
+    pca_pq <- GiottoClass::reduceData(pe,
+        gramEigenPcaParam(ncp = NCP, feats_to_use = hvg,
+            center = TRUE, scale = FALSE))
+
+    expect_equal(length(pca_pq$d), NCP)
+    # Gram-eigen matches irlba to machine precision on well-conditioned
+    # top-k (well below the 1% CONVENTIONS bar).
+    rel <- max(abs(ir$d - pca_pq$d) / ir$d)
+    expect_lt(rel, 1e-8)
+})
+
+
+# scale = TRUE parity vs svd(scale(A, center = TRUE, scale = TRUE)).
+
+test_that("streaming gram-eigen with scale=TRUE matches svd(scale(A))", {
+    skip_if_not_installed("Giotto")
+    mat <- .tiny_mat(seed = 21)
+    pe  <- .setup_normalized_pe(mat)
+    hvg <- rownames(mat)[1:30]
+
+    libsz <- as.numeric(Matrix::colSums(mat))
+    libsz[libsz == 0] <- 1
+    sf <- 1e4 / libsz
+    mat_norm <- log1p(t(t(mat) * sf)) / log(2)
+    A <- as.matrix(t(mat_norm[hvg, , drop = FALSE]))     # cells x HVG
+    A_cs <- scale(A, center = TRUE, scale = TRUE)         # standardized
+    ref <- svd(A_cs, nu = 5, nv = 5)
+
+    stream_res <- GiottoClass::reduceData(pe,
+        gramEigenPcaParam(ncp = 5, feats_to_use = hvg,
+            center = TRUE, scale = TRUE))
+
+    rel <- max(abs(stream_res$d - ref$d[seq_len(5)]) / ref$d[seq_len(5)])
+    expect_lt(rel, 1e-8)
+    ref_coords <- ref$u %*% diag(ref$d[seq_len(5)])
+    for (k in seq_len(5)) {
+        rho_v <- abs(cor(stream_res$v[, k], ref$v[, k]))
+        rho_u <- abs(cor(stream_res$u[, k], ref_coords[, k]))
+        expect_gt(rho_v, 0.999)
+        expect_gt(rho_u, 0.999)
+    }
+})
+
+test_that("streaming Halko with scale=TRUE matches svd(scale(A)) on top-k", {
+    skip_if_not_installed("Giotto")
+    set.seed(31)
+    mat <- .tiny_mat(n_genes = 100, n_cells = 500, density = 0.4, seed = 31)
+    pe  <- .setup_normalized_pe(mat)
+    libsz <- as.numeric(Matrix::colSums(mat))
+    libsz[libsz == 0] <- 1
+    sf <- 1e4 / libsz
+    mat_norm <- log1p(t(t(mat) * sf)) / log(2)
+    vars <- as.numeric(apply(as.matrix(mat_norm), 1, var))
+    hvg <- rownames(mat)[order(vars, decreasing = TRUE)][1:50]
+    A <- as.matrix(t(mat_norm[hvg, , drop = FALSE]))
+    A_cs <- scale(A, center = TRUE, scale = TRUE)
+    ref <- svd(A_cs, nu = 3, nv = 3)
+
+    pca_pq <- GiottoClass::reduceData(pe,
+        Giotto::pcaParam("random", ncp = 5, feats_to_use = hvg,
+            center = TRUE, scale = TRUE,
+            set_seed = TRUE, seed_number = 42L,
+            n_oversamples = 10L, n_power_iter = 3L))
+
+    # Halko is approximate; singular value magnitudes are the correctness
+    # signal for scale=TRUE wiring. On random-Poisson data the top-k
+    # spectrum is near-degenerate (d1/d3 ~ 1.05) and individual loadings
+    # rotate freely among near-tied eigenvalues -- correlate only top-1,
+    # where the gap is largest.
+    rel_top3 <- max(abs(pca_pq$d[1:3] - ref$d[1:3]) / ref$d[1:3])
+    expect_lt(rel_top3, 0.05)
+    rho_v1 <- abs(cor(pca_pq$v[, 1], ref$v[, 1]))
+    expect_gt(rho_v1, 0.90)
 })

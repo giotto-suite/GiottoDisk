@@ -100,11 +100,8 @@ test_that("sedonadb: pending affine applies via ST_Affine", {
     expect_equal(sort(coords[, "y"]), seq_len(5),     tolerance = 1e-6)
 })
 
-# Shear catches the ST_Affine argument-order transpose: sedona uses
-# (a, b, d, e) with x' = a*x + d*y, PostGIS/duckdb uses the transposed
-# convention. Diagonal scale matrices are transpose-invariant so the
-# scale test above passes with either wiring; only off-diagonal entries
-# expose the bug.
+# Shear catches the ST_Affine sedona-vs-duckdb transpose. Diagonal
+# scale is transpose-invariant so needs off-diagonal to expose the bug.
 test_that("sedonadb: pending affine applies via ST_Affine (shear, off-diagonal)", {
     skip_if_not_installed("sedonadb")
     pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb(5))

@@ -95,10 +95,8 @@ test_that("duckdb: pending affine applies via ST_Affine", {
     expect_equal(sort(coords$y_post), seq_len(5),     tolerance = 1e-6)
 })
 
-# Regression guard: the duckdb ST_Affine branch uses the PostGIS argument
-# convention (untouched by the sedona transpose fix). A shear catches any
-# future accidental swap of the branch coefficients -- the diagonal-scale
-# test above is transpose-invariant and won't.
+# Regression guard for the duckdb ST_Affine branch (untouched by the
+# sedona transpose fix). Shear catches any future coefficient swap.
 test_that("duckdb: pending affine applies via ST_Affine (shear, off-diagonal)", {
     skip_if_not_installed("duckdb")
     pgs <- parquetGeomStore() |> storeWrite(make_pts_dd(5))

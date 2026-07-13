@@ -12,10 +12,10 @@
     # -- file testing
     init_option("giottodisk.uri_test_exists", FALSE)
     # -- default formats
-    init_option("giotto.gdsrc_sparsematrix_format", "bpcells")
-    init_option("giotto.gdsrc_densematrix_format", "h5")
-    init_option("giotto.gdsrc_spatvector_format", "parquetGeom")
-    init_option("giotto.gdsrc_dataframe_format", "parquet")
+    init_option("giotto.gdsrc_sparsematrix_format", "parquetExpr")
+    init_option("giotto.gdsrc_densematrix_format",  "h5")
+    init_option("giotto.gdsrc_spatvector_format",   "parquetGeom")
+    init_option("giotto.gdsrc_dataframe_format",    "parquet")
     # -- random IDs
     init_option("giottodisk.uid_include_node", FALSE)
     init_option("giottodisk.uid_include_pid", TRUE)
