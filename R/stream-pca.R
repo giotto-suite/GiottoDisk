@@ -36,17 +36,9 @@ NULL
 setMethod("reduceData",
     signature(x = "parquetExprStore", param = "randomPcaParam"),
     function(x, param, ...) {
-        .stream_random_svd(
-            pe            = x,
-            k             = param$ncp,
-            n_oversamples = param$n_oversamples,
-            n_power_iter  = param$n_power_iter,
-            feats_to_use  = param$feats_to_use,
-            center        = isTRUE(param$center),
-            scale         = isTRUE(param$scale),
-            set_seed      = isTRUE(param$set_seed),
-            seed_number   = param$seed_number
-        )
+        args <- as.list(param@param)
+        args$method <- NULL     # class carries method; helper doesn't need it
+        do.call(.stream_random_svd, c(list(pe = x), args))
     }
 )
 
@@ -87,18 +79,9 @@ setMethod("reduceData",
 setMethod("reduceData",
     signature(x = "parquetExprStore", param = "gramEigenPcaParam"),
     function(x, param, ...) {
-        .stream_gram_svd(
-            pe               = x,
-            k                = param$ncp,
-            feats_to_use     = param$feats_to_use,
-            center           = isTRUE(param$center),
-            scale            = isTRUE(param$scale),
-            fallback_relerr  = param$fallback_relerr,
-            set_seed         = isTRUE(param$set_seed),
-            seed_number      = param$seed_number,
-            n_oversamples    = param$n_oversamples,
-            n_power_iter     = param$n_power_iter
-        )
+        args <- as.list(param@param)
+        args$method <- NULL
+        do.call(.stream_gram_svd, c(list(pe = x), args))
     }
 )
 
@@ -123,31 +106,14 @@ setMethod("reduceData",
         }
         budget_gb  <- getOption("giottodisk.pca_auto_budget_gb", 5)
         gram_bytes <- as.numeric(n_feat)^2 * 8
+        knobs <- as.list(param@param)
+        knobs$method  <- NULL   # strip auto sentinel
+        knobs$dry_run <- NULL   # not a concrete-flavor arg
         resolved <- if (gram_bytes < budget_gb * 1e9) {
-            gramEigenPcaParam(
-                ncp             = param$ncp,
-                center          = param$center,
-                scale           = param$scale,
-                feats_to_use    = param$feats_to_use,
-                n_oversamples   = param$n_oversamples,
-                n_power_iter    = param$n_power_iter,
-                set_seed        = param$set_seed,
-                seed_number     = param$seed_number
-                # fallback_relerr uses factory default; users pin
-                # explicitly via gramEigenPcaParam(fallback_relerr = ...)
-            )
+            do.call(gramEigenPcaParam, knobs)
         } else {
-            Giotto::pcaParam(
-                method        = "random",
-                ncp           = param$ncp,
-                center        = param$center,
-                scale         = param$scale,
-                feats_to_use  = param$feats_to_use,
-                n_oversamples = param$n_oversamples,
-                n_power_iter  = param$n_power_iter,
-                set_seed      = param$set_seed,
-                seed_number   = param$seed_number
-            )
+            do.call(Giotto::pcaParam,
+                c(list(method = "random"), knobs))
         }
         if (isTRUE(param$dry_run)) return(resolved)
         reduceData(x, resolved, ...)
@@ -157,10 +123,10 @@ setMethod("reduceData",
 
 # ---- Streaming Halko core --------------------------------------------------
 
-.stream_random_svd <- function(pe, k, n_oversamples = 10L, n_power_iter = 2L,
+.stream_random_svd <- function(pe, ncp, n_oversamples = 10L, n_power_iter = 2L,
                                 feats_to_use = NULL, center = TRUE,
                                 scale = FALSE,
-                                set_seed = TRUE, seed_number = 1234L) {
+                                set_seed = TRUE, seed_number = 1234L, ...) {
     if (set_seed) set.seed(seed_number)
 
     norm     <- pe@params$norm
@@ -185,13 +151,13 @@ setMethod("reduceData",
         idx
     }
     P_hvg <- length(hvg_idx)
-    k     <- as.integer(k)
-    if (k >= P_hvg) {
-        warning("[stream PCA] ncp (", k, ") >= n_HVG (", P_hvg,
+    ncp   <- as.integer(ncp)
+    if (ncp >= P_hvg) {
+        warning("[stream PCA] ncp (", ncp, ") >= n_HVG (", P_hvg,
                 "), setting ncp = ", P_hvg - 1L, call. = FALSE)
-        k <- P_hvg - 1L
+        ncp <- P_hvg - 1L
     }
-    k_total <- k + as.integer(n_oversamples)
+    k_total <- ncp + as.integer(n_oversamples)
 
     # Streaming stats: means (center) + sds (scale) in one pass.
     stats <- .stream_norm_hvg_stats(pe, hvg_idx)
@@ -298,13 +264,13 @@ setMethod("reduceData",
 
     sv <- svd(B, nu = k_total, nv = k_total)
 
-    M_recover <- backsolve(R_chol, sv$u[, seq_len(k), drop = FALSE])
+    M_recover <- backsolve(R_chol, sv$u[, seq_len(ncp), drop = FALSE])
     U <- Y %*% M_recover
-    D_k <- sv$d[seq_len(k)]
-    V   <- sv$v[, seq_len(k), drop = FALSE]
+    D_k <- sv$d[seq_len(ncp)]
+    V   <- sv$v[, seq_len(ncp), drop = FALSE]
 
     # Sign convention: largest |V[, j]| entry positive
-    signs <- vapply(seq_len(k), function(j) {
+    signs <- vapply(seq_len(ncp), function(j) {
         sign(V[which.max(abs(V[, j])), j])
     }, numeric(1L))
     signs[signs == 0] <- 1
@@ -331,11 +297,11 @@ setMethod("reduceData",
 # κ(A); when pred rel-err `ε·(d1/dk)²/2 > fallback_relerr`, delegate
 # to Halko.
 
-.stream_gram_svd <- function(pe, k, feats_to_use = NULL, center = TRUE,
+.stream_gram_svd <- function(pe, ncp, feats_to_use = NULL, center = TRUE,
                               scale = FALSE,
                               fallback_relerr = 0.01,
                               set_seed = TRUE, seed_number = 1234L,
-                              n_oversamples = 10L, n_power_iter = 2L) {
+                              n_oversamples = 10L, n_power_iter = 2L, ...) {
     norm     <- pe@params$norm
     has_norm <- !is.null(norm) && !is.null(norm$scale_factors)
     scalef   <- if (has_norm) norm$scale_factors else NULL
@@ -358,11 +324,11 @@ setMethod("reduceData",
         idx
     }
     P_hvg <- length(hvg_idx)
-    k     <- as.integer(k)
-    if (k >= P_hvg) {
-        warning("[stream gram PCA] ncp (", k, ") >= n_HVG (", P_hvg,
+    ncp   <- as.integer(ncp)
+    if (ncp >= P_hvg) {
+        warning("[stream gram PCA] ncp (", ncp, ") >= n_HVG (", P_hvg,
                 "), setting ncp = ", P_hvg - 1L, call. = FALSE)
-        k <- P_hvg - 1L
+        ncp <- P_hvg - 1L
     }
     hvg_orig <- .pe_orig_col(hvg_idx, pe)
 
@@ -415,7 +381,7 @@ setMethod("reduceData",
 
     # Eigendecomposition (descending)
     ei <- eigen(G, symmetric = TRUE)
-    ncp_used <- min(k, length(ei$values))
+    ncp_used <- min(ncp, length(ei$values))
     eigenvalues_G <- ei$values[seq_len(ncp_used)]
     V <- ei$vectors[, seq_len(ncp_used), drop = FALSE]
     eigenvalues_G[eigenvalues_G < 0] <- 0    # tiny-negative clamp
@@ -433,7 +399,7 @@ setMethod("reduceData",
             "). Delegating to streaming random SVD (Halko).",
             call. = FALSE)
         return(.stream_random_svd(
-            pe = pe, k = k,
+            pe = pe, ncp = ncp,
             n_oversamples = n_oversamples,
             n_power_iter  = n_power_iter,
             feats_to_use  = feats_to_use, center = center, scale = scale,
@@ -493,7 +459,7 @@ setMethod("reduceData",
 # Per-HVG-gene mean + sd of normalized data in one streaming pass.
 # Variance via SS identity: σ² = (SS − n·μ²)/(n−1). `norm` NULL reads
 # values as-written; `hvg_idx` NULL uses every column.
-.stream_norm_hvg_stats <- function(pe, hvg_idx) {
+.stream_norm_hvg_stats <- function(pe, hvg_idx, ...) {
     norm     <- pe@params$norm
     has_norm <- !is.null(norm) && !is.null(norm$scale_factors)
     scalef   <- if (has_norm) norm$scale_factors else NULL

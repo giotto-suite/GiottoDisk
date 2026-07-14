@@ -15,8 +15,8 @@ NULL
 setMethod("analyzeData",
     signature(x = "parquetExprStore", param = "cellStatsParam"),
     function(x, param, ...) {
-        thr <- param$detection_threshold %null% 0
-        .stream_cell_qc_stats(x, detection_threshold = thr)
+        do.call(.stream_cell_qc_stats,
+            c(list(pe = x), as.list(param@param)))
     }
 )
 
@@ -25,8 +25,8 @@ setMethod("analyzeData",
 setMethod("analyzeData",
     signature(x = "parquetExprStore", param = "featStatsParam"),
     function(x, param, ...) {
-        thr <- param$detection_threshold %null% 0
-        .stream_feat_qc_stats(x, detection_threshold = thr)
+        do.call(.stream_feat_qc_stats,
+            c(list(pe = x), as.list(param@param)))
     }
 )
 
@@ -37,7 +37,7 @@ setMethod("analyzeData",
 # downstream addCellMetadata / addFeatMetadata calls in those functions
 # work without any additional adapter logic.
 
-.stream_cell_qc_stats <- function(pe, detection_threshold = 0) {
+.stream_cell_qc_stats <- function(pe, detection_threshold = 0, ...) {
     if (!inherits(pe, "parquetExprStore"))
         stop("[.stream_cell_qc_stats] pe must be a parquetExprStore.")
 
@@ -77,7 +77,7 @@ setMethod("analyzeData",
 }
 
 
-.stream_feat_qc_stats <- function(pe, detection_threshold = 0) {
+.stream_feat_qc_stats <- function(pe, detection_threshold = 0, ...) {
     if (!inherits(pe, "parquetExprStore"))
         stop("[.stream_feat_qc_stats] pe must be a parquetExprStore.")
 

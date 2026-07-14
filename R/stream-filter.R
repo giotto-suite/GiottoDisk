@@ -21,16 +21,8 @@ NULL
 setMethod("filterData",
     signature(x = "parquetExprStore", param = "filterParam"),
     function(x, param, ...) {
-        thr   <- param$expression_threshold
-        f_min <- param$feat_det_in_min_cells
-        c_min <- param$min_det_feats_per_cell
-
-        .stream_filter_masks(
-            x,
-            expression_threshold   = thr,
-            feat_det_in_min_cells  = f_min,
-            min_det_feats_per_cell = c_min
-        )
+        do.call(.stream_filter_masks,
+            c(list(pe = x), as.list(param@param)))
     }
 )
 
@@ -38,7 +30,7 @@ setMethod("filterData",
 .stream_filter_masks <- function(pe,
                                   expression_threshold,
                                   feat_det_in_min_cells,
-                                  min_det_feats_per_cell) {
+                                  min_det_feats_per_cell, ...) {
     if (!inherits(pe, "parquetExprStore"))
         stop("[.stream_filter_masks] pe must be a parquetExprStore.")
 

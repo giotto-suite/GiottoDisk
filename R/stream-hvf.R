@@ -38,8 +38,8 @@ setMethod("analyzeData",
                  call. = FALSE)
         }
 
-        thr <- param$detection_threshold %null% 0
-        stats <- .stream_norm_gene_stats(x, expression_threshold = thr)
+        stats <- do.call(.stream_norm_gene_stats,
+            c(list(pe = x), as.list(param@param)))
 
         # Match Giotto: drop zero-detection features before fitting
         nr_cells <- cov <- pred_cov <- cov_diff <- mean_expr <- NULL
@@ -71,8 +71,8 @@ setMethod("analyzeData",
                  call. = FALSE)
         }
 
-        thr <- param$detection_threshold %null% 0
-        stats <- .stream_norm_gene_stats(x, expression_threshold = thr)
+        stats <- do.call(.stream_norm_gene_stats,
+            c(list(pe = x), as.list(param@param)))
 
         # NSE bindings
         nr_cells <- cov <- expr_groups <- cov_group_zscore <- NULL
@@ -126,7 +126,7 @@ setMethod("analyzeData",
 
 # ---- Internal: streaming per-gene stats with JIT normalization ------------
 
-.stream_norm_gene_stats <- function(pe, expression_threshold = 0) {
+.stream_norm_gene_stats <- function(pe, detection_threshold = 0, ...) {
     if (!inherits(pe, "parquetExprStore"))
         stop("[.stream_norm_gene_stats] pe must be a parquetExprStore.")
 
@@ -136,7 +136,7 @@ setMethod("analyzeData",
         stop("[.stream_norm_gene_stats] no scale_factors on pe@params$norm.")
     log_norm <- isTRUE(norm$log)
     log_base <- norm$base %null% 2
-    thr      <- as.numeric(expression_threshold)
+    thr      <- as.numeric(detection_threshold)
 
     n_cells <- as.integer(pe@n_cells)
     n_genes <- as.integer(pe@n_genes)
