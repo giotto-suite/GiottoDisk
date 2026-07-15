@@ -1,4 +1,5 @@
 #' @include class-parquetExprStore.R
+#' @include utils-pestore-ops.R
 NULL
 
 # stream-hvf ####
@@ -14,10 +15,10 @@ NULL
 #       -> per-feature stats including cov_group_zscore (within-bin
 #          COV z-score)
 #
-# Implementation: one streaming Arrow pass that applies the JIT
-# normalize recipe stored on pe@params$norm and accumulates per-gene
-# sum + sum-of-squares, then computes mean / sd / cv on the small
-# (n_genes-sized) result vectors and runs LOESS / bin-zscore in memory.
+# Implementation: storeRead(pe) returns the arrow query with @ops already
+# composed in (norm_libsize_log adds `v_norm`), then a per-gene
+# group_by + summarise runs at arrow layer — only the small (n_genes-sized)
+# aggregate transfers to R. LOESS / bin-zscore run on those small vectors.
 #
 # varParam still errors clearly because per-gene variance on a scaled
 # (z-scored) matrix requires materialising the dense matrix.
@@ -29,8 +30,7 @@ NULL
 setMethod("analyzeData",
     signature(x = "parquetExprStore", param = "covLoessParam"),
     function(x, param, ...) {
-        if (is.null(x@params$norm) ||
-            is.null(x@params$norm$scale_factors)) {
+        if (!.pe_has_norm_op(x@ops)) {
             stop("[analyzeData(parquetExprStore, covLoessParam)] ",
                  "expression backend has no normalization recipe. Run ",
                  "normalizeGiotto(g, scale_feats = FALSE, scale_cells = FALSE) ",
@@ -38,8 +38,8 @@ setMethod("analyzeData",
                  call. = FALSE)
         }
 
-        stats <- do.call(.stream_norm_gene_stats,
-            c(list(pe = x), as.list(param@param)))
+        thr <- param$detection_threshold %null% 0
+        stats <- .stream_norm_gene_stats(x, expression_threshold = thr)
 
         # Match Giotto: drop zero-detection features before fitting
         nr_cells <- cov <- pred_cov <- cov_diff <- mean_expr <- NULL
@@ -62,8 +62,7 @@ setMethod("analyzeData",
 setMethod("analyzeData",
     signature(x = "parquetExprStore", param = "covGroupsParam"),
     function(x, param, ...) {
-        if (is.null(x@params$norm) ||
-            is.null(x@params$norm$scale_factors)) {
+        if (!.pe_has_norm_op(x@ops)) {
             stop("[analyzeData(parquetExprStore, covGroupsParam)] ",
                  "expression backend has no normalization recipe. Run ",
                  "normalizeGiotto(g, scale_feats = FALSE, scale_cells = FALSE) ",
@@ -71,8 +70,8 @@ setMethod("analyzeData",
                  call. = FALSE)
         }
 
-        stats <- do.call(.stream_norm_gene_stats,
-            c(list(pe = x), as.list(param@param)))
+        thr <- param$detection_threshold %null% 0
+        stats <- .stream_norm_gene_stats(x, expression_threshold = thr)
 
         # NSE bindings
         nr_cells <- cov <- expr_groups <- cov_group_zscore <- NULL
@@ -126,71 +125,46 @@ setMethod("analyzeData",
 
 # ---- Internal: streaming per-gene stats with JIT normalization ------------
 
-.stream_norm_gene_stats <- function(pe, detection_threshold = 0, ...) {
+.stream_norm_gene_stats <- function(pe, expression_threshold = 0) {
     if (!inherits(pe, "parquetExprStore"))
         stop("[.stream_norm_gene_stats] pe must be a parquetExprStore.")
 
-    norm   <- pe@params$norm %null% list()
-    scalef <- norm$scale_factors
-    if (is.null(scalef))
-        stop("[.stream_norm_gene_stats] no scale_factors on pe@params$norm.")
-    log_norm <- isTRUE(norm$log)
-    log_base <- norm$base %null% 2
-    thr      <- as.numeric(detection_threshold)
+    if (!.pe_has_norm_op(pe@ops))
+        stop("[.stream_norm_gene_stats] pe has no norm op on @ops.")
+    thr <- as.numeric(expression_threshold)
 
     n_cells <- as.integer(pe@n_cells)
     n_genes <- as.integer(pe@n_genes)
+
+    # NSE bindings
+    col_id <- value <- v_norm <- s <- s2 <- nz <- raw_total <- NULL
+
+    # storeRead returns the arrow query with @ops composed in — v_norm is
+    # already projected by the norm_libsize_log op. Per-gene aggregation
+    # runs at arrow layer; only n_genes-sized result transfers to R.
+    agg <- storeRead(pe, output = "query") |>
+        dplyr::group_by(col_id) |>
+        dplyr::summarise(
+            s         = sum(v_norm, na.rm = TRUE),
+            s2        = sum(v_norm * v_norm, na.rm = TRUE),
+            nz        = sum(v_norm > !!thr, na.rm = TRUE),
+            raw_total = sum(value, na.rm = TRUE)
+        ) |>
+        dplyr::collect() |>
+        data.table::as.data.table()
 
     gene_sum   <- numeric(n_genes)
     gene_sumsq <- numeric(n_genes)
     gene_nnz   <- integer(n_genes)
     gene_total_raw <- numeric(n_genes)
 
-    # NSE bindings
-    row_id <- col_id <- value <- v_norm <- s <- s2 <- nz <- raw_total <- NULL
-
-    # storeRead already filters by pe@cell_idx / pe@gene_idx if set, but we
-    # need to walk by SUBSET positions and translate to original parquet
-    # row_ids when the store has been subsetted.
-    ds_base <- pe@read_fun(pe@path)   # unfiltered — we apply our own
-    chunk_size <- as.integer(pe@chunk_size %null% 250000L)
-
-    for (start in seq.int(1L, n_cells, by = chunk_size)) {
-        end <- min(start + chunk_size - 1L, n_cells)
-        # Translate subset positions [start..end] to original parquet row_ids
-        orig_rows <- .pe_orig_row(start:end, pe)
-
-        q <- ds_base |> dplyr::filter(row_id %in% !!orig_rows)
-        if (length(pe@gene_idx) > 0L) {
-            gi <- pe@gene_idx
-            q <- q |> dplyr::filter(col_id %in% !!gi)
-        }
-        chunk <- q |> dplyr::collect() |> data.table::as.data.table()
-        if (nrow(chunk) == 0L) next
-
-        # Remap row_id from original parquet -> subset position so
-        # scalef[row_id] works (scalef is in subset coords)
-        chunk[, row_id := .pe_remap_row(row_id, pe)]
-
-        # Apply JIT recipe: scale per cell, then optional log
-        chunk[, v_norm := value * scalef[row_id]]
-        if (log_norm) chunk[, v_norm := log1p(v_norm) / log(log_base)]
-
-        # Per-gene accumulators (use ORIGINAL col_id for grouping then
-        # remap once at the end)
-        agg <- chunk[, .(
-                s         = sum(v_norm),
-                s2        = sum(v_norm * v_norm),
-                nz        = sum(v_norm > thr),
-                raw_total = sum(value)
-            ), by = col_id]
-
+    if (nrow(agg) > 0L) {
         idx <- .pe_remap_col(agg$col_id, pe)
         keep <- !is.na(idx)
-        gene_sum[idx[keep]]       <- gene_sum[idx[keep]]       + agg$s[keep]
-        gene_sumsq[idx[keep]]     <- gene_sumsq[idx[keep]]     + agg$s2[keep]
-        gene_nnz[idx[keep]]       <- gene_nnz[idx[keep]]       + as.integer(agg$nz[keep])
-        gene_total_raw[idx[keep]] <- gene_total_raw[idx[keep]] + agg$raw_total[keep]
+        gene_sum[idx[keep]]       <- as.numeric(agg$s[keep])
+        gene_sumsq[idx[keep]]     <- as.numeric(agg$s2[keep])
+        gene_nnz[idx[keep]]       <- as.integer(agg$nz[keep])
+        gene_total_raw[idx[keep]] <- as.numeric(agg$raw_total[keep])
     }
 
     gene_mean <- gene_sum / n_cells

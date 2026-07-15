@@ -129,12 +129,6 @@ setMethod("reduceData",
                                 set_seed = TRUE, seed_number = 1234L, ...) {
     if (set_seed) set.seed(seed_number)
 
-    norm     <- pe@params$norm
-    has_norm <- !is.null(norm) && !is.null(norm$scale_factors)
-    scalef   <- if (has_norm) norm$scale_factors else NULL
-    log_norm <- isTRUE(norm$log)
-    log_base <- norm$base %null% 2
-
     n_cells <- as.integer(pe@n_cells)
     chunk_size <- as.integer(pe@chunk_size %null% 250000L)
 
@@ -159,19 +153,21 @@ setMethod("reduceData",
     }
     k_total <- ncp + as.integer(n_oversamples)
 
-    # Streaming stats: means (center) + sds (scale) in one pass.
+    # Streaming stats: means (center) + sds (scale) in one pass over @ops.
     stats <- .stream_norm_hvg_stats(pe, hvg_idx)
     means <- if (center) stats$means else numeric(P_hvg)
     sds   <- if (scale)  stats$sds   else rep(1, P_hvg)
 
     hvg_orig <- .pe_orig_col(hvg_idx, pe)
 
-    # Chunk reader. `has_norm` FALSE returns values as-written.
+    # Chunk reader. storeRead(pe) returns the arrow query with @ops
+    # composed in (v_norm already projected by any norm_libsize_log op).
+    # When no norm op is queued, uses raw `value`.
+    val_col <- if (.pe_has_norm_op(pe@ops)) "v_norm" else "value"
     .read_chunk_norm_hvg <- function(cell_start, cell_end) {
-        ds <- pe@read_fun(pe@path)
-        row_id <- col_id <- value <- NULL  # NSE
+        row_id <- col_id <- NULL  # NSE
         orig_rows <- .pe_orig_row(cell_start:cell_end, pe)
-        df <- ds |>
+        df <- storeRead(pe, output = "query") |>
             dplyr::filter(row_id %in% !!orig_rows,
                            col_id %in% !!hvg_orig) |>
             dplyr::collect() |>
@@ -180,16 +176,10 @@ setMethod("reduceData",
         chunk_n  <- cell_end - cell_start + 1L
         gene_map <- match(df$col_id, hvg_orig)
         cell_map <- match(df$row_id, orig_rows)
-        A <- Matrix::sparseMatrix(
-            i = cell_map, j = gene_map, x = as.double(df$value),
+        Matrix::sparseMatrix(
+            i = cell_map, j = gene_map, x = as.double(df[[val_col]]),
             dims = c(chunk_n, P_hvg), repr = "C"
         )
-        if (has_norm) {
-            scalef_chunk <- scalef[cell_start:cell_end]
-            A@x <- A@x * scalef_chunk[A@i + 1L]
-            if (log_norm) A@x <- log1p(A@x) / log(log_base)
-        }
-        A
     }
 
     # Forward: Y = ((A - 1μᵀ) · diag(1/σ)) · M. σ absorbed into M via
@@ -302,12 +292,6 @@ setMethod("reduceData",
                               fallback_relerr = 0.01,
                               set_seed = TRUE, seed_number = 1234L,
                               n_oversamples = 10L, n_power_iter = 2L, ...) {
-    norm     <- pe@params$norm
-    has_norm <- !is.null(norm) && !is.null(norm$scale_factors)
-    scalef   <- if (has_norm) norm$scale_factors else NULL
-    log_norm <- isTRUE(norm$log)
-    log_base <- norm$base %null% 2
-
     n_cells    <- as.integer(pe@n_cells)
     chunk_size <- as.integer(pe@chunk_size %null% 250000L)
 
@@ -332,17 +316,19 @@ setMethod("reduceData",
     }
     hvg_orig <- .pe_orig_col(hvg_idx, pe)
 
-    # Pass 1: means (center) + sds (scale) in one pass.
+    # Pass 1: means (center) + sds (scale) in one pass over @ops.
     stats <- .stream_norm_hvg_stats(pe, hvg_idx)
     means <- if (center) stats$means else numeric(P_hvg)
     sds   <- if (scale)  stats$sds   else rep(1, P_hvg)
 
-    # Chunk reader. `has_norm` FALSE returns values as-written.
+    # Chunk reader. storeRead(pe) returns the arrow query with @ops
+    # composed in (v_norm already projected by any norm_libsize_log op).
+    # When no norm op is queued, uses raw `value`.
+    val_col <- if (.pe_has_norm_op(pe@ops)) "v_norm" else "value"
     .read_chunk_norm_hvg <- function(cell_start, cell_end) {
-        ds <- pe@read_fun(pe@path)
-        row_id <- col_id <- value <- NULL  # NSE
+        row_id <- col_id <- NULL  # NSE
         orig_rows <- .pe_orig_row(cell_start:cell_end, pe)
-        df <- ds |>
+        df <- storeRead(pe, output = "query") |>
             dplyr::filter(row_id %in% !!orig_rows,
                            col_id %in% !!hvg_orig) |>
             dplyr::collect() |>
@@ -352,14 +338,9 @@ setMethod("reduceData",
         gene_map <- match(df$col_id, hvg_orig)
         cell_map <- match(df$row_id, orig_rows)
         A <- Matrix::sparseMatrix(
-            i = cell_map, j = gene_map, x = as.double(df$value),
+            i = cell_map, j = gene_map, x = as.double(df[[val_col]]),
             dims = c(chunk_n, P_hvg), repr = "C"
         )
-        if (has_norm) {
-            scalef_chunk <- scalef[cell_start:cell_end]
-            A@x <- A@x * scalef_chunk[A@i + 1L]
-            if (log_norm) A@x <- log1p(A@x) / log(log_base)
-        }
         A
     }
 
@@ -456,51 +437,45 @@ setMethod("reduceData",
 }
 
 
-# Per-HVG-gene mean + sd of normalized data in one streaming pass.
-# Variance via SS identity: σ² = (SS − n·μ²)/(n−1). `norm` NULL reads
-# values as-written; `hvg_idx` NULL uses every column.
+# Per-HVG-gene mean + sd of normalized data in one arrow-side pass.
+# Variance via SS identity: σ² = (SS − n·μ²)/(n−1). `hvg_idx` NULL uses
+# every column. Reads `v_norm` when an @ops norm op is queued; otherwise
+# aggregates `value` directly.
 .stream_norm_hvg_stats <- function(pe, hvg_idx, ...) {
-    norm     <- pe@params$norm
-    has_norm <- !is.null(norm) && !is.null(norm$scale_factors)
-    scalef   <- if (has_norm) norm$scale_factors else NULL
-    log_norm <- isTRUE(norm$log)
-    log_base <- norm$base %null% 2
     n_cells  <- as.integer(pe@n_cells)
 
     if (is.null(hvg_idx)) hvg_idx <- seq_along(pe@feat_ids)
-    P_hvg    <- length(hvg_idx)
-
-    g_sum  <- numeric(P_hvg)
-    g_ssum <- numeric(P_hvg)
-    row_id <- col_id <- value <- v_norm <- s <- ss <- NULL  # NSE
+    P_hvg <- length(hvg_idx)
 
     hvg_orig <- .pe_orig_col(hvg_idx, pe)
 
-    ds_base <- pe@read_fun(pe@path)
-    chunk_size <- as.integer(pe@chunk_size %null% 250000L)
-    for (cs in seq.int(1L, n_cells, by = chunk_size)) {
-        ce <- min(cs + chunk_size - 1L, n_cells)
-        orig_rows <- .pe_orig_row(cs:ce, pe)
-        df <- ds_base |>
-            dplyr::filter(row_id %in% !!orig_rows,
-                           col_id %in% !!hvg_orig) |>
-            dplyr::collect() |>
-            data.table::as.data.table()
-        if (nrow(df) == 0L) next
-        if (has_norm) {
-            df[, row_id := .pe_remap_row(row_id, pe)]
-            df[, v_norm := value * scalef[row_id]]
-            if (log_norm) df[, v_norm := log1p(v_norm) / log(log_base)]
-        } else {
-            df[, v_norm := value]
-        }
-        agg <- df[, .(s = sum(v_norm), ss = sum(v_norm * v_norm)),
-                  by = col_id]
+    # NSE bindings
+    col_id <- value <- v_norm <- s <- ss <- NULL
+
+    # storeRead returns the arrow query with @ops composed in — v_norm is
+    # already projected by any norm_libsize_log op. Per-gene aggregation
+    # runs at arrow layer; only the (P_hvg, 2)-sized result transfers to R.
+    val_expr <- if (.pe_has_norm_op(pe@ops)) rlang::expr(v_norm)
+                 else rlang::expr(value)
+    agg <- storeRead(pe, output = "query") |>
+        dplyr::filter(col_id %in% !!hvg_orig) |>
+        dplyr::group_by(col_id) |>
+        dplyr::summarise(
+            s  = sum(!!val_expr, na.rm = TRUE),
+            ss = sum((!!val_expr) * (!!val_expr), na.rm = TRUE)
+        ) |>
+        dplyr::collect() |>
+        data.table::as.data.table()
+
+    g_sum  <- numeric(P_hvg)
+    g_ssum <- numeric(P_hvg)
+    if (nrow(agg) > 0L) {
         g_idx <- match(agg$col_id, hvg_orig)
-        keep <- !is.na(g_idx)
-        g_sum[g_idx[keep]]  <- g_sum[g_idx[keep]]  + agg$s[keep]
-        g_ssum[g_idx[keep]] <- g_ssum[g_idx[keep]] + agg$ss[keep]
+        keep  <- !is.na(g_idx)
+        g_sum[g_idx[keep]]  <- as.numeric(agg$s[keep])
+        g_ssum[g_idx[keep]] <- as.numeric(agg$ss[keep])
     }
+
     means <- g_sum / n_cells
     vars  <- (g_ssum - as.numeric(n_cells) * means^2) /
         max(as.numeric(n_cells) - 1, 1)

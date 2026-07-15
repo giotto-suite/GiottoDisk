@@ -16,17 +16,13 @@
 .setup_normalized_pe <- function(mat, hvg_idx) {
     pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
 
-    # Apply normalize recipe to the store (matches in-memory math)
+    # Push a norm_libsize_log op directly (matches in-memory math the
+    # tests compare against). Skip the processData path so this helper
+    # doesn't depend on GiottoClass / Giotto being loaded.
     libsz <- as.numeric(Matrix::colSums(mat))
     libsz[libsz == 0] <- 1
-    pe@params$norm <- list(
-        method        = "library_size",
-        scalefactor   = 1e4,
-        scale_factors = 1e4 / libsz,
-        log           = TRUE,
-        base          = 2,
-        offset        = 1
-    )
+    pe@ops <- list(GiottoDisk:::.pe_norm_libsize_log_record(
+        pe, scalef = 1e4 / libsz, log = TRUE, base = 2))
     pe
 }
 
