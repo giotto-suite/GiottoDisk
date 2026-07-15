@@ -2,23 +2,30 @@
 NULL
 
 # storeRead ####
-# Subset state lives in @cell_idx / @gene_idx (populated by `[`). Injected
-# into the lazy Arrow query by wrapping @read_fun, then delegated to
-# queryableStore::storeRead which handles fields / callback / output
-# dispatch (query / tibble / duckdb).
+# Subset state lives in @cell_idx / @gene_idx (populated by `[`). Op chain
+# lives on @ops as pure-data records. Both fold into the lazy Arrow query
+# by wrapping @read_fun: subset filter first, then `.pe_apply_ops()`
+# translates every op record into composed arrow steps (see .pe_do_op).
+# The result is one composed arrow_dplyr_query executed once at output
+# dispatch time. Delegated to queryableStore::storeRead for the
+# query / tibble / duckdb output switch.
 
 #' @rdname storeRead
 #' @export
 setMethod("storeRead", signature("parquetExprStore"), function(store, ...) {
-    if (length(store@cell_idx) > 0L || length(store@gene_idx) > 0L) {
+    has_subset <- length(store@cell_idx) > 0L || length(store@gene_idx) > 0L
+    has_ops    <- length(store@ops) > 0L
+    if (has_subset || has_ops) {
         orig_rf <- store@read_fun
-        ci <- store@cell_idx
-        gi <- store@gene_idx
+        ci  <- store@cell_idx
+        gi  <- store@gene_idx
+        ops <- store@ops
         store@read_fun <- function(x, ...) {
             row_id <- col_id <- NULL  # NSE bindings
             ds <- orig_rf(x, ...)
             if (length(ci) > 0L) ds <- dplyr::filter(ds, row_id %in% !!ci)
             if (length(gi) > 0L) ds <- dplyr::filter(ds, col_id %in% !!gi)
+            if (length(ops) > 0L) ds <- .pe_apply_ops(ds, ops)
             ds
         }
     }

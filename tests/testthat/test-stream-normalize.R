@@ -1,6 +1,8 @@
 # Tests for streaming normalize dispatch:
-#   processData(parquetExprStore, libraryNormParam) -> updated pe with JIT
-#   processData(parquetExprStore, logNormParam)     -> updated pe with log flag
+#   processData(parquetExprStore, libraryNormParam) -> appends norm_libsize_log
+#       op (log = FALSE) to pe@ops
+#   processData(parquetExprStore, logNormParam)     -> flips the same op's
+#       log flag to TRUE (libsize+log fuse into one op)
 
 .tiny_mat <- function(n_genes = 12L, n_cells = 30L,
                        density = 0.5, seed = 1L) {
@@ -13,7 +15,7 @@
 }
 
 
-test_that("libraryNormParam stores correct scale_factors on parquetExprStore", {
+test_that("libraryNormParam appends norm_libsize_log op to @ops", {
     skip_if_not_installed("Giotto")
 
     mat <- .tiny_mat()
@@ -23,13 +25,16 @@ test_that("libraryNormParam stores correct scale_factors on parquetExprStore", {
 
     libsz <- as.numeric(Matrix::colSums(mat))
     libsz[libsz == 0] <- 1
-    expect_equal(pe2@params$norm$method, "library_size")
-    expect_equal(pe2@params$norm$scalefactor, 1e4)
-    expect_equal(pe2@params$norm$scale_factors, 1e4 / libsz)
+    expect_length(pe2@ops, 1L)
+    expect_equal(pe2@ops[[1]]$type, "norm_libsize_log")
+    expect_equal(pe2@ops[[1]]$scalef$scalef, 1e4 / libsz)
+    expect_equal(pe2@ops[[1]]$scalef$orig_row_id, seq_along(libsz))
+    expect_false(pe2@ops[[1]]$log)
+    expect_equal(pe2@ops[[1]]$base, 2)
 })
 
 
-test_that("logNormParam sets log flag on parquetExprStore", {
+test_that("logNormParam fuses log flag onto existing libsize op", {
     skip_if_not_installed("Giotto")
 
     mat <- .tiny_mat(seed = 2)
@@ -37,11 +42,15 @@ test_that("logNormParam sets log flag on parquetExprStore", {
     pe  <- GiottoClass::processData(pe, Giotto::normParam("library", scalefactor = 1e4))
     pe  <- GiottoClass::processData(pe, Giotto::normParam("log", base = 2, offset = 1))
 
-    expect_true(isTRUE(pe@params$norm$log))
-    expect_equal(pe@params$norm$base, 2)
-    expect_equal(pe@params$norm$offset, 1)
-    # library scale_factors must be preserved through the log step
-    expect_true(!is.null(pe@params$norm$scale_factors))
+    # Still one fused op, not two appended.
+    expect_length(pe@ops, 1L)
+    expect_equal(pe@ops[[1]]$type, "norm_libsize_log")
+    expect_true(pe@ops[[1]]$log)
+    expect_equal(pe@ops[[1]]$base, 2)
+    # scale_factors preserved through the fuse.
+    libsz <- as.numeric(Matrix::colSums(mat))
+    libsz[libsz == 0] <- 1
+    expect_equal(pe@ops[[1]]$scalef$scalef, 1e4 / libsz)
 })
 
 
@@ -49,6 +58,7 @@ test_that("logNormParam with offset != 1 errors clearly", {
     skip_if_not_installed("Giotto")
     mat <- .tiny_mat(seed = 3)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+    pe  <- GiottoClass::processData(pe, Giotto::normParam("library", scalefactor = 1e4))
     expect_error(
         GiottoClass::processData(pe, Giotto::normParam("log", base = 2, offset = 0.5)),
         "offset != 1"
@@ -56,7 +66,18 @@ test_that("logNormParam with offset != 1 errors clearly", {
 })
 
 
-test_that("normalizeGiotto end-to-end on parquet backend stores JIT recipe", {
+test_that("logNormParam without prior libsize op errors", {
+    skip_if_not_installed("Giotto")
+    mat <- .tiny_mat(seed = 6)
+    pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+    expect_error(
+        GiottoClass::processData(pe, Giotto::normParam("log", base = 2, offset = 1)),
+        "no.*library-size normalization op"
+    )
+})
+
+
+test_that("normalizeGiotto end-to-end on parquet backend builds fused @ops", {
     skip_if_not_installed("Giotto")
     skip_if_not_installed("GiottoClass")
 
@@ -81,17 +102,14 @@ test_that("normalizeGiotto end-to-end on parquet backend stores JIT recipe", {
                                             output = "exprObj")
     pe_norm <- slot(norm_eo, "exprMat")
     expect_s4_class(pe_norm, "parquetExprStore")
-    expect_equal(pe_norm@params$norm$scalefactor, 1e4)
-    expect_true(isTRUE(pe_norm@params$norm$log))
+    expect_length(pe_norm@ops, 1L)
+    expect_equal(pe_norm@ops[[1]]$type, "norm_libsize_log")
+    expect_true(pe_norm@ops[[1]]$log)
 
-    # JIT recipe applied to raw must reproduce in-memory normalized matrix
+    # Direct math matches stored scale_factors
     libsz <- as.numeric(Matrix::colSums(mat))
     libsz[libsz == 0] <- 1
-    applied <- t(t(mat) * (1e4 / libsz))
-    applied <- log1p(applied) / log(2)
-
-    # Also check direct math matches stored scale_factors
-    expect_equal(pe_norm@params$norm$scale_factors, 1e4 / libsz)
+    expect_equal(pe_norm@ops[[1]]$scalef$scalef, 1e4 / libsz)
 })
 
 

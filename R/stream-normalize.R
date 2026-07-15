@@ -1,4 +1,5 @@
 #' @include class-parquetExprStore.R
+#' @include utils-pestore-ops.R
 NULL
 
 # stream-normalize ####
@@ -6,19 +7,44 @@ NULL
 # existing processData(x, param) dispatch via two setMethod calls:
 #
 #   processData(parquetExprStore, libraryNormParam)
-#       -> parquetExprStore with @params$norm$scale_factors set
+#       -> appends a `norm_libsize_log` op (log = FALSE) to pe@ops
 #   processData(parquetExprStore, logNormParam)
-#       -> parquetExprStore with @params$norm$log set
+#       -> if a `norm_libsize_log` op is already on the chain, flips its
+#          `log = TRUE` flag in place (libsize+log fuse into one op so the
+#          arrow translation does both transforms in a single pass).
+#          Otherwise errors — log-only on raw counts isn't a documented
+#          Giotto streaming path.
 #
-# Neither method rewrites the Parquet file. The recipe lives on the store
-# and is applied on-the-fly by downstream streaming readers (sc_hvg,
-# sc_pca dispatch in later Phase 2 steps). This preserves the JIT
-# normalization design from scstream.
+# Neither method rewrites the Parquet file. The recipe lives as a pure-data
+# record on @ops and is translated to lazy arrow steps at storeRead time
+# (see .pe_do_op).  The recipe survives saveRDS / load cycles without
+# special handling — no closures.
 #
 # zscoreScaleParam is intentionally NOT implemented for parquetExprStore:
 # per-cell / per-gene centering+scaling densifies the sparse matrix and
 # breaks the O(N*k) streaming guarantee. normalizeGiotto already errors
 # upstream when scale_cells / scale_feats = TRUE on a streaming backend.
+
+# Build a `norm_libsize_log` op record. `scalef` is the per-cell scale
+# factor vector in the SAME positional order as `pe@cell_idx` (or
+# 1..n_cells if no subset). orig_row_id keys the lookup against the
+# on-disk parquet row_id at storeRead time via a left_join.
+.pe_norm_libsize_log_record <- function(pe, scalef, log = FALSE, base = 2) {
+    orig_row_id <- if (length(pe@cell_idx) > 0L) {
+        as.integer(pe@cell_idx)
+    } else {
+        seq_len(as.integer(pe@n_cells))
+    }
+    list(
+        type   = "norm_libsize_log",
+        scalef = data.table::data.table(
+            orig_row_id = orig_row_id,
+            scalef      = as.numeric(scalef)
+        ),
+        log    = isTRUE(log),
+        base   = as.numeric(base)
+    )
+}
 
 # ---- libraryNormParam: compute & store JIT scale factors -------------------
 
@@ -31,13 +57,21 @@ setMethod("processData",
 
         libsizes <- .stream_colsums(x)
         libsizes[libsizes == 0] <- 1   # guard against div-by-zero
+        scalef <- as.numeric(scalefactor) / libsizes
 
-        norm <- x@params$norm %null% list()
-        norm$method        <- "library_size"
-        norm$scalefactor   <- as.numeric(scalefactor)
-        norm$scale_factors <- as.numeric(scalefactor) / libsizes
-
-        x@params$norm <- norm
+        # If a libsize-log op already exists (re-running normalize),
+        # preserve its log flag and base. Otherwise default to log=FALSE.
+        existing <- .pe_find_op_type(x@ops, "norm_libsize_log")
+        log_flag <- if (is.na(existing)) FALSE else
+                    isTRUE(x@ops[[existing]]$log)
+        log_base <- if (is.na(existing)) 2 else x@ops[[existing]]$base
+        new_op <- .pe_norm_libsize_log_record(x, scalef,
+            log = log_flag, base = log_base)
+        if (is.na(existing)) {
+            x@ops <- c(x@ops, list(new_op))
+        } else {
+            x@ops[[existing]] <- new_op
+        }
         x
     }
 )
@@ -59,11 +93,17 @@ setMethod("processData",
                  "(log1p) to preserve sparsity.", call. = FALSE)
         }
 
-        norm <- x@params$norm %null% list()
-        norm$log    <- TRUE
-        norm$base   <- as.numeric(base)
-        norm$offset <- 1
-        x@params$norm <- norm
+        existing <- .pe_find_op_type(x@ops, "norm_libsize_log")
+        if (is.na(existing)) {
+            stop("[processData(parquetExprStore, logNormParam)] no ",
+                 "library-size normalization op present. Run ",
+                 "processData(libraryNormParam) first; log-only on raw ",
+                 "counts is not a supported streaming path.",
+                 call. = FALSE)
+        }
+        # Fuse log flag onto the existing libsize op.
+        x@ops[[existing]]$log  <- TRUE
+        x@ops[[existing]]$base <- as.numeric(base)
         x
     }
 )
