@@ -17,40 +17,47 @@
     pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
 
     # Push a norm_libsize_log op directly (matches in-memory math the
-    # tests compare against). Skip the processData path so this helper
-    # doesn't depend on GiottoClass / Giotto being loaded.
+    # tests compare against). Slice constructor lives on the internal
+    # namespace; the full op record fuses libsize + log = TRUE.
     libsz <- as.numeric(Matrix::colSums(mat))
     libsz[libsz == 0] <- 1
-    pe@ops <- list(GiottoDisk:::.pe_norm_libsize_log_record(
-        pe, scalef = 1e4 / libsz, log = TRUE, base = 2))
+    slice <- GiottoDisk:::.pe_norm_libsize_scalef_slice(
+        pe, scalef = 1e4 / libsz)
+    pe@ops <- list(list(
+        type   = "norm_libsize_log",
+        scalef = slice,
+        log    = TRUE,
+        base   = 2
+    ))
     pe
 }
 
 
-test_that("randomPcaParam works on a store with no normalize recipe", {
+test_that("randomPcaParam errors on a store with no normalize recipe", {
     skip_if_not_installed("Giotto")
     mat <- .tiny_mat()
-    # Raw store, no @params$norm set — chunk reader treats values as-is.
+    # Raw store, empty @ops -- reduceData requires a norm op.
     pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
         mat)
-    res <- GiottoClass::reduceData(pe,
-        Giotto::pcaParam("random", ncp = 5,
-            feats_to_use = rownames(mat)[1:20], scale = FALSE))
-    expect_named(res, c("u", "d", "v", "sdev", "eigenvalues"),
-        ignore.order = TRUE)
-    expect_equal(length(res$d), 5L)
+    expect_error(
+        GiottoClass::reduceData(pe,
+            Giotto::pcaParam("random", ncp = 5,
+                feats_to_use = rownames(mat)[1:20], scale = FALSE)),
+        "no normalization recipe"
+    )
 })
 
 
-test_that("randomPcaParam works with feats_to_use = NULL (all features)", {
+test_that("randomPcaParam errors when feats_to_use is missing", {
     skip_if_not_installed("Giotto")
     mat <- .tiny_mat(seed = 2)
     pe  <- .setup_normalized_pe(mat)
-    res <- GiottoClass::reduceData(pe,
-        Giotto::pcaParam("random", ncp = 5, scale = FALSE,
-            set_seed = TRUE, seed_number = 42L))
-    # Loadings restricted to full feat set
-    expect_equal(nrow(res$v), nrow(mat))
+    expect_error(
+        GiottoClass::reduceData(pe,
+            Giotto::pcaParam("random", ncp = 5, scale = FALSE,
+                set_seed = TRUE, seed_number = 42L)),
+        "feats_to_use is required"
+    )
 })
 
 
@@ -267,34 +274,15 @@ test_that("streaming gram-eigen with scale=TRUE matches svd(scale(A))", {
     }
 })
 
-test_that("streaming Halko with scale=TRUE matches svd(scale(A)) on top-k", {
+test_that("streaming Halko errors on scale=TRUE (densification guard)", {
     skip_if_not_installed("Giotto")
-    set.seed(31)
-    mat <- .tiny_mat(n_genes = 100, n_cells = 500, density = 0.4, seed = 31)
+    mat <- .tiny_mat()
     pe  <- .setup_normalized_pe(mat)
-    libsz <- as.numeric(Matrix::colSums(mat))
-    libsz[libsz == 0] <- 1
-    sf <- 1e4 / libsz
-    mat_norm <- log1p(t(t(mat) * sf)) / log(2)
-    vars <- as.numeric(apply(as.matrix(mat_norm), 1, var))
-    hvg <- rownames(mat)[order(vars, decreasing = TRUE)][1:50]
-    A <- as.matrix(t(mat_norm[hvg, , drop = FALSE]))
-    A_cs <- scale(A, center = TRUE, scale = TRUE)
-    ref <- svd(A_cs, nu = 3, nv = 3)
-
-    pca_pq <- GiottoClass::reduceData(pe,
-        Giotto::pcaParam("random", ncp = 5, feats_to_use = hvg,
-            center = TRUE, scale = TRUE,
-            set_seed = TRUE, seed_number = 42L,
-            n_oversamples = 10L, n_power_iter = 3L))
-
-    # Halko is approximate; singular value magnitudes are the correctness
-    # signal for scale=TRUE wiring. On random-Poisson data the top-k
-    # spectrum is near-degenerate (d1/d3 ~ 1.05) and individual loadings
-    # rotate freely among near-tied eigenvalues -- correlate only top-1,
-    # where the gap is largest.
-    rel_top3 <- max(abs(pca_pq$d[1:3] - ref$d[1:3]) / ref$d[1:3])
-    expect_lt(rel_top3, 0.05)
-    rho_v1 <- abs(cor(pca_pq$v[, 1], ref$v[, 1]))
-    expect_gt(rho_v1, 0.90)
+    hvg <- rownames(mat)[1:20]
+    expect_error(
+        GiottoClass::reduceData(pe,
+            Giotto::pcaParam("random", ncp = 5, feats_to_use = hvg,
+                center = TRUE, scale = TRUE)),
+        "scale = TRUE.*not supported"
+    )
 })
