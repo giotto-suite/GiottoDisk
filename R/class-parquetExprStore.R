@@ -42,7 +42,7 @@ NULL
 #'   anymore — those live on `@ops`.
 #' @slot ops list. Ordered chain of lazy arrow step recipes. Each entry
 #'   is a pure-data `list(type, ...params)` record (no closures). At
-#'   `storeRead()` time the executor `.pe_do_op()` translates each record
+#'   `storeRead()` time the executor `.pe_apply_op()` translates each record
 #'   into composed arrow steps applied to the lazy query; the whole chain
 #'   compiles into one arrow plan executed once at collect / output
 #'   dispatch. Records survive `saveRDS` cleanly. Empty by default;
@@ -207,7 +207,7 @@ setMethod("initialize", signature("parquetExprStore"), function(.Object, ...) {
 #' @slot n_genes numeric. Shared feature count.
 #' @slot params list. Reserved for downstream pipeline metadata.
 #' @slot ops list. Ordered chain of lazy arrow step recipes. Mirrors
-#'   `parquetExprStore@ops` — same op record schema, same `.pe_do_op`
+#'   `parquetExprStore@ops` — same op record schema, same `.pe_apply_op`
 #'   executor. Composite (source_id, orig_row_id) cell-axis keys let one
 #'   op table span all substores in a single arrow join. Substores must
 #'   have empty `@ops` at union construction time (see constructor); the

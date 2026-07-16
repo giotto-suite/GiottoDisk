@@ -25,7 +25,7 @@ NULL
 #
 # Neither method rewrites the Parquet file. The recipe lives as a pure-data
 # record on @ops and is translated to lazy arrow steps at storeRead time
-# (see .pe_do_op).  The recipe survives saveRDS / load cycles without
+# (see .pe_apply_op).  The recipe survives saveRDS / load cycles without
 # special handling — no closures.
 #
 # zscoreScaleParam is intentionally NOT implemented for parquetExprBase:

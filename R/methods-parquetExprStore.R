@@ -5,7 +5,7 @@ NULL
 # Subset state lives in @cell_idx / @gene_idx (populated by `[`). Op chain
 # lives on @ops as pure-data records. Both fold into the lazy Arrow query
 # by wrapping @read_fun: subset filter first, then `.pe_apply_ops()`
-# translates every op record into composed arrow steps (see .pe_do_op).
+# translates every op record into composed arrow steps (see .pe_apply_op).
 # The result is one composed arrow_dplyr_query executed once at output
 # dispatch time. Delegated to queryableStore::storeRead for the
 # query / tibble / duckdb output switch. The dgcmatrix output is

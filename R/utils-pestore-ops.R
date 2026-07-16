@@ -33,7 +33,7 @@ NULL
 #         mutate(v_norm = value * scalef [|> log1p(.) * inv_log_base]) |>
 #         select(-scalef)
 #
-# Extension protocol: add a new branch to .pe_do_op and a `slice_*`
+# Extension protocol: add a new branch to .pe_apply_op and a `slice_*`
 # branch to .pe_slice_op_cells / .pe_slice_op_genes (commit 2). No other
 # code paths change — the executor is the only place that knows about
 # specific op types.
@@ -43,24 +43,24 @@ NULL
 
 # Apply a single op record to a lazy arrow query (or arrow_dplyr_query).
 # Returns the augmented query.
-.pe_do_op <- function(atab, op) {
+.pe_apply_op <- function(atab, op) {
     switch(op$type,
-        "norm_libsize_log" = .pe_do_op_norm_libsize_log(atab, op),
-        stop("[.pe_do_op] unknown op type: ", op$type, call. = FALSE)
+        "norm_libsize_log" = .pe_apply_op_norm_libsize_log(atab, op),
+        stop("[.pe_apply_op] unknown op type: ", op$type, call. = FALSE)
     )
 }
 
 # Fold the chain — composes all ops into one lazy query.
 .pe_apply_ops <- function(atab, ops) {
     if (length(ops) == 0L) return(atab)
-    for (op in ops) atab <- .pe_do_op(atab, op)
+    for (op in ops) atab <- .pe_apply_op(atab, op)
     atab
 }
 
 
 # ---- per-type translators --------------------------------------------------
 
-.pe_do_op_norm_libsize_log <- function(atab, op) {
+.pe_apply_op_norm_libsize_log <- function(atab, op) {
     # NSE bindings
     row_id <- source_id <- value <- v_norm <- scalef <- NULL
 
