@@ -23,7 +23,7 @@
     libsz[libsz == 0] <- 1
     slice <- GiottoDisk:::.pe_norm_libsize_scalef_slice(
         pe, scalef = 1e4 / libsz)
-    pe@ops <- list(list(
+    pe@post_ops <- list(list(
         type   = "norm_libsize_log",
         scalef = slice,
         log    = TRUE,

@@ -1,6 +1,6 @@
 # Tests for streaming normalize dispatch:
 #   processData(parquetExprStore, libraryNormParam) -> appends norm_libsize_log
-#       op (log = FALSE) to pe@ops
+#       op (log = FALSE) to pe@post_ops
 #   processData(parquetExprStore, logNormParam)     -> flips the same op's
 #       log flag to TRUE (libsize+log fuse into one op)
 
@@ -15,7 +15,7 @@
 }
 
 
-test_that("libraryNormParam appends norm_libsize_log op to @ops", {
+test_that("libraryNormParam appends norm_libsize_log op to @post_ops", {
     skip_if_not_installed("Giotto")
 
     mat <- .tiny_mat()
@@ -25,12 +25,12 @@ test_that("libraryNormParam appends norm_libsize_log op to @ops", {
 
     libsz <- as.numeric(Matrix::colSums(mat))
     libsz[libsz == 0] <- 1
-    expect_length(pe2@ops, 1L)
-    expect_equal(pe2@ops[[1]]$type, "norm_libsize_log")
-    expect_equal(pe2@ops[[1]]$scalef$scalef, 1e4 / libsz)
-    expect_equal(pe2@ops[[1]]$scalef$orig_row_id, seq_along(libsz))
-    expect_false(pe2@ops[[1]]$log)
-    expect_equal(pe2@ops[[1]]$base, 2)
+    expect_length(pe2@post_ops, 1L)
+    expect_equal(pe2@post_ops[[1]]$type, "norm_libsize_log")
+    expect_equal(pe2@post_ops[[1]]$scalef$scalef, 1e4 / libsz)
+    expect_equal(pe2@post_ops[[1]]$scalef$orig_row_id, seq_along(libsz))
+    expect_false(pe2@post_ops[[1]]$log)
+    expect_equal(pe2@post_ops[[1]]$base, 2)
 })
 
 
@@ -43,14 +43,14 @@ test_that("logNormParam fuses log flag onto existing libsize op", {
     pe  <- GiottoClass::processData(pe, Giotto::normParam("log", base = 2, offset = 1))
 
     # Still one fused op, not two appended.
-    expect_length(pe@ops, 1L)
-    expect_equal(pe@ops[[1]]$type, "norm_libsize_log")
-    expect_true(pe@ops[[1]]$log)
-    expect_equal(pe@ops[[1]]$base, 2)
+    expect_length(pe@post_ops, 1L)
+    expect_equal(pe@post_ops[[1]]$type, "norm_libsize_log")
+    expect_true(pe@post_ops[[1]]$log)
+    expect_equal(pe@post_ops[[1]]$base, 2)
     # scale_factors preserved through the fuse.
     libsz <- as.numeric(Matrix::colSums(mat))
     libsz[libsz == 0] <- 1
-    expect_equal(pe@ops[[1]]$scalef$scalef, 1e4 / libsz)
+    expect_equal(pe@post_ops[[1]]$scalef$scalef, 1e4 / libsz)
 })
 
 
@@ -77,7 +77,7 @@ test_that("logNormParam without prior libsize op errors", {
 })
 
 
-test_that("normalizeGiotto end-to-end on parquet backend builds fused @ops", {
+test_that("normalizeGiotto end-to-end on parquet backend builds fused @post_ops", {
     skip_if_not_installed("Giotto")
     skip_if_not_installed("GiottoClass")
 
@@ -102,14 +102,14 @@ test_that("normalizeGiotto end-to-end on parquet backend builds fused @ops", {
                                             output = "exprObj")
     pe_norm <- slot(norm_eo, "exprMat")
     expect_s4_class(pe_norm, "parquetExprStore")
-    expect_length(pe_norm@ops, 1L)
-    expect_equal(pe_norm@ops[[1]]$type, "norm_libsize_log")
-    expect_true(pe_norm@ops[[1]]$log)
+    expect_length(pe_norm@post_ops, 1L)
+    expect_equal(pe_norm@post_ops[[1]]$type, "norm_libsize_log")
+    expect_true(pe_norm@post_ops[[1]]$log)
 
     # Direct math matches stored scale_factors
     libsz <- as.numeric(Matrix::colSums(mat))
     libsz[libsz == 0] <- 1
-    expect_equal(pe_norm@ops[[1]]$scalef$scalef, 1e4 / libsz)
+    expect_equal(pe_norm@post_ops[[1]]$scalef$scalef, 1e4 / libsz)
 })
 
 
@@ -119,21 +119,22 @@ test_that("cell subset on parquetExprStore slices scalef table", {
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
     pe  <- GiottoClass::processData(pe,
         Giotto::normParam("library", scalefactor = 1e4))
-    expect_equal(nrow(pe@ops[[1]]$scalef), ncol(mat))
+    expect_equal(nrow(pe@post_ops[[1]]$scalef), ncol(mat))
 
     pe2 <- pe[, 1:5]
-    expect_equal(nrow(pe2@ops[[1]]$scalef), 5L)
+    expect_equal(nrow(pe2@post_ops[[1]]$scalef), 5L)
     # source_id stays constant for single store
-    expect_setequal(unique(pe2@ops[[1]]$scalef$source_id), pe@uid)
-    expect_setequal(pe2@ops[[1]]$scalef$orig_row_id, 1:5)
+    expect_setequal(unique(pe2@post_ops[[1]]$scalef$source_id), pe@uid)
+    expect_setequal(pe2@post_ops[[1]]$scalef$orig_row_id, 1:5)
 
-    # v_norm for surviving cells must match pre-subset values
+    # Normalized value for surviving cells must match pre-subset values
+    # (value is mutated in place by @post_ops during tibble collect).
     v_full <- data.table::as.data.table(storeRead(pe,  output = "tibble"))
     v_sub  <- data.table::as.data.table(storeRead(pe2, output = "tibble"))
     common <- v_full[row_id %in% 1:5]
     data.table::setorder(common, row_id, col_id)
     data.table::setorder(v_sub, row_id, col_id)
-    expect_equal(common$v_norm, v_sub$v_norm)
+    expect_equal(common$value, v_sub$value)
 })
 
 
@@ -143,10 +144,10 @@ test_that("gene subset on parquetExprStore preserves scalef table", {
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
     pe  <- GiottoClass::processData(pe,
         Giotto::normParam("library", scalefactor = 1e4))
-    before <- nrow(pe@ops[[1]]$scalef)
+    before <- nrow(pe@post_ops[[1]]$scalef)
 
     pe2 <- pe[1:5, ]  # 5 of the n_genes
-    expect_equal(nrow(pe2@ops[[1]]$scalef), before)
+    expect_equal(nrow(pe2@post_ops[[1]]$scalef), before)
 })
 
 

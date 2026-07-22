@@ -8,11 +8,11 @@ NULL
 # shared `parquetExprBase` virtual:
 #
 #   processData(parquetExprBase, libraryNormParam)
-#       -> appends a `norm_libsize_log` op (log = FALSE) to x@ops
+#       -> appends a `norm_libsize_log` op (log = FALSE) to x@post_ops
 #   processData(parquetExprBase, logNormParam)
-#       -> if a `norm_libsize_log` op is already on the chain, flips its
-#          `log = TRUE` flag in place (libsize+log fuse into one op so the
-#          arrow translation does both transforms in a single pass).
+#       -> if a `norm_libsize_log` op is already on @post_ops, flips its
+#          `log = TRUE` flag in place (libsize+log fuse into one op record;
+#          the R-side executor applies scale then log in a single pass).
 #          Otherwise errors — log-only on raw counts isn't a documented
 #          Giotto streaming path.
 #
@@ -24,9 +24,9 @@ NULL
 # runs once.
 #
 # Neither method rewrites the Parquet file. The recipe lives as a pure-data
-# record on @ops and is translated to lazy arrow steps at storeRead time
-# (see .pe_apply_op).  The recipe survives saveRDS / load cycles without
-# special handling — no closures.
+# record on @post_ops and is applied R-side after collect (see
+# .pe_apply_post_op_norm_libsize_log_df / _mat). The recipe survives
+# saveRDS / load cycles without special handling — no closures.
 #
 # zscoreScaleParam is intentionally NOT implemented for parquetExprBase:
 # per-cell / per-gene centering+scaling densifies the sparse matrix and
@@ -71,12 +71,13 @@ setMethod("processData",
         })
         scalef_dt <- data.table::rbindlist(slices)
 
-        # If a libsize-log op already exists (re-running normalize),
-        # preserve its log flag and base. Otherwise default to log=FALSE.
-        existing <- .pe_find_op_type(x@ops, "norm_libsize_log")
+        # If a libsize-log op already exists on @post_ops (re-running
+        # normalize), preserve its log flag and base. Otherwise default
+        # to log=FALSE.
+        existing <- .pe_find_op_type(x@post_ops, "norm_libsize_log")
         log_flag <- if (is.na(existing)) FALSE else
-                    isTRUE(x@ops[[existing]]$log)
-        log_base <- if (is.na(existing)) 2 else x@ops[[existing]]$base
+                    isTRUE(x@post_ops[[existing]]$log)
+        log_base <- if (is.na(existing)) 2 else x@post_ops[[existing]]$base
         new_op <- list(
             type   = "norm_libsize_log",
             scalef = scalef_dt,
@@ -84,11 +85,11 @@ setMethod("processData",
             base   = log_base
         )
         if (is.na(existing)) {
-            x@ops <- c(x@ops, list(new_op))
+            .pe_push_op(x, new_op, phase = "post")
         } else {
-            x@ops[[existing]] <- new_op
+            x@post_ops[[existing]] <- new_op
+            x
         }
-        x
     }
 )
 
@@ -109,7 +110,7 @@ setMethod("processData",
                  "(log1p) to preserve sparsity.", call. = FALSE)
         }
 
-        existing <- .pe_find_op_type(x@ops, "norm_libsize_log")
+        existing <- .pe_find_op_type(x@post_ops, "norm_libsize_log")
         if (is.na(existing)) {
             stop("[processData(parquetExprBase, logNormParam)] no ",
                  "library-size normalization op present. Run ",
@@ -118,8 +119,8 @@ setMethod("processData",
                  call. = FALSE)
         }
         # Fuse log flag onto the existing libsize op.
-        x@ops[[existing]]$log  <- TRUE
-        x@ops[[existing]]$base <- as.numeric(base)
+        x@post_ops[[existing]]$log  <- TRUE
+        x@post_ops[[existing]]$base <- as.numeric(base)
         x
     }
 )

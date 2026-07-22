@@ -2,19 +2,19 @@
 NULL
 
 # storeRead ####
-# Subset state lives in @cell_idx / @gene_idx (populated by `[`). Op chain
-# lives on @ops as pure-data records. Both fold into the lazy Arrow query
-# by wrapping @read_fun: subset filter first, then `.pe_apply_ops()`
-# translates every op record into composed arrow steps (see .pe_apply_op).
-# The result is one composed arrow_dplyr_query executed once at output
-# dispatch time. Delegated to queryableStore::storeRead for the
-# query / tibble / duckdb output switch. The dgcmatrix output is
-# intercepted here since it's class-specific (collects, then builds a
-# Matrix::sparseMatrix from triplets with @ops-derived v_norm when
-# present).
+# Two-phase op execution:
+#   @ops       arrow-lazy: folded into the composed query via @read_fun
+#              wrap + .pe_apply_ops before materialization.
+#   @post_ops  R-side post-collect: applied AFTER the arrow query has been
+#              collected, mutating `value` in place. Only applied for
+#              output modes that materialize (tibble / data.table /
+#              dgcmatrix). `query` and `duckdb` outputs return the
+#              lazy-only view — callers using those outputs are
+#              responsible for applying @post_ops themselves if they
+#              want fully-baked values.
 
 #' @rdname storeRead
-#' @param max_rows,max_cols integer. Dimension guard for
+#' @param max_rows,max_cols integer (optional). Dimension guard for
 #'   `output = "dgcmatrix"`. A materialized sparseMatrix must have at
 #'   least one axis narrowed to within the cap — both unbounded errors.
 #'   Defaults via `getOption("giottodisk.dgc_max_rows", 100L)` /
@@ -27,6 +27,7 @@ setMethod("storeRead", signature("parquetExprStore"), function(store,
     max_rows = NULL, max_cols = NULL, ...) {
     if (is.character(output)) output <- match.arg(output)
 
+    # Phase 1: wrap @read_fun with subset filters + arrow-side @ops
     has_subset <- length(store@cell_idx) > 0L || length(store@gene_idx) > 0L
     has_ops    <- length(store@ops) > 0L
     if (has_subset || has_ops) {
@@ -43,12 +44,26 @@ setMethod("storeRead", signature("parquetExprStore"), function(store,
             ds
         }
     }
+
+    # dgcmatrix intercept: collect + apply @post_ops + build sparseMatrix
     if (identical(output, "dgcmatrix")) {
         atab <- callNextMethod(store = store, output = "query", ...)
         return(.pe_to_dgcmatrix(store, atab,
             max_rows = max_rows, max_cols = max_cols))
     }
-    callNextMethod(store = store, output = output, ...)
+
+    # query / duckdb: return lazy without applying @post_ops (documented)
+    if (output %in% c("query", "duckdb")) {
+        return(callNextMethod(store = store, output = output, ...))
+    }
+
+    # tibble path: collect + apply @post_ops R-side. @post_ops mutates
+    # via data.table `:=`, so convert to data.table for the mutation, then
+    # back to tibble to preserve the "tibble" output contract.
+    df <- data.table::as.data.table(
+        callNextMethod(store = store, output = "tibble", ...))
+    df <- .pe_apply_post_ops_df(df, store@post_ops)
+    dplyr::as_tibble(df)
 })
 
 # storeWrite ####
@@ -272,7 +287,8 @@ setMethod(
 }
 
 .pe_to_dgcmatrix <- function(store, atab,
-                              max_rows = NULL, max_cols = NULL) {
+    max_rows = NULL,
+    max_cols = NULL) {
     n_rows <- as.integer(store@n_genes)
     n_cols <- as.integer(store@n_cells)
     .pe_check_dgc_dims(n_rows, n_cols, max_rows, max_cols)
@@ -280,7 +296,10 @@ setMethod(
     # `atab` is the lazy query with @ops + @cell_idx / @gene_idx already
     # composed (built by callNextMethod(output = "query") in the caller).
     df <- data.table::as.data.table(dplyr::collect(atab))
-    row_id <- col_id <- value <- v_norm <- NULL  # NSE
+    row_id <- col_id <- value <- NULL  # NSE
+
+    # Apply @post_ops R-side; mutates df$value in place.
+    df <- .pe_apply_post_ops_df(df, store@post_ops)
 
     # Map original parquet ids -> 1..n_rows / 1..n_cols positions.
     # row_id (cell axis) -> j (matrix col); col_id (gene axis) -> i (matrix row).
@@ -290,7 +309,7 @@ setMethod(
     if (!all(keep)) {
         i_pos <- i_pos[keep]; j_pos <- j_pos[keep]; df <- df[keep]
     }
-    x_col <- if ("v_norm" %in% names(df)) df$v_norm else df$value
+    x_col <- df$value
 
     Matrix::sparseMatrix(
         i = i_pos,
@@ -435,13 +454,17 @@ setMethod("[",
             x@feat_ids <- new_feat_ids
             x@gene_idx <- as.integer(new_gene_idx)
             x@n_genes  <- as.numeric(length(x@feat_ids))
-            # Slice gene-axis op tables. Current op kinds have no
-            # gene-axis tables; this is a no-op for norm_libsize_log but
-            # generic for future kinds (e.g. center_scale_genes).
+            # Slice gene-axis op tables on both phase chains. Current op
+            # kinds have no gene-axis tables; this is a no-op for
+            # norm_libsize_log but generic for future kinds.
+            surviving_genes <- data.table::data.table(
+                feat_id = as.character(new_feat_ids))
             if (length(x@ops) > 0L) {
-                surviving_genes <- data.table::data.table(
-                    feat_id = as.character(new_feat_ids))
                 x@ops <- .pe_slice_ops(x@ops, axis = "gene",
+                    surviving_keys = surviving_genes)
+            }
+            if (length(x@post_ops) > 0L) {
+                x@post_ops <- .pe_slice_ops(x@post_ops, axis = "gene",
                     surviving_keys = surviving_genes)
             }
         }
@@ -455,15 +478,19 @@ setMethod("[",
             x@cell_ids <- x@cell_ids[j_int]
             x@cell_idx <- as.integer(new_cell_idx)
             x@n_cells  <- as.numeric(length(x@cell_ids))
-            # Slice cell-axis op tables. Composite key (source_id,
-            # orig_row_id); source_id is constant (= x@uid) for a single
-            # store.
+            # Slice cell-axis op tables on both phase chains. Composite
+            # key (source_id, orig_row_id); source_id is constant (=
+            # x@uid) for a single store.
+            surviving_cells <- data.table::data.table(
+                source_id   = rep_len(as.character(x@uid),
+                                      length(new_cell_idx)),
+                orig_row_id = as.integer(new_cell_idx))
             if (length(x@ops) > 0L) {
-                surviving_cells <- data.table::data.table(
-                    source_id   = rep_len(as.character(x@uid),
-                                          length(new_cell_idx)),
-                    orig_row_id = as.integer(new_cell_idx))
                 x@ops <- .pe_slice_ops(x@ops, axis = "cell",
+                    surviving_keys = surviving_cells)
+            }
+            if (length(x@post_ops) > 0L) {
+                x@post_ops <- .pe_slice_ops(x@post_ops, axis = "cell",
                     surviving_keys = surviving_cells)
             }
         }
@@ -517,9 +544,16 @@ setMethod("storeRead", signature("unionParquetExprStore"), function(store,
     if (!is.null(fields)) atab <- dplyr::select(atab, dplyr::all_of(fields))
     if (!is.null(callback)) atab <- callback(atab)
     switch(output,
+        # query / duckdb: return lazy without applying @post_ops
         "query"  = atab,
-        "tibble" = dplyr::collect(atab),
         "duckdb" = .arrow_to_duckdb(atab, duckdb_params = duckdb_params),
+        # tibble: collect + apply @post_ops R-side; return tibble
+        "tibble" = {
+            df <- data.table::as.data.table(dplyr::collect(atab))
+            df <- .pe_apply_post_ops_df(df, store@post_ops)
+            dplyr::as_tibble(df)
+        },
+        # dgcmatrix: collect + apply @post_ops + build sparseMatrix
         "dgcmatrix" = .union_pe_to_dgcmatrix(store, atab,
             max_rows = max_rows, max_cols = max_cols)
     )
@@ -539,7 +573,13 @@ setMethod("storeRead", signature("unionParquetExprStore"), function(store,
     .pe_check_dgc_dims(n_rows, n_cols, max_rows, max_cols)
 
     df <- data.table::as.data.table(dplyr::collect(atab))
-    source_id <- row_id <- col_id <- value <- v_norm <- NULL  # NSE
+    source_id <- row_id <- col_id <- value <- NULL  # NSE
+
+    # Apply @post_ops R-side; mutates df$value in place. Post-op union
+    # payload (e.g., norm_libsize_log's scalef table) carries composite
+    # (source_id, orig_row_id) keys — the R-side update-join in
+    # .pe_apply_post_op_norm_libsize_log_df resolves across substores.
+    df <- .pe_apply_post_ops_df(df, store@post_ops)
 
     # j: union-global cell position from (source_id, row_id). Build a
     # lookup per substore: orig_row_id within the substore's @cell_idx
@@ -570,7 +610,7 @@ setMethod("storeRead", signature("unionParquetExprStore"), function(store,
     if (!all(keep)) {
         i_pos <- i_pos[keep]; j_pos <- j_pos[keep]; df <- df[keep]
     }
-    x_col <- if ("v_norm" %in% names(df)) df$v_norm else df$value
+    x_col <- df$value
 
     Matrix::sparseMatrix(
         i = i_pos,
@@ -693,17 +733,25 @@ setMethod("[",
         }
         new_union <- unionParquetExprStore(new_stores)
 
-        # Inherit + slice union-level @ops along the axes being narrowed.
-        # Substore @ops stay empty by constraint; only the union carries
-        # ops, and slicing applies on cell axis with the composite
-        # (source_id, orig_row_id) key spanning surviving substores.
-        new_union@ops <- x@ops
-        if (length(new_union@ops) > 0L) {
+        # Inherit + slice union-level phase chains along the axes being
+        # narrowed. Substore @ops / @post_ops stay empty by constraint;
+        # only the union carries ops, and slicing applies on cell axis
+        # with the composite (source_id, orig_row_id) key spanning
+        # surviving substores.
+        new_union@ops      <- x@ops
+        new_union@post_ops <- x@post_ops
+        has_any_ops <- length(new_union@ops) > 0L ||
+                       length(new_union@post_ops) > 0L
+        if (has_any_ops) {
             if (!missing(i)) {
                 surviving_genes <- data.table::data.table(
                     feat_id = as.character(new_union@feat_ids))
-                new_union@ops <- .pe_slice_ops(new_union@ops,
-                    axis = "gene", surviving_keys = surviving_genes)
+                if (length(new_union@ops) > 0L)
+                    new_union@ops <- .pe_slice_ops(new_union@ops,
+                        axis = "gene", surviving_keys = surviving_genes)
+                if (length(new_union@post_ops) > 0L)
+                    new_union@post_ops <- .pe_slice_ops(new_union@post_ops,
+                        axis = "gene", surviving_keys = surviving_genes)
             }
             if (!missing(j)) {
                 surviving_cells <- data.table::rbindlist(lapply(
@@ -715,8 +763,12 @@ setMethod("[",
                                                   length(ci)),
                             orig_row_id = as.integer(ci))
                     }))
-                new_union@ops <- .pe_slice_ops(new_union@ops,
-                    axis = "cell", surviving_keys = surviving_cells)
+                if (length(new_union@ops) > 0L)
+                    new_union@ops <- .pe_slice_ops(new_union@ops,
+                        axis = "cell", surviving_keys = surviving_cells)
+                if (length(new_union@post_ops) > 0L)
+                    new_union@post_ops <- .pe_slice_ops(new_union@post_ops,
+                        axis = "cell", surviving_keys = surviving_cells)
             }
         }
         new_union

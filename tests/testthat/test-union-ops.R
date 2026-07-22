@@ -1,12 +1,12 @@
-# Tests for unionParquetExprStore @ops chain:
+# Tests for unionParquetExprStore @post_ops chain:
 #   * substores must be ops-clean at union construction time
 #   * processData on union builds a single (source_id, orig_row_id, scalef)
 #     table spanning substores
-#   * storeRead on union applies @ops via composite-key join, identical to
+#   * storeRead on union applies @post_ops via composite-key join, identical to
 #     the single-store arrow path
 #   * cell subset on union slices the scalef table along (source_id, row_id);
 #     works for within-substore and cross-substore subsets
-#   * gene subset preserves @ops unchanged (current op kind is cell-axis only)
+#   * gene subset preserves @post_ops unchanged (current op kind is cell-axis only)
 
 .tiny_substore <- function(n_genes = 10L, n_cells = 8L, prefix = "a",
                             seed = 1L) {
@@ -19,18 +19,18 @@
 }
 
 
-test_that("unionParquetExprStore: substores with @ops are rejected", {
+test_that("unionParquetExprStore: substores with @post_ops are rejected", {
     skip_if_not_installed("Giotto")
     pe1 <- .tiny_substore(prefix = "a", seed = 1)
     pe2 <- .tiny_substore(prefix = "b", seed = 2)
     # Pre-normalize pe1 so it has ops queued
     pe1n <- GiottoClass::processData(pe1,
         Giotto::normParam("library", scalefactor = 1e4))
-    expect_length(pe1n@ops, 1L)
+    expect_length(pe1n@post_ops, 1L)
 
     expect_error(
         unionParquetExprStore(list(pe1n, pe2)),
-        "substores has queued @ops"
+        "queued @ops or @post_ops"
     )
 })
 
@@ -43,10 +43,10 @@ test_that("processData(unionParquetExprStore, libNorm) builds union-spanning sca
     u2 <- GiottoClass::processData(u,
         Giotto::normParam("library", scalefactor = 1e4))
 
-    expect_length(u2@ops, 1L)
-    expect_equal(u2@ops[[1]]$type, "norm_libsize_log")
+    expect_length(u2@post_ops, 1L)
+    expect_equal(u2@post_ops[[1]]$type, "norm_libsize_log")
 
-    scalef_dt <- u2@ops[[1]]$scalef
+    scalef_dt <- u2@post_ops[[1]]$scalef
     expect_setequal(names(scalef_dt),
         c("source_id", "orig_row_id", "scalef"))
     # one row per cell in the union view (6 + 4 = 10)
@@ -56,7 +56,7 @@ test_that("processData(unionParquetExprStore, libNorm) builds union-spanning sca
 })
 
 
-test_that("storeRead on union with norm @ops returns v_norm via composite join", {
+test_that("storeRead on union with norm @post_ops mutates value in place", {
     skip_if_not_installed("Giotto")
     pe1 <- .tiny_substore(prefix = "a", seed = 21, n_cells = 5L)
     pe2 <- .tiny_substore(prefix = "b", seed = 22, n_cells = 4L)
@@ -64,13 +64,15 @@ test_that("storeRead on union with norm @ops returns v_norm via composite join",
         GiottoClass::processData(Giotto::normParam("library",
             scalefactor = 1e4))
 
+    # tibble output applies @post_ops R-side; value is now normalized.
     out <- data.table::as.data.table(storeRead(u, output = "tibble"))
-    expect_true("v_norm" %in% names(out))
     expect_true("source_id" %in% names(out))
     # both substores present in output
     expect_setequal(unique(out$source_id), c(pe1@uid, pe2@uid))
-    # no NA v_norm — every triplet found a matching scalef row
-    expect_false(anyNA(out$v_norm))
+    # No NA value — every triplet's post-op join succeeded.
+    expect_false(anyNA(out$value))
+    # No v_norm sidecar column — value is mutated in place.
+    expect_false("v_norm" %in% names(out))
 })
 
 
@@ -81,13 +83,13 @@ test_that("within-substore cell subset on union slices scalef correctly", {
     u <- unionParquetExprStore(list(pe1, pe2)) |>
         GiottoClass::processData(Giotto::normParam("library",
             scalefactor = 1e4))
-    expect_equal(nrow(u@ops[[1]]$scalef), 11L)
+    expect_equal(nrow(u@post_ops[[1]]$scalef), 11L)
 
     # Subset to cells 1..3 (all in substore A)
     u_a <- u[, 1:3]
-    expect_equal(nrow(u_a@ops[[1]]$scalef), 3L)
-    expect_setequal(unique(u_a@ops[[1]]$scalef$source_id), pe1@uid)
-    expect_setequal(u_a@ops[[1]]$scalef$orig_row_id, 1:3)
+    expect_equal(nrow(u_a@post_ops[[1]]$scalef), 3L)
+    expect_setequal(unique(u_a@post_ops[[1]]$scalef$source_id), pe1@uid)
+    expect_setequal(u_a@post_ops[[1]]$scalef$orig_row_id, 1:3)
 })
 
 
@@ -101,7 +103,7 @@ test_that("cross-substore cell subset on union slices scalef correctly", {
 
     # cells 3 (from A) and 9 (= position 3 of B, since A has 6)
     u_x <- u[, c(3L, 9L)]
-    scalef_dt <- u_x@ops[[1]]$scalef
+    scalef_dt <- u_x@post_ops[[1]]$scalef
     expect_equal(nrow(scalef_dt), 2L)
     expect_setequal(unique(scalef_dt$source_id), c(pe1@uid, pe2@uid))
     # The B-side surviving cell should have orig_row_id = 3 (local position in B)
@@ -110,17 +112,17 @@ test_that("cross-substore cell subset on union slices scalef correctly", {
 })
 
 
-test_that("gene subset on union leaves @ops unchanged (cell-axis only op)", {
+test_that("gene subset on union leaves @post_ops unchanged (cell-axis only op)", {
     skip_if_not_installed("Giotto")
     pe1 <- .tiny_substore(prefix = "a", seed = 51, n_cells = 4L)
     pe2 <- .tiny_substore(prefix = "b", seed = 52, n_cells = 3L)
     u <- unionParquetExprStore(list(pe1, pe2)) |>
         GiottoClass::processData(Giotto::normParam("library",
             scalefactor = 1e4))
-    before <- nrow(u@ops[[1]]$scalef)
+    before <- nrow(u@post_ops[[1]]$scalef)
 
     u_g <- u[1:5, ]   # narrow to 5 features
-    expect_equal(nrow(u_g@ops[[1]]$scalef), before)
+    expect_equal(nrow(u_g@post_ops[[1]]$scalef), before)
 })
 
 
@@ -134,7 +136,7 @@ test_that("union with norm + log fuse + storeRead applies log1p / log(base)", {
         GiottoClass::processData(Giotto::normParam("log", base = 2,
             offset = 1))
 
-    expect_length(u@ops, 1L)   # fused, not appended
-    expect_true(u@ops[[1]]$log)
-    expect_equal(u@ops[[1]]$base, 2)
+    expect_length(u@post_ops, 1L)   # fused, not appended
+    expect_true(u@post_ops[[1]]$log)
+    expect_equal(u@post_ops[[1]]$base, 2)
 })

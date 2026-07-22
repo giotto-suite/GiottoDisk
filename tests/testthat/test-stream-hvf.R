@@ -75,7 +75,7 @@ test_that("varParam errors clearly on parquet backend (cov_groups is supported)"
     skip_if_not_installed("Giotto")
     mat <- .tiny_mat(seed = 19)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
-    pe@ops <- list(list(
+    pe@post_ops <- list(list(
         type   = "norm_libsize_log",
         scalef = GiottoDisk:::.pe_norm_libsize_scalef_slice(
             pe, scalef = rep(1, ncol(mat))),
@@ -101,7 +101,7 @@ test_that("varParam errors clearly on parquet backend (cov_groups is supported)"
 test_that("covLoessParam output schema matches Giotto convention", {
     mat <- .tiny_mat(seed = 23)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
-    pe@ops <- list(list(
+    pe@post_ops <- list(list(
         type   = "norm_libsize_log",
         scalef = GiottoDisk:::.pe_norm_libsize_scalef_slice(
             pe, scalef = rep(1, ncol(mat))),
@@ -126,7 +126,7 @@ test_that("covLoessParam output schema matches Giotto convention", {
 test_that("covGroupsParam output schema matches Giotto convention", {
     mat <- .tiny_mat(seed = 29)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
-    pe@ops <- list(list(
+    pe@post_ops <- list(list(
         type   = "norm_libsize_log",
         scalef = GiottoDisk:::.pe_norm_libsize_scalef_slice(
             pe, scalef = rep(1, ncol(mat))),
@@ -148,7 +148,7 @@ test_that("covGroupsParam output schema matches Giotto convention", {
 test_that("streaming + in-memory analyzeData share column schema", {
     mat <- .tiny_mat(seed = 31)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
-    pe@ops <- list(list(
+    pe@post_ops <- list(list(
         type   = "norm_libsize_log",
         scalef = GiottoDisk:::.pe_norm_libsize_scalef_slice(
             pe, scalef = rep(1, ncol(mat))),

@@ -22,9 +22,9 @@ NULL
 #   svd(B) -> recover U, d, V; sign-correct V
 #
 # Centering is implicit: column means of normalized data are computed by
-# `.stream_norm_hvg_means()` in a single streaming pass over the @ops chain
-# (summed across substores for union stores), then subtracted analytically
-# inside the forward/backward passes — no densification.
+# `.stream_norm_hvg_means()` — one collect + R-side @post_ops apply per
+# substore (summed across substores for union stores), then subtracted
+# analytically inside the forward/backward passes — no densification.
 #
 # Single (`parquetExprStore`) and union (`unionParquetExprStore`) collapse
 # to one implementation via `.exprbase_substores()`: forward/backward
@@ -44,7 +44,7 @@ NULL
 setMethod("reduceData",
     signature(x = "parquetExprBase", param = "randomPcaParam"),
     function(x, param, ...) {
-        if (!.pe_has_norm_op(x@ops)) {
+        if (!.pe_has_norm_op(x)) {
             stop("[reduceData(parquetExprBase, randomPcaParam)] ",
                  "expression backend has no normalization recipe. Run ",
                  "normalizeGiotto(g, scale_feats = FALSE, scale_cells = FALSE) ",
@@ -193,12 +193,17 @@ setMethod("reduceData",
     # vector for that substore (handles per-substore @gene_idx via
     # `.pe_orig_col`). For single store the list has one entry.
     parent_ops <- if (inherits(pe, "unionParquetExprStore")) pe@ops else list()
+    post_ops <- pe@post_ops
     sub_infos <- lapply(.exprbase_substores(pe), function(se) {
         sub <- .exprbase_inject_parent_ops(se$store, parent_ops)
-        list(sub      = sub,
-             offset   = as.integer(se$cell_offset),
-             n_sub    = as.integer(sub@n_cells),
-             hvg_orig = .pe_orig_col(hvg_idx, sub))
+        # Pre-extract per-substore positional scalef vectors for each
+        # post op that has per-cell state on this substore.
+        scalef_vecs <- .pe_scalef_vecs_for_sub(post_ops, sub@uid)
+        list(sub         = sub,
+             offset      = as.integer(se$cell_offset),
+             n_sub       = as.integer(sub@n_cells),
+             hvg_orig    = .pe_orig_col(hvg_idx, sub),
+             scalef_vecs = scalef_vecs)
     })
 
     # ---- Compute per-HVG-gene normalized means (one streaming pass) -------
@@ -222,10 +227,13 @@ setMethod("reduceData",
         chunk_n <- sub_ce - sub_cs + 1L
         gene_map <- match(df$col_id, info$hvg_orig)
         i_within <- match(df$row_id, orig_rows)
-        Matrix::sparseMatrix(
-            i = i_within, j = gene_map, x = as.double(df$v_norm),
+        A <- Matrix::sparseMatrix(
+            i = i_within, j = gene_map, x = as.double(df$value),
             dims = c(chunk_n, P_hvg), repr = "C"
         )
+        # Apply @post_ops R-side (mutates A@x). scalef_vecs are pre-sliced
+        # to this substore; chunk-local slice happens inside the executor.
+        .pe_apply_post_ops_mat(A, post_ops, info$scalef_vecs, sub_cs, sub_ce)
     }
 
     # ---- Forward: Y = (A_norm - 1·means^T) · M  --------------------------
@@ -334,16 +342,17 @@ setMethod("reduceData",
 }
 
 
-# Helper: per-HVG-gene mean of normalized data (one streaming pass per
-# substore, summed across substores for union stores). Used for implicit
-# centering inside .forward / .backward.
+# Helper: per-HVG-gene mean of normalized data. Collects per-substore
+# triplets (HVG-column-filtered), applies @post_ops R-side, aggregates
+# per-gene sums via data.table by-group, sums across substores.
 .stream_norm_hvg_means <- function(pe, hvg_idx, sub_infos = NULL) {
     n_cells  <- as.integer(pe@n_cells)
     P_hvg    <- length(hvg_idx)
 
     g_sum <- numeric(P_hvg)
-    col_id <- v_norm <- s <- NULL  # NSE
+    col_id <- value <- s <- NULL  # NSE
 
+    post_ops <- pe@post_ops
     if (is.null(sub_infos)) {
         parent_ops <- if (inherits(pe, "unionParquetExprStore")) {
             pe@ops
@@ -357,12 +366,14 @@ setMethod("reduceData",
     }
 
     for (info in sub_infos) {
-        agg <- storeRead(info$sub, output = "query") |>
+        df <- storeRead(info$sub, output = "query") |>
             dplyr::filter(col_id %in% !!info$hvg_orig) |>
-            dplyr::group_by(col_id) |>
-            dplyr::summarise(s = sum(v_norm, na.rm = TRUE)) |>
             dplyr::collect() |>
             data.table::as.data.table()
+        if (nrow(df) == 0L) next
+        # Apply @post_ops R-side; mutates df$value.
+        df <- .pe_apply_post_ops_df(df, post_ops)
+        agg <- df[, .(s = sum(value, na.rm = TRUE)), by = col_id]
         if (nrow(agg) > 0L) {
             g_idx <- match(agg$col_id, info$hvg_orig)
             keep <- !is.na(g_idx)
@@ -422,15 +433,15 @@ setMethod("reduceData",
     }
     hvg_orig <- .pe_orig_col(hvg_idx, pe)
 
-    # Pass 1: means (center) + sds (scale) in one pass over @ops.
+    # Pass 1: means (center) + sds (scale) in one pass over @post_ops.
     stats <- .stream_norm_hvg_stats(pe, hvg_idx)
     means <- if (center) stats$means else numeric(P_hvg)
     sds   <- if (scale)  stats$sds   else rep(1, P_hvg)
 
-    # Chunk reader. storeRead(pe) returns the arrow query with @ops
-    # composed in (v_norm already projected by any norm_libsize_log op).
-    # When no norm op is queued, uses raw `value`.
-    val_col <- if (.pe_has_norm_op(pe@ops)) "v_norm" else "value"
+    # Chunk reader. Arrow query yields raw triplets; @post_ops applies
+    # R-side to mutate A@x. scalef vectors pre-extracted for this store.
+    post_ops    <- pe@post_ops
+    scalef_vecs <- .pe_scalef_vecs_for_sub(post_ops, pe@uid)
     .read_chunk_norm_hvg <- function(cell_start, cell_end) {
         row_id <- col_id <- NULL  # NSE
         orig_rows <- .pe_orig_row(cell_start:cell_end, pe)
@@ -444,10 +455,11 @@ setMethod("reduceData",
         gene_map <- match(df$col_id, hvg_orig)
         cell_map <- match(df$row_id, orig_rows)
         A <- Matrix::sparseMatrix(
-            i = cell_map, j = gene_map, x = as.double(df[[val_col]]),
+            i = cell_map, j = gene_map, x = as.double(df$value),
             dims = c(chunk_n, P_hvg), repr = "C"
         )
-        A
+        .pe_apply_post_ops_mat(A, post_ops, scalef_vecs,
+            cell_start, cell_end)
     }
 
     # Pass 2: G_raw = Σ chunk^T chunk (one streaming crossprod per band)
@@ -543,10 +555,10 @@ setMethod("reduceData",
 }
 
 
-# Per-HVG-gene mean + sd of normalized data in one arrow-side pass.
+# Per-HVG-gene mean + sd of normalized data. Collects HVG-column-filtered
+# triplets, applies @post_ops R-side, aggregates via data.table by-group.
 # Variance via SS identity: σ² = (SS − n·μ²)/(n−1). `hvg_idx` NULL uses
-# every column. Reads `v_norm` when an @ops norm op is queued; otherwise
-# aggregates `value` directly.
+# every column.
 .stream_norm_hvg_stats <- function(pe, hvg_idx, ...) {
     n_cells  <- as.integer(pe@n_cells)
 
@@ -556,22 +568,20 @@ setMethod("reduceData",
     hvg_orig <- .pe_orig_col(hvg_idx, pe)
 
     # NSE bindings
-    col_id <- value <- v_norm <- s <- ss <- NULL
+    col_id <- value <- s <- ss <- NULL
 
-    # storeRead returns the arrow query with @ops composed in — v_norm is
-    # already projected by any norm_libsize_log op. Per-gene aggregation
-    # runs at arrow layer; only the (P_hvg, 2)-sized result transfers to R.
-    val_expr <- if (.pe_has_norm_op(pe@ops)) rlang::expr(v_norm)
-                 else rlang::expr(value)
-    agg <- storeRead(pe, output = "query") |>
+    df <- storeRead(pe, output = "query") |>
         dplyr::filter(col_id %in% !!hvg_orig) |>
-        dplyr::group_by(col_id) |>
-        dplyr::summarise(
-            s  = sum(!!val_expr, na.rm = TRUE),
-            ss = sum((!!val_expr) * (!!val_expr), na.rm = TRUE)
-        ) |>
         dplyr::collect() |>
         data.table::as.data.table()
+
+    # Apply @post_ops R-side (mutates df$value); then per-gene aggregate
+    # via data.table by-group.
+    df <- .pe_apply_post_ops_df(df, pe@post_ops)
+    agg <- df[, .(
+        s  = sum(value, na.rm = TRUE),
+        ss = sum(value * value, na.rm = TRUE)
+    ), by = col_id]
 
     g_sum  <- numeric(P_hvg)
     g_ssum <- numeric(P_hvg)

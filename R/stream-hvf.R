@@ -15,10 +15,10 @@ NULL
 #       -> per-feature stats including cov_group_zscore (within-bin
 #          COV z-score)
 #
-# Implementation: storeRead(pe) returns the arrow query with @ops already
-# composed in (norm_libsize_log adds `v_norm`), then a per-gene
-# group_by + summarise runs at arrow layer — only the small (n_genes-sized)
-# aggregate transfers to R. LOESS / bin-zscore run on those small vectors.
+# Implementation: per-substore R-side pass. Arrow query yields raw
+# triplets (arrow-side @ops applied, if any). @post_ops (norm) is applied
+# R-side after collect. Per-gene stats reduce via data.table by-group.
+# LOESS / bin-zscore run on the n_genes-sized aggregate vectors.
 #
 # varParam still errors clearly because per-gene variance on a scaled
 # (z-scored) matrix requires materialising the dense matrix.
@@ -30,7 +30,7 @@ NULL
 setMethod("analyzeData",
     signature(x = "parquetExprBase", param = "covLoessParam"),
     function(x, param, ...) {
-        if (!.pe_has_norm_op(x@ops)) {
+        if (!.pe_has_norm_op(x)) {
             stop("[analyzeData(parquetExprBase, covLoessParam)] ",
                  "expression backend has no normalization recipe. Run ",
                  "normalizeGiotto(g, scale_feats = FALSE, scale_cells = FALSE) ",
@@ -62,7 +62,7 @@ setMethod("analyzeData",
 setMethod("analyzeData",
     signature(x = "parquetExprBase", param = "covGroupsParam"),
     function(x, param, ...) {
-        if (!.pe_has_norm_op(x@ops)) {
+        if (!.pe_has_norm_op(x)) {
             stop("[analyzeData(parquetExprBase, covGroupsParam)] ",
                  "expression backend has no normalization recipe. Run ",
                  "normalizeGiotto(g, scale_feats = FALSE, scale_cells = FALSE) ",
@@ -124,46 +124,57 @@ setMethod("analyzeData",
 
 
 # ---- Internal: streaming per-gene stats with JIT normalization ------------
+#
+# Per-substore flow:
+#   1. Collect raw triplets from substore's arrow query (arrow-side @ops
+#      applied, if any).
+#   2. Snapshot raw `value` into `raw_value` before mutation.
+#   3. Apply parent's @post_ops R-side; `df$value` becomes normalized.
+#   4. Per-gene reduction via data.table by-group: sum, sumsq, nnz on
+#      normalized; sum on raw for `total_expr`.
 
 .stream_norm_gene_stats <- function(pe, expression_threshold = 0) {
     if (!inherits(pe, "parquetExprBase"))
         stop("[.stream_norm_gene_stats] pe must be a parquetExprBase.")
-    if (!.pe_has_norm_op(pe@ops))
-        stop("[.stream_norm_gene_stats] pe has no norm op on @ops.")
+    if (!.pe_has_norm_op(pe))
+        stop("[.stream_norm_gene_stats] pe has no norm op on @post_ops.")
 
     thr     <- as.numeric(expression_threshold)
     n_cells <- as.integer(pe@n_cells)
     n_genes <- as.integer(pe@n_genes)
 
     # NSE bindings
-    col_id <- value <- v_norm <- s <- s2 <- nz <- raw_total <- NULL
+    col_id <- value <- raw_value <- s <- s2 <- nz <- raw_total <- NULL
 
     gene_sum       <- numeric(n_genes)
     gene_sumsq     <- numeric(n_genes)
     gene_nnz       <- integer(n_genes)
     gene_total_raw <- numeric(n_genes)
 
-    # Iterate substores; for union, project the union's @ops (norm scalef
-    # filtered by source_id) onto each substore so its storeRead carries
-    # the right per-cell scalef. For a single parquetExprStore the loop
-    # runs once with sub == pe (the iterator yields pe itself) and
-    # `.exprbase_inject_parent_ops` is a no-op given pe@ops is already
-    # on the same store.
-    parent_ops <- if (inherits(pe, "unionParquetExprStore")) pe@ops else list()
+    # Iterate substores. Parent's @post_ops applies to each substore's
+    # collected chunk (payloads carry source_id / orig_row_id so the
+    # update-join resolves per substore).
+    post_ops <- pe@post_ops
     subs <- .exprbase_substores(pe)
     for (sub_entry in subs) {
         sub <- sub_entry$store
-        sub <- .exprbase_inject_parent_ops(sub, parent_ops)
-        agg <- storeRead(sub, output = "query") |>
-            dplyr::group_by(col_id) |>
-            dplyr::summarise(
-                s         = sum(v_norm, na.rm = TRUE),
-                s2        = sum(v_norm * v_norm, na.rm = TRUE),
-                nz        = sum(v_norm > !!thr, na.rm = TRUE),
-                raw_total = sum(value, na.rm = TRUE)
-            ) |>
+        df <- storeRead(sub, output = "query") |>
             dplyr::collect() |>
             data.table::as.data.table()
+        if (nrow(df) == 0L) next
+
+        # Snapshot raw before @post_ops mutates value
+        df[, raw_value := value]
+        df <- .pe_apply_post_ops_df(df, post_ops)
+
+        # Per-gene aggregation R-side (data.table by-group)
+        agg <- df[, .(
+            s         = sum(value, na.rm = TRUE),
+            s2        = sum(value * value, na.rm = TRUE),
+            nz        = sum(value > thr, na.rm = TRUE),
+            raw_total = sum(raw_value, na.rm = TRUE)
+        ), by = col_id]
+
         if (nrow(agg) > 0L) {
             # `.pe_remap_col` on the substore maps on-disk col_ids to
             # local feat positions; feat_ids align across substores

@@ -105,7 +105,8 @@ setClass("parquetExprStore",
         cell_idx   = "integer",
         gene_idx   = "integer",
         chunk_size = "numeric",
-        ops        = "list"
+        ops        = "list",   # arrow-lazy phase
+        post_ops   = "list"    # R-side post-collect phase
     ),
     prototype = list(
         n_cells    = 0,
@@ -115,7 +116,8 @@ setClass("parquetExprStore",
         cell_idx   = integer(0L),
         gene_idx   = integer(0L),
         chunk_size = 250000,
-        ops        = list()
+        ops        = list(),
+        post_ops   = list()
     )
 )
 
@@ -224,7 +226,8 @@ setClass("unionParquetExprStore",
         n_cells  = "numeric",
         n_genes  = "numeric",
         params   = "list",
-        ops      = "list"
+        ops      = "list",     # arrow-lazy phase
+        post_ops = "list"      # R-side post-collect phase
     ),
     prototype = list(
         stores   = list(),
@@ -233,7 +236,8 @@ setClass("unionParquetExprStore",
         n_cells  = 0,
         n_genes  = 0,
         params   = list(),
-        ops      = list()
+        ops      = list(),
+        post_ops = list()
     )
 )
 
@@ -269,13 +273,15 @@ unionParquetExprStore <- function(stores) {
     # snapshots" contract (per-substore norm would be tuned to per-
     # substore populations, not the union's). The canonical workflow
     # is: cbind raw substores → run processData on the union.
-    if (any(vapply(stores, function(s) length(s@ops) > 0L,
-                   logical(1L)))) {
+    if (any(vapply(stores, function(s)
+        length(s@ops) > 0L || length(s@post_ops) > 0L,
+        logical(1L)))) {
         stop("[unionParquetExprStore] one or more substores has queued ",
-             "@ops. Materialize via storeWrite(parquetExprStore(), s) ",
-             "first to bake the chain into a fresh raw store, or run ",
-             "processData() on the union after cbind. Per-substore ops ",
-             "are not composed across unions.", call. = FALSE)
+             "@ops or @post_ops. Materialize via ",
+             "storeWrite(parquetExprStore(), s) first to bake the chain ",
+             "into a fresh raw store, or run processData() on the union ",
+             "after cbind. Per-substore ops are not composed across ",
+             "unions.", call. = FALSE)
     }
     # feat_ids must be identical and in identical order across substores.
     f0 <- stores[[1L]]@feat_ids

@@ -1,56 +1,66 @@
 #' @include class-parquetExprStore.R
 NULL
 
-# parquetExprStore @ops — lazy arrow step recipes.
+# parquetExprStore op chain — two-phase design.
+#
+# @ops       arrow-lazy phase. Ops that translate to arrow-dplyr steps
+#            on the lazy query (filter, distinct, head, tail, sample,
+#            future arrow-native transforms). Composed at storeRead time
+#            via .pe_apply_ops before collect.
+#
+# @post_ops  R-side post-collect phase. Ops that operate on materialized
+#            data (data.table for tibble/dgcmatrix/data.table outputs,
+#            sparseMatrix chunks for streaming consumers). Composed at
+#            output-materialization time via .pe_apply_post_ops_df or
+#            .pe_apply_post_ops_mat.
 #
 # Each op is a pure-data record `list(type = <character>, ...params)`.
-# No closures, no fn field. At storeRead time, the executor translates the
-# whole chain into composed arrow steps applied to the lazy query, then
-# executes once via collect / output dispatch — matching the parquetGeomBase
-# @ops contract.
+# No closures, no phase field on the record — the phase is determined by
+# which slot the op lives in.
+#
+# Monotonic phase rule: once @post_ops has an entry, subsequent pushes go
+# to @post_ops regardless of the op's natural phase. Enforced by
+# .pe_push_op. Users needing a lazy op after a post op must materialize
+# first (storeWrite bakes @post_ops into on-disk values; new pe starts
+# with empty chains).
 #
 # Op types currently supported:
 #
-#   norm_libsize_log
-#     Fused library-size scaling + optional log transform. Adds `v_norm`
-#     column to the lazy query.
+#   norm_libsize_log  (phase: post)
+#     Fused library-size scaling + optional log transform. Mutates
+#     `value` in place (R-side; no separate v_norm column).
 #     Params:
 #       scalef   data.table(source_id, orig_row_id, scalef). One row per
 #                cell present in the store's current view at processData
-#                time. The (source_id, orig_row_id) composite is required
-#                so the same op record carries scalefs for all substores
-#                of a unionParquetExprStore in a single table — row_id
-#                restarts per substore so source_id is the disambiguator.
-#                Single stores collapse to a constant source_id (= the
-#                store's @uid).
+#                time. Composite (source_id, orig_row_id) key so the same
+#                op record carries scalefs for all substores of a union.
 #       log      logical. Apply log1p / log(base) after scaling.
 #       base     numeric. log base (default 2).
-#     Arrow translation:
-#       atab |>
-#         left_join(scalef_tab,
-#                   by = c("source_id" = "source_id",
-#                          "row_id"    = "orig_row_id")) |>
-#         mutate(v_norm = value * scalef [|> log1p(.) * inv_log_base]) |>
-#         select(-scalef)
 #
-# Extension protocol: add a new branch to .pe_apply_op and a `slice_*`
-# branch to .pe_slice_op_cells / .pe_slice_op_genes (commit 2). No other
-# code paths change — the executor is the only place that knows about
-# specific op types.
+# Extension protocol:
+#   - Lazy op: add a branch to .pe_apply_op (arrow-side switch), and a
+#     .pe_op_table_keys entry if the op carries axis-keyed state that
+#     `[`-subset should narrow.
+#   - Post op: add branches to .pe_apply_post_op_df AND
+#     .pe_apply_post_op_mat (both shapes). Add .pe_op_table_keys entry
+#     if axis-keyed. Add a natural-phase-"post" case in the verb that
+#     produces it.
 
 
-# ---- executor: translate one op record into arrow steps --------------------
+# ---- @ops arrow-side executor ---------------------------------------------
 
-# Apply a single op record to a lazy arrow query (or arrow_dplyr_query).
+# Apply a single arrow-lazy op record to a lazy arrow query.
 # Returns the augmented query.
 .pe_apply_op <- function(atab, op) {
     switch(op$type,
-        "norm_libsize_log" = .pe_apply_op_norm_libsize_log(atab, op),
-        stop("[.pe_apply_op] unknown op type: ", op$type, call. = FALSE)
+        # Future arrow-native op types dispatch here. norm_libsize_log
+        # moved to @post_ops; not an arrow-side op.
+        stop("[.pe_apply_op] unknown arrow-side op type: ", op$type,
+            call. = FALSE)
     )
 }
 
-# Fold the chain — composes all ops into one lazy query.
+# Fold the arrow-side chain — composes all @ops into one lazy query.
 .pe_apply_ops <- function(atab, ops) {
     if (length(ops) == 0L) return(atab)
     for (op in ops) atab <- .pe_apply_op(atab, op)
@@ -58,27 +68,131 @@ NULL
 }
 
 
-# ---- per-type translators --------------------------------------------------
+# ---- @post_ops R-side executor (data.table shape) --------------------------
+#
+# Used by materializing output paths (tibble / data.table / dgcmatrix) and
+# by any consumer that collects a triplet chunk into a data.table. Ops
+# mutate `df$value` in place.
 
-.pe_apply_op_norm_libsize_log <- function(atab, op) {
+.pe_apply_post_op_df <- function(df, op) {
+    switch(op$type,
+        "norm_libsize_log" = .pe_apply_post_op_norm_libsize_log_df(df, op),
+        stop("[.pe_apply_post_op_df] unknown post op type: ", op$type,
+            call. = FALSE)
+    )
+}
+
+.pe_apply_post_ops_df <- function(df, post_ops) {
+    if (length(post_ops) == 0L) return(df)
+    for (op in post_ops) df <- .pe_apply_post_op_df(df, op)
+    df
+}
+
+.pe_apply_post_op_norm_libsize_log_df <- function(df, op) {
     # NSE bindings
-    row_id <- source_id <- value <- v_norm <- scalef <- NULL
-
-    scalef_tab <- arrow::as_arrow_table(op$scalef)
-    inv_log_base <- 1 / log(op$base)
-
-    atab <- atab |>
-        dplyr::left_join(scalef_tab,
-                          by = c("source_id" = "source_id",
-                                 "row_id"    = "orig_row_id")) |>
-        dplyr::mutate(v_norm = value * scalef)
+    row_id <- source_id <- value <- scalef <- NULL
+    # Update-join: bring scalef into df on (source_id, row_id -> orig_row_id).
+    # data.table's update-by-join adds only the scalef column, keyed by
+    # the composite. Works uniformly for single (one source_id) and union
+    # (many source_ids) collected chunks.
+    df[op$scalef,
+        on = c("source_id", "row_id" = "orig_row_id"),
+        scalef := i.scalef]
+    df[, value := value * scalef]
+    df[, scalef := NULL]
     if (isTRUE(op$log)) {
-        atab <- dplyr::mutate(atab, v_norm = log1p(v_norm) * inv_log_base)
+        df[, value := log1p(value) / log(op$base %null% 2)]
     }
-    # Drop the joined scalef column so downstream consumers see only the
-    # schema the recipe extended. v_norm sticks around as the recipe's
-    # contribution.
-    dplyr::select(atab, -scalef)
+    df
+}
+
+
+# ---- @post_ops R-side executor (sparseMatrix chunk shape) ------------------
+#
+# Used by streaming consumers (stream-pca chunk readers, stream-hvf) that
+# hold a sparseMatrix chunk in memory. Ops mutate A@x in place. Because
+# a chunk is scoped to a single substore, caller pre-extracts a
+# substore-positional scalef vector via .pe_scalef_vec_for_sub and passes
+# it in; the executor slices chunk-local from that vector.
+
+.pe_apply_post_op_mat <- function(A, op, scalef_vec, cell_start, cell_end) {
+    switch(op$type,
+        "norm_libsize_log" = .pe_apply_post_op_norm_libsize_log_mat(
+            A, op, scalef_vec, cell_start, cell_end),
+        stop("[.pe_apply_post_op_mat] unknown post op type: ", op$type,
+            call. = FALSE)
+    )
+}
+
+# Apply a chain of post ops to a sparseMatrix chunk. `scalef_vecs` is a
+# list parallel to `post_ops`, giving each op's per-cell vector for the
+# active substore (list entries are NULL for ops without per-cell state).
+.pe_apply_post_ops_mat <- function(A, post_ops, scalef_vecs,
+                                    cell_start, cell_end) {
+    if (length(post_ops) == 0L) return(A)
+    for (i in seq_along(post_ops)) {
+        A <- .pe_apply_post_op_mat(A, post_ops[[i]], scalef_vecs[[i]],
+            cell_start, cell_end)
+    }
+    A
+}
+
+.pe_apply_post_op_norm_libsize_log_mat <- function(A, op, scalef_vec,
+                                                    cell_start, cell_end) {
+    scalef_chunk <- scalef_vec[cell_start:cell_end]
+    A@x <- A@x * scalef_chunk[A@i + 1L]
+    if (isTRUE(op$log)) A@x <- log1p(A@x) / log(op$base %null% 2)
+    A
+}
+
+
+# ---- Substore-scoped scalef extraction -------------------------------------
+
+# Extract a positional per-cell scalef vector for a specific substore
+# from a norm_libsize_log op record. Returns a numeric vector indexed by
+# the substore's own cell position (1..n_sub_cells at processData time).
+.pe_scalef_vec_for_sub <- function(op, sub_uid) {
+    orig_row_id <- source_id <- NULL   # NSE
+    if (identical(op$type, "norm_libsize_log")) {
+        sub_dt <- op$scalef[source_id == sub_uid]
+        data.table::setorder(sub_dt, orig_row_id)
+        return(as.numeric(sub_dt$scalef))
+    }
+    NULL   # op doesn't have per-cell scalef state
+}
+
+# Prepare per-substore scalef vectors for every op in a post-ops chain.
+# Returns a list parallel to post_ops. Each entry is either a numeric
+# vector (for ops with per-cell state on this substore) or NULL.
+.pe_scalef_vecs_for_sub <- function(post_ops, sub_uid) {
+    lapply(post_ops, .pe_scalef_vec_for_sub, sub_uid = sub_uid)
+}
+
+
+# ---- Push helper: monotonic phase enforcement ------------------------------
+
+# Route an op record to the appropriate slot on the store. Enforces the
+# monotonic-phase rule: once @post_ops has an entry, subsequent lazy
+# pushes are ALSO routed to @post_ops (bumped) or rejected — we currently
+# choose reject (strict), which is easier to debug and steers users to
+# materialize when they hit the boundary.
+#
+# For our current op inventory (norm on @post_ops, no lazy pestore ops
+# yet), the "phase = lazy" path is unused. When we add filter or similar
+# lazy pestore ops, this helper is the enforcement point.
+.pe_push_op <- function(pe, op, phase = c("lazy", "post")) {
+    phase <- match.arg(phase)
+    if (phase == "lazy" && length(pe@post_ops) > 0L) {
+        stop("[.pe_push_op] cannot queue a lazy op after a post op is ",
+             "already on @post_ops. Materialize first (via storeWrite) ",
+             "to reset the chain, then push the lazy op.", call. = FALSE)
+    }
+    if (phase == "post") {
+        pe@post_ops <- c(pe@post_ops, list(op))
+    } else {
+        pe@ops <- c(pe@ops, list(op))
+    }
+    pe
 }
 
 
@@ -96,35 +210,17 @@ NULL
 #                   union's `@cell_ids` axis (always 0 for a single
 #                   parquetExprStore; cumulative substore offset for a
 #                   unionParquetExprStore)
-#
-# Methods loop substores, aggregate via per-substore Arrow queries (so
-# `.pe_remap_col` / `.pe_remap_row` / `.pe_orig_col` continue to work
-# unchanged since they operate per substore), then concatenate or sum
-# the per-substore results into the union axis.
-#
-# For a single `parquetExprStore` the iterator yields one entry whose
-# store is `x` itself with offset 0 — same algorithm, no special case.
 
-# Project a parent (union) ops chain onto a single substore so its
-# `storeRead()` carries the same recipe restricted to this substore's
-# rows. Currently only `norm_libsize_log` carries source-keyed payload —
-# its `scalef` lookup is filtered to `source_id == sub@uid`. Op types
-# without source-keyed state pass through unchanged; future op types
-# with source-keyed payloads will need a case in the filter.
-#
-# No-op for single stores (parent_ops empty) so the iterator-driven
-# methods work uniformly across single and union.
+# Project a parent (union) @ops chain onto a single substore so its
+# `storeRead()` carries the same arrow-lazy recipe restricted to this
+# substore's rows. For arrow-native ops with source-keyed payload the
+# per-substore filter is applied here. norm_libsize_log now lives on
+# @post_ops (not @ops), so this projection currently no-ops for it —
+# @post_ops are consumed by streaming consumers via .pe_scalef_vec_for_sub
+# and don't need to travel with the substore's own @ops.
 .exprbase_inject_parent_ops <- function(sub, parent_ops) {
     if (length(parent_ops) == 0L) return(sub)
-    source_id <- NULL  # NSE
-    uid <- as.character(sub@uid)
-    proj_ops <- lapply(parent_ops, function(op) {
-        if (identical(op$type, "norm_libsize_log")) {
-            op$scalef <- op$scalef[source_id == uid]
-        }
-        op
-    })
-    sub@ops <- c(sub@ops, proj_ops)
+    sub@ops <- c(sub@ops, parent_ops)
     sub
 }
 
@@ -147,9 +243,8 @@ NULL
 
 # ---- introspection helpers -------------------------------------------------
 
-# Find the index of the first op of a given type in @ops. Returns NA_integer_
-# when not present. Used by processData(logNormParam) to detect-and-fuse with
-# an upstream libsize op rather than appending a redundant entry.
+# Find the index of the first op of a given type in a chain. Returns
+# NA_integer_ when not present. Chain-agnostic — pass @ops or @post_ops.
 .pe_find_op_type <- function(ops, type) {
     if (length(ops) == 0L) return(NA_integer_)
     idx <- which(vapply(ops, function(op) identical(op$type, type),
@@ -157,22 +252,23 @@ NULL
     if (length(idx) == 0L) NA_integer_ else as.integer(idx[1L])
 }
 
-# Predicate: does @ops carry a normalization recipe?
-.pe_has_norm_op <- function(ops) {
-    !is.na(.pe_find_op_type(ops, "norm_libsize_log"))
+# Predicate: does the store carry a normalization recipe? Norm now lives
+# on @post_ops.
+.pe_has_norm_op <- function(pe) {
+    !is.na(.pe_find_op_type(pe@post_ops, "norm_libsize_log"))
 }
 
 
 # ---- subset slice ----------------------------------------------------------
 #
-# Ops are frozen snapshots of population stats captured at trigger time.
-# Subsetting cells / genes never invalidates them — every op carries axis-
-# keyed lookup tables, and subset filters those tables by the surviving
-# axis keys. Survivors retain their captured-population stats; the user
-# re-runs processData(...) if they want stats over the new population.
+# Ops (both phases) are frozen snapshots of population stats captured at
+# trigger time. Subsetting cells / genes never invalidates them — every
+# op with axis-keyed lookup tables gets those tables filtered by the
+# surviving axis keys. Survivors retain their captured-population stats;
+# the user re-runs processData(...) if they want stats over the new
+# population.
 #
-# Each op type declares its lookup tables and axis keys via the registry
-# below. Subset dispatch walks the registry and filters rows.
+# Slice dispatch walks the registry and filters rows.
 
 # Registry: per op type, list of (table_field_name -> list of axes -> key
 # columns). The key columns are the field names in the lookup table that
@@ -204,24 +300,16 @@ NULL
         if (is.null(axis_spec)) next  # this table isn't axis-keyed
         tbl <- op[[tname]]
         if (is.null(tbl) || nrow(tbl) == 0L) next
-        # Semi-join the table on the axis key columns against surviving_keys.
-        # data.table's `tbl[surviving_keys, on = .(...), nomatch = NULL]`
-        # is an inner-join that yields all tbl columns; equivalent semi-join
-        # by selecting tbl-side fields after the join.
-        join_cols <- axis_spec  # named c(parquet_col = tbl_col) or simple char vec
-        # For composite cell axis, surviving_keys columns are
-        # (source_id, orig_row_id); axis_spec is c("source_id",
-        # "orig_row_id") — same names on both sides.
+        join_cols <- axis_spec
         op[[tname]] <- tbl[surviving_keys, on = join_cols,
                             nomatch = NULL, allow.cartesian = FALSE]
-        # Drop any join-introduced columns from surviving_keys side if they
-        # differ from tbl columns (none expected for the current schemas).
     }
     op
 }
 
 
-# Slice every op in a chain along one axis.
+# Slice every op in a chain along one axis. Chain-agnostic; caller passes
+# @ops or @post_ops as `ops`.
 .pe_slice_ops <- function(ops, axis, surviving_keys) {
     if (length(ops) == 0L) return(ops)
     lapply(ops, .pe_slice_op, axis = axis, surviving_keys = surviving_keys)
