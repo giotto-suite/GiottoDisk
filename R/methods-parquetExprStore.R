@@ -14,13 +14,15 @@ NULL
 #              want fully-baked values.
 
 #' @rdname storeRead
-#' @param max_rows,max_cols integer (optional). Dimension guard for
-#'   `output = "dgcmatrix"`. A materialized sparseMatrix must have at
-#'   least one axis narrowed to within the cap — both unbounded errors.
-#'   Defaults via `getOption("giottodisk.dgc_max_rows", 100L)` /
+#' @param max_rows,max_cols integer or `Inf` (optional). Set a dimension
+#'   guard for `output = "dgcmatrix"`. A materialized sparseMatrix must
+#'   have at least one axis narrowed to within the cap — both exceeding
+#'   errors. Defaults via `getOption("giottodisk.dgc_max_rows", 100L)` /
 #'   `getOption("giottodisk.dgc_max_cols", 100L)`. Asymmetric so
 #'   "narrow slice" usage (100 × Inf or Inf × 100) is allowed; the
-#'   intent is `[`-subset along one axis before materializing.
+#'   intent is `[`-subset along one axis before materializing. Pass
+#'   `Inf` to disable the cap on an axis (`Inf`/`Inf` disables the
+#'   guard entirely).
 #' @export
 setMethod("storeRead", signature("parquetExprStore"), function(store,
     output = c("query", "tibble", "duckdb", "dgcmatrix"),
@@ -110,17 +112,95 @@ setMethod(
             "\n  pre-allocated store path must be a directory or absent.",
             call. = FALSE)
     }
-    q <- .pestore_remap_query(data)
-    .write_parquet(store, q)
+
+    # Dispatch on `@post_ops`:
+    #   * empty: existing fast arrow-lazy remap. Cell/gene narrowing is
+    #     handled via left-join in `.pestore_remap_query`, no R-side pass.
+    #   * non-empty: chunk-stream bake via the mat-shape @post_ops
+    #     executor.  Each chunk becomes a sparseMatrix, @post_ops
+    #     applies in place via positional scalef indexing (no arrow
+    #     left-join), triplets are extracted and written to a shard.
+    #     Row ids get remapped to the narrowed output cell axis.
+    if (length(data@post_ops) > 0L) {
+        .pestore_write_baked(store, data)
+    } else {
+        q <- .pestore_remap_query(data)
+        .write_parquet(store, q)
+    }
 
     # Slots copied from input -- already correctly narrowed by any
     # `[`-subset. `cell_idx`/`gene_idx` stay empty on the fresh output
-    # (no subset queued).
+    # (no subset queued).  `@post_ops` is also empty on the fresh output
+    # since values are baked in.
     store@cell_ids <- data@cell_ids
     store@feat_ids <- data@feat_ids
     store@n_cells  <- as.numeric(data@n_cells)
     store@n_genes  <- as.numeric(data@n_genes)
     .pestore_finalize_chunk_size(store)
+}
+
+
+# Chunk-stream bake: iterate substores + chunks, read raw triplets, build
+# a sparseMatrix band, apply `@post_ops` in place via the mat-shape
+# executor (positional scalef — no arrow left-join), extract normalized
+# triplets, remap row_id to the narrowed output cell axis, write a shard.
+#
+# Complexity: O(nnz) per chunk for build + apply + extract; global sort
+# of shards is implicit because chunks are visited in cell order and each
+# shard is sorted by (row_id, col_id) at write time.
+.pestore_write_baked <- function(store, data) {
+    n_out      <- as.integer(data@n_cells)
+    P_out      <- as.integer(data@n_genes)
+    chunk_size <- as.integer(.exprbase_chunk_size(data))
+    hvg_idx    <- seq_len(P_out)   # identity on the narrowed feat axis
+    post_ops   <- data@post_ops
+
+    # Build sub_infos with per-substore hvg_orig + scalef_vecs.
+    parent_ops <- if (inherits(data, "unionParquetExprStore")) data@ops
+                  else list()
+    sub_infos <- lapply(.exprbase_substores(data), function(se) {
+        sub <- .exprbase_inject_parent_ops(se$store, parent_ops)
+        list(sub         = sub,
+             offset      = as.integer(se$cell_offset),
+             n_sub       = as.integer(sub@n_cells),
+             hvg_orig    = .pe_orig_col(hvg_idx, sub),
+             scalef_vecs = .pe_scalef_vecs_for_sub(post_ops, sub@uid))
+    })
+
+    partition_dir <- .idpath(store@path, store@uid)
+    if (!dir.exists(partition_dir)) {
+        dir.create(partition_dir, recursive = TRUE, showWarnings = FALSE)
+    }
+
+    part_idx <- 0L
+    for (info in sub_infos) {
+        n_sub  <- info$n_sub
+        offset <- info$offset
+        cs <- 1L
+        while (cs <= n_sub) {
+            ce <- min(cs + chunk_size - 1L, n_sub)
+            A  <- .pe_read_chunk_sub(info, cs, ce, post_ops, P_out)
+            if (!is.null(A) && length(A@x) > 0L) {
+                # A is chunk_n × P_out (cells × cols, normalized).
+                # Remap i to global output row_id via cell_offset + cs.
+                row_local  <- A@i + 1L                # 1-based within chunk
+                row_global <- offset + cs + row_local - 1L
+                col_pos    <- rep.int(seq_len(P_out), diff(A@p))
+                dt <- data.table::data.table(
+                    row_id = as.integer(row_global),
+                    col_id = as.integer(col_pos),
+                    value  = A@x
+                )
+                data.table::setorder(dt, row_id, col_id)
+                .write_parquet_file(dt,
+                    file.path(partition_dir,
+                        sprintf("part-%d.parquet", part_idx)))
+                part_idx <- part_idx + 1L
+            }
+            cs <- ce + 1L
+        }
+    }
+    invisible(NULL)
 }
 
 # Build the lazy remapped triplet query for a (possibly subset) input.
@@ -269,8 +349,16 @@ setMethod(
         getOption("giottodisk.dgc_max_rows", 100L)
     if (is.null(max_cols)) max_cols <-
         getOption("giottodisk.dgc_max_cols", 100L)
-    max_rows <- as.integer(max_rows)
-    max_cols <- as.integer(max_cols)
+    # Accept Inf as "no cap on this axis"; otherwise require a whole number.
+    .as_cap <- function(x, nm) {
+        if (is.numeric(x) && length(x) == 1L && !is.na(x) &&
+            (is.infinite(x) || x %% 1 == 0)) {
+            return(if (is.infinite(x)) x else as.integer(x))
+        }
+        stop("`", nm, "` must be a whole number or `Inf`.", call. = FALSE)
+    }
+    max_rows <- .as_cap(max_rows, "max_rows")
+    max_cols <- .as_cap(max_cols, "max_cols")
     # Asymmetric guard: at least one axis must be ≤ its cap.
     if (n_rows > max_rows && n_cols > max_cols) {
         stop("[storeRead] dgcmatrix output would materialize ",

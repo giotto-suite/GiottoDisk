@@ -107,13 +107,13 @@ setMethod("reduceData",
 
 # gramEigenPcaParam: streaming exact PCA via AᵀA. See .stream_gram_svd
 # for the algorithm; delegates to Halko when the condition-squared
-# blowup exceeds param$fallback_relerr. Currently only single-store
-# (parquetExprStore) — union dispatch is a follow-up.
+# blowup exceeds param$fallback_relerr. Works on parquetExprBase
+# (single store or union) via per-substore chunk iteration.
 
 #' @rdname reduceData
 #' @export
 setMethod("reduceData",
-    signature(x = "parquetExprStore", param = "gramEigenPcaParam"),
+    signature(x = "parquetExprBase", param = "gramEigenPcaParam"),
     function(x, param, ...) {
         args <- as.list(param@param)
         args$method <- NULL
@@ -122,7 +122,7 @@ setMethod("reduceData",
 )
 
 
-# autoPcaParam on parquetExprStore: gram-eigen if P²·8 fits the budget
+# autoPcaParam on parquetExprBase: gram-eigen if P²·8 fits the budget
 # (default 5 GB → P ≤ ~25k, covers all realistic scRNA / imaging /
 # multi-omic RNA regimes), Halko otherwise. Fixed budget rather than
 # %-of-RAM: cache/TLB effects make Halko faster before large machines'
@@ -132,7 +132,7 @@ setMethod("reduceData",
 #' @rdname reduceData
 #' @export
 setMethod("reduceData",
-    signature(x = "parquetExprStore", param = "autoPcaParam"),
+    signature(x = "parquetExprBase", param = "autoPcaParam"),
     function(x, param, ...) {
         # P estimate: feats_to_use if set (HVG-restricted), else full store
         n_feat <- if (!is.null(param$feats_to_use)) {
@@ -398,6 +398,8 @@ setMethod("reduceData",
     }
     250000L
 }
+
+
 # Streaming gram-eigen core. Three passes: (1) per-gene μ + σ,
 # (2) accumulate G_raw = Σ chunkᵀchunk with G = G_raw − n·μμᵀ (and
 # optional / (σσᵀ) for scale=TRUE), (3) coords = A_c · V. AᵀA squares
@@ -409,9 +411,6 @@ setMethod("reduceData",
                               fallback_relerr = 0.01,
                               set_seed = TRUE, seed_number = 1234L,
                               n_oversamples = 10L, n_power_iter = 2L, ...) {
-    n_cells    <- as.integer(pe@n_cells)
-    chunk_size <- as.integer(pe@chunk_size %null% 250000L)
-
     # feats_to_use = NULL -> use every feature.
     hvg_idx <- if (is.null(feats_to_use)) {
         seq_along(pe@feat_ids)
@@ -431,48 +430,107 @@ setMethod("reduceData",
                 "), setting ncp = ", P_hvg - 1L, call. = FALSE)
         ncp <- P_hvg - 1L
     }
-    hvg_orig <- .pe_orig_col(hvg_idx, pe)
+
+    # ---- Materialize: HVG-only, @post_ops baked, union collapsed ----------
+    # Writes a fresh temp pestore whose value column is the normalized
+    # (JIT-applied) HVG-subset triplet stream.  Downstream 3-pass PCA reads
+    # this temp store directly — no per-band @post_ops apply, no per-band
+    # `%in%` HVG filter, no cross-substore composition.  The temp store is
+    # cleaned up on function exit.
+    cell_ids_final <- pe@cell_ids
+    pe_narrow <- pe[hvg_idx, ]
+    pe_mat_path <- tempfile("gd_pca_mat_", fileext = ".parquet")
+    pe_mat <- storeWrite(
+        parquetExprStore(path = pe_mat_path),
+        pe_narrow
+    )
+    on.exit(unlink(pe_mat_path, recursive = TRUE), add = TRUE)
+
+    # Rebuild sub_infos + related state against the materialized store.
+    # pe_mat is a fresh single-store parquetExprStore with empty @ops /
+    # @post_ops, so parent_ops is empty, hvg_orig is identity, and
+    # scalef_vecs is empty.
+    pe         <- pe_mat
+    n_cells    <- as.integer(pe@n_cells)
+    chunk_size <- as.integer(.exprbase_chunk_size(pe))
+    hvg_idx    <- seq_len(P_hvg)          # identity on materialized axis
+    post_ops   <- list()                   # baked in
+    sub_infos  <- lapply(.exprbase_substores(pe), function(se) {
+        sub <- se$store
+        list(sub         = sub,
+             offset      = as.integer(se$cell_offset),
+             n_sub       = as.integer(sub@n_cells),
+             hvg_orig    = seq_len(P_hvg),
+             scalef_vecs = list())
+    })
 
     # Pass 1: means (center) + sds (scale) in one pass over @post_ops.
-    stats <- .stream_norm_hvg_stats(pe, hvg_idx)
+    stats <- .stream_norm_hvg_stats(pe, hvg_idx, sub_infos = sub_infos)
     means <- if (center) stats$means else numeric(P_hvg)
     sds   <- if (scale)  stats$sds   else rep(1, P_hvg)
 
-    # Chunk reader. Arrow query yields raw triplets; @post_ops applies
-    # R-side to mutate A@x. scalef vectors pre-extracted for this store.
-    post_ops    <- pe@post_ops
-    scalef_vecs <- .pe_scalef_vecs_for_sub(post_ops, pe@uid)
-    .read_chunk_norm_hvg <- function(cell_start, cell_end) {
+    # Per-substore chunk reader (cell-major within substore).
+    .read_chunk_sub <- function(info, sub_cs, sub_ce) {
         row_id <- col_id <- NULL  # NSE
-        orig_rows <- .pe_orig_row(cell_start:cell_end, pe)
-        df <- storeRead(pe, output = "query") |>
+        sub <- info$sub
+        orig_rows <- .pe_orig_row(sub_cs:sub_ce, sub)
+        df <- storeRead(sub, output = "query") |>
             dplyr::filter(row_id %in% !!orig_rows,
-                           col_id %in% !!hvg_orig) |>
+                           col_id %in% !!info$hvg_orig) |>
             dplyr::collect() |>
             data.table::as.data.table()
         if (nrow(df) == 0L) return(NULL)
-        chunk_n  <- cell_end - cell_start + 1L
-        gene_map <- match(df$col_id, hvg_orig)
+        chunk_n  <- sub_ce - sub_cs + 1L
+        gene_map <- match(df$col_id, info$hvg_orig)
         cell_map <- match(df$row_id, orig_rows)
         A <- Matrix::sparseMatrix(
             i = cell_map, j = gene_map, x = as.double(df$value),
             dims = c(chunk_n, P_hvg), repr = "C"
         )
-        .pe_apply_post_ops_mat(A, post_ops, scalef_vecs,
-            cell_start, cell_end)
+        .pe_apply_post_ops_mat(A, post_ops, info$scalef_vecs,
+            sub_cs, sub_ce)
     }
 
-    # Pass 2: G_raw = Σ chunk^T chunk (one streaming crossprod per band)
+    # Pass 2: G_raw = Σ chunk^T chunk across all substores × chunks.
+    # Associative accumulation — substore boundaries don't matter.
+    # Kept serial: an mclapply-over-bands experiment (2026-07-24) added
+    # 3-5 s vs serial due to per-band arrow filter + sparseMatrix rebuild
+    # overhead × 8 workers, plus arrow C++ thread-pool oversubscription
+    # (n_workers × cpu_count threads competing for cpu_count cores).
+    # Pass 2 band-parallel: since input is now the small materialized
+    # store, per-band arrow reads are cheap (no `%in%` HVG filter, tiny
+    # row-group stats).  Split n_sub into n_workers bands, each returns
+    # a partial G_raw = ΣchunkᵀAchunk; reduce by summing.
+    n_workers <- .par_workers()
     G_raw <- matrix(0.0, nrow = P_hvg, ncol = P_hvg)
-    cs <- 1L
-    while (cs <= n_cells) {
-        ce <- min(cs + chunk_size - 1L, n_cells)
-        A  <- .read_chunk_norm_hvg(cs, ce)
-        if (!is.null(A)) {
-            G_raw <- G_raw + as.matrix(Matrix::crossprod(A))
+    info1 <- sub_infos[[1L]]
+    n_sub1 <- info1$n_sub
+    band_size <- max(1L, as.integer(ceiling(n_sub1 / n_workers)))
+    band_starts <- seq.int(1L, n_sub1, by = band_size)
+    bands <- lapply(band_starts, function(bs)
+        c(bs, min(bs + band_size - 1L, n_sub1)))
+
+    gram_band <- function(rng) {
+        G_local <- matrix(0.0, nrow = P_hvg, ncol = P_hvg)
+        cs <- rng[1L]
+        ce_stop <- rng[2L]
+        while (cs <= ce_stop) {
+            ce <- min(cs + chunk_size - 1L, ce_stop)
+            A  <- .read_chunk_sub(info1, cs, ce)
+            if (!is.null(A)) {
+                G_local <- G_local + as.matrix(Matrix::crossprod(A))
+            }
+            cs <- ce + 1L
         }
-        cs <- ce + 1L
+        G_local
     }
+    partials <- if (.Platform$OS.type == "unix" && n_workers > 1L) {
+        parallel::mclapply(bands, gram_band,
+            mc.cores = n_workers, mc.preschedule = TRUE)
+    } else {
+        lapply(bands, gram_band)
+    }
+    G_raw <- Reduce("+", partials, init = G_raw)
     # Center: (A - 1μᵀ)ᵀ(A - 1μᵀ) = AᵀA - n·μμᵀ. Scale: divide by σσᵀ.
     G <- if (center) G_raw - as.numeric(n_cells) * tcrossprod(means)
          else       G_raw
@@ -514,7 +572,9 @@ setMethod("reduceData",
     V <- sweep(V, 2L, signs, "*")
 
     # Pass 3: coords = A_std · V. Absorb σ into V (V/σ, row-wise), so
-    # per-chunk work is identical for scale on/off.
+    # per-chunk work is identical for scale on/off. coords is sized to
+    # the union cell axis; each band writes its own disjoint row range,
+    # main thread copies partials into the global coords matrix.
     V_use <- V / sds
     coords <- matrix(0.0, nrow = n_cells, ncol = ncp_used)
     correction <- if (center) {
@@ -522,24 +582,41 @@ setMethod("reduceData",
     } else {
         numeric(ncp_used)
     }
-    cs <- 1L
-    while (cs <= n_cells) {
-        ce <- min(cs + chunk_size - 1L, n_cells)
-        A  <- .read_chunk_norm_hvg(cs, ce)
-        chunk_n <- ce - cs + 1L
-        if (!is.null(A)) {
-            Cc <- as.matrix(A %*% V_use)
-            if (center) {
-                Cc <- Cc - matrix(correction, nrow = chunk_n,
-                                   ncol = ncp_used, byrow = TRUE)
+    # Pass 3 band-parallel: same shape as Pass 2.  Each worker returns
+    # its band's coord slice; main thread copies into the global matrix.
+    coords_band <- function(rng) {
+        band_n <- rng[2L] - rng[1L] + 1L
+        band_coords <- matrix(0.0, nrow = band_n, ncol = ncp_used)
+        cs <- rng[1L]
+        ce_stop <- rng[2L]
+        while (cs <= ce_stop) {
+            ce <- min(cs + chunk_size - 1L, ce_stop)
+            A  <- .read_chunk_sub(info1, cs, ce)
+            chunk_n <- ce - cs + 1L
+            in_band <- (cs - rng[1L] + 1L):(cs - rng[1L] + chunk_n)
+            if (!is.null(A)) {
+                Cc <- as.matrix(A %*% V_use)
+                if (center) {
+                    Cc <- Cc - matrix(correction, nrow = chunk_n,
+                                       ncol = ncp_used, byrow = TRUE)
+                }
+                band_coords[in_band, ] <- Cc
+            } else if (center) {
+                band_coords[in_band, ] <- -matrix(correction,
+                    nrow = chunk_n, ncol = ncp_used, byrow = TRUE)
             }
-            coords[cs:ce, ] <- Cc
-        } else if (center) {
-            coords[cs:ce, ] <- -matrix(correction, nrow = chunk_n,
-                                        ncol = ncp_used, byrow = TRUE)
+            cs <- ce + 1L
         }
-        cs <- ce + 1L
+        list(rows = (info1$offset + rng[1L]):(info1$offset + rng[2L]),
+             band = band_coords)
     }
+    coord_partials <- if (.Platform$OS.type == "unix" && n_workers > 1L) {
+        parallel::mclapply(bands, coords_band,
+            mc.cores = n_workers, mc.preschedule = TRUE)
+    } else {
+        lapply(bands, coords_band)
+    }
+    for (p in coord_partials) coords[p$rows, ] <- p$band
 
     rownames(coords) <- pe@cell_ids
     rownames(V)      <- pe@feat_ids[hvg_idx]
@@ -555,41 +632,59 @@ setMethod("reduceData",
 }
 
 
-# Per-HVG-gene mean + sd of normalized data. Collects HVG-column-filtered
-# triplets, applies @post_ops R-side, aggregates via data.table by-group.
-# Variance via SS identity: σ² = (SS − n·μ²)/(n−1). `hvg_idx` NULL uses
-# every column.
-.stream_norm_hvg_stats <- function(pe, hvg_idx, ...) {
+# Per-HVG-gene mean + sd of normalized data.  Iterates substores,
+# collects HVG-column-filtered triplets per substore, applies @post_ops
+# R-side, aggregates via data.table by-group, sums across substores.
+# Variance via SS identity: σ² = (SS − n·μ²)/(n−1).  `hvg_idx` NULL uses
+# every column.  `sub_infos` may be reused from a caller that already
+# built them (must include $sub and $hvg_orig).
+#
+# NOTE: kept serial intentionally. Pass 1's data volume is small (HVG-
+# column filter reduces to ~11% of full triplets), so mclapply's fork/
+# join overhead + sparseMatrix sort per band cost more than they save.
+# Verified by bench: parallel Pass 1 pushed PCA from 20 s → 25 s.
+.stream_norm_hvg_stats <- function(pe, hvg_idx, sub_infos = NULL, ...) {
     n_cells  <- as.integer(pe@n_cells)
 
     if (is.null(hvg_idx)) hvg_idx <- seq_along(pe@feat_ids)
     P_hvg <- length(hvg_idx)
 
-    hvg_orig <- .pe_orig_col(hvg_idx, pe)
+    post_ops <- pe@post_ops
+    if (is.null(sub_infos)) {
+        parent_ops <- if (inherits(pe, "unionParquetExprStore")) {
+            pe@ops
+        } else {
+            list()
+        }
+        sub_infos <- lapply(.exprbase_substores(pe), function(se) {
+            sub <- .exprbase_inject_parent_ops(se$store, parent_ops)
+            list(sub = sub, hvg_orig = .pe_orig_col(hvg_idx, sub))
+        })
+    }
 
     # NSE bindings
     col_id <- value <- s <- ss <- NULL
 
-    df <- storeRead(pe, output = "query") |>
-        dplyr::filter(col_id %in% !!hvg_orig) |>
-        dplyr::collect() |>
-        data.table::as.data.table()
-
-    # Apply @post_ops R-side (mutates df$value); then per-gene aggregate
-    # via data.table by-group.
-    df <- .pe_apply_post_ops_df(df, pe@post_ops)
-    agg <- df[, .(
-        s  = sum(value, na.rm = TRUE),
-        ss = sum(value * value, na.rm = TRUE)
-    ), by = col_id]
-
     g_sum  <- numeric(P_hvg)
     g_ssum <- numeric(P_hvg)
-    if (nrow(agg) > 0L) {
-        g_idx <- match(agg$col_id, hvg_orig)
-        keep  <- !is.na(g_idx)
-        g_sum[g_idx[keep]]  <- as.numeric(agg$s[keep])
-        g_ssum[g_idx[keep]] <- as.numeric(agg$ss[keep])
+
+    for (info in sub_infos) {
+        df <- storeRead(info$sub, output = "query") |>
+            dplyr::filter(col_id %in% !!info$hvg_orig) |>
+            dplyr::collect() |>
+            data.table::as.data.table()
+        if (nrow(df) == 0L) next
+        df <- .pe_apply_post_ops_df(df, post_ops)
+        agg <- df[, .(
+            s  = sum(value, na.rm = TRUE),
+            ss = sum(value * value, na.rm = TRUE)
+        ), by = col_id]
+        if (nrow(agg) > 0L) {
+            g_idx <- match(agg$col_id, info$hvg_orig)
+            keep  <- !is.na(g_idx)
+            g_sum[g_idx[keep]]  <- g_sum[g_idx[keep]] + as.numeric(agg$s[keep])
+            g_ssum[g_idx[keep]] <- g_ssum[g_idx[keep]] + as.numeric(agg$ss[keep])
+        }
     }
 
     means <- g_sum / n_cells

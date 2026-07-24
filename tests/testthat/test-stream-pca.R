@@ -274,6 +274,58 @@ test_that("streaming gram-eigen with scale=TRUE matches svd(scale(A))", {
     }
 })
 
+# Gram-eigen on unionParquetExprStore: substore-iterated Pass 2 + Pass 3.
+# Correctness bar mirrors the single-store case (machine-precision d;
+# per-PC cor > 0.999 vs dense svd on concatenated normalized data).
+
+test_that("streaming gram-eigen on union matches svd() on concat data", {
+    skip_if_not_installed("Giotto")
+    set.seed(42)
+    m1 <- Matrix::rsparsematrix(50, 30, density = 0.4,
+        rand.x = function(n) as.double(rpois(n, 4L) + 1L))
+    rownames(m1) <- paste0("g", sprintf("%03d", seq_len(50)))
+    colnames(m1) <- paste0("a_c", seq_len(30))
+    m2 <- Matrix::rsparsematrix(50, 20, density = 0.4,
+        rand.x = function(n) as.double(rpois(n, 4L) + 1L))
+    rownames(m2) <- rownames(m1)
+    colnames(m2) <- paste0("b_c", seq_len(20))
+
+    pe1 <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), m1)
+    pe2 <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), m2)
+    u <- unionParquetExprStore(list(pe1, pe2)) |>
+        GiottoClass::processData(Giotto::normParam("library", scalefactor = 1e4)) |>
+        GiottoClass::processData(Giotto::normParam("log", base = 2, offset = 1))
+
+    hvg <- rownames(m1)[seq_len(20)]
+    res <- GiottoClass::reduceData(u,
+        gramEigenPcaParam(ncp = 5, feats_to_use = hvg,
+            center = TRUE, scale = FALSE))
+
+    # Dense reference: concat + normalize with the same libsize+log2 recipe.
+    m_all <- cbind(m1, m2)
+    libsz <- as.numeric(Matrix::colSums(m_all))
+    libsz[libsz == 0] <- 1
+    sf <- 1e4 / libsz
+    mat_norm <- log1p(t(t(m_all) * sf)) / log(2)
+    A <- as.matrix(t(mat_norm[hvg, , drop = FALSE]))
+    A_c <- scale(A, center = TRUE, scale = FALSE)
+    ref <- svd(A_c, nu = 5, nv = 5)
+
+    rel <- max(abs(res$d - ref$d[seq_len(5)]) / ref$d[seq_len(5)])
+    expect_lt(rel, 1e-8)
+    expect_equal(nrow(res$v), 20L)
+    expect_equal(nrow(res$u), 50L)  # union cell axis (30 + 20)
+
+    ref_coords <- ref$u %*% diag(ref$d[seq_len(5)])
+    for (k in seq_len(5)) {
+        rho_v <- abs(cor(res$v[, k], ref$v[, k]))
+        rho_u <- abs(cor(res$u[, k], ref_coords[, k]))
+        expect_gt(rho_v, 0.999)
+        expect_gt(rho_u, 0.999)
+    }
+})
+
+
 test_that("streaming Halko errors on scale=TRUE (densification guard)", {
     skip_if_not_installed("Giotto")
     mat <- .tiny_mat()

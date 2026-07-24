@@ -241,6 +241,42 @@ NULL
 }
 
 
+# ---- shared chunk reader (used by PCA + storeWrite baking) ------------------
+#
+# Reads cells [sub_cs, sub_ce] from `info$sub` restricted to columns in
+# `info$hvg_orig`, builds a chunk_n × P_hvg sparseMatrix, applies @post_ops
+# in place via the mat-shape executor (positional scalef, no keyed join),
+# returns the normalized chunk.  Returns NULL when the arrow query yields
+# no rows.
+#
+# `info` is a list with fields:
+#   $sub         parquetExprStore substore (with parent @ops projected).
+#   $hvg_orig    integer vector — original col_ids for the columns to keep
+#                (identity when reading all columns).
+#   $scalef_vecs list of per-op positional scalef vectors, from
+#                `.pe_scalef_vecs_for_sub()`.
+.pe_read_chunk_sub <- function(info, sub_cs, sub_ce, post_ops, P_hvg) {
+    row_id <- col_id <- NULL   # NSE
+    sub <- info$sub
+    orig_rows <- .pe_orig_row(sub_cs:sub_ce, sub)
+    df <- storeRead(sub, output = "query") |>
+        dplyr::filter(row_id %in% !!orig_rows,
+                       col_id %in% !!info$hvg_orig) |>
+        dplyr::collect() |>
+        data.table::as.data.table()
+    if (nrow(df) == 0L) return(NULL)
+    chunk_n  <- sub_ce - sub_cs + 1L
+    gene_map <- match(df$col_id, info$hvg_orig)
+    cell_map <- match(df$row_id, orig_rows)
+    A <- Matrix::sparseMatrix(
+        i = cell_map, j = gene_map, x = as.double(df$value),
+        dims = c(chunk_n, P_hvg), repr = "C"
+    )
+    .pe_apply_post_ops_mat(A, post_ops, info$scalef_vecs,
+        sub_cs, sub_ce)
+}
+
+
 # ---- introspection helpers -------------------------------------------------
 
 # Find the index of the first op of a given type in a chain. Returns
