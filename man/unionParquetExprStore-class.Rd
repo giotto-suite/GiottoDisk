@@ -30,7 +30,7 @@ No data is rewritten; substores remain independently usable.
 \item{\code{params}}{list. Reserved for downstream pipeline metadata.}
 
 \item{\code{ops}}{list. Ordered chain of lazy arrow step recipes. Mirrors
-\code{parquetExprStore@ops} — same op record schema, same \code{.pe_do_op}
+\code{parquetExprStore@ops} — same op record schema, same \code{.pe_apply_op}
 executor. Composite (source_id, orig_row_id) cell-axis keys let one
 op table span all substores in a single arrow join. Substores must
 have empty \verb{@ops} at union construction time (see constructor); the

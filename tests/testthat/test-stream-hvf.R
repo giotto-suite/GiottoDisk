@@ -71,7 +71,7 @@ test_that("streaming covLoessParam matches in-memory selection on a tiny matrix"
 })
 
 
-test_that("varParam errors clearly on parquet backend (cov_groups is supported)", {
+test_that("cov_groups and var are both supported on the parquet backend", {
     skip_if_not_installed("Giotto")
     mat <- .tiny_mat(seed = 19)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
@@ -89,12 +89,47 @@ test_that("varParam errors clearly on parquet backend (cov_groups is supported)"
     expect_s3_class(res, "data.table")
     expect_true("cov_group_zscore" %in% colnames(res))
 
-    # var (per-feature variance on a scaled matrix) requires densifying
-    # the streaming reads and is intentionally unsupported.
-    expect_error(
-        GiottoClass::analyzeData(pe, Giotto::analyzeParam("var")),
-        "not supported for streaming"
+    # var returns analytic Pearson residual variance from RAW counts, so it
+    # runs even with a norm recipe present (@post_ops is not applied).
+    v <- GiottoClass::analyzeData(pe, Giotto::analyzeParam("var"))
+    expect_s3_class(v, "data.table")
+    expect_identical(colnames(v), c("feats", "var"))
+    expect_setequal(v$feats, rownames(mat))
+    expect_equal(v$var, sort(v$var, decreasing = TRUE))  # Giotto's convention
+    expect_true(all(is.finite(v$var)))
+
+    # a non-"raw" name warns rather than erroring -- the store's values may
+    # well be counts under a different slot name -- and raw is used regardless
+    expect_warning(
+        v2 <- GiottoClass::analyzeData(pe,
+            Giotto::analyzeParam("var", expression_values = "normalized")),
+        "is ignored"
     )
+    expect_equal(v2$var, v$var)
+    expect_identical(v2$feats, v$feats)
+})
+
+
+test_that("varParam matches a dense Pearson-residual reference", {
+    skip_if_not_installed("Giotto")
+    set.seed(5)
+    n_g <- 60L; n_c <- 250L
+    cnt <- matrix(rpois(n_g * n_c, lambda = 1.5), nrow = n_g)
+    rownames(cnt) <- sprintf("g%03d", seq_len(n_g))
+    colnames(cnt) <- sprintf("c%03d", seq_len(n_c))
+    cnt <- cnt[rowSums(cnt) > 0, , drop = FALSE]
+    cnt <- cnt[, colSums(cnt) > 0, drop = FALSE]
+    mat <- methods::as(cnt, "dgCMatrix")
+    pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+
+    # dense reference: mu = g_i c_j / T, z = (x - mu)/sqrt(mu), sample var
+    g <- rowSums(cnt); cvec <- colSums(cnt); Tt <- sum(g)
+    MU  <- outer(g, cvec) / Tt
+    ref <- apply((cnt - MU) / sqrt(MU), 1, var)
+
+    v <- GiottoClass::analyzeData(pe, Giotto::analyzeParam("var"))
+    got <- v$var[match(names(ref), v$feats)]
+    expect_equal(got, unname(ref), tolerance = 1e-10)
 })
 
 

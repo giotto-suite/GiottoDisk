@@ -147,8 +147,11 @@ setMethod("storeRead", signature("tenxH5Input"), function(store, ...) {
             if (slice_hi >= slice_lo) break
             c_lo <<- c_hi + 1L
         }
-        vals <- as.double(data_ds[seq.int(slice_lo, slice_hi)])
-        gidx <- as.integer(indices_ds[seq.int(slice_lo, slice_hi)])
+        # `lo:hi` (ALTREP compact sequence -> hyperslab), never
+        # `seq.int(lo, hi)` (materialized vector -> point selection). See the
+        # note in `.tenxh5_read_range()`; same 4x time / 4x memory penalty.
+        vals <- as.double(data_ds[slice_lo:slice_hi])
+        gidx <- as.integer(indices_ds[slice_lo:slice_hi])
         nnz_per_cell   <- diff(indptr[c_lo:(c_hi + 1L)])
         cell_idx_local <- rep.int(seq.int(c_lo, c_hi), nnz_per_cell)
         out <- data.table::data.table(
@@ -512,10 +515,16 @@ setMethod(
     if (slice_hi < slice_lo) return(NULL)   # empty batch
     h5 <- hdf5r::H5File$new(h5_path, mode = "r")
     on.exit(try(h5$close_all(), silent = TRUE), add = TRUE)
-    vals <- as.double(
-        h5[[paste0(root, "/data")]][seq.int(slice_lo, slice_hi)])
-    gidx <- as.integer(
-        h5[[paste0(root, "/indices")]][seq.int(slice_lo, slice_hi)])
+    # Index as `lo:hi`, NOT `seq.int(lo, hi)`.  `:` yields an ALTREP compact
+    # integer sequence, which hdf5r recognizes as contiguous and serves with
+    # a single hyperslab read.  `seq.int()` materializes a real 47.6M-element
+    # vector, so hdf5r falls back to point selection: measured on Atera
+    # (25k-cell batch) that is 1.20 s / +2.16 GB per read versus 0.27 s /
+    # +0.55 GB, for byte-identical output.  There are two such reads per
+    # batch, so at 7 concurrent workers this alone accounted for ~15 GB of
+    # peak RSS and roughly half the ingest wall-clock.
+    vals <- as.double(h5[[paste0(root, "/data")]][slice_lo:slice_hi])
+    gidx <- as.integer(h5[[paste0(root, "/indices")]][slice_lo:slice_hi])
     nnz_per_cell   <- diff(indptr[c_lo:(c_hi + 1L)])
     cell_idx_local <- rep.int(seq.int(c_lo, c_hi), nnz_per_cell)
     dt <- data.table::data.table(
@@ -539,37 +548,72 @@ setMethod(
     starts  <- seq.int(1L, n_cells, by = bc)
     h5_path <- data@path
     root    <- data@params$root
-    # Read indptr once in the parent (small; n_cells+1 doubles). Workers
-    # inherit it via fork COW, so each can compute its data/indices slice
-    # offsets without repeating the full-array read.
+    # Read indptr once in the parent (small; n_cells+1 doubles) and pass it
+    # to each batch as an argument, so no worker repeats the full-array read.
     h5     <- hdf5r::H5File$new(h5_path, mode = "r")
     indptr <- as.numeric(h5[[paste0(root, "/indptr")]][])
     h5$close_all()
 
     n_workers <- .par_workers()
-    run_batch <- function(b) {
-        c_lo <- starts[b]
-        c_hi <- min(c_lo + bc - 1L, n_cells)
-        dt   <- .tenxh5_read_range(h5_path, root, c_lo, c_hi, indptr)
-        if (is.null(dt) || nrow(dt) == 0L) return(invisible(NULL))
-        .write_parquet_file(
-            dt,
-            file.path(partition_dir,
-                      sprintf("part-%d.parquet", b - 1L)))
-        invisible(NULL)
-    }
+    args <- list(h5_path = h5_path, root = root, starts = starts, bc = bc,
+                 n_cells = n_cells, indptr = indptr,
+                 partition_dir = partition_dir)
 
-    if (.Platform$OS.type == "unix" && n_workers > 1L) {
-        res <- parallel::mclapply(seq_along(starts), run_batch,
-            mc.cores = n_workers, mc.preschedule = TRUE)
+    # Fork (`mclapply`) where available, socket workers only as the fallback.
+    # Measured on Atera (170k cells, 8 workers): fork 9.0 s / +16.1 GB peak
+    # versus lapply_flex -> mirai 17.8 s / +8.7 GB with daemons already warm.
+    # Fork wins on wall-clock by ~2x because each task ships `indptr` and its
+    # arguments over a socket and pays per-daemon namespace loading, while a
+    # fork inherits everything for free.  The socket path does roughly halve
+    # peak RSS, so it is the better choice when memory, not time, is the
+    # binding constraint -- and it is the only option on Windows, where
+    # `mclapply(mc.cores > 1)` silently degrades to sequential.
+    #
+    # `.storewrite_h5_batch` is deliberately a TOP-LEVEL internal rather than
+    # a local closure so it works under both: its environment is the
+    # GiottoDisk namespace, which serializes by name reference (~3 KB)
+    # instead of by value.  A closure defined here would carry this whole
+    # call frame -- including `indptr` -- into every task.  That also makes
+    # `future.packages` unnecessary: deserializing a namespace-parented
+    # function loads the namespace in the worker, so sibling internals
+    # resolve lexically and every cross-package call here is `::`-qualified.
+    if (n_workers > 1L && .Platform$OS.type == "unix") {
+        res <- do.call(parallel::mclapply, c(
+            list(X = seq_along(starts), FUN = .storewrite_h5_batch,
+                 mc.cores = n_workers, mc.preschedule = TRUE),
+            args))
         errs <- vapply(res, inherits, logical(1L), "try-error")
         if (any(errs)) {
             msg <- attr(res[[which(errs)[1L]]], "condition")$message
             stop("[.storewrite_h5_parallel] worker failed: ", msg,
                  call. = FALSE)
         }
+    } else if (n_workers > 1L) {
+        do.call(GiottoUtils::lapply_flex, c(
+            list(X = seq_along(starts), FUN = .storewrite_h5_batch,
+                 cores = n_workers, future.seed = NULL),
+            args))
     } else {
-        lapply(seq_along(starts), run_batch)
+        do.call(lapply, c(
+            list(X = seq_along(starts), FUN = .storewrite_h5_batch),
+            args))
     }
+    invisible(NULL)
+}
+
+# One h5 cell-batch -> one parquet shard. Top-level (not a closure) so it
+# serializes as a namespace reference; every input arrives as an argument.
+
+#' @keywords internal
+#' @noRd
+.storewrite_h5_batch <- function(b, h5_path, root, starts, bc, n_cells,
+                                  indptr, partition_dir) {
+    c_lo <- starts[b]
+    c_hi <- min(c_lo + bc - 1L, n_cells)
+    dt   <- .tenxh5_read_range(h5_path, root, c_lo, c_hi, indptr)
+    if (is.null(dt) || nrow(dt) == 0L) return(invisible(NULL))
+    .write_parquet_file(
+        dt,
+        file.path(partition_dir, sprintf("part-%d.parquet", b - 1L)))
     invisible(NULL)
 }

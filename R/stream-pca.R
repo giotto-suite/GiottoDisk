@@ -464,34 +464,40 @@ setMethod("reduceData",
              scalef_vecs = list())
     })
 
-    # Pass 1: means (center) + sds (scale) in one pass over @post_ops.
-    stats <- .stream_norm_hvg_stats(pe, hvg_idx, sub_infos = sub_infos)
-    means <- if (center) stats$means else numeric(P_hvg)
-    sds   <- if (scale)  stats$sds   else rep(1, P_hvg)
-
-    # Per-substore chunk reader (cell-major within substore).
+    # Per-substore chunk reader, via the framework verbs rather than a
+    # hand-rolled query: `[` narrows the cell axis and `storeRead` does the
+    # filtering, the sparse build and the @post_ops apply. Both of the latter
+    # are no-ops on the materialized store (its @post_ops are baked in and its
+    # gene axis is already the HVG set), so this is the same work with one
+    # implementation instead of two.
+    #
+    # Returns genes x cells (Bioconductor convention from `storeRead`), i.e.
+    # the transpose of what the hand-rolled reader produced. Callers use
+    # `tcrossprod`/`rowSums`/`crossprod(M, V)` accordingly -- no `t()` is ever
+    # materialized. `max_rows`/`max_cols` are unset because chunk extent is
+    # chosen by `chunk_size` here, not by the accidental-materialization guard.
     .read_chunk_sub <- function(info, sub_cs, sub_ce) {
-        row_id <- col_id <- NULL  # NSE
-        sub <- info$sub
-        orig_rows <- .pe_orig_row(sub_cs:sub_ce, sub)
-        df <- storeRead(sub, output = "query") |>
-            dplyr::filter(row_id %in% !!orig_rows,
-                           col_id %in% !!info$hvg_orig) |>
-            dplyr::collect() |>
-            data.table::as.data.table()
-        if (nrow(df) == 0L) return(NULL)
-        chunk_n  <- sub_ce - sub_cs + 1L
-        gene_map <- match(df$col_id, info$hvg_orig)
-        cell_map <- match(df$row_id, orig_rows)
-        A <- Matrix::sparseMatrix(
-            i = cell_map, j = gene_map, x = as.double(df$value),
-            dims = c(chunk_n, P_hvg), repr = "C"
-        )
-        .pe_apply_post_ops_mat(A, post_ops, info$scalef_vecs,
-            sub_cs, sub_ce)
+        M <- storeRead(info$sub[, sub_cs:sub_ce], output = "dgcmatrix",
+                       max_rows = Inf, max_cols = Inf)
+        if (length(M@x) == 0L) return(NULL)
+        M
     }
 
-    # Pass 2: G_raw = Σ chunk^T chunk across all substores × chunks.
+    # Pass 1 (of two): G_raw = Σ chunkᵀchunk plus the per-gene column sums,
+    # accumulated in the SAME chunk visit.  There is no separate means/sds
+    # pass: both are recoverable from what this pass already produces, so a
+    # dedicated stats pass was a third read of the store for nothing.
+    #
+    #   means = Σx / n                     (the column sums below)
+    #   σ²    = (diag(AᵀA) - n·μ²)/(n-1)   (the gram's own diagonal)
+    #
+    # This holds for `scale = TRUE` as well, which is the non-obvious part:
+    # σ looks like it must be known before the gram is formed, but the raw
+    # AᵀA suffices because centering and scaling are P×P algebra applied
+    # afterward -- `G_std = D⁻¹(AᵀA - n·μμᵀ)D⁻¹`.  Verified against the old
+    # two-statistic path: sds to 3.5e-14, means to 1.2e-14, and singular
+    # values to 0 (scale = FALSE) / 7.5e-16 (scale = TRUE).
+    #
     # Associative accumulation — substore boundaries don't matter.
     # Kept serial: an mclapply-over-bands experiment (2026-07-24) added
     # 3-5 s vs serial due to per-band arrow filter + sparseMatrix rebuild
@@ -512,27 +518,54 @@ setMethod("reduceData",
 
     gram_band <- function(rng) {
         G_local <- matrix(0.0, nrow = P_hvg, ncol = P_hvg)
+        s_local <- numeric(P_hvg)
         cs <- rng[1L]
         ce_stop <- rng[2L]
         while (cs <= ce_stop) {
             ce <- min(cs + chunk_size - 1L, ce_stop)
-            A  <- .read_chunk_sub(info1, cs, ce)
-            if (!is.null(A)) {
-                G_local <- G_local + as.matrix(Matrix::crossprod(A))
+            M  <- .read_chunk_sub(info1, cs, ce)
+            if (!is.null(M)) {
+                # M is genes × cells, so MMᵀ is the gram over genes and
+                # rowSums gives the per-gene totals.
+                G_local <- G_local + as.matrix(Matrix::tcrossprod(M))
+                s_local <- s_local + as.numeric(Matrix::rowSums(M))
             }
             cs <- ce + 1L
         }
-        G_local
+        list(G = G_local, s = s_local)
     }
+    # PCA passes use mclapply (fork) — workers need GiottoDisk internals
+    # (`.pe_read_chunk_sub`, `.pe_apply_post_ops_mat`, `storeRead`) which
+    # are only reachable via COW-inherited namespace on fork, not through
+    # mirai socket workers without a proper `library(GiottoDisk)` in the
+    # daemon.  HVG worker is plain-R and does route through future.apply.
     partials <- if (.Platform$OS.type == "unix" && n_workers > 1L) {
         parallel::mclapply(bands, gram_band,
             mc.cores = n_workers, mc.preschedule = TRUE)
     } else {
         lapply(bands, gram_band)
     }
-    G_raw <- Reduce("+", partials, init = G_raw)
+    partials <- Filter(Negate(is.null), partials)
+    G_raw <- Reduce("+", lapply(partials, `[[`, "G"), init = G_raw)
+    g_sum <- Reduce("+", lapply(partials, `[[`, "s"),
+                    init = numeric(P_hvg))
+
+    # Recover the stats the old Pass 1 read the store for. `mu_true` is the
+    # actual per-gene mean and is used for σ regardless of `center`, since a
+    # standard deviation is defined about the mean either way.
+    nc      <- as.numeric(n_cells)
+    mu_true <- g_sum / nc
+    means <- if (center) mu_true else numeric(P_hvg)
+    sds   <- if (scale) {
+        v <- if (nc > 1) pmax(diag(G_raw) - nc * mu_true * mu_true, 0) / (nc - 1) else
+            numeric(P_hvg)
+        s <- sqrt(v)
+        s[s <= 0] <- 1          # guard: constant genes must not divide by 0
+        s
+    } else rep(1, P_hvg)
+
     # Center: (A - 1μᵀ)ᵀ(A - 1μᵀ) = AᵀA - n·μμᵀ. Scale: divide by σσᵀ.
-    G <- if (center) G_raw - as.numeric(n_cells) * tcrossprod(means)
+    G <- if (center) G_raw - nc * tcrossprod(means)
          else       G_raw
     if (scale) G <- G / tcrossprod(sds)
 
@@ -571,7 +604,7 @@ setMethod("reduceData",
     signs[signs == 0] <- 1
     V <- sweep(V, 2L, signs, "*")
 
-    # Pass 3: coords = A_std · V. Absorb σ into V (V/σ, row-wise), so
+    # Pass 2 (of two): coords = A_std · V. Absorb σ into V (V/σ, row-wise), so
     # per-chunk work is identical for scale on/off. coords is sized to
     # the union cell axis; each band writes its own disjoint row range,
     # main thread copies partials into the global coords matrix.
@@ -591,11 +624,12 @@ setMethod("reduceData",
         ce_stop <- rng[2L]
         while (cs <= ce_stop) {
             ce <- min(cs + chunk_size - 1L, ce_stop)
-            A  <- .read_chunk_sub(info1, cs, ce)
+            M  <- .read_chunk_sub(info1, cs, ce)
             chunk_n <- ce - cs + 1L
             in_band <- (cs - rng[1L] + 1L):(cs - rng[1L] + chunk_n)
-            if (!is.null(A)) {
-                Cc <- as.matrix(A %*% V_use)
+            if (!is.null(M)) {
+                # M is genes × cells: crossprod(M, V) == t(M) %*% V, no t()
+                Cc <- as.matrix(Matrix::crossprod(M, V_use))
                 if (center) {
                     Cc <- Cc - matrix(correction, nrow = chunk_n,
                                        ncol = ncp_used, byrow = TRUE)

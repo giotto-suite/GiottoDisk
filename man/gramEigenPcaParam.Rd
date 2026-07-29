@@ -9,7 +9,7 @@
 gramEigenPcaParam(
   ncp = 50L,
   center = TRUE,
-  scale = FALSE,
+  scale = TRUE,
   feats_to_use = NULL,
   set_seed = TRUE,
   seed_number = 1234L,
@@ -22,29 +22,20 @@ gramEigenPcaParam(
 \arguments{
 \item{ncp}{number of components. Default \code{50}.}
 
-\item{center}{logical. Center columns (per-gene mean subtraction).
-Default \code{TRUE}.}
+\item{center}{logical. Center columns. Default \code{TRUE}.}
 
-\item{scale}{logical. Per-gene z-score. Streaming backends do not
-support this (densifies the matrix). Default \code{FALSE}.}
+\item{scale}{logical. Per-gene z-score (implicit — σ rescaling is
+absorbed into the projection matrix; sparsity preserved, no extra
+passes). Default \code{TRUE}.}
 
-\item{feats_to_use}{character vector of feature IDs to subset to
-before PCA. Required on parquetExprStore; typically the HVG set.}
+\item{feats_to_use}{character vector of feature IDs. \code{NULL} = use all.}
 
-\item{set_seed}{logical. Default \code{TRUE}. Only affects the Halko
-fallback path.}
+\item{set_seed, seed_number}{Halko-fallback seed control.}
 
-\item{seed_number}{integer. Default \code{1234}. Only affects the Halko
-fallback path.}
+\item{n_oversamples, n_power_iter}{Halko-fallback knobs. Defaults \code{10}, \code{2}.}
 
-\item{n_oversamples}{integer. Halko oversampling; used if the
-fallback fires. Default \code{10}.}
-
-\item{n_power_iter}{integer. Halko power iterations; used if the
-fallback fires. Default \code{2}.}
-
-\item{fallback_relerr}{numeric. Predicted-relerr threshold above
-which the method delegates to Halko. Default \code{0.01}.}
+\item{fallback_relerr}{predicted-relerr threshold above which the
+method delegates to Halko. Default \code{0.01}.}
 
 \item{...}{reserved.}
 }
@@ -52,18 +43,12 @@ which the method delegates to Halko. Default \code{0.01}.}
 A \code{gramEigenPcaParam} object.
 }
 \description{
-Construct a \code{gramEigenPcaParam} for use with \code{\link[GiottoClass:reduceData]{GiottoClass::reduceData()}}
-on a streaming substrate (\code{parquetExprStore}). The method accumulates
-the P × P Gram matrix \code{AᵀA} in two disk passes and eigendecomposes it
-in memory -- exact top-k with the fewest possible passes over disk.
-
-Forming \code{AᵀA} squares the condition number, so the predicted relative
-error on the kth singular value is \verb{ε · (d1/dk)² / 2}. When this
-exceeds \code{fallback_relerr}, the streaming method warns and delegates
-to the Halko path (which is condition-number-independent).
+Streaming PCA that accumulates the P × P Gram matrix \code{AᵀA} in two
+disk passes and eigendecomposes it in memory. Forming \code{AᵀA} squares
+the condition number; when the predicted rel-err on d_k exceeds
+\code{fallback_relerr}, delegates to the Halko path.
 }
 \examples{
-# Usage: pass to reduceData on a normalized parquetExprStore with HVG IDs
 # p <- gramEigenPcaParam(ncp = 30, feats_to_use = hvg_ids)
 # res <- reduceData(pes, p)
 }

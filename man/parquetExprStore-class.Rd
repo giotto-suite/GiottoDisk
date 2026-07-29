@@ -3,6 +3,7 @@
 \docType{class}
 \name{parquetExprStore-class}
 \alias{parquetExprStore-class}
+\alias{parquetExprBase-class}
 \title{Parquet Expression Matrix Store (streaming)}
 \description{
 S4 class for \strong{disk-backed expression matrices} stored as long-format
@@ -42,7 +43,7 @@ anymore — those live on \verb{@ops}.}
 
 \item{\code{ops}}{list. Ordered chain of lazy arrow step recipes. Each entry
 is a pure-data \code{list(type, ...params)} record (no closures). At
-\code{storeRead()} time the executor \code{.pe_do_op()} translates each record
+\code{storeRead()} time the executor \code{.pe_apply_op()} translates each record
 into composed arrow steps applied to the lazy query; the whole chain
 compiles into one arrow plan executed once at collect / output
 dispatch. Records survive \code{saveRDS} cleanly. Empty by default;

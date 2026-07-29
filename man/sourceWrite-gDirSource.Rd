@@ -57,7 +57,7 @@ disk-backed.
 Write data to a \link{gDirSource} managed project directory. Defaults for
 different data types are settable via global options:
 \itemize{
-\item \emph{sparse matrices:} \code{giotto.gdsrc_sparsematrix_format} (default = "bpcells")
+\item \emph{sparse matrices:} \code{giotto.gdsrc_sparsematrix_format} (default = "parquetExpr")
 \item \emph{dense matrices:} \code{"giotto.gdsrc_densematrix_format"} (default = "h5")
 \item \emph{dataframes:} \code{"giotto.gdsrc_dataframe_format"} (default = "parquet")
 \item \emph{spatvector:} \code{"giotto.gdsrc_spatvector_format"} (default = "parquetGeom")

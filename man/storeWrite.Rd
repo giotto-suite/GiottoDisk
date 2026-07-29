@@ -9,6 +9,7 @@
 \alias{storeWrite,parquetExprStore,exprInput-method}
 \alias{storeWrite,parquetExprStore,parquetExprStore-method}
 \alias{storeWrite,parquetExprStore,unionParquetExprStore-method}
+\alias{storeWrite,parquetExprStore,memoryMatrix-method}
 \alias{storeWrite}
 \alias{storeWrite,fileStore,fileStore-method}
 \alias{storeWrite,h5ArrayStore,memoryMatrix-method}
@@ -53,6 +54,8 @@
 \S4method{storeWrite}{parquetExprStore,parquetExprStore}(store, data, ...)
 
 \S4method{storeWrite}{parquetExprStore,unionParquetExprStore}(store, data, ...)
+
+\S4method{storeWrite}{parquetExprStore,memoryMatrix}(store, data, ...)
 
 \S4method{storeWrite}{fileStore,fileStore}(store, data, ...)
 

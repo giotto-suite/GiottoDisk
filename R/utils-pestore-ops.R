@@ -28,7 +28,7 @@ NULL
 #
 #   norm_libsize_log  (phase: post)
 #     Fused library-size scaling + optional log transform. Mutates
-#     `value` in place (R-side; no separate v_norm column).
+#     `value` in place, R-side.
 #     Params:
 #       scalef   data.table(source_id, orig_row_id, scalef). One row per
 #                cell present in the store's current view at processData
@@ -91,15 +91,28 @@ NULL
 .pe_apply_post_op_norm_libsize_log_df <- function(df, op) {
     # NSE bindings
     row_id <- source_id <- value <- scalef <- NULL
-    # Update-join: bring scalef into df on (source_id, row_id -> orig_row_id).
-    # data.table's update-by-join adds only the scalef column, keyed by
-    # the composite. Works uniformly for single (one source_id) and union
-    # (many source_ids) collected chunks.
-    df[op$scalef,
-        on = c("source_id", "row_id" = "orig_row_id"),
-        scalef := i.scalef]
-    df[, value := value * scalef]
-    df[, scalef := NULL]
+    # For a single-source scalef payload, replace the (source_id,
+    # orig_row_id) update-join with a plain positional vector index:
+    # build a numeric vector where `scalef_by_row_id[orig_row_id]` is
+    # the scalef for that on-disk cell, then look up per df row via
+    # `scalef_by_row_id[df$row_id]`.  No composite hash, no per-row
+    # join dispatch — a native vector index.
+    # Union collected chunks (multi-source scalef) still use the
+    # update-join because source_id disambiguates overlapping row_ids
+    # across substores.
+    sids <- unique(op$scalef$source_id)
+    if (length(sids) == 1L) {
+        n_slots <- max(op$scalef$orig_row_id)
+        scalef_by_row_id <- numeric(n_slots)
+        scalef_by_row_id[op$scalef$orig_row_id] <- op$scalef$scalef
+        df[, value := value * scalef_by_row_id[row_id]]
+    } else {
+        df[op$scalef,
+            on = c("source_id", "row_id" = "orig_row_id"),
+            scalef := i.scalef]
+        df[, value := value * scalef]
+        df[, scalef := NULL]
+    }
     if (isTRUE(op$log)) {
         df[, value := log1p(value) / log(op$base %null% 2)]
     }
@@ -218,9 +231,30 @@ NULL
 # @post_ops (not @ops), so this projection currently no-ops for it —
 # @post_ops are consumed by streaming consumers via .pe_scalef_vec_for_sub
 # and don't need to travel with the substore's own @ops.
-.exprbase_inject_parent_ops <- function(sub, parent_ops) {
-    if (length(parent_ops) == 0L) return(sub)
-    sub@ops <- c(sub@ops, parent_ops)
+# Project a union parent's phase chains onto one of its substores, so the
+# substore alone is enough to read from.  Union substores carry no ops by
+# constraint (see the `[` method for unionParquetExprStore) -- only the union
+# does -- so anything reading a substore directly has to transplant them.
+#
+# `parent_post_ops` is optional and only injected when the substore has none
+# of its own: for a single (non-union) store `.exprbase_substores()` yields
+# the store itself, which already carries its @post_ops, and re-adding them
+# would double-apply.
+#
+# Injecting @post_ops here rather than at chunk-read time is what lets `[`
+# slice them: narrowing the substore's cell axis runs the surviving keys
+# (source_id = this substore's uid, orig_row_id = kept cells) through
+# `.pe_slice_ops`, which inner-joins the parent's global scalef table down to
+# just this chunk's rows.  That leaves a single source_id, so the executor
+# takes the positional-lookup branch instead of the keyed-join branch.
+.exprbase_inject_parent_ops <- function(sub, parent_ops,
+                                         parent_post_ops = list()) {
+    if (length(parent_ops) > 0L) {
+        sub@ops <- c(sub@ops, parent_ops)
+    }
+    if (length(parent_post_ops) > 0L && length(sub@post_ops) == 0L) {
+        sub@post_ops <- c(sub@post_ops, parent_post_ops)
+    }
     sub
 }
 
@@ -241,39 +275,45 @@ NULL
 }
 
 
-# ---- shared chunk reader (used by PCA + storeWrite baking) ------------------
+# ---- shared chunk reader (used by storeWrite baking) ------------------------
 #
-# Reads cells [sub_cs, sub_ce] from `info$sub` restricted to columns in
-# `info$hvg_orig`, builds a chunk_n × P_hvg sparseMatrix, applies @post_ops
-# in place via the mat-shape executor (positional scalef, no keyed join),
-# returns the normalized chunk.  Returns NULL when the arrow query yields
-# no rows.
+# Reads cells [sub_cs, sub_ce] from `info$sub` and returns the normalized
+# chunk, or NULL when the chunk holds no nonzeros.
+#
+# Goes through the framework verbs -- `[` to narrow the cell axis, `storeRead`
+# to filter, materialize and apply @post_ops -- rather than hand-rolling a
+# query.  Three things fall out of that:
+#   * the gene predicate comes from `sub@gene_idx`, which `storeRead` already
+#     applies; the old explicit `col_id %in% hvg_orig` filter duplicated it
+#     (`hvg_idx` is identity on the already-narrowed axis).
+#   * a contiguous cell chunk is the gapless case in `.pick_axis_pred`, so the
+#     cell predicate becomes a pure `row_id >= lo, row_id <= hi` range that
+#     prunes parquet row groups, instead of an `is_in` over the chunk's ids.
+#   * @post_ops application lives in one place instead of two.
+#
+# `info$sub` is expected to already carry both phase chains --
+# `.exprbase_inject_parent_ops()` transplants a union parent's @ops and
+# @post_ops onto the substore -- so `[` slices @post_ops to this chunk's cells
+# and `storeRead` applies them.  The `post_ops` / `P_hvg` arguments are
+# retained for call compatibility and are no longer read here.
+#
+# Returns genes x cells (Bioconductor convention), the transpose of what this
+# helper used to return; callers index accordingly rather than materializing
+# a `t()`.
 #
 # `info` is a list with fields:
 #   $sub         parquetExprStore substore (with parent @ops projected).
-#   $hvg_orig    integer vector — original col_ids for the columns to keep
-#                (identity when reading all columns).
+#   $hvg_orig    integer vector — original col_ids for the columns to keep.
+#                Retained for callers that still need the mapping; the read
+#                itself no longer uses it.
 #   $scalef_vecs list of per-op positional scalef vectors, from
-#                `.pe_scalef_vecs_for_sub()`.
+#                `.pe_scalef_vecs_for_sub()`.  Unused here now that
+#                `storeRead` owns the apply; kept so `info` stays one shape.
 .pe_read_chunk_sub <- function(info, sub_cs, sub_ce, post_ops, P_hvg) {
-    row_id <- col_id <- NULL   # NSE
-    sub <- info$sub
-    orig_rows <- .pe_orig_row(sub_cs:sub_ce, sub)
-    df <- storeRead(sub, output = "query") |>
-        dplyr::filter(row_id %in% !!orig_rows,
-                       col_id %in% !!info$hvg_orig) |>
-        dplyr::collect() |>
-        data.table::as.data.table()
-    if (nrow(df) == 0L) return(NULL)
-    chunk_n  <- sub_ce - sub_cs + 1L
-    gene_map <- match(df$col_id, info$hvg_orig)
-    cell_map <- match(df$row_id, orig_rows)
-    A <- Matrix::sparseMatrix(
-        i = cell_map, j = gene_map, x = as.double(df$value),
-        dims = c(chunk_n, P_hvg), repr = "C"
-    )
-    .pe_apply_post_ops_mat(A, post_ops, info$scalef_vecs,
-        sub_cs, sub_ce)
+    M <- storeRead(info$sub[, sub_cs:sub_ce], output = "dgcmatrix",
+                   max_rows = Inf, max_cols = Inf)
+    if (length(M@x) == 0L) return(NULL)
+    M
 }
 
 
