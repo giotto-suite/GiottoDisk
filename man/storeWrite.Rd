@@ -79,8 +79,8 @@
 \item{...}{additional params to pass}
 }
 \description{
-Direct data.table dispatch: the in-memory caller (e.g. Giotto's
-\code{.finalize_network}) hands a pre-canonicalized edge data.table with
+Direct data.table dispatch: the in-memory caller (e.g. GiottoClass's
+\code{createNetwork()} machinery) hands a pre-canonicalized edge data.table with
 character \code{from} / \code{to} columns plus optional \code{weight} / \code{distance} /
 \code{shared}. Trusts the caller for canonical form — no swap, no dedup.
 

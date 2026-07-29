@@ -14,14 +14,15 @@ NULL
 #   analyzeData(parquetExprStore, covGroupsParam)
 #       -> per-feature stats including cov_group_zscore (within-bin
 #          COV z-score)
+#   analyzeData(parquetExprStore, varParam)
+#       -> per-feature variance of analytic Poisson Pearson residuals,
+#          computed from raw counts (see the varParam section below)
 #
-# Implementation: per-substore R-side pass. Arrow query yields raw
-# triplets (arrow-side @ops applied, if any). @post_ops (norm) is applied
-# R-side after collect. Per-gene stats reduce via data.table by-group.
-# LOESS / bin-zscore run on the n_genes-sized aggregate vectors.
-#
-# varParam still errors clearly because per-gene variance on a scaled
-# (z-scored) matrix requires materialising the dense matrix.
+# The COV methods share one stats pass, `.stream_norm_gene_stats()`, which
+# reduces the triplet stream to n_genes-sized sum / sumsq / nnz vectors;
+# LOESS and bin-zscore then run on those. That pass has two shapes: an
+# arrow-native aggregate when the recipe is a single norm_libsize_log
+# post-op, and a generic per-substore R-side pass otherwise.
 
 # ---- covLoessParam: streaming ---------------------------------------------
 
@@ -272,146 +273,6 @@ setMethod("analyzeData",
 
 
 # ---- Internal: streaming per-gene stats with JIT normalization ------------
-#
-# Two paths:
-#   (a) Band-parallel via `lapply_flex` when a parallel `future` plan is
-#       set AND the store's op state is band-worker-safe (no arrow-side
-#       @ops; @post_ops limited to norm_libsize_log which the worker
-#       inlines). Each worker handles a contiguous cell range, returns
-#       partial per-gene sums, main thread reduces.
-#   (b) Serial single-collect otherwise (existing path, unchanged).
-#
-# Worker contract for (a):
-#   * Runs in a fresh R session (mirai_multisession) or in-process
-#     (sequential fallback). Cannot see GiottoDisk internal S4 methods —
-#     re-opens arrow dataset directly on the store path and computes
-#     the norm math inline via a positional scalef vector.
-#   * @ops must be empty and @post_ops must contain only known types,
-#     verified before dispatch.
-
-# Plain-R worker.  Takes only serializable primitives + vectors — no S4
-# objects, no method dispatch — so future.mirai can ship it to fresh
-# worker sessions with just arrow/dplyr/data.table loaded.
-#
-# Shape mirrors scstream::.read_chunk_portable + .hvg_band_w:
-#   * Range predicate at the arrow scan (`row_id >= cs, row_id <= ce`)
-#     — pushes down cleanly to parquet row-group stats.
-#   * If cell_idx has gaps, `findInterval` gives the position window in
-#     cell_idx that falls in the raw range; in-mem `%in%` filter drops
-#     the dropped cells.
-#   * Build a chunk_n × n_genes sparseMatrix from the surviving triplets.
-#   * Apply norm in place: `A@x <- A@x * sf[A@i + 1L]`, then log1p — no
-#     column allocations, no data.table update-join.
-#   * `Matrix::colSums(A)` for normalized sum; `rowsum(A@x^2, col_of_x)`
-#     for sumsq; `tabulate(col_of_x[A@x > thr])` for nnz-above-threshold.
-.hvg_band_worker <- function(band_cells,
-                              sub_path, sub_uid,
-                              cell_idx, gene_idx,
-                              n_genes,
-                              scalef_vec,
-                              log_flag, log_base,
-                              thr) {
-    row_id <- col_id <- source_id <- NULL   # NSE
-
-    empty <- list(
-        s = numeric(n_genes), s2 = numeric(n_genes),
-        nz = integer(n_genes)
-    )
-
-    # Raw row_id range covering the band's cells.  When cell_idx is
-    # empty, band positions ARE raw row_ids; otherwise cell_idx maps
-    # position → raw row_id.  Because cell_idx is monotonic ascending
-    # (populated via `which()` in filterData), the band's first / last
-    # positions bracket the full raw range.
-    cs_raw <- if (length(cell_idx) > 0L)
-        as.integer(cell_idx[band_cells[1L]])
-    else
-        as.integer(band_cells[1L])
-    ce_raw <- if (length(cell_idx) > 0L)
-        as.integer(cell_idx[band_cells[length(band_cells)]])
-    else
-        as.integer(band_cells[length(band_cells)])
-
-    # Range predicate — pushed down to parquet row-group stats.
-    ds <- arrow::open_dataset(sub_path)
-    q <- ds |>
-        dplyr::filter(source_id == !!sub_uid,
-                       row_id    >= !!cs_raw,
-                       row_id    <= !!ce_raw)
-    if (length(gene_idx) > 0L) {
-        q <- q |> dplyr::filter(col_id %in% !!gene_idx)
-    }
-    df <- dplyr::collect(q) |> data.table::as.data.table()
-    if (nrow(df) == 0L) return(empty)
-
-    # If cell_idx has gaps in this range, drop rows outside the active
-    # window.  cell_idx[band_cells] gives the exact active raw row_ids;
-    # findInterval finds the position window in cell_idx that overlaps
-    # [cs_raw, ce_raw].
-    if (length(cell_idx) > 0L) {
-        lo <- findInterval(cs_raw - 1L, cell_idx) + 1L
-        hi <- findInterval(ce_raw,      cell_idx)
-        if (lo > hi) return(empty)
-        active_raw <- as.integer(cell_idx[lo:hi])
-        df <- df[row_id %in% active_raw]
-        if (nrow(df) == 0L) return(empty)
-    }
-
-    # Build a chunk × n_genes sparseMatrix.
-    if (length(cell_idx) > 0L) {
-        chunk_cells <- sort(unique(df$row_id))
-        chunk_n     <- length(chunk_cells)
-        cell_map    <- match(df$row_id, chunk_cells)
-    } else {
-        chunk_cells <- cs_raw:ce_raw
-        chunk_n     <- ce_raw - cs_raw + 1L
-        cell_map    <- df$row_id - cs_raw + 1L
-    }
-    gene_map <- if (length(gene_idx) > 0L) {
-        match(df$col_id, gene_idx)
-    } else {
-        as.integer(df$col_id)
-    }
-    A <- Matrix::sparseMatrix(
-        i = cell_map, j = gene_map, x = as.double(df$value),
-        dims = c(chunk_n, n_genes), repr = "C"
-    )
-
-    # Apply norm in place — matches scstream's `.hvg_band_w`.  scalef_vec
-    # is positional in the substore's narrowed cell axis; for cell_idx
-    # empty, chunk_cells IS the position, otherwise `match(chunk_cells,
-    # cell_idx)` maps raw → narrowed position.
-    if (length(scalef_vec) > 0L) {
-        sf <- if (length(cell_idx) > 0L) {
-            scalef_vec[match(chunk_cells, cell_idx)]
-        } else {
-            scalef_vec[chunk_cells]
-        }
-        A@x <- A@x * sf[A@i + 1L]
-        if (log_flag) A@x <- log1p(A@x) / log(log_base)
-    }
-
-    s  <- as.numeric(Matrix::colSums(A))
-    s2 <- numeric(n_genes)
-    nz <- integer(n_genes)
-    if (length(A@x) > 0L) {
-        col_of_x <- rep.int(seq_len(n_genes), diff(A@p))
-        csq <- rowsum(A@x * A@x, group = col_of_x, reorder = FALSE)
-        grp <- as.integer(rownames(csq))
-        s2[grp] <- as.numeric(csq[, 1L])
-        if (isTRUE(thr == 0)) {
-            nz <- as.integer(tabulate(col_of_x, nbins = n_genes))
-        } else {
-            nz_cols <- col_of_x[A@x > thr]
-            if (length(nz_cols) > 0L) {
-                nz <- as.integer(tabulate(nz_cols, nbins = n_genes))
-            }
-        }
-    }
-
-    list(s = s, s2 = s2, nz = nz)
-}
-
 
 .stream_norm_gene_stats <- function(pe, expression_threshold = 0) {
     if (!inherits(pe, "parquetExprBase"))
@@ -424,13 +285,11 @@ setMethod("analyzeData",
     n_genes <- as.integer(pe@n_genes)
 
     # Arrow-native eligibility.  The whole aggregate runs in Acero and only
-    # the per-gene result (~18k rows) crosses into R, so it beats every
-    # R-side chunking shape we measured -- on Atera (170k cells x 18k genes)
-    # 1.94 s vs 9.59 s for 8-way band-parallel and 11.16 s via
-    # storeRead(dgcmatrix), with no parallelism at all.  Needs the norm
-    # expressed as arrow compute, so it is limited to a single
-    # `norm_libsize_log` post-op; anything else falls through to the generic
-    # R-side executor below, which handles any op kind.
+    # the per-gene result (~18k rows) crosses into R, which on Atera (170k
+    # cells x 18k genes) is 1.94 s serial against 11.16 s for the best R-side
+    # chunking shape we measured.  Requires the norm as arrow compute, so it
+    # is limited to a single `norm_libsize_log` post-op; anything else falls
+    # through to the generic R-side pass below, which handles any op kind.
     #
     # Union stores fall through too: the (source_id, orig_row_id) join would
     # span substores fine, but `.pe_remap_col` resolves against a single
@@ -451,9 +310,15 @@ setMethod("analyzeData",
     gene_sumsq <- numeric(n_genes)
     gene_nnz   <- integer(n_genes)
 
-    # Iterate substores. Parent's @post_ops applies to each substore's
-    # collected chunk (payloads carry source_id / orig_row_id so the
-    # update-join resolves per substore).
+    # Iterate substores, applying the parent's @post_ops to each collected
+    # chunk. Payloads carry source_id / orig_row_id, so per-cell state such
+    # as norm scale factors resolves against the right substore.
+    #
+    # Values are normalized in place with no raw snapshot kept: `total_expr`
+    # follows Giotto and reports `rowSums()` of the values it was handed, so
+    # it is the NORMALIZED sum (identical to `mean_expr * n_cells`). A
+    # `raw_value` copy would add a numeric column over the whole triplet
+    # stream (~2.5 GB at 307M rows) for a quantity nothing reads.
     post_ops <- pe@post_ops
     subs <- .exprbase_substores(pe)
     for (sub_entry in subs) {
@@ -462,12 +327,6 @@ setMethod("analyzeData",
             dplyr::collect() |>
             data.table::as.data.table()
         if (nrow(df) == 0L) next
-
-        # No raw snapshot: `total_expr` follows Giotto, which reports
-        # `rowSums()` of the values it was handed -- i.e. the normalized
-        # sum, identical to `mean_expr * n_cells`.  Keeping a `raw_value`
-        # copy would cost an extra numeric column over the whole triplet
-        # stream (~2.5 GB at 307M rows) for a quantity nothing reads.
         df <- .pe_apply_post_ops_df(df, post_ops)
 
         # Per-gene aggregation R-side (data.table by-group)
@@ -525,9 +384,7 @@ setMethod("analyzeData",
 # two in sync -- the sole reason this function is restricted to the
 # `norm_libsize_log` op kind.
 #
-# `total_expr` follows Giotto, which reports `rowSums()` of the values it was
-# handed -- the NORMALIZED sum, identical to `mean_expr * n_cells`. So it is
-# just `s`; no separate raw aggregate is needed.
+# `total_expr` is the normalized sum `s`, matching the generic pass above.
 
 #' @keywords internal
 #' @noRd
@@ -586,129 +443,6 @@ setMethod("analyzeData",
     }
     gene_sd  <- sqrt(gene_var)
     gene_cov <- ifelse(gene_mean > 0, gene_sd / gene_mean, NaN)
-
-    data.table::data.table(
-        feats      = pe@feat_ids,
-        nr_cells   = gene_nnz,
-        total_expr = gene_sum,
-        mean_expr  = gene_mean,
-        sd         = gene_sd,
-        cov        = gene_cov
-    )
-}
-
-
-# Band-parallel HVG stats.  Fork-based via `parallel::mclapply` on Unix
-# (Linux/macOS): each fork COW-inherits the parent's loaded namespace and
-# arrow buffers, so worker startup is ~zero cost and daemon-session
-# memory blowup doesn't apply.  On Windows, `mclapply(mc.cores = n > 1)`
-# degrades to sequential (documented `parallel` behavior) — HVG stays
-# serial there until a fork alternative or a socket-worker path is added.
-.stream_norm_gene_stats_bandparallel <- function(pe, thr,
-                                                  n_cells, n_genes) {
-    hvg_worker <- .hvg_band_worker
-
-    # Only norm_libsize_log is supported here (checked by caller).
-    norm_op  <- pe@post_ops[[1L]]
-    log_flag <- isTRUE(norm_op$log)
-    log_base <- norm_op$base %null% 2
-
-    gene_sum       <- numeric(n_genes)
-    gene_sumsq     <- numeric(n_genes)
-    gene_nnz       <- integer(n_genes)
-
-    n_workers <- .par_workers()
-
-    for (sub_entry in .exprbase_substores(pe)) {
-        sub         <- sub_entry$store
-        n_sub       <- as.integer(sub@n_cells)
-        scalef_vec  <- .pe_scalef_vecs_for_sub(pe@post_ops, sub@uid)[[1L]]
-
-        # Contiguous cell-axis bands.  ceiling(n_sub / n_workers) per band;
-        # last band may be short.
-        band_size   <- max(1L, as.integer(ceiling(n_sub / n_workers)))
-        band_starts <- seq.int(1L, n_sub, by = band_size)
-        bands <- lapply(band_starts, function(s0)
-            seq.int(s0, min(s0 + band_size - 1L, n_sub)))
-
-        # Extract primitives so the worker closure doesn't capture sub@.
-        sub_path <- sub@path
-        sub_uid  <- sub@uid
-        cell_idx <- if (length(sub@cell_idx) > 0L) sub@cell_idx else integer(0)
-        gene_idx <- if (length(sub@gene_idx) > 0L) sub@gene_idx else integer(0)
-
-        # Self-contained worker closure: pull the worker function's body
-        # into a fresh environment parented to globalenv() so serialization
-        # doesn't drag the GiottoDisk namespace along.  Pack all captured
-        # args explicitly into a per-task list so future.apply doesn't do
-        # implicit globals detection on the enclosing frame.  Analogous to
-        # scstream's `environment(.read_chunk_portable) <- globalenv()`.
-        worker_env <- new.env(parent = globalenv())
-        worker_env$hvg_worker <- hvg_worker
-        environment(worker_env$hvg_worker) <- worker_env
-        task_fn <- function(t) {
-            hvg_worker(
-                band_cells = t$band_cells,
-                sub_path   = t$sub_path,
-                sub_uid    = t$sub_uid,
-                cell_idx   = t$cell_idx,
-                gene_idx   = t$gene_idx,
-                n_genes    = t$n_genes,
-                scalef_vec = t$scalef_vec,
-                log_flag   = t$log_flag,
-                log_base   = t$log_base,
-                thr        = t$thr
-            )
-        }
-        environment(task_fn) <- worker_env
-
-        tasks <- lapply(bands, function(b) list(
-            band_cells = b,
-            sub_path   = sub_path,
-            sub_uid    = sub_uid,
-            cell_idx   = cell_idx,
-            gene_idx   = gene_idx,
-            n_genes    = n_genes,
-            scalef_vec = scalef_vec,
-            log_flag   = log_flag,
-            log_base   = log_base,
-            thr        = thr
-        ))
-
-        # Dispatch: skip auto-globals detection (we passed everything
-        # in `tasks`), reuse persistent workers set up by the caller
-        # via `future::plan()`.
-        partials <- if (n_workers > 1L) {
-            future.apply::future_lapply(tasks, task_fn,
-                future.globals = FALSE,
-                future.seed    = NULL)
-        } else {
-            lapply(tasks, task_fn)
-        }
-
-        # mclapply returns try-error objects on worker failure; surface them.
-        errs <- vapply(partials, inherits, logical(1L), "try-error")
-        if (any(errs)) {
-            msg <- attr(partials[[which(errs)[1L]]], "condition")$message
-            stop("[.stream_norm_gene_stats_bandparallel] worker failed: ",
-                 msg, call. = FALSE)
-        }
-
-        for (p in partials) {
-            gene_sum       <- gene_sum       + p$s
-            gene_sumsq     <- gene_sumsq     + p$s2
-            gene_nnz       <- gene_nnz       + p$nz
-        }
-    }
-
-    gene_mean <- gene_sum / n_cells
-    gene_var  <- if (n_cells > 1L) {
-        pmax((gene_sumsq - gene_sum * gene_sum / n_cells) / (n_cells - 1L), 0)
-    } else {
-        numeric(n_genes)
-    }
-    gene_sd   <- sqrt(gene_var)
-    gene_cov  <- ifelse(gene_mean > 0, gene_sd / gene_mean, NaN)
 
     data.table::data.table(
         feats      = pe@feat_ids,

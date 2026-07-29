@@ -10,7 +10,7 @@ NULL
 #   reduceData(parquetExprBase, randomPcaParam)
 #       -> list(u, d, v, sdev, eigenvalues)
 #
-# Algorithm (mirrors scstream::sc_pca):
+# Algorithm:
 #   omega ~ Gaussian(P_hvg x (k + p))
 #   Y     <- (A_norm - 1*means^T) * omega          # forward pass
 #   for q power iterations:
@@ -400,11 +400,11 @@ setMethod("reduceData",
 }
 
 
-# Streaming gram-eigen core. Three passes: (1) per-gene μ + σ,
-# (2) accumulate G_raw = Σ chunkᵀchunk with G = G_raw − n·μμᵀ (and
-# optional / (σσᵀ) for scale=TRUE), (3) coords = A_c · V. AᵀA squares
-# κ(A); when pred rel-err `ε·(d1/dk)²/2 > fallback_relerr`, delegate
-# to Halko.
+# Streaming gram-eigen core. Two passes over a materialized store:
+# (1) accumulate G_raw = Σ chunkᵀchunk plus per-gene column sums, from which
+# μ, σ and G = G_raw − n·μμᵀ (optionally / σσᵀ) all follow; (2) coords
+# = A_c · V. AᵀA squares κ(A); when pred rel-err `ε·(d1/dk)²/2 >
+# fallback_relerr`, delegate to Halko.
 
 .stream_gram_svd <- function(pe, ncp, feats_to_use = NULL, center = TRUE,
                               scale = FALSE,
@@ -433,10 +433,12 @@ setMethod("reduceData",
 
     # ---- Materialize: HVG-only, @post_ops baked, union collapsed ----------
     # Writes a fresh temp pestore whose value column is the normalized
-    # (JIT-applied) HVG-subset triplet stream.  Downstream 3-pass PCA reads
-    # this temp store directly — no per-band @post_ops apply, no per-band
-    # `%in%` HVG filter, no cross-substore composition.  The temp store is
-    # cleaned up on function exit.
+    # HVG-subset triplet stream, so both passes below read it directly — no
+    # per-band @post_ops apply, no per-band `%in%` HVG filter, no
+    # cross-substore composition.  This is also what keeps memory flat under
+    # parallelism: each worker reads the narrowed store (18M rows at Atera
+    # scale) instead of re-scanning the full one (307M), where a col_id
+    # predicate cannot prune row groups.  Cleaned up on function exit.
     cell_ids_final <- pe@cell_ids
     pe_narrow <- pe[hvg_idx, ]
     pe_mat_path <- tempfile("gd_pca_mat_", fileext = ".parquet")
@@ -464,18 +466,17 @@ setMethod("reduceData",
              scalef_vecs = list())
     })
 
-    # Per-substore chunk reader, via the framework verbs rather than a
+    # Per-substore chunk reader, on the framework verbs rather than a
     # hand-rolled query: `[` narrows the cell axis and `storeRead` does the
-    # filtering, the sparse build and the @post_ops apply. Both of the latter
-    # are no-ops on the materialized store (its @post_ops are baked in and its
-    # gene axis is already the HVG set), so this is the same work with one
-    # implementation instead of two.
+    # filtering, the sparse build and the @post_ops apply (the last two are
+    # no-ops on the materialized store, whose ops are baked and whose gene
+    # axis is already the HVG set). `[` also emits the pruning range
+    # predicate, which the hand-rolled `%in%` did not.
     #
-    # Returns genes x cells (Bioconductor convention from `storeRead`), i.e.
-    # the transpose of what the hand-rolled reader produced. Callers use
-    # `tcrossprod`/`rowSums`/`crossprod(M, V)` accordingly -- no `t()` is ever
-    # materialized. `max_rows`/`max_cols` are unset because chunk extent is
-    # chosen by `chunk_size` here, not by the accidental-materialization guard.
+    # Returns genes x cells, so callers use `tcrossprod` / `rowSums` /
+    # `crossprod(M, V)` and never materialize a `t()`. max_rows/max_cols are
+    # lifted because chunk extent is set by `chunk_size` here, not by the
+    # accidental-materialization guard.
     .read_chunk_sub <- function(info, sub_cs, sub_ce) {
         M <- storeRead(info$sub[, sub_cs:sub_ce], output = "dgcmatrix",
                        max_rows = Inf, max_cols = Inf)
@@ -494,19 +495,16 @@ setMethod("reduceData",
     # This holds for `scale = TRUE` as well, which is the non-obvious part:
     # σ looks like it must be known before the gram is formed, but the raw
     # AᵀA suffices because centering and scaling are P×P algebra applied
-    # afterward -- `G_std = D⁻¹(AᵀA - n·μμᵀ)D⁻¹`.  Verified against the old
-    # two-statistic path: sds to 3.5e-14, means to 1.2e-14, and singular
-    # values to 0 (scale = FALSE) / 7.5e-16 (scale = TRUE).
+    # afterward -- `G_std = D⁻¹(AᵀA - n·μμᵀ)D⁻¹`.  Verified against the
+    # separate-stats-pass version it replaced: sds to 3.5e-14, means to
+    # 1.2e-14, and singular values to 0 (scale = FALSE) / 7.5e-16 (TRUE).
     #
-    # Associative accumulation — substore boundaries don't matter.
-    # Kept serial: an mclapply-over-bands experiment (2026-07-24) added
-    # 3-5 s vs serial due to per-band arrow filter + sparseMatrix rebuild
-    # overhead × 8 workers, plus arrow C++ thread-pool oversubscription
-    # (n_workers × cpu_count threads competing for cpu_count cores).
-    # Pass 2 band-parallel: since input is now the small materialized
-    # store, per-band arrow reads are cheap (no `%in%` HVG filter, tiny
-    # row-group stats).  Split n_sub into n_workers bands, each returns
-    # a partial G_raw = ΣchunkᵀAchunk; reduce by summing.
+    # Band-parallel: n_sub splits into n_workers cell bands, each returning a
+    # partial G_raw + column sums, reduced by summing — associative, so band
+    # and substore boundaries don't matter.  Reading the materialized store
+    # is what makes this pay: per-band arrow reads are cheap (no `%in%` HVG
+    # filter, tight row-group stats), whereas the same fan-out over the
+    # un-narrowed store cost 3-5 s more than serial.
     n_workers <- .par_workers()
     G_raw <- matrix(0.0, nrow = P_hvg, ncol = P_hvg)
     info1 <- sub_infos[[1L]]
@@ -535,10 +533,9 @@ setMethod("reduceData",
         list(G = G_local, s = s_local)
     }
     # PCA passes use mclapply (fork) — workers need GiottoDisk internals
-    # (`.pe_read_chunk_sub`, `.pe_apply_post_ops_mat`, `storeRead`) which
-    # are only reachable via COW-inherited namespace on fork, not through
-    # mirai socket workers without a proper `library(GiottoDisk)` in the
-    # daemon.  HVG worker is plain-R and does route through future.apply.
+    # (`.pe_read_chunk_sub`, `storeRead` and its S4 dispatch) which are only
+    # reachable via COW-inherited namespace on fork, not through mirai
+    # socket workers without a proper `library(GiottoDisk)` in the daemon.
     partials <- if (.Platform$OS.type == "unix" && n_workers > 1L) {
         parallel::mclapply(bands, gram_band,
             mc.cores = n_workers, mc.preschedule = TRUE)
@@ -550,9 +547,9 @@ setMethod("reduceData",
     g_sum <- Reduce("+", lapply(partials, `[[`, "s"),
                     init = numeric(P_hvg))
 
-    # Recover the stats the old Pass 1 read the store for. `mu_true` is the
-    # actual per-gene mean and is used for σ regardless of `center`, since a
-    # standard deviation is defined about the mean either way.
+    # Derive the stats a dedicated pass would have read the store for.
+    # `mu_true` is the actual per-gene mean and is used for σ regardless of
+    # `center`, since a standard deviation is defined about the mean either way.
     nc      <- as.numeric(n_cells)
     mu_true <- g_sum / nc
     means <- if (center) mu_true else numeric(P_hvg)
@@ -605,9 +602,10 @@ setMethod("reduceData",
     V <- sweep(V, 2L, signs, "*")
 
     # Pass 2 (of two): coords = A_std · V. Absorb σ into V (V/σ, row-wise), so
-    # per-chunk work is identical for scale on/off. coords is sized to
-    # the union cell axis; each band writes its own disjoint row range,
-    # main thread copies partials into the global coords matrix.
+    # per-chunk work is identical for scale on/off. Band-parallel on the same
+    # bands as Pass 1: coords is sized to the union cell axis and each band
+    # writes its own disjoint row range, so the main thread just copies the
+    # partials in.
     V_use <- V / sds
     coords <- matrix(0.0, nrow = n_cells, ncol = ncp_used)
     correction <- if (center) {
@@ -615,8 +613,6 @@ setMethod("reduceData",
     } else {
         numeric(ncp_used)
     }
-    # Pass 3 band-parallel: same shape as Pass 2.  Each worker returns
-    # its band's coord slice; main thread copies into the global matrix.
     coords_band <- function(rng) {
         band_n <- rng[2L] - rng[1L] + 1L
         band_coords <- matrix(0.0, nrow = band_n, ncol = ncp_used)
@@ -663,71 +659,4 @@ setMethod("reduceData",
         sdev        = sqrt(eigenvalues),
         eigenvalues = eigenvalues
     )
-}
-
-
-# Per-HVG-gene mean + sd of normalized data.  Iterates substores,
-# collects HVG-column-filtered triplets per substore, applies @post_ops
-# R-side, aggregates via data.table by-group, sums across substores.
-# Variance via SS identity: σ² = (SS − n·μ²)/(n−1).  `hvg_idx` NULL uses
-# every column.  `sub_infos` may be reused from a caller that already
-# built them (must include $sub and $hvg_orig).
-#
-# NOTE: kept serial intentionally. Pass 1's data volume is small (HVG-
-# column filter reduces to ~11% of full triplets), so mclapply's fork/
-# join overhead + sparseMatrix sort per band cost more than they save.
-# Verified by bench: parallel Pass 1 pushed PCA from 20 s → 25 s.
-.stream_norm_hvg_stats <- function(pe, hvg_idx, sub_infos = NULL, ...) {
-    n_cells  <- as.integer(pe@n_cells)
-
-    if (is.null(hvg_idx)) hvg_idx <- seq_along(pe@feat_ids)
-    P_hvg <- length(hvg_idx)
-
-    post_ops <- pe@post_ops
-    if (is.null(sub_infos)) {
-        parent_ops <- if (inherits(pe, "unionParquetExprStore")) {
-            pe@ops
-        } else {
-            list()
-        }
-        sub_infos <- lapply(.exprbase_substores(pe), function(se) {
-            sub <- .exprbase_inject_parent_ops(se$store, parent_ops)
-            list(sub = sub, hvg_orig = .pe_orig_col(hvg_idx, sub))
-        })
-    }
-
-    # NSE bindings
-    col_id <- value <- s <- ss <- NULL
-
-    g_sum  <- numeric(P_hvg)
-    g_ssum <- numeric(P_hvg)
-
-    for (info in sub_infos) {
-        df <- storeRead(info$sub, output = "query") |>
-            dplyr::filter(col_id %in% !!info$hvg_orig) |>
-            dplyr::collect() |>
-            data.table::as.data.table()
-        if (nrow(df) == 0L) next
-        df <- .pe_apply_post_ops_df(df, post_ops)
-        agg <- df[, .(
-            s  = sum(value, na.rm = TRUE),
-            ss = sum(value * value, na.rm = TRUE)
-        ), by = col_id]
-        if (nrow(agg) > 0L) {
-            g_idx <- match(agg$col_id, info$hvg_orig)
-            keep  <- !is.na(g_idx)
-            g_sum[g_idx[keep]]  <- g_sum[g_idx[keep]] + as.numeric(agg$s[keep])
-            g_ssum[g_idx[keep]] <- g_ssum[g_idx[keep]] + as.numeric(agg$ss[keep])
-        }
-    }
-
-    means <- g_sum / n_cells
-    vars  <- (g_ssum - as.numeric(n_cells) * means^2) /
-        max(as.numeric(n_cells) - 1, 1)
-    vars[vars < 0] <- 0   # tiny-negative clamp (numerical)
-    sds   <- sqrt(vars)
-    # Zero-variance genes: keep σ = 1 for safe division downstream
-    # (a truly constant feature contributes nothing to any PC anyway).
-    sds[sds == 0] <- 1
-    list(means = means, sds = sds)
 }

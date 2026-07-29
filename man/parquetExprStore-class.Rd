@@ -75,10 +75,11 @@ See \code{R/utils-pestore-ops.R} for the op type registry.}
 
 \section{Use case}{
 
-This store is the streaming-friendly expression backend designed for the
-scstream pipeline. It is slotted into \code{exprObj@exprMat} like any other
-disk-backed store; downstream Giotto methods that recognize the class
-will dispatch to streaming implementations.
+This store is the streaming expression backend for datasets too large to
+hold in memory as a sparse matrix. It is slotted into \code{exprObj@exprMat}
+like any other disk-backed store; downstream Giotto methods that recognize
+the class dispatch to streaming implementations, which read the triplet
+payload in cell chunks rather than materializing the whole matrix.
 }
 
 \section{Subset semantics}{

@@ -384,8 +384,8 @@ setMethod("storeWrite",
 
 #' @rdname storeWrite
 #' @description
-#' Direct data.table dispatch: the in-memory caller (e.g. Giotto's
-#' `.finalize_network`) hands a pre-canonicalized edge data.table with
+#' Direct data.table dispatch: the in-memory caller (e.g. GiottoClass's
+#' `createNetwork()` machinery) hands a pre-canonicalized edge data.table with
 #' character `from` / `to` columns plus optional `weight` / `distance` /
 #' `shared`. Trusts the caller for canonical form — no swap, no dedup.
 setMethod("storeWrite",

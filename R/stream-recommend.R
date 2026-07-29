@@ -2,8 +2,8 @@
 NULL
 
 # stream-recommend ####
-# Ported from scstream.R. Estimates an optimal streaming chunk size given
-# the dataset shape, planned pipeline parameters, and currently free RAM.
+# Estimates an optimal streaming chunk size given the dataset shape, planned
+# pipeline parameters, and currently free RAM.
 
 #' @name sc_recommend_chunk
 #' @title Recommend a streaming chunk size from free RAM

@@ -537,8 +537,8 @@ setMethod(
 }
 
 # Parallel h5 → parquet writer.  Fork-based via `parallel::mclapply` on
-# Unix — same design as `.stream_norm_gene_stats_bandparallel`: workers
-# COW-inherit the parent's loaded namespace and the pre-read indptr;
+# Unix — workers COW-inherit the parent's loaded namespace and the
+# pre-read indptr;
 # each opens its own hdf5r handle (required — hdf5r C handles aren't
 # fork-safe across parent+child sharing).  On Windows, mclapply degrades
 # to sequential (no fork available).

@@ -284,31 +284,28 @@ NULL
 # to filter, materialize and apply @post_ops -- rather than hand-rolling a
 # query.  Three things fall out of that:
 #   * the gene predicate comes from `sub@gene_idx`, which `storeRead` already
-#     applies; the old explicit `col_id %in% hvg_orig` filter duplicated it
-#     (`hvg_idx` is identity on the already-narrowed axis).
-#   * a contiguous cell chunk is the gapless case in `.pick_axis_pred`, so the
+#     applies; the old explicit `col_id %in% hvg_orig` filter duplicated it.
+#   * a contiguous cell chunk is the gapless case in `.pe_axis_pred()`, so the
 #     cell predicate becomes a pure `row_id >= lo, row_id <= hi` range that
 #     prunes parquet row groups, instead of an `is_in` over the chunk's ids.
 #   * @post_ops application lives in one place instead of two.
 #
-# `info$sub` is expected to already carry both phase chains --
+# `info$sub` must already carry both phase chains --
 # `.exprbase_inject_parent_ops()` transplants a union parent's @ops and
 # @post_ops onto the substore -- so `[` slices @post_ops to this chunk's cells
-# and `storeRead` applies them.  The `post_ops` / `P_hvg` arguments are
-# retained for call compatibility and are no longer read here.
+# and `storeRead` applies them.
 #
-# Returns genes x cells (Bioconductor convention), the transpose of what this
-# helper used to return; callers index accordingly rather than materializing
-# a `t()`.
+# Returns genes x cells (Bioconductor convention); callers index accordingly
+# rather than materializing a `t()`.
 #
 # `info` is a list with fields:
-#   $sub         parquetExprStore substore (with parent @ops projected).
+#   $sub         parquetExprStore substore, both op chains already injected.
 #   $hvg_orig    integer vector — original col_ids for the columns to keep.
-#                Retained for callers that still need the mapping; the read
-#                itself no longer uses it.
 #   $scalef_vecs list of per-op positional scalef vectors, from
-#                `.pe_scalef_vecs_for_sub()`.  Unused here now that
-#                `storeRead` owns the apply; kept so `info` stays one shape.
+#                `.pe_scalef_vecs_for_sub()`.
+# The last two, like the `post_ops` / `P_hvg` arguments, are no longer read
+# here now that `storeRead` owns both the gene filter and the apply; they are
+# kept so `info` and the call signature stay one shape across readers.
 .pe_read_chunk_sub <- function(info, sub_cs, sub_ce, post_ops, P_hvg) {
     M <- storeRead(info$sub[, sub_cs:sub_ce], output = "dgcmatrix",
                    max_rows = Inf, max_cols = Inf)

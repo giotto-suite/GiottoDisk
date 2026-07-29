@@ -687,8 +687,10 @@ setMethod(
         }
         sm <- Matrix::summary(data)
         # In Giotto convention, expression matrices are gene x cell
-        # (rows = genes, cols = cells). scstream's row_id = cell index,
-        # col_id = gene index. So row_id <- sm$j, col_id <- sm$i.
+        # (rows = genes, cols = cells), whereas the store's triplet schema is
+        # cell-major: row_id = cell index, col_id = gene index (row_id is the
+        # sort key, so cell-major is what makes row-group pruning work). Hence
+        # the flip: row_id <- sm$j, col_id <- sm$i.
         dt <- data.table::data.table(
             row_id = as.integer(sm$j),
             col_id = as.integer(sm$i),

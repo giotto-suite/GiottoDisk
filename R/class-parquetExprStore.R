@@ -27,10 +27,11 @@ NULL
 #' character ID.
 #'
 #' @section Use case:
-#' This store is the streaming-friendly expression backend designed for the
-#' scstream pipeline. It is slotted into `exprObj@exprMat` like any other
-#' disk-backed store; downstream Giotto methods that recognize the class
-#' will dispatch to streaming implementations.
+#' This store is the streaming expression backend for datasets too large to
+#' hold in memory as a sparse matrix. It is slotted into `exprObj@exprMat`
+#' like any other disk-backed store; downstream Giotto methods that recognize
+#' the class dispatch to streaming implementations, which read the triplet
+#' payload in cell chunks rather than materializing the whole matrix.
 #'
 #' @slot path character. Local file path (single Parquet) or directory
 #'   (one Parquet per chunk for very large datasets). Arrow's `open_dataset`
