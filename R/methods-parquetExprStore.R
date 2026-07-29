@@ -533,7 +533,7 @@ setMethod(
     hvg_idx    <- seq_len(P_out)   # identity on the narrowed feat axis
     post_ops   <- data@post_ops
 
-    # Build sub_infos with per-substore hvg_orig + scalef_vecs.
+    # Build sub_infos, one entry per substore.
     parent_ops <- if (inherits(data, "unionParquetExprStore")) data@ops
                   else list()
     # Both phase chains are transplanted in one step, so each substore is
@@ -541,11 +541,15 @@ setMethod(
     # `storeRead` applies them.
     sub_infos <- lapply(.exprbase_substores(data), function(se) {
         sub <- .exprbase_inject_parent_ops(se$store, parent_ops, post_ops)
+        # scalef_vecs is vestigial here for the same reason as on the PCA
+        # paths: `[` slices @post_ops per chunk and `storeRead` applies them,
+        # so no caller reads a pre-extracted per-cell vector. Kept empty so
+        # `info` is one shape across readers.
         list(sub         = sub,
              offset      = as.integer(se$cell_offset),
              n_sub       = as.integer(sub@n_cells),
              hvg_orig    = .pe_orig_col(hvg_idx, sub),
-             scalef_vecs = .pe_scalef_vecs_for_sub(post_ops, sub@uid))
+             scalef_vecs = list())
     })
 
     partition_dir <- .idpath(store@path, store@uid)
@@ -834,16 +838,8 @@ setMethod("dimnames<-",
     as.integer(match(orig_col_ids, pe@gene_idx))
 }
 
-# Translate a vector of subset positions to the original parquet
-# row_ids / col_ids -- used when methods filter Arrow by HVG genes or
-# cell bands and need the on-disk integer indices.
-
-#' @keywords internal
-#' @noRd
-.pe_orig_row <- function(subset_pos, pe) {
-    if (length(pe@cell_idx) == 0L) return(as.integer(subset_pos))
-    as.integer(pe@cell_idx[subset_pos])
-}
+# Translate a vector of subset positions to the original parquet col_ids --
+# used when a method needs the on-disk gene indices rather than view positions.
 
 #' @keywords internal
 #' @noRd

@@ -25,8 +25,8 @@ NULL
 #
 # Neither method rewrites the Parquet file. The recipe lives as a pure-data
 # record on @post_ops and is applied R-side after collect (see
-# .pe_apply_post_op_norm_libsize_log_df / _mat). The recipe survives
-# saveRDS / load cycles without special handling — no closures.
+# .pe_apply_post_op_norm_libsize_log_df). The recipe survives saveRDS / load
+# cycles without special handling — no closures.
 #
 # zscoreScaleParam is intentionally NOT implemented for parquetExprBase:
 # per-cell / per-gene centering+scaling densifies the sparse matrix and

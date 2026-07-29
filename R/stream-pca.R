@@ -21,10 +21,10 @@ NULL
 #   B      <- chol-QR(Z) -> Q^T A
 #   svd(B) -> recover U, d, V; sign-correct V
 #
-# Centering is implicit: column means of normalized data are computed by
-# `.stream_norm_hvg_means()` — one collect + R-side @post_ops apply per
-# substore (summed across substores for union stores), then subtracted
-# analytically inside the forward/backward passes — no densification.
+# Centering is implicit: the per-gene means of the normalized data are
+# accumulated during the first forward pass and subtracted analytically inside
+# the forward / backward passes, so nothing is ever densified and no pass
+# exists solely to compute them.
 #
 # Single (`parquetExprStore`) and union (`unionParquetExprStore`) collapse
 # to one implementation via `.exprbase_substores()`: forward/backward
@@ -187,62 +187,117 @@ setMethod("reduceData",
     }
     k_total <- k + as.integer(n_oversamples)
 
+    # ---- Optional transient bake, gated on how much the HVG set narrows ----
+    # Halko makes `3 + 2 * n_power_iter` reads (6 at the default q = 2). Baking
+    # a normalized, HVG-narrowed, union-collapsed copy once turns all of them
+    # into reads of a small store with values already computed -- no per-chunk
+    # @post_ops apply and no `col_id` predicate, which cannot prune row groups
+    # because col_id is not the sort key.
+    #
+    # But it only pays when the HVG set is actually a narrowing. `autoPcaParam`
+    # routes to Halko when P is LARGE (P^2*8 over the budget, so P > ~25k),
+    # which is exactly the regime where feats_to_use approaches the full gene
+    # axis and the bake degenerates into copying the store to save nothing.
+    # Hence the ratio gate rather than baking unconditionally as the gram path
+    # does -- gram is only ever chosen when P is small.
+    #
+    # Threshold is deliberately an option: the crossover depends on write
+    # throughput and on `n_power_iter` (more power iterations amortize the
+    # write over more reads), so a single hard-coded constant would be wrong
+    # for some configurations.
+    bake_ratio <- P_hvg / max(as.numeric(pe@n_genes), 1)
+    bake_max   <- getOption("giottodisk.pca_bake_max_ratio", 0.5)
+    do_bake    <- bake_ratio <= bake_max
+
+    cell_ids_final <- pe@cell_ids
+    feat_ids_final <- pe@feat_ids[hvg_idx]
+
+    if (do_bake) {
+        pe_mat_path <- tempfile("gd_halko_mat_", fileext = ".parquet")
+        pe_mat <- storeWrite(parquetExprStore(path = pe_mat_path),
+                             pe[hvg_idx, ])
+        on.exit(unlink(pe_mat_path, recursive = TRUE), add = TRUE)
+        # The baked store is a fresh single-store parquetExprStore with empty
+        # @ops / @post_ops whose gene axis IS the HVG set, so the parent-op
+        # projection and the gene narrowing below both become identities.
+        pe         <- pe_mat
+        chunk_size <- as.integer(.exprbase_chunk_size(pe))
+        hvg_idx    <- seq_len(P_hvg)
+    }
+
     # Build per-substore record list: each entry carries the substore
-    # (with parent ops projected on union path), its cumulative cell
-    # offset into the union axis, n_sub, and the HVG-as-original col_id
-    # vector for that substore (handles per-substore @gene_idx via
-    # `.pe_orig_col`). For single store the list has one entry.
+    # (with both op chains projected on the union path), its cumulative cell
+    # offset into the union axis, and n_sub. For a single store -- including
+    # the baked one -- the list has one entry at offset 0.
+    #
+    # The gene narrowing is applied ONCE here rather than per chunk: every
+    # chunked pass below reads the same HVG set, so `sub[hvg_idx, ]` hoists
+    # that work out of the loop and leaves the per-chunk `[` to slice only
+    # the cell axis. `hvg_idx` is positions on `pe@feat_ids`, which is also
+    # each substore's gene axis (feat_ids align across substores by the union
+    # invariant), and `[` composes it onto any existing @gene_idx. On the baked
+    # path this is a no-op subset, kept so both paths share one shape.
+    #
+    # `hvg_idx` is HVG-RANKED, so it is deliberately unsorted. `[` preserves
+    # caller order (`x@gene_idx[i_int]`) and `.pe_remap_col` maps back by
+    # `match()` against @gene_idx, so the rows of every chunk come out in
+    # HVG-rank order -- which is what `rownames(V)` below assumes.
     parent_ops <- if (inherits(pe, "unionParquetExprStore")) pe@ops else list()
     post_ops <- pe@post_ops
     sub_infos <- lapply(.exprbase_substores(pe), function(se) {
-        sub <- .exprbase_inject_parent_ops(se$store, parent_ops)
-        # Pre-extract per-substore positional scalef vectors for each
-        # post op that has per-cell state on this substore.
-        scalef_vecs <- .pe_scalef_vecs_for_sub(post_ops, sub@uid)
-        list(sub         = sub,
+        sub <- .exprbase_inject_parent_ops(se$store, parent_ops, post_ops)
+        # hvg_orig / scalef_vecs are vestigial: the reader below no longer
+        # reads either, because `[` narrows the gene axis and slices the
+        # scalef payload, and `storeRead` applies it. Kept (empty, as on the
+        # gram path) so `info` is one shape across all readers.
+        list(sub         = sub[hvg_idx, ],
              offset      = as.integer(se$cell_offset),
              n_sub       = as.integer(sub@n_cells),
-             hvg_orig    = .pe_orig_col(hvg_idx, sub),
-             scalef_vecs = scalef_vecs)
+             hvg_orig    = seq_len(P_hvg),
+             scalef_vecs = list())
     })
 
-    # ---- Compute per-HVG-gene normalized means (one streaming pass) -------
-    means <- if (center) {
-        .stream_norm_hvg_means(pe, hvg_idx, sub_infos)
-    } else {
-        numeric(P_hvg)
-    }
+    # ---- Per-HVG-gene means: derived from the first forward pass ----------
+    # There is no dedicated means pass. Centering enters the forward product
+    # as a rank-1 term -- Y = AᵀM - 1·(μᵀM) -- so the correction can be
+    # applied to Y after a pass instead of having to be known before it. The
+    # first `.forward` therefore accumulates per-gene sums from chunks it is
+    # already holding, publishes `means`, and subtracts the correction once at
+    # the end; every later `.forward` reuses that value. Saves one full read
+    # of the store out of the `3 + 2 * n_power_iter` this algorithm makes.
+    means <- numeric(P_hvg)
 
     # ---- Per-substore chunk reader (cell-major within substore) ----------
+    # The shared framework reader: `[` narrows the cell axis and `storeRead`
+    # does the filtering, the sparse build and the @post_ops apply. Two
+    # things follow from that which the hand-rolled query did not get:
+    # a contiguous chunk is the gapless case in `.pe_axis_pred()`, so the
+    # cell predicate is a `row_id >= lo & row_id <= hi` range that prunes
+    # parquet row groups instead of an `is_in` over the chunk's ids; and `[`
+    # slices @post_ops to the chunk's cells, so no separate scalef-vector
+    # bookkeeping is needed. The gene axis stays an `is_in` either way --
+    # col_id is not the sort key, so no row group can be skipped on it.
+    #
+    # Returns genes x cells, the transpose of the old hand-rolled build, so
+    # `.forward` / `.backward` below use `crossprod(A, .)` / `A %*% .`.
     .read_chunk_sub <- function(info, sub_cs, sub_ce) {
-        row_id <- col_id <- NULL  # NSE
-        sub <- info$sub
-        orig_rows <- .pe_orig_row(sub_cs:sub_ce, sub)
-        df <- storeRead(sub, output = "query") |>
-            dplyr::filter(row_id %in% !!orig_rows,
-                           col_id %in% !!info$hvg_orig) |>
-            dplyr::collect() |>
-            data.table::as.data.table()
-        if (nrow(df) == 0L) return(NULL)
-        chunk_n <- sub_ce - sub_cs + 1L
-        gene_map <- match(df$col_id, info$hvg_orig)
-        i_within <- match(df$row_id, orig_rows)
-        A <- Matrix::sparseMatrix(
-            i = i_within, j = gene_map, x = as.double(df$value),
-            dims = c(chunk_n, P_hvg), repr = "C"
-        )
-        # Apply @post_ops R-side (mutates A@x). scalef_vecs are pre-sliced
-        # to this substore; chunk-local slice happens inside the executor.
-        .pe_apply_post_ops_mat(A, post_ops, info$scalef_vecs, sub_cs, sub_ce)
+        .pe_read_chunk_sub(info, sub_cs, sub_ce, post_ops, P_hvg)
     }
 
     # ---- Forward: Y = (A_norm - 1·means^T) · M  --------------------------
     # Y is sized to the UNION cell axis; per-substore reads fill the
     # appropriate row band at `offset + sub_cs:sub_ce`.
-    .forward <- function(M) {
+    # `init_means = TRUE` (first call only, and only when centering) means μ
+    # is not known yet, so per-gene sums are accumulated here and the rank-1
+    # centering term is deferred to a single sweep after the loop. Cells whose
+    # chunk read back empty land on `-correction` either way: their Y rows stay
+    # zero through the loop and the deferred sweep supplies the same value the
+    # per-chunk branch would have written.
+    .forward <- function(M, init_means = FALSE) {
         m <- ncol(M)
-        correction <- if (center) as.numeric(means %*% M)
-                       else numeric(m)
+        apply_now  <- center && !init_means
+        correction <- if (apply_now) as.numeric(means %*% M) else numeric(m)
+        g_sum <- numeric(P_hvg)
         Y <- matrix(0.0, nrow = n_cells, ncol = m)
         for (info in sub_infos) {
             offset <- info$offset
@@ -254,18 +309,28 @@ setMethod("reduceData",
                 chunk_n <- ce - cs + 1L
                 rows <- (offset + cs):(offset + ce)
                 if (!is.null(A)) {
-                    Yc <- as.matrix(A %*% M)
-                    if (center) {
+                    # A is genes x cells, so Aᵀ·M is the cells x m block and
+                    # rowSums(A) is this chunk's contribution to the per-gene
+                    # totals -- free, given the chunk is already in hand.
+                    Yc <- as.matrix(Matrix::crossprod(A, M))
+                    if (apply_now) {
                         Yc <- Yc - matrix(correction, nrow = chunk_n,
                                           ncol = m, byrow = TRUE)
                     }
                     Y[rows, ] <- Yc
-                } else if (center) {
+                    if (init_means) {
+                        g_sum <- g_sum + as.numeric(Matrix::rowSums(A))
+                    }
+                } else if (apply_now) {
                     Y[rows, ] <- -matrix(correction, nrow = chunk_n,
                                           ncol = m, byrow = TRUE)
                 }
                 cs <- ce + 1L
             }
+        }
+        if (init_means) {
+            means <<- g_sum / n_cells
+            Y <- sweep(Y, 2L, as.numeric(means %*% M), "-")
         }
         Y
     }
@@ -288,7 +353,8 @@ setMethod("reduceData",
                 G  <- G + crossprod(Yc)
                 cs_Y <- cs_Y + colSums(Yc)
                 if (!is.null(A)) {
-                    Z <- Z + as.matrix(Matrix::crossprod(A, Yc))
+                    # A is genes x cells, so A·Yc is the genes x m block.
+                    Z <- Z + as.matrix(A %*% Yc)
                 }
                 cs <- ce + 1L
             }
@@ -300,7 +366,7 @@ setMethod("reduceData",
     # ---- Halko algorithm -------------------------------------------------
     omega <- matrix(stats::rnorm(P_hvg * k_total), nrow = P_hvg, ncol = k_total)
 
-    Y <- .forward(omega)
+    Y <- .forward(omega, init_means = center)
     for (i in seq_len(n_power_iter)) {
         zg <- .backward(Y)
         R_chol <- chol(zg$G)
@@ -328,8 +394,10 @@ setMethod("reduceData",
     V <- sweep(V, 2L, signs, "*")
     U <- sweep(U, 2L, signs, "*")
 
-    rownames(U) <- pe@cell_ids
-    rownames(V) <- pe@feat_ids[hvg_idx]
+    # Captured before the optional bake reassigned `pe`, so labels come from
+    # the caller's store either way.
+    rownames(U) <- cell_ids_final
+    rownames(V) <- feat_ids_final
 
     eigenvalues <- D_k^2 / (n_cells - 1L)
     list(
@@ -339,48 +407,6 @@ setMethod("reduceData",
         sdev        = sqrt(eigenvalues),
         eigenvalues = eigenvalues
     )
-}
-
-
-# Helper: per-HVG-gene mean of normalized data. Collects per-substore
-# triplets (HVG-column-filtered), applies @post_ops R-side, aggregates
-# per-gene sums via data.table by-group, sums across substores.
-.stream_norm_hvg_means <- function(pe, hvg_idx, sub_infos = NULL) {
-    n_cells  <- as.integer(pe@n_cells)
-    P_hvg    <- length(hvg_idx)
-
-    g_sum <- numeric(P_hvg)
-    col_id <- value <- s <- NULL  # NSE
-
-    post_ops <- pe@post_ops
-    if (is.null(sub_infos)) {
-        parent_ops <- if (inherits(pe, "unionParquetExprStore")) {
-            pe@ops
-        } else {
-            list()
-        }
-        sub_infos <- lapply(.exprbase_substores(pe), function(se) {
-            sub <- .exprbase_inject_parent_ops(se$store, parent_ops)
-            list(sub = sub, hvg_orig = .pe_orig_col(hvg_idx, sub))
-        })
-    }
-
-    for (info in sub_infos) {
-        df <- storeRead(info$sub, output = "query") |>
-            dplyr::filter(col_id %in% !!info$hvg_orig) |>
-            dplyr::collect() |>
-            data.table::as.data.table()
-        if (nrow(df) == 0L) next
-        # Apply @post_ops R-side; mutates df$value.
-        df <- .pe_apply_post_ops_df(df, post_ops)
-        agg <- df[, .(s = sum(value, na.rm = TRUE)), by = col_id]
-        if (nrow(agg) > 0L) {
-            g_idx <- match(agg$col_id, info$hvg_orig)
-            keep <- !is.na(g_idx)
-            g_sum[g_idx[keep]] <- g_sum[g_idx[keep]] + as.numeric(agg$s[keep])
-        }
-    }
-    g_sum / n_cells
 }
 
 

@@ -8,11 +8,10 @@ NULL
 #            future arrow-native transforms). Composed at storeRead time
 #            via .pe_apply_ops before collect.
 #
-# @post_ops  R-side post-collect phase. Ops that operate on materialized
-#            data (data.table for tibble/dgcmatrix/data.table outputs,
-#            sparseMatrix chunks for streaming consumers). Composed at
-#            output-materialization time via .pe_apply_post_ops_df or
-#            .pe_apply_post_ops_mat.
+# @post_ops  R-side post-collect phase. Ops that operate on the materialized
+#            data.table, for every output mode and for streaming consumers
+#            alike -- they all reach it through storeRead. Composed at
+#            output-materialization time via .pe_apply_post_ops_df.
 #
 # Each op is a pure-data record `list(type = <character>, ...params)`.
 # No closures, no phase field on the record — the phase is determined by
@@ -117,68 +116,6 @@ NULL
         df[, value := log1p(value) / log(op$base %null% 2)]
     }
     df
-}
-
-
-# ---- @post_ops R-side executor (sparseMatrix chunk shape) ------------------
-#
-# Used by streaming consumers (stream-pca chunk readers, stream-hvf) that
-# hold a sparseMatrix chunk in memory. Ops mutate A@x in place. Because
-# a chunk is scoped to a single substore, caller pre-extracts a
-# substore-positional scalef vector via .pe_scalef_vec_for_sub and passes
-# it in; the executor slices chunk-local from that vector.
-
-.pe_apply_post_op_mat <- function(A, op, scalef_vec, cell_start, cell_end) {
-    switch(op$type,
-        "norm_libsize_log" = .pe_apply_post_op_norm_libsize_log_mat(
-            A, op, scalef_vec, cell_start, cell_end),
-        stop("[.pe_apply_post_op_mat] unknown post op type: ", op$type,
-            call. = FALSE)
-    )
-}
-
-# Apply a chain of post ops to a sparseMatrix chunk. `scalef_vecs` is a
-# list parallel to `post_ops`, giving each op's per-cell vector for the
-# active substore (list entries are NULL for ops without per-cell state).
-.pe_apply_post_ops_mat <- function(A, post_ops, scalef_vecs,
-                                    cell_start, cell_end) {
-    if (length(post_ops) == 0L) return(A)
-    for (i in seq_along(post_ops)) {
-        A <- .pe_apply_post_op_mat(A, post_ops[[i]], scalef_vecs[[i]],
-            cell_start, cell_end)
-    }
-    A
-}
-
-.pe_apply_post_op_norm_libsize_log_mat <- function(A, op, scalef_vec,
-                                                    cell_start, cell_end) {
-    scalef_chunk <- scalef_vec[cell_start:cell_end]
-    A@x <- A@x * scalef_chunk[A@i + 1L]
-    if (isTRUE(op$log)) A@x <- log1p(A@x) / log(op$base %null% 2)
-    A
-}
-
-
-# ---- Substore-scoped scalef extraction -------------------------------------
-
-# Extract a positional per-cell scalef vector for a specific substore
-# from a norm_libsize_log op record. Returns a numeric vector indexed by
-# the substore's own cell position (1..n_sub_cells at processData time).
-.pe_scalef_vec_for_sub <- function(op, sub_uid) {
-    orig_row_id <- source_id <- NULL   # NSE
-    if (identical(op$type, "norm_libsize_log")) {
-        sub_dt <- op$scalef[source_id == sub_uid]
-        data.table::setorder(sub_dt, orig_row_id)
-        return(as.numeric(sub_dt$scalef))
-    }
-    NULL   # op doesn't have per-cell scalef state
-}
-
-# Prepare per-substore scalef vectors for every op in a post-ops chain.
-# Returns a list parallel to post_ops. Each entry is either a numeric
-# vector (for ops with per-cell state on this substore) or NULL.
-.pe_scalef_vecs_for_sub <- function(post_ops, sub_uid) {
-    lapply(post_ops, .pe_scalef_vec_for_sub, sub_uid = sub_uid)
 }
 
 
@@ -298,14 +235,12 @@ NULL
 # Returns genes x cells (Bioconductor convention); callers index accordingly
 # rather than materializing a `t()`.
 #
-# `info` is a list with fields:
-#   $sub         parquetExprStore substore, both op chains already injected.
-#   $hvg_orig    integer vector — original col_ids for the columns to keep.
-#   $scalef_vecs list of per-op positional scalef vectors, from
-#                `.pe_scalef_vecs_for_sub()`.
-# The last two, like the `post_ops` / `P_hvg` arguments, are no longer read
-# here now that `storeRead` owns both the gene filter and the apply; they are
-# kept so `info` and the call signature stay one shape across readers.
+# `info` is a list whose only field this reader touches is `$sub`, the
+# parquetExprStore substore with both op chains already injected. Callers also
+# carry `$hvg_orig` and `$scalef_vecs`, and pass `post_ops` / `P_hvg`, none of
+# which are read here now that `storeRead` owns the gene filter and the
+# @post_ops apply; they are kept so `info` and the call signature stay one
+# shape across readers.
 .pe_read_chunk_sub <- function(info, sub_cs, sub_ce, post_ops, P_hvg) {
     M <- storeRead(info$sub[, sub_cs:sub_ce], output = "dgcmatrix",
                    max_rows = Inf, max_cols = Inf)

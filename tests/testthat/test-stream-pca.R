@@ -338,3 +338,94 @@ test_that("streaming Halko errors on scale=TRUE (densification guard)", {
         "scale = TRUE.*not supported"
     )
 })
+
+
+# Halko with center = FALSE. Separate from the centered parity test above
+# because the two take different branches: with center = FALSE no per-gene
+# means are accumulated and the rank-1 centering correction is never applied,
+# so a fault in the deferred-centering logic need not show up on the centered
+# path. Reference is an uncentered dense SVD.
+#
+# Only singular values are asserted. `.tiny_mat` is structureless noise whose
+# singular values past the first all sit within ~1-3 % of each other, so the
+# individual singular VECTORS are not identifiable (free rotation inside a
+# near-degenerate subspace) and no per-PC loading comparison is well posed on
+# it. Consequence, known gap: a fault that permutes the gene axis while
+# leaving rownames HVG-ranked would not be caught here, since `d` is invariant
+# to a gene permutation. Closing that needs a fixture with real PC structure.
+test_that("streaming Halko with center=FALSE matches uncentered svd()", {
+    skip_if_not_installed("Giotto")
+
+    mat <- .tiny_mat(n_genes = 80L, n_cells = 400L, density = 0.4, seed = 7L)
+    pe  <- .setup_normalized_pe(mat)
+
+    libsz <- as.numeric(Matrix::colSums(mat))
+    libsz[libsz == 0] <- 1
+    mat_norm <- log1p(t(t(mat) * (1e4 / libsz))) / log(2)
+    # HVG-RANKED selection: deliberately not ascending, so the gene axis
+    # exercises the unsorted-index path through `[` / .pe_axis_pred.
+    vars <- as.numeric(apply(as.matrix(mat_norm), 1, var))
+    hvg  <- rownames(mat)[order(vars, decreasing = TRUE)][1:40]
+    A    <- as.matrix(mat_norm[hvg, , drop = FALSE])
+
+    NCP <- 8L
+    ref <- svd(t(A))$d[seq_len(NCP)]
+
+    res <- GiottoClass::reduceData(pe,
+        Giotto::pcaParam("random", ncp = NCP, feats_to_use = hvg,
+            center = FALSE, scale = FALSE, set_seed = TRUE,
+            seed_number = 42L, n_oversamples = 10L, n_power_iter = 2L))
+
+    # Halko on an 80x400 noise matrix runs a few % off on the trailing PCs;
+    # the leading PC is the one with a real gap behind it.
+    expect_lt(max(abs(res$d - ref) / ref), 0.06)
+    expect_lt(abs(res$d[1] - ref[1]) / ref[1], 0.01)
+
+    expect_identical(rownames(res$v), hvg)
+    expect_equal(nrow(res$u), ncol(mat))
+})
+
+
+# Halko on a union store. The suite's other union PCA test is gram-eigen,
+# which takes a different route (it bakes a transient store first). Halko
+# reads the substores directly, so this covers parent @ops / @post_ops
+# injection and the per-substore gene narrowing.
+test_that("streaming Halko on union matches svd() on concat data", {
+    skip_if_not_installed("Giotto")
+
+    m1 <- .tiny_mat(n_genes = 60L, n_cells = 120L, density = 0.4, seed = 11L)
+    m2 <- .tiny_mat(n_genes = 60L, n_cells = 80L, density = 0.4, seed = 12L)
+    rownames(m2) <- rownames(m1)
+    colnames(m1) <- paste0("a_c", seq_len(ncol(m1)))
+    colnames(m2) <- paste0("b_c", seq_len(ncol(m2)))
+    both <- cbind(m1, m2)
+
+    pe1 <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), m1)
+    pe2 <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), m2)
+    u <- unionParquetExprStore(list(pe1, pe2)) |>
+        GiottoClass::processData(Giotto::normParam("library", scalefactor = 1e4)) |>
+        GiottoClass::processData(Giotto::normParam("log", base = 2, offset = 1))
+
+    libsz <- as.numeric(Matrix::colSums(both))
+    libsz[libsz == 0] <- 1
+    mat_norm <- log1p(t(t(both) * (1e4 / libsz))) / log(2)
+    vars <- as.numeric(apply(as.matrix(mat_norm), 1, var))
+    hvg  <- rownames(both)[order(vars, decreasing = TRUE)][1:30]
+    A    <- as.matrix(mat_norm[hvg, , drop = FALSE])
+
+    NCP <- 8L
+    ref <- svd(scale(t(A), center = TRUE, scale = FALSE))$d[seq_len(NCP)]
+
+    res <- GiottoClass::reduceData(u,
+        Giotto::pcaParam("random", ncp = NCP, feats_to_use = hvg,
+            center = TRUE, scale = FALSE, set_seed = TRUE,
+            seed_number = 42L, n_oversamples = 10L, n_power_iter = 2L))
+
+    expect_lt(max(abs(res$d - ref) / ref), 0.06)
+    expect_lt(abs(res$d[1] - ref[1]) / ref[1], 0.01)
+
+    # Cells must land on the union axis in substore order.
+    expect_equal(nrow(res$u), ncol(both))
+    expect_identical(rownames(res$u), colnames(both))
+    expect_identical(rownames(res$v), hvg)
+})
