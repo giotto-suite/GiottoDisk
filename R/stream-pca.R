@@ -44,24 +44,16 @@ NULL
 setMethod("reduceData",
     signature(x = "parquetExprBase", param = "randomPcaParam"),
     function(x, param, ...) {
-        if (!.pe_has_norm_op(x)) {
-            stop("[reduceData(parquetExprBase, randomPcaParam)] ",
-                 "expression backend has no normalization recipe. Run ",
-                 "normalizeGiotto(g, scale_feats = FALSE, scale_cells = FALSE) ",
-                 "first.", call. = FALSE)
-        }
+        # No normalization requirement and no feats_to_use requirement: PCA of
+        # whatever the store currently holds is the caller's business, and
+        # Halko is the large-feature-space fallback, so demanding an HVF
+        # selection is backwards. Matches the gram-eigen method, which has
+        # always allowed both. `feats_to_use = NULL` means every feature.
         if (isTRUE(param$scale)) {
             stop("[reduceData(parquetExprBase, randomPcaParam)] ",
                  "scale = TRUE (per-gene z-score) is not supported for ",
                  "streaming because it densifies the matrix. Pass ",
                  "scale = FALSE.", call. = FALSE)
-        }
-        feats <- param$feats_to_use
-        if (is.null(feats)) {
-            stop("[reduceData(parquetExprBase, randomPcaParam)] ",
-                 "feats_to_use is required for the streaming PCA path. ",
-                 "Pass the HVG feature IDs (typically rownames where ",
-                 "@featMetadata$hvf == \"yes\").", call. = FALSE)
         }
 
         .stream_random_svd(
@@ -69,7 +61,7 @@ setMethod("reduceData",
             k             = param$ncp,
             n_oversamples = param$n_oversamples,
             n_power_iter  = param$n_power_iter,
-            feats_to_use  = feats,
+            feats_to_use  = param$feats_to_use,
             center        = isTRUE(param$center),
             set_seed      = isTRUE(param$set_seed),
             seed_number   = param$seed_number
@@ -160,7 +152,7 @@ setMethod("reduceData",
 # ---- Streaming Halko core --------------------------------------------------
 
 .stream_random_svd <- function(pe, k, n_oversamples = 10L, n_power_iter = 2L,
-                                feats_to_use, center = TRUE,
+                                feats_to_use = NULL, center = TRUE,
                                 set_seed = TRUE, seed_number = 1234L) {
     if (set_seed) set.seed(seed_number)
 
@@ -171,12 +163,18 @@ setMethod("reduceData",
 
     # Map HVG feature IDs to integer col_ids on the union/feat axis.
     # feat_ids align across substores (union invariant), so this lookup
-    # is unambiguous.
-    hvg_idx <- match(feats_to_use, pe@feat_ids)
-    if (anyNA(hvg_idx)) {
-        bad <- feats_to_use[is.na(hvg_idx)]
-        stop("[stream PCA] feats_to_use has IDs not in pe@feat_ids: ",
-             toString(head(bad, 5L)), call. = FALSE)
+    # is unambiguous. feats_to_use = NULL -> every feature, same as the
+    # gram-eigen path.
+    hvg_idx <- if (is.null(feats_to_use)) {
+        seq_along(pe@feat_ids)
+    } else {
+        idx <- match(feats_to_use, pe@feat_ids)
+        if (anyNA(idx)) {
+            bad <- feats_to_use[is.na(idx)]
+            stop("[stream PCA] feats_to_use has IDs not in pe@feat_ids: ",
+                 toString(head(bad, 5L)), call. = FALSE)
+        }
+        idx
     }
     P_hvg <- length(hvg_idx)
     k     <- as.integer(k)
@@ -205,6 +203,21 @@ setMethod("reduceData",
     # throughput and on `n_power_iter` (more power iterations amortize the
     # write over more reads), so a single hard-coded constant would be wrong
     # for some configurations.
+    #
+    # The gate is the FEATURE ratio alone, deliberately. Other "is there
+    # anything to collapse" tests were considered and rejected:
+    #
+    #   * op-chain presence does not discriminate -- a norm recipe is present in
+    #     essentially every real pipeline, so `length(@post_ops) > 0` is always
+    #     TRUE and carrying it in the condition changes nothing.
+    #   * a cell-axis subset is a weak signal either way: `row_id` is the sort
+    #     key, so an un-baked read already prunes row groups. Any cell-side
+    #     threshold would need its own empirical value, not this one.
+    #   * a union is handled by the ratio like anything else: a narrowing union
+    #     bakes (cheap write, collapses substores too), a wide one does not, and
+    #     running un-baked keeps the disk footprint down at little cost.
+    #
+    # So the only question asked is whether the HVG set is a real narrowing.
     bake_ratio <- P_hvg / max(as.numeric(pe@n_genes), 1)
     bake_max   <- getOption("giottodisk.pca_bake_max_ratio", 0.5)
     do_bake    <- bake_ratio <= bake_max

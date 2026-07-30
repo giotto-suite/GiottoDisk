@@ -33,31 +33,71 @@
 }
 
 
-test_that("randomPcaParam errors on a store with no normalize recipe", {
+# Halko imposes neither a normalization requirement nor an HVF requirement --
+# PCA of whatever the store holds is the caller's business, and Halko is the
+# large-feature-space fallback, so demanding a feature selection would be
+# backwards. Both used to error; these pin the freedom.
+test_that("randomPcaParam runs on a raw (un-normalized) store", {
     skip_if_not_installed("Giotto")
     mat <- .tiny_mat()
-    # Raw store, empty @ops -- reduceData requires a norm op.
     pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
-        mat)
-    expect_error(
-        GiottoClass::reduceData(pe,
-            Giotto::pcaParam("random", ncp = 5,
-                feats_to_use = rownames(mat)[1:20], scale = FALSE)),
-        "no normalization recipe"
-    )
+        mat)   # raw store, empty @ops / @post_ops
+    hvg <- rownames(mat)[1:20]
+
+    res <- GiottoClass::reduceData(pe,
+        Giotto::pcaParam("random", ncp = 5, feats_to_use = hvg,
+            center = TRUE, scale = FALSE, set_seed = TRUE, seed_number = 42L))
+
+    # Reference: dense SVD of the same raw counts, centered.
+    A <- as.matrix(t(mat[hvg, , drop = FALSE]))
+    ref <- svd(scale(A, center = TRUE, scale = FALSE))$d[seq_len(5)]
+    expect_lt(abs(res$d[1] - ref[1]) / ref[1], 0.05)
+    expect_identical(rownames(res$v), hvg)
+    expect_equal(nrow(res$u), ncol(mat))
 })
 
 
-test_that("randomPcaParam errors when feats_to_use is missing", {
+test_that("randomPcaParam runs with feats_to_use = NULL (all features)", {
     skip_if_not_installed("Giotto")
     mat <- .tiny_mat(seed = 2)
     pe  <- .setup_normalized_pe(mat)
-    expect_error(
+
+    res <- GiottoClass::reduceData(pe,
+        Giotto::pcaParam("random", ncp = 5, scale = FALSE,
+            center = TRUE, set_seed = TRUE, seed_number = 42L))
+
+    # Every feature is retained, in store order.
+    expect_equal(nrow(res$v), nrow(mat))
+    expect_identical(rownames(res$v), rownames(mat))
+    expect_equal(nrow(res$u), ncol(mat))
+    expect_equal(length(res$d), 5L)
+})
+
+
+# The transient bake is a performance choice only -- both sides of the gate
+# must produce the same answer. `giottodisk.pca_bake_max_ratio` is forced to
+# each extreme to take the two branches on identical input.
+test_that("transient bake and un-baked paths agree", {
+    skip_if_not_installed("Giotto")
+    mat <- .tiny_mat(seed = 5)
+    pe  <- .setup_normalized_pe(mat)
+    hvg <- rownames(mat)[1:20]
+
+    run <- function(ratio) withr::with_options(
+        list(giottodisk.pca_bake_max_ratio = ratio),
         GiottoClass::reduceData(pe,
-            Giotto::pcaParam("random", ncp = 5, scale = FALSE,
-                set_seed = TRUE, seed_number = 42L)),
-        "feats_to_use is required"
-    )
+            Giotto::pcaParam("random", ncp = 5, feats_to_use = hvg,
+                center = TRUE, scale = FALSE, set_seed = TRUE,
+                seed_number = 42L)))
+
+    baked   <- run(1)   # ratio 20/80 = 0.25 <= 1  -> bakes
+    unbaked <- run(0)   #                  > 0     -> does not
+
+    expect_equal(baked$d, unbaked$d, tolerance = 1e-10)
+    expect_equal(baked$u, unbaked$u, tolerance = 1e-10)
+    expect_equal(baked$v, unbaked$v, tolerance = 1e-10)
+    expect_identical(rownames(baked$v), rownames(unbaked$v))
+    expect_identical(rownames(baked$u), rownames(unbaked$u))
 })
 
 
