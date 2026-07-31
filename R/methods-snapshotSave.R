@@ -12,7 +12,10 @@
 #'   snapshot of the same name exists.
 #' @param verbose verbosity
 #' @param ... additional params to pass (none implemented)
-#' @returns TRUE if save completed
+#' @returns the modified gobject (invisible). Mutated by the internal
+#'   adoption pass — captured by `snapshotSave(gDirSource, giottoMulti)`
+#'   so the multi-level `.rds` sees post-adoption file handles in each
+#'   child.
 NULL
 
 #' @rdname snapshotSave
@@ -72,6 +75,12 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
         giottosave = name,
         verbose = verbose
     )
+
+    vmsg(.v = verbose, "[GiottoDisk] checking network stores...")
+    x <- .ss_gdsrc_register_external_network(x,
+        giottosave = name,
+        verbose = verbose
+    )
   
     vmsg(.v = verbose, "[GiottoDisk] writing snapshot")
     temp <- .dump_tempfile() # temp location for atomic writes
@@ -96,18 +105,18 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     # tagging --------------------------------------------------- #
     vmsg(.v = verbose, "[GiottoDisk] tagging snapshot artifacts...")
     uids <- .ss_gdsrc_detect_uid(x)
-    if (length(uids) == 0L) return(invisible(TRUE))
-    
-    manifest <- as.data.frame(src)
-    for (uid_to_tag in uids) {
-        content <- manifest[uid == uid_to_tag, giottosave]
-        content <- c(content, name)
-        content <- unique(content[!is.na(content)])
-        src[uid_to_tag, "giottosave"] <- content
+    if (length(uids) > 0L) {
+        manifest <- as.data.frame(src)
+        for (uid_to_tag in uids) {
+            content <- manifest[uid == uid_to_tag, giottosave]
+            content <- c(content, name)
+            content <- unique(content[!is.na(content)])
+            src[uid_to_tag, "giottosave"] <- content
+        }
     }
-  
+
     vmsg(.v = verbose, "[GiottoDisk] done")
-    invisible(TRUE)
+    invisible(x)
 })
 
 # internals ####
@@ -181,10 +190,13 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     uids <- c(uids, .ss_gdsrc_detect_uid_spatial_polygons(gobject))
     # overlaps
     uids <- c(uids, .ss_gdsrc_detect_uid_overlaps(gobject))
+    # networks (nn + spatial)
+    uids <- c(uids, .ss_gdsrc_detect_uid_networks(gobject))
     uids
 }
 
-# detect spatial store uids
+# detect spatial store uids — uses .ss_store_uids so union stores get
+# expanded to their substore uids (a union has no @uid of its own).
 .ss_gdsrc_detect_uid_spatial_points <- function(gobject) {
     pts_list <- gobject[["feat_info"]]
     is_tracked_class <- vapply(pts_list,
@@ -193,11 +205,7 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     )
     pts_list <- pts_list[is_tracked_class]
     if (length(pts_list) == 0L) return(c())
-  
-    vapply(pts_list,
-        function(x) x[]@uid,
-        FUN.VALUE = character(1L)
-    )
+    unlist(lapply(pts_list, function(x) .ss_store_uids(x[])))
 }
 .ss_gdsrc_detect_uid_spatial_polygons <- function(gobject) {
     polys_list <- gobject[["spatial_info"]]
@@ -207,11 +215,7 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     )
     polys_list <- polys_list[is_tracked_class]
     if (length(polys_list) == 0L) return(c())
-
-    vapply(polys_list,
-        function(x) x[]@uid,
-        FUN.VALUE = character(1L)
-    )
+    unlist(lapply(polys_list, function(x) .ss_store_uids(x[])))
 }
 
 .ss_gdsrc_detect_uid_overlaps <- function(gobject) {
@@ -225,6 +229,23 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
             ovlp <- ovlps[[feat_name]]
             if (!inherits(ovlp, "overlapPointDisk")) next
             uids <- c(uids, ovlp@data@uid)
+        }
+    }
+    uids
+}
+
+# detect network store uids — networks land in @network on nnNetObj /
+# spatialNetworkObj. In-memory igraphs are skipped; only dataStore-backed
+# networks (typically parquetEdgeStore after a setter auto-write) carry
+# vault uids and need snapshot tagging to survive sourcePrune.
+.ss_gdsrc_detect_uid_networks <- function(gobject) {
+    uids <- c()
+    for (slot in c("nn_network", "spatial_network")) {
+        net_list <- gobject[[slot]]
+        for (net_obj in net_list) {
+            net <- net_obj@network
+            if (!inherits(net, "dataStore")) next
+            uids <- c(uids, .ss_store_uids(net))
         }
     }
     uids
@@ -304,25 +325,98 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     gobject
 }
 
-# canonical hash of the underlying storage, stripping lazy ops
+# Mirror of the geom/overlap registrants for networks. The common path
+# is: user calls setNearestNetwork / setSpatialNetwork with an in-memory
+# igraph on a backed gobject → setter auto-writes via
+# sourceWrite(gDirSource, igraph) → network is already vault-resident
+# before snapshotSave runs. This helper covers the rarer case where a
+# parquetEdgeStore was attached externally (e.g. constructed manually,
+# or moved between projects). Walks both @nn_network and
+# @spatial_network slots uniformly.
+.ss_gdsrc_register_external_network <- function(gobject, giottosave, verbose = NULL) {
+    src <- gobject@source
+
+    for (slot in c("nn_network", "spatial_network")) {
+        net_list <- gobject[[slot]]
+        for (net_obj in net_list) {
+            net <- net_obj@network
+            if (!inherits(net, "dataStore")) next
+            if (sourceContains(src, net)) next
+
+            vmsg(.v = verbose, sprintf(
+                "[GiottoDisk] adopting external network '%s'",
+                GiottoClass::objName(net_obj)
+            ))
+
+            net_obj@network <- sourceAdopt(src, net, giottosave = giottosave)
+            gobject <- GiottoClass::setGiotto(gobject, net_obj, verbose = FALSE)
+        }
+    }
+
+    gobject
+}
+
+# canonical hash(es) of the underlying storage, stripping lazy ops /
+# view state. Returns a character vector — one entry per leaf / substore
+# so each manifest entry can be matched independently. This handles
+# compound stores (multi-leaf IterableMatrix, union*Store) without the
+# concat-collapse trick that never matched any single manifest hash.
 .ss_hash_expr_base <- function(mat) {
     if (inherits(mat, "IterableMatrix")) {
-        dirs <- .im_leaf_dirs(mat)
-        hashes <- vapply(dirs,
+        vapply(.im_leaf_dirs(mat),
             function(d) .hash(BPCells::open_matrix_dir(d)),
             FUN.VALUE = character(1L)
         )
-        paste(hashes, collapse = "|")
     } else if (inherits(mat, "HDF5Array")) {
         .hash(HDF5Array::HDF5Array(HDF5Array::path(mat), HDF5Array::name(mat)))
+    } else if (inherits(mat, "unionParquetStore") ||
+               inherits(mat, "unionParquetExprStore")) {
+        unlist(lapply(mat@stores, .ss_hash_expr_base))
+    } else if (inherits(mat, "dataStore")) {
+        .hash(storeRead(.store_nostate(mat)))
     } else {
         .hash(mat)
     }
 }
 
-# detect matrix uid based on hash lookup in manifest
+# Returns the uids of all leaf / substore artifacts inside a (possibly
+# compound) store. Used by the spatial-store detectors where direct
+# @uid access fails for union stores (which have @stores, not @uid).
+.ss_store_uids <- function(x) {
+    if (inherits(x, "unionParquetStore") ||
+        inherits(x, "unionParquetExprStore")) {
+        return(unlist(lapply(x@stores, .ss_store_uids)))
+    }
+    if (inherits(x, "fileStore")) return(x@uid)
+    character(0L)
+}
+
+# Detect manifest uids of the expression matrices currently held by a
+# gobject. Used by snapshotSave to know which artifacts to tag.
+#
+# Two-path dispatch:
+#
+#   * parquetExprStore / unionParquetExprStore carry a stable `@uid` slot
+#     assigned at construction and persisted as the vault directory name.
+#     We extract it directly via .ss_store_uids. Hash matching is unsuitable
+#     for these classes because `.ss_hash_expr_base` reaches them via
+#     `.hash(storeRead(.store_nostate(mat)))`, which digests an arrow
+#     `FileSystemDataset` R6 wrapper — base R `serialize()` doesn't invoke
+#     active bindings (so $files / $schema never enter the bytes) and
+#     stores externalptrs as a null placeholder. Result: every
+#     parquetExprStore digests to the same constant regardless of data,
+#     and the subsequent `manifest[!duplicated(hash)]` step collapses all
+#     of them onto a single arbitrary uid — wrong uids get tagged or none
+#     at all.
+#
+#   * IterableMatrix / HDF5Array don't carry a stable identity slot
+#     (BPCells assigns uid by manifest registration, not on the matrix
+#     handle). `.ss_hash_expr_base` digests S4 backends with real path /
+#     dim slots there, so hash matching is content-discriminating and
+#     stable across re-opens — keep the hash path for them.
 .ss_gdsrc_detect_uid_matrices <- function(gobject, manifest) {
-    tracked_classes <- c("IterableMatrix", "HDF5Array")
+    tracked_classes <- c("IterableMatrix", "HDF5Array",
+                         "parquetExprStore", "unionParquetExprStore")
     mat_list <- gobject[["expression"]]
 
     is_tracked_class <- vapply(mat_list,
@@ -332,12 +426,27 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     mat_list <- mat_list[is_tracked_class]
     if (length(mat_list) == 0L) return(c())
 
-    protected_hash <- vapply(mat_list,
-        function(x) .ss_hash_expr_base(x[]),
-        FUN.VALUE = character(1L)
-    )
-    manifest <- manifest[!duplicated(hash)]
-    manifest[hash %in% protected_hash, uid]
+    # Split between direct-uid (parquetExprStore family) and hash-match
+    # (BPCells / HDF5Array) — see header comment.
+    direct_uids <- character(0L)
+    hash_mats   <- list()
+    for (x in mat_list) {
+        m <- x[]
+        if (inherits(m, c("parquetExprStore", "unionParquetExprStore"))) {
+            direct_uids <- c(direct_uids, .ss_store_uids(m))
+        } else {
+            hash_mats <- c(hash_mats, list(m))
+        }
+    }
+
+    hash_uids <- character(0L)
+    if (length(hash_mats) > 0L) {
+        protected_hash <- unlist(lapply(hash_mats, .ss_hash_expr_base))
+        manifest_dedup <- manifest[!duplicated(hash)]
+        hash_uids <- manifest_dedup[hash %in% protected_hash, uid]
+    }
+
+    c(direct_uids, hash_uids)
 }
 
 # add numerical suffix to prevent file naming collision

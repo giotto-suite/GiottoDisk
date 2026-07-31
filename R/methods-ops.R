@@ -46,15 +46,22 @@ setMethod("subset", signature("parquetBase"), function(x, subset, select,
     negate = FALSE, quote = TRUE, ...) {
       
     if (!missing(subset)) {
-        if (quote) {                                        
-            q <- rlang::enquo(subset)                               
-            expr <- rlang::quo_get_expr(q)  
-            env <- rlang::quo_get_env(q)                              
-            expr <- .inline_local_vars(expr, c(colnames(x), specialCols(x)), env)
-        } else {                                                       
-            expr <- subset  # pre-quoted expression passed directly    
-        }                                                              
-        if (negate) expr <- call("!", expr)                            
+        if (quote) {
+            q <- rlang::enquo(subset)
+            expr <- rlang::quo_get_expr(q)
+            env <- rlang::quo_get_env(q)
+            # Use effective_schema (NOT colnames(x) or disk_fields) as the
+            # col universe -- a prior `[, j]` may have narrowed @fields,
+            # and queued join ops bring in y-side cols. Filter exprs need
+            # to reference any of these without being treated as local
+            # vars. The lazy_fields path re-widens at storeRead time so
+            # the upstream projection includes referenced cols, and
+            # .do_op's join handler materializes y-side cols post-join.
+            expr <- .inline_local_vars(expr, .pstore_effective_schema(x), env)
+        } else {
+            expr <- subset  # pre-quoted expression passed directly
+        }
+        if (negate) expr <- call("!", expr)
         x@ops <- c(x@ops, list(list(type = "filter", expr = expr)))
     }
   
@@ -101,19 +108,40 @@ setMethod("unique", signature("parquetBase"), function(x, incomparables = FALSE,
     x
 })
 
-# head ####
+# head / tail ####
+# S3 methods, not S4. setMethod("head", "parquetBase", ...) against utils's
+# implicit S3 generic auto-promotes utils::head to S4 inside this namespace,
+# which produces "generic for X loaded with a different signature" warnings
+# whenever a downstream package that also touches utils::head loads. Bare
+# `head(pgs)` from user scope also doesn't dispatch through the S4 method
+# because utils::head is found first on the search path; it falls into
+# head.default → head.array → `[`, which errors on the S4 object.
+#
+# Following GiottoClass's pattern (head.giottoBinPoints + @exportS3Method
+# utils::head): S3 dispatch walks S4 class() inheritance, so a method on
+# parquetBase still fires for concrete subclasses (parquetGeomStore,
+# parquetGeomTileStore, parquetStore, parquetExprStore, ...).
 
-setMethod("head", signature("parquetBase"), function(x, n = 6, ...) {
+#' @title Head and tail
+#' @name parquet-headtail
+#' @description Queue a `head` or `tail` op on a lazy parquet store. The
+#'   op is applied at `storeRead()` time.
+#' @param x parquetBase-inheriting store
+#' @param n integer. Number of rows to keep.
+#' @param ... additional arguments (ignored)
+#' @returns the input store with a head / tail op queued on `@ops`
+#' @exportS3Method utils::head
+head.parquetBase <- function(x, n = 6L, ...) {
     x@ops <- c(x@ops, list(list(type = "head", n = n)))
     x
-})
+}
 
-# tail ####
-
-setMethod("tail", signature("parquetBase"), function(x, n = 6, ...) {
+#' @rdname parquet-headtail
+#' @exportS3Method utils::tail
+tail.parquetBase <- function(x, n = 6L, ...) {
     x@ops <- c(x@ops, list(list(type = "tail", n = n)))
     x
-})
+}
 
 # rowSample ####
 #' @name rowSample
@@ -277,6 +305,18 @@ setMethod("window<-", signature("parquetGeomBase"), function(x, ..., value) {
             join_fn <- if (op$nomatch == "inner") dplyr::inner_join else dplyr::left_join
             join_fn(atab, y_q, by = op$by)
         },
+        # `spat_relate` is handled at the `.pbase_storeread_processing`
+        # level (not via `.do_op`) so it can route through sedonadb.
+        # Reaching here means something bypassed the processing loop.
+        "spat_relate" = stop(
+            "[.do_op] 'spat_relate' must be handled by ",
+            ".pbase_storeread_processing; reached .do_op unexpectedly",
+            call. = FALSE),
+        # Internal op type created ephemerally by the spat_relate
+        # evaluation path to inject cached surviving ids without re-running
+        # the spatial predicate. Carries an arrow Table of id cols and the
+        # join keys. Not part of the public API.
+        "id_filter" = dplyr::semi_join(atab, op$ids_tab, by = op$by),
         stop(sprintf("[.do_op] unknown op type: '%s'", type), call. = FALSE)
     )
 }

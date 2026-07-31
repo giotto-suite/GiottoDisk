@@ -17,8 +17,19 @@ function must be provided where the first param of the function can read
 the \code{path} to load in the data in a useful format.
 }
 \seealso{
-Other store constructors: 
-\code{\link{parquetStore}},
-\code{\link{storeCreate}()}
+Other store constructors:
+\code{\link[=binGefInput]{binGefInput()}},
+\code{\link[=cellbinGefInput]{cellbinGefInput()}},
+\code{\link[=csvWideInput]{csvWideInput()}},
+\code{\link[=edgeDTInput]{edgeDTInput()}},
+\code{\link[=igraphInput]{igraphInput()}},
+\code{\link[=mtxInput]{mtxInput()}},
+\code{\link[=nnSearchInput]{nnSearchInput()}},
+\code{\link[=parquetEdgeStore]{parquetEdgeStore()}},
+\code{\link[=parquetExprStore]{parquetExprStore()}},
+\code{\link[=parquetStore]{parquetStore()}},
+\code{\link[=storeCreate]{storeCreate()}},
+\code{\link[=tenxH5Input]{tenxH5Input()}},
+\code{\link[=unionParquetExprStore]{unionParquetExprStore()}}
 }
 \concept{store constructors}

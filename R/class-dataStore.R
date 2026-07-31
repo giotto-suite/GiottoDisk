@@ -202,6 +202,8 @@ bpcMatrixStore <- function(
 #' * `"parquet"`
 #' * `"parquetGeom"`
 #' * `"parquetGeomTile"`
+#' * `"parquetExpr"`
+#' * `"parquetEdge"`
 #' * `"h5"`
 #' * `"bpcells"`
 #' * `"tiledb"`
@@ -210,22 +212,26 @@ bpcMatrixStore <- function(
 #' @export
 storeCreate <- function(path = .dump_tempfile(), type = "parquet", ...) {
   .store_type_aliases <- c(
-      "parquet"       = "parquetstore",
-      "parquetgeom"   = "parquetgeomstore",
+      "parquet"         = "parquetstore",
+      "parquetgeom"     = "parquetgeomstore",
       "parquetgeomtile" = "parquetgeomtilestore",
-      "file"          = "filestore",
-      "h5"            = "h5arraystore",
-      "bpcells"       = "bpcmatrixstore",
-      "tiledb"        = "tiledbarraystore"
+      "parquetexpr"     = "parquetexprstore",
+      "parquetedge"     = "parquetedgestore",
+      "file"            = "filestore",
+      "h5"              = "h5arraystore",
+      "bpcells"         = "bpcmatrixstore",
+      "tiledb"          = "tiledbarraystore"
   )
   type <- tolower(type)
   type <- .store_type_aliases[type] %na% type
 
     type <- match.arg(type,
         choices = c(
-            "parquetstore", 
+            "parquetstore",
             "parquetgeomstore",
             "parquetgeomtilestore",
+            "parquetexprstore",
+            "parquetedgestore",
             "filestore",
             "h5arraystore",
             "bpcmatrixstore",
@@ -236,6 +242,8 @@ storeCreate <- function(path = .dump_tempfile(), type = "parquet", ...) {
         "parquetstore" = parquetStore(path = path, ...),
         "parquetgeomstore" = parquetGeomStore(path = path, ...),
         "parquetgeomtilestore" = parquetGeomTileStore(path = path, ...),
+        "parquetexprstore" = parquetExprStore(path = path, ...),
+        "parquetedgestore" = parquetEdgeStore(path = path, ...),
         "filestore" = fileStore(path = path, ...),
         "h5arraystore" = h5ArrayStore(path = path, ...),
         "bpcmatrixstore" = bpcMatrixStore(path = path, ...),

@@ -468,7 +468,7 @@ as.list.gDirSource <- function(x) {
 
 #' @rdname coerce_gdsrc
 #' @param ... additional params to pass
-#' @export
+#' @exportS3Method base::as.data.frame
 as.data.frame.gDirSource <- function(x, ...) {
     data <- as.list.gDirSource(x)
     data.table::rbindlist(data, 

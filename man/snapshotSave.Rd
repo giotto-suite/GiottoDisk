@@ -39,7 +39,10 @@ external images in the project directory}
 \item{...}{additional params to pass (none implemented)}
 }
 \value{
-TRUE if save completed
+the modified gobject (invisible). Mutated by the internal
+adoption pass — captured by \code{snapshotSave(gDirSource, giottoMulti)}
+so the multi-level \code{.rds} sees post-adoption file handles in each
+child.
 }
 \description{
 Register a gobject snapshot into the source

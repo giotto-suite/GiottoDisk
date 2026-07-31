@@ -27,6 +27,16 @@ setMethod("show", signature("tileDBArrayStore"), function(object) {
     invisible(NULL)
 })
 
+setMethod("show", signature("parquetExprStore"), function(object) {
+    .show_info(object, .print = TRUE)
+    invisible(NULL)
+})
+
+setMethod("show", signature("unionParquetExprStore"), function(object) {
+    .show_info(object, .print = TRUE)
+    invisible(NULL)
+})
+
 
 # .show_info ####
 
@@ -37,6 +47,7 @@ setMethod(".show_info", signature("fileStore"), function(object, .print = TRUE) 
     info <- list()
     info[["class"]] <- class(object)
     info[["path"]]  <- paste0(str_abbreviate(object@path), collapse = "\n      ")
+    if (length(object@uid) > 0L && nzchar(object@uid)) info[["uid"]] <- object@uid
     if (!storeExists(object)) info[["status"]] <- "<empty>"
     if (.print) return(.print_show(object, info))
     invisible(info)
@@ -149,12 +160,60 @@ setMethod(".show_info", signature("tileDBArrayStore"), function(object, .print =
     invisible(info)
 })
 
+.pe_id_preview <- function(ids, n = 3L) {
+    n_show <- min(n, length(ids))
+    paste0(
+        paste(ids[seq_len(n_show)], collapse = ", "),
+        if (length(ids) > n) ", ..." else ""
+    )
+}
+
+setMethod(".show_info", signature("parquetExprStore"), function(object, .print = TRUE) {
+    info <- callNextMethod(object, .print = FALSE)
+    info[["dim"]] <- sprintf("%s genes x %s cells",
+        format(object@n_genes, big.mark = ",", scientific = FALSE),
+        format(object@n_cells, big.mark = ",", scientific = FALSE))
+    if (length(object@feat_ids) > 0L) {
+        info[["feat_ids"]] <- .pe_id_preview(object@feat_ids)
+    }
+    if (length(object@cell_ids) > 0L) {
+        info[["cell_ids"]] <- .pe_id_preview(object@cell_ids)
+    }
+    if (length(object@cell_idx) > 0L || length(object@gene_idx) > 0L) {
+        info[["subset"]] <- sprintf("cell_idx[%d] gene_idx[%d]",
+            length(object@cell_idx), length(object@gene_idx))
+    }
+    info[["chunk"]] <- sprintf("%s cells",
+        format(object@chunk_size, big.mark = ",", scientific = FALSE))
+    if (.print) return(.print_show(object, info))
+    invisible(info)
+})
+
+setMethod(".show_info", signature("unionParquetExprStore"), function(object, .print = TRUE) {
+    info <- list()
+    info[["class"]] <- "unionParquetExprStore"
+    info[["substores"]] <- length(object@stores)
+    info[["dim"]] <- sprintf("%s genes x %s cells",
+        format(object@n_genes, big.mark = ",", scientific = FALSE),
+        format(object@n_cells, big.mark = ",", scientific = FALSE))
+    if (length(object@feat_ids) > 0L) {
+        info[["feat_ids"]] <- .pe_id_preview(object@feat_ids)
+    }
+    if (length(object@cell_ids) > 0L) {
+        info[["cell_ids"]] <- .pe_id_preview(object@cell_ids)
+    }
+    if (.print) return(.print_show(object, info))
+    invisible(info)
+})
+
 
 # internals ####
 
 .show_key_order <- c(
-    "path", "substores", "geomtype", "extent",
-    "columns", "nrows", "tiles", "name", "status"
+    "path", "uid", "substores", "geomtype", "extent",
+    "columns", "nrows", "tiles", "name",
+    "dim", "feat_ids", "cell_ids", "subset", "chunk",
+    "status"
 )
 
 .print_show <- function(object, info) {
@@ -193,6 +252,15 @@ setMethod(".show_info", signature("tileDBArrayStore"), function(object, .print =
             keys_str <- paste(names(step$by), unname(step$by), sep = " = ",
                 collapse = ", ")
             sprintf("%s on [%s]", type_str, keys_str)
+        },
+        "spat_relate" = {
+            y_str <- if (!is.null(step$y_wkt)) {
+                wkt <- step$y_wkt
+                if (nchar(wkt) > 40L) paste0(substr(wkt, 1L, 37L), "...") else wkt
+            } else {
+                "<store>"
+            }
+            sprintf("%s [%s] %s", step$relation, step$form, y_str)
         },
         "transform" = {
             aff <- step$affine2d

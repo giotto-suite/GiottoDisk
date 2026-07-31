@@ -23,6 +23,10 @@
     init_option("giottodisk.use_locking", TRUE)
     # -- arrow schema
     init_option("giottodisk.arrow_timestamp_locale", "us")
+    # -- parquet writer compression. See .parquet_compression() in
+    #    utils-arrow.R. Snappy default keeps reads fast; switch to
+    #    "zstd" for ~30-40% smaller files at a small CPU cost.
+    init_option("giottodisk.parquet_compression", "snappy")
     # -- dump management
     init_option("giottodisk.artifact_dump", file.path(tempdir(), "gdisk_dump"))
     init_option("giottodisk.adopt_external", FALSE)

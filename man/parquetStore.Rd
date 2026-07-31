@@ -21,8 +21,19 @@ Create a parquet-backed storage.
 \seealso{
 \link[=parquetStore-class]{store}
 
-Other store constructors: 
-\code{\link{fileStore}},
-\code{\link{storeCreate}()}
+Other store constructors:
+\code{\link[=binGefInput]{binGefInput()}},
+\code{\link[=cellbinGefInput]{cellbinGefInput()}},
+\code{\link[=csvWideInput]{csvWideInput()}},
+\code{\link[=edgeDTInput]{edgeDTInput()}},
+\code{\link[=fileStore]{fileStore()}},
+\code{\link[=igraphInput]{igraphInput()}},
+\code{\link[=mtxInput]{mtxInput()}},
+\code{\link[=nnSearchInput]{nnSearchInput()}},
+\code{\link[=parquetEdgeStore]{parquetEdgeStore()}},
+\code{\link[=parquetExprStore]{parquetExprStore()}},
+\code{\link[=storeCreate]{storeCreate()}},
+\code{\link[=tenxH5Input]{tenxH5Input()}},
+\code{\link[=unionParquetExprStore]{unionParquetExprStore()}}
 }
 \concept{store constructors}

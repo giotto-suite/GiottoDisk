@@ -32,7 +32,7 @@ features form the first group. See \code{\link[GiottoClass:createGiottoPoints]{G
 \code{split_keyword} is provided
 }
 \description{
-Create a \link[GiottoClass:giottoPoints-class]{GiottoClass::giottoPoints} object from a \code{parquetGeomBase}
+Create a \link[GiottoClass:giottoPoints]{GiottoClass::giottoPoints} object from a \code{parquetGeomBase}
 store. The store is kept in the \code{spatVector} slot -- nothing is
 materialized. The \code{unique_ID_cache} is populated via a single Arrow
 \code{DISTINCT} query at construction time.
