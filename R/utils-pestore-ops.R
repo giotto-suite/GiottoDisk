@@ -23,6 +23,24 @@ NULL
 # first (storeWrite bakes @post_ops into on-disk values; new pe starts
 # with empty chains).
 #
+# KNOWN MISCLASSIFICATION -- do not build on the current placement.
+# `norm_libsize` and `log` sit on @post_ops even though both lower to Acero
+# (see `.pe_post_op_arrow_ok`). They are there because the R-side executors
+# are faster for materializing reads, not because they must run in R -- a
+# deliberate move (fa3ee64) that bought 2-3x on the norm hot path and retired
+# the `v_norm` sidecar column. It cited parquetGeomBase as precedent, but that
+# store's @post_ops holds WKB transforms which genuinely cannot be lowered, so
+# the same slot ended up carrying two different criteria: "must run in R"
+# there, "faster in R" here. There is no way to express the latter, so it got
+# encoded in the slot. Two
+# consequences: storeRead cannot tell a lowerable post-op from an R-only one,
+# so consumers wanting pushdown route around it via output = "query" and
+# reimplement the ops (hence the duplicated norm math below); and the
+# monotonic rule above will wrongly reject a lazy op queued after a norm,
+# which will bite as soon as a real lazy pestore op exists. The intended
+# contract and the demotion/token mechanism that restores it are written up
+# in vignettes/articles/roadmap.Rmd, "Restore the @ops / @post_ops contract".
+#
 # Op types currently supported:
 #
 #   norm_libsize      (phase: post)
