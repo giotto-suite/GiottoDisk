@@ -13,23 +13,14 @@
 }
 
 
+# Raw store carrying a library-size + log2 recipe on @post_ops, built through
+# the public verbs so the fixture exercises the same path a caller takes.
 .setup_normalized_pe <- function(mat, hvg_idx) {
-    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
-
-    # Push a norm_libsize_log op directly (matches in-memory math the
-    # tests compare against). Slice constructor lives on the internal
-    # namespace; the full op record fuses libsize + log = TRUE.
-    libsz <- as.numeric(Matrix::colSums(mat))
-    libsz[libsz == 0] <- 1
-    slice <- GiottoDisk:::.pe_norm_libsize_scalef_slice(
-        pe, scalef = 1e4 / libsz)
-    pe@post_ops <- list(list(
-        type   = "norm_libsize_log",
-        scalef = slice,
-        log    = TRUE,
-        base   = 2
-    ))
-    pe
+    storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat) |>
+        GiottoClass::processData(
+            Giotto::normParam("library", scalefactor = 1e4)) |>
+        GiottoClass::processData(
+            Giotto::normParam("log", base = 2, offset = 1))
 }
 
 

@@ -21,8 +21,8 @@ NULL
 # The COV methods share one stats pass, `.stream_gene_stats()`, which
 # reduces the triplet stream to n_genes-sized sum / sumsq / nnz vectors;
 # LOESS and bin-zscore then run on those. That pass has two shapes: an
-# arrow-native aggregate when the recipe is a single norm_libsize_log
-# post-op, and a generic per-substore R-side pass otherwise.
+# arrow-native aggregate when every post-op can be lowered to arrow
+# compute, and a generic per-substore R-side pass otherwise.
 
 # ---- covLoessParam: streaming ---------------------------------------------
 
@@ -317,16 +317,15 @@ setMethod("analyzeData",
     # the per-gene result (~18k rows) crosses into R, which on Atera (170k
     # cells x 18k genes) is 1.94 s serial against 11.16 s for the best R-side
     # chunking shape we measured.  Requires the norm as arrow compute, so it
-    # is limited to a single `norm_libsize_log` post-op; anything else falls
-    # through to the generic R-side pass below, which handles any op kind.
+    # needs each post-op to be expressible as arrow compute; anything else
+    # falls through to the generic R-side pass below, which handles any kind.
     #
     # Union stores fall through too: the (source_id, orig_row_id) join would
     # span substores fine, but `.pe_remap_col` resolves against a single
     # store's @gene_idx.
     can_arrow <- inherits(pe, "parquetExprStore") &&
-        (length(pe@post_ops) == 0L ||
-         (length(pe@post_ops) == 1L &&
-          identical(pe@post_ops[[1L]]$type, "norm_libsize_log")))
+        all(vapply(pe@post_ops, function(op) .pe_post_op_arrow_ok(op),
+                   logical(1L)))
 
     if (can_arrow) {
         return(.stream_gene_stats_arrow(pe, thr,
@@ -392,11 +391,11 @@ setMethod("analyzeData",
 # expression, and the per-gene aggregate is pushed down.  Only the ~n_genes
 # result rows cross the arrow -> R boundary.
 #
-# The norm math here MIRRORS `.pe_apply_post_op_norm_libsize_log_df`; it is
+# The norm math here MIRRORS the `_df` executors; it is
 # duplicated because arrow cannot index an R vector positionally inside a
 # query, so the per-cell scalef has to arrive as a joinable table.  Keep the
-# two in sync -- the sole reason this function is restricted to the
-# `norm_libsize_log` op kind.
+# two in sync -- and the reason `.pe_post_op_arrow_ok()` gates which op kinds
+# this path can serve.
 #
 # `total_expr` is the normalized sum `s`, matching the generic pass above.
 
@@ -407,34 +406,11 @@ setMethod("analyzeData",
     row_id <- col_id <- value <- nv <- scalef <- source_id <- NULL
     s <- s2 <- nz <- NULL
 
-    # Empty op chain: the on-disk values ARE the values, so the join and the
-    # norm expression drop out and the aggregate runs directly. This is the
-    # baked / normalized-at-write case, which would otherwise fall to the
-    # generic R-side pass for no reason.
-    q <- storeRead(pe, output = "query")
-    if (length(pe@post_ops) == 0L) {
-        q <- dplyr::mutate(q, nv = value)
-    } else {
-        op       <- pe@post_ops[[1L]]
-        log_flag <- isTRUE(op$log)
-        log_base <- op$base %null% 2
-
-        sf <- data.table::as.data.table(op$scalef)
-        scalef_tbl <- arrow::as_arrow_table(data.frame(
-            source_id   = as.character(sf$source_id),
-            orig_row_id = as.integer(sf$orig_row_id),
-            scalef      = as.numeric(sf$scalef),
-            stringsAsFactors = FALSE
-        ))
-
-        q <- q |>
-            dplyr::left_join(scalef_tbl,
-                by = c("source_id" = "source_id", "row_id" = "orig_row_id")) |>
-            dplyr::mutate(nv = value * scalef)
-        if (log_flag) {
-            q <- dplyr::mutate(q, nv = log1p(nv) / log(!!log_base))
-        }
-    }
+    # Start from the on-disk value and fold the @post_ops chain into the lazy
+    # query, one lowering per op. An empty chain leaves `nv = value`, which is
+    # the baked / normalized-at-write case.
+    q <- dplyr::mutate(storeRead(pe, output = "query"), nv = value)
+    for (op in pe@post_ops) q <- .pe_post_op_arrow(q, op)
 
     agg <- q |>
         dplyr::group_by(col_id) |>

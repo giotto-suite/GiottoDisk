@@ -354,9 +354,9 @@ setMethod("storeRead", signature("unionParquetExprStore"), function(store,
     source_id <- row_id <- col_id <- value <- NULL  # NSE
 
     # Apply @post_ops R-side; mutates df$value in place. Post-op union
-    # payload (e.g., norm_libsize_log's scalef table) carries composite
+    # payload (e.g., norm_libsize's scalef table) carries composite
     # (source_id, orig_row_id) keys — the R-side update-join in
-    # .pe_apply_post_op_norm_libsize_log_df resolves across substores.
+    # .pe_apply_post_op_norm_libsize_df resolves across substores.
     df <- .pe_apply_post_ops_df(df, store@post_ops)
 
     # j: union-global cell position from (source_id, row_id). Build a
@@ -866,7 +866,7 @@ setMethod("[",
             x@n_genes  <- as.numeric(length(x@feat_ids))
             # Slice gene-axis op tables on both phase chains. Current op
             # kinds have no gene-axis tables; this is a no-op for
-            # norm_libsize_log but generic for future kinds.
+            # the current kinds but generic for future ones.
             surviving_genes <- data.table::data.table(
                 feat_id = as.character(new_feat_ids))
             if (length(x@ops) > 0L) {

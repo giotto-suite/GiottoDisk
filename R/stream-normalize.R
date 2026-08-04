@@ -8,13 +8,14 @@ NULL
 # shared `parquetExprBase` virtual:
 #
 #   processData(parquetExprBase, libraryNormParam)
-#       -> appends a `norm_libsize_log` op (log = FALSE) to x@post_ops
+#       -> appends a `norm_libsize` op to x@post_ops
 #   processData(parquetExprBase, logNormParam)
-#       -> if a `norm_libsize_log` op is already on @post_ops, flips its
-#          `log = TRUE` flag in place (libsize+log fuse into one op record;
-#          the R-side executor applies scale then log in a single pass).
-#          Otherwise errors — log-only on raw counts isn't a documented
-#          Giotto streaming path.
+#       -> appends an independent `log` op to x@post_ops
+#
+# The two are separate op records with no ordering requirement between them:
+# @post_ops is a chain applied in order, so the chain itself supplies the
+# sequencing. Either can be used alone -- log-only on raw counts is a
+# legitimate request.
 #
 # Single (`parquetExprStore`) and union (`unionParquetExprStore`) collapse
 # to one algorithm via `.exprbase_substores()`: each substore's per-cell
@@ -25,7 +26,7 @@ NULL
 #
 # Neither method rewrites the Parquet file. The recipe lives as a pure-data
 # record on @post_ops and is applied R-side after collect (see
-# .pe_apply_post_op_norm_libsize_log_df). The recipe survives saveRDS / load
+# .pe_apply_post_op_norm_libsize_df / _log_df). The recipe survives saveRDS / load
 # cycles without special handling — no closures.
 #
 # zscoreScaleParam is intentionally NOT implemented for parquetExprBase:
@@ -34,7 +35,7 @@ NULL
 # upstream when scale_cells / scale_feats = TRUE on a streaming backend.
 
 # Build a per-substore `(source_id, orig_row_id, scalef)` slice for the
-# `norm_libsize_log` op record. `scalef` is the per-cell scale factor
+# `norm_libsize` op record. `scalef` is the per-cell scale factor
 # vector in the SAME positional order as `store@cell_idx` (or
 # 1..n_cells if no subset). Both single and union paths concatenate the
 # per-substore slices into one composite-keyed table — row_id restarts
@@ -71,19 +72,11 @@ setMethod("processData",
         })
         scalef_dt <- data.table::rbindlist(slices)
 
-        # If a libsize-log op already exists on @post_ops (re-running
-        # normalize), preserve its log flag and base. Otherwise default
-        # to log=FALSE.
-        existing <- .pe_find_op_type(x@post_ops, "norm_libsize_log")
-        log_flag <- if (is.na(existing)) FALSE else
-                    isTRUE(x@post_ops[[existing]]$log)
-        log_base <- if (is.na(existing)) 2 else x@post_ops[[existing]]$base
-        new_op <- list(
-            type   = "norm_libsize_log",
-            scalef = scalef_dt,
-            log    = log_flag,
-            base   = log_base
-        )
+        # Re-running library normalization replaces the existing scale
+        # factors in place rather than stacking a second scaling; any log op
+        # further down the chain is untouched and still applies after it.
+        new_op <- list(type = "norm_libsize", scalef = scalef_dt)
+        existing <- .pe_find_op_type(x@post_ops, "norm_libsize")
         if (is.na(existing)) {
             .pe_push_op(x, new_op, phase = "post")
         } else {
@@ -110,18 +103,11 @@ setMethod("processData",
                  "(log1p) to preserve sparsity.", call. = FALSE)
         }
 
-        existing <- .pe_find_op_type(x@post_ops, "norm_libsize_log")
-        if (is.na(existing)) {
-            stop("[processData(parquetExprBase, logNormParam)] no ",
-                 "library-size normalization op present. Run ",
-                 "processData(libraryNormParam) first; log-only on raw ",
-                 "counts is not a supported streaming path.",
-                 call. = FALSE)
-        }
-        # Fuse log flag onto the existing libsize op.
-        x@post_ops[[existing]]$log  <- TRUE
-        x@post_ops[[existing]]$base <- as.numeric(base)
-        x
+        # Stands alone: log-only on raw counts is a legitimate request, and
+        # the chain supplies the ordering -- whatever ops precede this one
+        # have already been applied by the time the log runs.
+        .pe_push_op(x, list(type = "log", base = as.numeric(base)),
+                    phase = "post")
     }
 )
 

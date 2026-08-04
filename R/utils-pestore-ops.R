@@ -25,25 +25,30 @@ NULL
 #
 # Op types currently supported:
 #
-#   norm_libsize_log  (phase: post)
-#     Fused library-size scaling + optional log transform. Mutates
-#     `value` in place, R-side.
+#   norm_libsize      (phase: post)
+#     Per-cell library-size scaling. Mutates `value` in place, R-side.
 #     Params:
 #       scalef   data.table(source_id, orig_row_id, scalef). One row per
 #                cell present in the store's current view at processData
 #                time. Composite (source_id, orig_row_id) key so the same
 #                op record carries scalefs for all substores of a union.
-#       log      logical. Apply log1p / log(base) after scaling.
+#
+#   log               (phase: post)
+#     log1p / log(base). Carries no axis-keyed state.
+#     Params:
 #       base     numeric. log base (default 2).
+#
+# These are independent records, not a fused one, so either may be used
+# alone and in either order -- the chain supplies the sequencing.
 #
 # Extension protocol:
 #   - Lazy op: add a branch to .pe_apply_op (arrow-side switch), and a
 #     .pe_op_table_keys entry if the op carries axis-keyed state that
 #     `[`-subset should narrow.
-#   - Post op: add branches to .pe_apply_post_op_df AND
-#     .pe_apply_post_op_mat (both shapes). Add .pe_op_table_keys entry
-#     if axis-keyed. Add a natural-phase-"post" case in the verb that
-#     produces it.
+#   - Post op: add a branch to .pe_apply_post_op_df, plus a
+#     .pe_op_table_keys entry if axis-keyed, and an arrow lowering in
+#     `.pe_post_op_arrow` if the op can be pushed down. Add a
+#     natural-phase-"post" case in the verb that produces it.
 
 
 # ---- @ops arrow-side executor ---------------------------------------------
@@ -52,7 +57,7 @@ NULL
 # Returns the augmented query.
 .pe_apply_op <- function(atab, op) {
     switch(op$type,
-        # Future arrow-native op types dispatch here. norm_libsize_log
+        # Future arrow-native op types dispatch here. norm_libsize / log
         # moved to @post_ops; not an arrow-side op.
         stop("[.pe_apply_op] unknown arrow-side op type: ", op$type,
             call. = FALSE)
@@ -75,7 +80,8 @@ NULL
 
 .pe_apply_post_op_df <- function(df, op) {
     switch(op$type,
-        "norm_libsize_log" = .pe_apply_post_op_norm_libsize_log_df(df, op),
+        "norm_libsize" = .pe_apply_post_op_norm_libsize_df(df, op),
+        "log"          = .pe_apply_post_op_log_df(df, op),
         stop("[.pe_apply_post_op_df] unknown post op type: ", op$type,
             call. = FALSE)
     )
@@ -87,7 +93,13 @@ NULL
     df
 }
 
-.pe_apply_post_op_norm_libsize_log_df <- function(df, op) {
+.pe_apply_post_op_log_df <- function(df, op) {
+    value <- NULL   # NSE
+    df[, value := log1p(value) / log(op$base %null% 2)]
+    df
+}
+
+.pe_apply_post_op_norm_libsize_df <- function(df, op) {
     # NSE bindings
     row_id <- source_id <- value <- scalef <- NULL
     # For a single-source scalef payload, replace the (source_id,
@@ -112,10 +124,54 @@ NULL
         df[, value := value * scalef]
         df[, scalef := NULL]
     }
-    if (isTRUE(op$log)) {
-        df[, value := log1p(value) / log(op$base %null% 2)]
-    }
     df
+}
+
+
+# ---- @post_ops arrow lowering ----------------------------------------------
+#
+# Some post ops can be pushed into the lazy query instead of being applied
+# R-side after collect. When every op in a chain can be, a consumer may run
+# the whole thing in Acero and pull back only the aggregate -- see
+# `.stream_gene_stats_arrow()`.
+#
+# The math here MIRRORS the `_df` executors above and must stay in step with
+# them. It is duplicated rather than shared because arrow cannot index an R
+# vector positionally inside a query, so per-cell state has to arrive as a
+# joinable table rather than a lookup.
+#
+# `nv` is the column being transformed; callers seed it with `value`.
+
+# Can this op be lowered? Gate for the fast path.
+.pe_post_op_arrow_ok <- function(op) {
+    isTRUE(op$type %in% c("norm_libsize", "log"))
+}
+
+# Lower one op onto a lazy query. Only call when `.pe_post_op_arrow_ok()`.
+.pe_post_op_arrow <- function(q, op) {
+    nv <- value <- scalef <- source_id <- row_id <- NULL   # NSE
+    switch(op$type,
+        "log" = {
+            base <- op$base %null% 2
+            dplyr::mutate(q, nv = log1p(nv) / log(!!base))
+        },
+        "norm_libsize" = {
+            sf <- data.table::as.data.table(op$scalef)
+            scalef_tbl <- arrow::as_arrow_table(data.frame(
+                source_id   = as.character(sf$source_id),
+                orig_row_id = as.integer(sf$orig_row_id),
+                scalef      = as.numeric(sf$scalef),
+                stringsAsFactors = FALSE
+            ))
+            q |>
+                dplyr::left_join(scalef_tbl,
+                    by = c("source_id" = "source_id",
+                           "row_id" = "orig_row_id")) |>
+                dplyr::mutate(nv = nv * scalef)
+        },
+        stop("[.pe_post_op_arrow] op type not lowerable to arrow: ",
+             op$type, call. = FALSE)
+    )
 }
 
 
@@ -164,7 +220,7 @@ NULL
 # Project a parent (union) @ops chain onto a single substore so its
 # `storeRead()` carries the same arrow-lazy recipe restricted to this
 # substore's rows. For arrow-native ops with source-keyed payload the
-# per-substore filter is applied here. norm_libsize_log now lives on
+# per-substore filter is applied here. The norm ops now live on
 # @post_ops (not @ops), so this projection currently no-ops for it —
 # @post_ops are consumed by streaming consumers via .pe_scalef_vec_for_sub
 # and don't need to travel with the substore's own @ops.
@@ -279,10 +335,11 @@ NULL
 #   gene axis key: "feat_id" — names, since col_id positional layout can
 #                  differ across substores (alignment not guaranteed)
 .pe_op_table_keys <- list(
-    norm_libsize_log = list(
+    norm_libsize = list(
         scalef = list(cell = c("source_id", "orig_row_id"))
     )
-    # Future kinds add their entries here.
+    # `log` carries no axis-keyed state, so it needs no entry.
+    # Future kinds add theirs here.
 )
 
 

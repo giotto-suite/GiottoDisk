@@ -268,6 +268,8 @@ setMethod(".show_info", signature("unionParquetExprStore"), function(object, .pr
             }
             sprintf("%s [%s] %s", step$relation, step$form, y_str)
         },
+        "norm_libsize" = sprintf("%d cells", nrow(step$scalef)),
+        "log"           = sprintf("base = %g", step$base %null% 2),
         "transform" = {
             aff <- step$affine2d
             parts <- character(0L)

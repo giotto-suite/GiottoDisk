@@ -44,7 +44,7 @@ test_that("processData(unionParquetExprStore, libNorm) builds union-spanning sca
         Giotto::normParam("library", scalefactor = 1e4))
 
     expect_length(u2@post_ops, 1L)
-    expect_equal(u2@post_ops[[1]]$type, "norm_libsize_log")
+    expect_equal(u2@post_ops[[1]]$type, "norm_libsize")
 
     scalef_dt <- u2@post_ops[[1]]$scalef
     expect_setequal(names(scalef_dt),
@@ -126,7 +126,7 @@ test_that("gene subset on union leaves @post_ops unchanged (cell-axis only op)",
 })
 
 
-test_that("union with norm + log fuse + storeRead applies log1p / log(base)", {
+test_that("union with norm + log chain + storeRead applies log1p / log(base)", {
     skip_if_not_installed("Giotto")
     pe1 <- .tiny_substore(prefix = "a", seed = 61, n_cells = 4L)
     pe2 <- .tiny_substore(prefix = "b", seed = 62, n_cells = 4L)
@@ -136,7 +136,8 @@ test_that("union with norm + log fuse + storeRead applies log1p / log(base)", {
         GiottoClass::processData(Giotto::normParam("log", base = 2,
             offset = 1))
 
-    expect_length(u@post_ops, 1L)   # fused, not appended
-    expect_true(u@post_ops[[1]]$log)
-    expect_equal(u@post_ops[[1]]$base, 2)
+    # Two independent records in chain order, not one fused record.
+    expect_equal(vapply(u@post_ops, function(o) o$type, character(1L)),
+                 c("norm_libsize", "log"))
+    expect_equal(u@post_ops[[2]]$base, 2)
 })
