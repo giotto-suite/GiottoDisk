@@ -49,19 +49,13 @@ setMethod("reduceData",
         # Halko is the large-feature-space fallback, so demanding an HVF
         # selection is backwards. Matches the gram-eigen method, which has
         # always allowed both. `feats_to_use = NULL` means every feature.
-        if (isTRUE(param$scale)) {
-            stop("[reduceData(parquetExprBase, randomPcaParam)] ",
-                 "scale = TRUE (per-gene z-score) is not supported for ",
-                 "streaming because it densifies the matrix. Pass ",
-                 "scale = FALSE.", call. = FALSE)
-        }
-
         .stream_random_svd(
             pe            = x,
             k             = param$ncp,
             n_oversamples = param$n_oversamples,
             n_power_iter  = param$n_power_iter,
             feats_to_use  = param$feats_to_use,
+            scale         = isTRUE(param$scale),
             center        = isTRUE(param$center),
             set_seed      = isTRUE(param$set_seed),
             seed_number   = param$seed_number
@@ -153,6 +147,7 @@ setMethod("reduceData",
 
 .stream_random_svd <- function(pe, k, n_oversamples = 10L, n_power_iter = 2L,
                                 feats_to_use = NULL, center = TRUE,
+                                scale = FALSE,
                                 set_seed = TRUE, seed_number = 1234L) {
     if (set_seed) set.seed(seed_number)
 
@@ -270,15 +265,22 @@ setMethod("reduceData",
              scalef_vecs = list())
     })
 
-    # ---- Per-HVG-gene means: derived from the first forward pass ----------
-    # There is no dedicated means pass. Centering enters the forward product
-    # as a rank-1 term -- Y = AᵀM - 1·(μᵀM) -- so the correction can be
-    # applied to Y after a pass instead of having to be known before it. The
-    # first `.forward` therefore accumulates per-gene sums from chunks it is
-    # already holding, publishes `means`, and subtracts the correction once at
-    # the end; every later `.forward` reuses that value. Saves one full read
-    # of the store out of the `3 + 2 * n_power_iter` this algorithm makes.
+    # ---- Per-HVG-gene means and sds ---------------------------------------
+    # Centering enters the forward product as a rank-1 term --
+    # Y = AᵀM - 1·(μᵀM) -- so the correction can be applied to Y AFTER a pass
+    # instead of having to be known before it. The first `.forward` therefore
+    # accumulates per-gene sums from chunks it is already holding, publishes
+    # `means`, and subtracts once at the end; later calls reuse it. That saves
+    # one full read out of the `3 + 2 * n_power_iter` this algorithm makes.
+    #
+    # Scaling cannot be deferred the same way: σ sits INSIDE the product,
+    # A·(D⁻¹M), so it has to be known before the first chunk is touched. When
+    # `scale = TRUE` a dedicated stats pass runs first and the fusion above is
+    # switched off. That pass reads the (usually baked, HVG-narrowed) store
+    # once, so it is the cheapest read in the algorithm -- but it is a real
+    # extra pass, and the only cost of asking for scaling.
     means <- numeric(P_hvg)
+    sds   <- rep(1, P_hvg)
 
     # ---- Per-substore chunk reader (cell-major within substore) ----------
     # The shared framework reader: `[` narrows the cell axis and `storeRead`
@@ -306,10 +308,29 @@ setMethod("reduceData",
     # chunk read back empty land on `-correction` either way: their Y rows stay
     # zero through the loop and the deferred sweep supplies the same value the
     # per-chunk branch would have written.
+    if (scale) {
+        # Reuse the HVF stats verb rather than hand-rolling a chunked read: it
+        # already returns per-gene mean and sd, and takes a single pushed-down
+        # Acero aggregate whenever the store is a single parquetExprStore with
+        # either an empty op chain (the baked case here) or one norm recipe.
+        # That makes this the cheapest read in the algorithm rather than a
+        # full extra chunked pass. `pe` is post-bake, so its gene axis is
+        # already the HVG set in the order the passes below expect.
+        st    <- .stream_gene_stats(pe)
+        sds   <- st$sd
+        sds[!is.finite(sds) | sds <= 0] <- 1  # constant genes: avoid /0
+        means <- if (center) st$mean_expr else numeric(P_hvg)
+    }
+
     .forward <- function(M, init_means = FALSE) {
         m <- ncol(M)
+        # Absorb σ into M once per call (M is P_hvg x m, so dividing by a
+        # length-P_hvg vector scales rows): A_std·M == A·(D⁻¹M), which keeps
+        # every per-chunk product identical for scale on/off. Same trick the
+        # gram path uses for its coordinate pass.
+        M_use      <- if (scale) M / sds else M
         apply_now  <- center && !init_means
-        correction <- if (apply_now) as.numeric(means %*% M) else numeric(m)
+        correction <- if (apply_now) as.numeric(means %*% M_use) else numeric(m)
         g_sum <- numeric(P_hvg)
         Y <- matrix(0.0, nrow = n_cells, ncol = m)
         for (info in sub_infos) {
@@ -325,7 +346,7 @@ setMethod("reduceData",
                     # A is genes x cells, so Aᵀ·M is the cells x m block and
                     # rowSums(A) is this chunk's contribution to the per-gene
                     # totals -- free, given the chunk is already in hand.
-                    Yc <- as.matrix(Matrix::crossprod(A, M))
+                    Yc <- as.matrix(Matrix::crossprod(A, M_use))
                     if (apply_now) {
                         Yc <- Yc - matrix(correction, nrow = chunk_n,
                                           ncol = m, byrow = TRUE)
@@ -343,7 +364,7 @@ setMethod("reduceData",
         }
         if (init_means) {
             means <<- g_sum / n_cells
-            Y <- sweep(Y, 2L, as.numeric(means %*% M), "-")
+            Y <- sweep(Y, 2L, as.numeric(means %*% M_use), "-")
         }
         Y
     }
@@ -373,13 +394,18 @@ setMethod("reduceData",
             }
         }
         if (center) Z <- Z - tcrossprod(means, cs_Y)  # implicit centering
+        # Zᵀ = A_stdᵀY = D⁻¹(AᵀY - μ·1ᵀY), so σ divides the rows once the
+        # centering term is in. Still no densification -- this is P x m algebra.
+        if (scale) Z <- Z / sds
         list(Z = Z, G = G)
     }
 
     # ---- Halko algorithm -------------------------------------------------
     omega <- matrix(stats::rnorm(P_hvg * k_total), nrow = P_hvg, ncol = k_total)
 
-    Y <- .forward(omega, init_means = center)
+    # Means ride along on the first pass only when they are not already known;
+    # `scale` forces the dedicated stats pass above, which supplies both.
+    Y <- .forward(omega, init_means = center && !scale)
     for (i in seq_len(n_power_iter)) {
         zg <- .backward(Y)
         R_chol <- chol(zg$G)
@@ -625,7 +651,7 @@ setMethod("reduceData",
             "). Delegating to streaming random SVD (Halko).",
             call. = FALSE)
         return(.stream_random_svd(
-            pe = pe, ncp = ncp,
+            pe = pe, k = ncp,
             n_oversamples = n_oversamples,
             n_power_iter  = n_power_iter,
             feats_to_use  = feats_to_use, center = center, scale = scale,

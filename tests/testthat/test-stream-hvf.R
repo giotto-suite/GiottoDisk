@@ -14,14 +14,65 @@
 }
 
 
-test_that("analyzeData(parquetExprStore, covLoessParam) requires JIT recipe", {
+# Raw store carrying a library-size + log2 recipe on @post_ops, i.e. values
+# normalized just-in-time on read. Built through the public verbs rather than
+# by assembling an op record by hand, so the test exercises the same path a
+# caller takes.
+.norm_recipe_pe <- function(mat) {
+    storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat) |>
+        GiottoClass::processData(
+            Giotto::normParam("library", scalefactor = 1e4)) |>
+        GiottoClass::processData(
+            Giotto::normParam("log", base = 2, offset = 1))
+}
+
+
+# A norm recipe on @post_ops is a fast path, not a requirement. A store whose
+# values were normalized at write time has an empty op chain and is just as
+# valid an input -- it used to be rejected outright. Both routes must agree.
+test_that("covLoessParam works on values normalized on disk (no recipe)", {
     skip_if_not_installed("Giotto")
     mat <- .tiny_mat()
-    pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
-    expect_error(
-        GiottoClass::analyzeData(pe, Giotto::analyzeParam("cov_loess")),
-        "no normalization recipe"
+
+    # (a) raw store + JIT recipe on @post_ops
+    jit <- .norm_recipe_pe(mat)
+
+    # (b) the same normalized values written to disk, empty op chain
+    libsz <- as.numeric(Matrix::colSums(mat))
+    libsz[libsz == 0] <- 1
+    mat_norm <- log1p(t(t(mat) * (1e4 / libsz))) / log(2)
+    baked <- storeWrite(
+        parquetExprStore(path = tempfile(fileext = ".parquet")),
+        methods::as(mat_norm, "CsparseMatrix"))
+    expect_length(baked@post_ops, 0L)
+
+    a <- GiottoClass::analyzeData(jit, Giotto::analyzeParam("cov_loess"))
+    b <- GiottoClass::analyzeData(baked, Giotto::analyzeParam("cov_loess"))
+
+    data.table::setorder(a, feats)
+    data.table::setorder(b, feats)
+    expect_equal(a$mean_expr, b$mean_expr, tolerance = 1e-10)
+    expect_equal(a$cov, b$cov, tolerance = 1e-10)
+    expect_equal(a$cov_diff, b$cov_diff, tolerance = 1e-10)
+})
+
+
+# The recipe is gone, so nothing structural says "these are counts" -- the
+# per-gene totals do. Integer totals reaching a COV statistic is a mistake
+# worth flagging, but not one worth blocking.
+test_that("covLoessParam warns when handed raw integer counts", {
+    skip_if_not_installed("Giotto")
+    mat <- .tiny_mat()
+    raw <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        mat)
+    expect_warning(
+        GiottoClass::analyzeData(raw, Giotto::analyzeParam("cov_loess")),
+        "look like raw integer counts"
     )
+    # ...and normalized values do not trip it
+    expect_silent(
+        GiottoClass::analyzeData(.norm_recipe_pe(mat),
+            Giotto::analyzeParam("cov_loess")))
 })
 
 

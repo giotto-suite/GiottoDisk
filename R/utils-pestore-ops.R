@@ -260,13 +260,6 @@ NULL
     if (length(idx) == 0L) NA_integer_ else as.integer(idx[1L])
 }
 
-# Predicate: does the store carry a normalization recipe? Norm now lives
-# on @post_ops.
-.pe_has_norm_op <- function(pe) {
-    !is.na(.pe_find_op_type(pe@post_ops, "norm_libsize_log"))
-}
-
-
 # ---- subset slice ----------------------------------------------------------
 #
 # Ops (both phases) are frozen snapshots of population stats captured at

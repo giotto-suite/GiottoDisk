@@ -18,7 +18,7 @@ NULL
 #       -> per-feature variance of analytic Poisson Pearson residuals,
 #          computed from raw counts (see the varParam section below)
 #
-# The COV methods share one stats pass, `.stream_norm_gene_stats()`, which
+# The COV methods share one stats pass, `.stream_gene_stats()`, which
 # reduces the triplet stream to n_genes-sized sum / sumsq / nnz vectors;
 # LOESS and bin-zscore then run on those. That pass has two shapes: an
 # arrow-native aggregate when the recipe is a single norm_libsize_log
@@ -31,16 +31,8 @@ NULL
 setMethod("analyzeData",
     signature(x = "parquetExprBase", param = "covLoessParam"),
     function(x, param, ...) {
-        if (!.pe_has_norm_op(x)) {
-            stop("[analyzeData(parquetExprBase, covLoessParam)] ",
-                 "expression backend has no normalization recipe. Run ",
-                 "normalizeGiotto(g, scale_feats = FALSE, scale_cells = FALSE) ",
-                 "first to populate scale factors on the store.",
-                 call. = FALSE)
-        }
-
         thr <- param$detection_threshold %null% 0
-        stats <- .stream_norm_gene_stats(x, expression_threshold = thr)
+        stats <- .stream_gene_stats(x, expression_threshold = thr)
 
         # Match Giotto: drop zero-detection features before fitting
         nr_cells <- cov <- pred_cov <- cov_diff <- mean_expr <- NULL
@@ -63,16 +55,8 @@ setMethod("analyzeData",
 setMethod("analyzeData",
     signature(x = "parquetExprBase", param = "covGroupsParam"),
     function(x, param, ...) {
-        if (!.pe_has_norm_op(x)) {
-            stop("[analyzeData(parquetExprBase, covGroupsParam)] ",
-                 "expression backend has no normalization recipe. Run ",
-                 "normalizeGiotto(g, scale_feats = FALSE, scale_cells = FALSE) ",
-                 "first to populate scale factors on the store.",
-                 call. = FALSE)
-        }
-
         thr <- param$detection_threshold %null% 0
-        stats <- .stream_norm_gene_stats(x, expression_threshold = thr)
+        stats <- .stream_gene_stats(x, expression_threshold = thr)
 
         # NSE bindings
         nr_cells <- cov <- expr_groups <- cov_group_zscore <- NULL
@@ -272,13 +256,58 @@ setMethod("analyzeData",
 }
 
 
-# ---- Internal: streaming per-gene stats with JIT normalization ------------
+# Shared tail for both stats paths: derive mean / sd / cov from the summed
+# accumulators and assemble the result. Variance via the SS identity,
+# σ² = (Σx² − n·μ²)/(n−1).
+#
+# Also the one place that can cheaply tell whether the values were normalized.
+# There is no requirement that they be -- a store may hold values normalized on
+# disk, with an empty op chain -- but per-gene totals that are all integers
+# almost certainly mean raw counts reached a statistic that is normally taken
+# on normalized values. `gene_sum` is already computed, so the check is free.
+.gene_stats_dt <- function(pe, gene_sum, gene_sumsq, gene_nnz,
+                            n_cells, n_genes, .warn_raw = TRUE) {
+    if (isTRUE(.warn_raw)) {
+        nzs <- gene_sum[gene_sum > 0]
+        if (length(nzs) > 0L && all(abs(nzs - round(nzs)) < 1e-8)) {
+            warning("[analyzeData] expression values look like raw integer ",
+                    "counts. COV-based feature statistics are normally taken ",
+                    "on normalized values; run normalizeGiotto() first, or ",
+                    "ignore this if the store already holds normalized data.",
+                    call. = FALSE)
+        }
+    }
 
-.stream_norm_gene_stats <- function(pe, expression_threshold = 0) {
+    gene_mean <- gene_sum / n_cells
+    gene_var  <- if (n_cells > 1L) {
+        pmax((gene_sumsq - gene_sum * gene_sum / n_cells) / (n_cells - 1L), 0)
+    } else {
+        numeric(n_genes)
+    }
+    gene_sd  <- sqrt(gene_var)
+    gene_cov <- ifelse(gene_mean > 0, gene_sd / gene_mean, NaN)
+
+    data.table::data.table(
+        feats      = pe@feat_ids,
+        nr_cells   = gene_nnz,
+        total_expr = gene_sum,
+        mean_expr  = gene_mean,
+        sd         = gene_sd,
+        cov        = gene_cov
+    )
+}
+
+
+# ---- Internal: streaming per-gene stats, JIT-normalizing if a recipe -------
+#
+# No normalization requirement. Any @post_ops present are applied on the way
+# through; an empty chain means the on-disk values are used as they are, which
+# is correct for a store holding values normalized at write time. Only the
+# arrow fast path below needs a specific op, and it tests for that itself.
+
+.stream_gene_stats <- function(pe, expression_threshold = 0) {
     if (!inherits(pe, "parquetExprBase"))
-        stop("[.stream_norm_gene_stats] pe must be a parquetExprBase.")
-    if (!.pe_has_norm_op(pe))
-        stop("[.stream_norm_gene_stats] pe has no norm op on @post_ops.")
+        stop("[.stream_gene_stats] pe must be a parquetExprBase.")
 
     thr     <- as.numeric(expression_threshold)
     n_cells <- as.integer(pe@n_cells)
@@ -295,11 +324,12 @@ setMethod("analyzeData",
     # span substores fine, but `.pe_remap_col` resolves against a single
     # store's @gene_idx.
     can_arrow <- inherits(pe, "parquetExprStore") &&
-        length(pe@post_ops) == 1L &&
-        identical(pe@post_ops[[1L]]$type, "norm_libsize_log")
+        (length(pe@post_ops) == 0L ||
+         (length(pe@post_ops) == 1L &&
+          identical(pe@post_ops[[1L]]$type, "norm_libsize_log")))
 
     if (can_arrow) {
-        return(.stream_norm_gene_stats_arrow(pe, thr,
+        return(.stream_gene_stats_arrow(pe, thr,
             n_cells = n_cells, n_genes = n_genes))
     }
 
@@ -352,23 +382,7 @@ setMethod("analyzeData",
         }
     }
 
-    gene_mean <- gene_sum / n_cells
-    gene_var  <- if (n_cells > 1L) {
-        pmax((gene_sumsq - gene_sum * gene_sum / n_cells) / (n_cells - 1L), 0)
-    } else {
-        numeric(n_genes)
-    }
-    gene_sd   <- sqrt(gene_var)
-    gene_cov  <- ifelse(gene_mean > 0, gene_sd / gene_mean, NaN)
-
-    data.table::data.table(
-        feats      = pe@feat_ids,
-        nr_cells   = gene_nnz,
-        total_expr = gene_sum,
-        mean_expr  = gene_mean,
-        sd         = gene_sd,
-        cov        = gene_cov
-    )
+    .gene_stats_dt(pe, gene_sum, gene_sumsq, gene_nnz, n_cells, n_genes)
 }
 
 
@@ -388,29 +402,38 @@ setMethod("analyzeData",
 
 #' @keywords internal
 #' @noRd
-.stream_norm_gene_stats_arrow <- function(pe, thr, n_cells, n_genes) {
+.stream_gene_stats_arrow <- function(pe, thr, n_cells, n_genes) {
     # NSE bindings
     row_id <- col_id <- value <- nv <- scalef <- source_id <- NULL
     s <- s2 <- nz <- NULL
 
-    op       <- pe@post_ops[[1L]]
-    log_flag <- isTRUE(op$log)
-    log_base <- op$base %null% 2
+    # Empty op chain: the on-disk values ARE the values, so the join and the
+    # norm expression drop out and the aggregate runs directly. This is the
+    # baked / normalized-at-write case, which would otherwise fall to the
+    # generic R-side pass for no reason.
+    q <- storeRead(pe, output = "query")
+    if (length(pe@post_ops) == 0L) {
+        q <- dplyr::mutate(q, nv = value)
+    } else {
+        op       <- pe@post_ops[[1L]]
+        log_flag <- isTRUE(op$log)
+        log_base <- op$base %null% 2
 
-    sf <- data.table::as.data.table(op$scalef)
-    scalef_tbl <- arrow::as_arrow_table(data.frame(
-        source_id   = as.character(sf$source_id),
-        orig_row_id = as.integer(sf$orig_row_id),
-        scalef      = as.numeric(sf$scalef),
-        stringsAsFactors = FALSE
-    ))
+        sf <- data.table::as.data.table(op$scalef)
+        scalef_tbl <- arrow::as_arrow_table(data.frame(
+            source_id   = as.character(sf$source_id),
+            orig_row_id = as.integer(sf$orig_row_id),
+            scalef      = as.numeric(sf$scalef),
+            stringsAsFactors = FALSE
+        ))
 
-    q <- storeRead(pe, output = "query") |>
-        dplyr::left_join(scalef_tbl,
-            by = c("source_id" = "source_id", "row_id" = "orig_row_id")) |>
-        dplyr::mutate(nv = value * scalef)
-    if (log_flag) {
-        q <- dplyr::mutate(q, nv = log1p(nv) / log(!!log_base))
+        q <- q |>
+            dplyr::left_join(scalef_tbl,
+                by = c("source_id" = "source_id", "row_id" = "orig_row_id")) |>
+            dplyr::mutate(nv = value * scalef)
+        if (log_flag) {
+            q <- dplyr::mutate(q, nv = log1p(nv) / log(!!log_base))
+        }
     }
 
     agg <- q |>
@@ -435,21 +458,9 @@ setMethod("analyzeData",
         gene_nnz[idx[keep]]   <- as.integer(agg$nz[keep])
     }
 
-    gene_mean <- gene_sum / n_cells
-    gene_var  <- if (n_cells > 1L) {
-        pmax((gene_sumsq - gene_sum * gene_sum / n_cells) / (n_cells - 1L), 0)
-    } else {
-        numeric(n_genes)
-    }
-    gene_sd  <- sqrt(gene_var)
-    gene_cov <- ifelse(gene_mean > 0, gene_sd / gene_mean, NaN)
-
-    data.table::data.table(
-        feats      = pe@feat_ids,
-        nr_cells   = gene_nnz,
-        total_expr = gene_sum,
-        mean_expr  = gene_mean,
-        sd         = gene_sd,
-        cov        = gene_cov
-    )
+    # With a norm recipe the values are normalized by construction and the
+    # raw-counts check would be pure noise. With an empty op chain they are
+    # whatever is on disk, so the check still applies.
+    .gene_stats_dt(pe, gene_sum, gene_sumsq, gene_nnz, n_cells, n_genes,
+                   .warn_raw = length(pe@post_ops) == 0L)
 }
