@@ -113,11 +113,9 @@ setMethod("analyzeData",
 # `inclusive = TRUE` switches those two to `>=`, which is what filtering
 # means by a threshold.
 #
-# Threshold contract, matching Giotto: `thr` selects which entries are
-# *counted as detected*; it never reduces a magnitude that participates.
-# So `sum` and `sumsq` are unconditional and only `nnz` / `sum_det` see it.
-# `sum_det` is the numerator of Giotto's `mean_expr_det` -- a mean over a
-# different population, not a modified total (see `.mean_expr_det_test`).
+# `thr` is a detection predicate: it selects which entries COUNT, and never
+# reduces a magnitude that participates. So `sum` / `sumsq` are unconditional
+# and only `nnz` / `sum_det` see it. adr/0009.
 #
 # One query, unions included. `storeRead()` on a union already opens every
 # substore as a single Dataset and composes their per-substore subset filters

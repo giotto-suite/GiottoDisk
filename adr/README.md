@@ -69,6 +69,9 @@ Not: bug fixes, refactors that preserve behaviour, or naming conventions
 | [0004](0004-op-machinery-roles.md) | Op machinery roles, and the invariants that connect them | Accepted | 2026-08-07 |
 | [0005](0005-ops-is-the-pre-materialization-prefix.md) | `@ops` is the pre-materialization prefix, not the set of lowerable ops | Accepted | 2026-08-07 |
 | [0006](0006-view-state-is-not-chain-state.md) | View state is not chain state; window-dependent ops bake at push time | Accepted | 2026-08-07 |
+| [0007](0007-altrep-range-indexing.md) | Index ALTREP-aware readers with `lo:hi`, never `seq.int()` | Accepted | 2026-05-30 |
+| [0008](0008-axis-predicate-shapes.md) | Axis subsets emit range, range+anti-set, or kept-set — never a range "for good measure" | Accepted | 2026-06-12 |
+| [0009](0009-threshold-selects-population.md) | A detection threshold selects which entries count, never reduces a magnitude | Accepted | 2026-08-07 |
 
 ## Backfill candidates
 

@@ -35,30 +35,24 @@ NULL
 
 # ---- shared axis predicates -------------------------------------------------
 #
-# `cell_idx` / `gene_idx` narrowing is expressed as an arrow predicate. The
-# naive form, `%in% <large int vec>`, does not row-group-prune and pays a hash
-# probe per returned row; `row_id >= a & row_id <= b` uses the parquet
-# row-group min/max statistics to skip untouched groups entirely.
+# `cell_idx` / `gene_idx` narrowing becomes an arrow predicate. Three shapes,
+# all exact -- the predicate admits precisely the in-view entries, so nothing
+# downstream re-filters:
 #
-# Strategy per axis:
-#   1. gapless (unique count == range span) -> range predicate ALONE, which
-#      exactly matches the kept set and beats a hash probe per row.
-#   2. gaps, few dropped -> range + `!(x %in% dropped)`. The range is REQUIRED
-#      for correctness here, or rows outside [lo, hi] pass the negated test.
-#   3. gaps, few kept -> `x %in% kept` ALONE. That is already correct and
-#      complete, and the range is deliberately NOT emitted: it can only help
-#      via row-group pruning, and on the gene axis it never does -- rows are
-#      written in cell batches, so every row group spans most col_ids.
-#      Measured on Atera (2k of 18k genes, HVG-ranked): stacking a range onto
-#      `is_in(kept)` cost +6.4% for zero pruning. On the cell axis a range
-#      over a contiguous chunk was 3.9x faster than the `%in%` form.
+#   1. gapless               -> range alone
+#   2. gaps, few dropped     -> range AND `!(x %in% dropped)`
+#                               (the range is required for CORRECTNESS here)
+#   3. gaps, few kept        -> `x %in% kept` alone, NO range
 #
-# Bounds come from min/max, never the first/last element: `idx` is NOT
-# guaranteed sorted (`feats_to_use` may be HVG-rank ordered), and these are
-# set predicates -- row order is restored downstream by `.pe_remap_row` /
-# `.pe_remap_col`. Gap detection works on unique values so duplicated entries
-# cannot make `n == span` accidentally true while gaps remain, and `dropped`
-# is only materialized when the anti-set branch actually wins.
+# Case 3 looks like an omission and is not: a `col_id` range prunes no row
+# groups (the file is cell-major) while still costing a comparison per row.
+# Adding it "for symmetry" is a measured regression. adr/0008 has the numbers
+# and the sort-order argument.
+#
+# Bounds come from min/max, never first/last -- `idx` is not guaranteed sorted
+# (`feats_to_use` may be HVG-rank ordered). Gap detection runs on unique values
+# so duplicates cannot make `n == span` accidentally true, and `dropped` is
+# materialized only when case 2 wins.
 
 #' @keywords internal
 #' @noRd

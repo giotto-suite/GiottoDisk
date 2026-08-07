@@ -82,8 +82,10 @@ Both chains already draw this line, in the same place for different reasons:
   (ADR 0003). An op that records "which rows are visible" would have to be
   re-keyed on every subsequent `[`.
 
-Corollary for both: **view state is not chain state.** If your feature answers
-"which subset am I looking at," it is a slot.
+Corollary for both: **view state is not chain state** (ADR 0006). If your
+feature answers "which subset am I looking at," it is a slot. `[` narrows the
+window and never touches the chain; the chain never consults the window at
+read time.
 
 **4. Which class tier dispatches it?**
 
@@ -133,21 +135,63 @@ This is the distinction most easily missed, because both use slots named
 **Tabular / geom chain** (`parquetBase`, `parquetStore`, `parquetGeomBase`)
 - Op types: `filter`, `head`, `tail`, `sample`, `distinct`, `join`,
   `spat_relate`, plus internal `id_filter`.
-- Arrow executor: `.ptabular_apply_op`. SQL executor: `.pstore_sql_inner`.
+- Carriers: lazy Arrow query (`.ptabular_apply_op`) and **SQL**
+  (`.pstore_sql_inner`, serving both duckdb and sedona).
 - Fold: `.pbase_storeread_processing`.
 - `@post_ops` here currently holds one type: `"transform"` (affine2d),
   applied by `.apply_post_ops`.
+- No push helper, no monotonic guard — producers append with
+  `x@ops <- c(x@ops, list(...))` directly.
 
 **Expression chain** (`parquetExprBase`)
 - Op types: `multiply`, `log`, `add` (stub — recorded and refused).
   Authoritative list: the header of `R/utils-pestore-ops.R`.
-- Arrow executor: `.pe_apply_op` → `.op_*`. Collected-frame executor:
-  `.pe_apply_post_op_df` → `.pe_apply_post_op_*_df`.
+- Carriers: lazy Arrow query (`.pe_apply_op` → `.op_*`) and the **collected
+  triplet `data.table`** (`.pe_apply_post_op_df` → `.pe_apply_post_op_*_df`).
+  **There is no SQL compile on this chain** — do not go looking for a
+  `.pe_*_sql_inner`, and do not add one to serve a single op.
 - Folds: `.pe_apply_ops` (lazy), `.pe_apply_post_ops_df` (post).
-- Chain editors: `.pe_push_op`, `.pe_demote_ops`, `.pe_chain_none`.
+- Chain editors: `.pe_push_op`, `.pe_demote_ops`, `.pe_chain_none` — the only
+  sanctioned way to move where a step runs.
 
 An executor from one chain never runs an op from the other. If you find
 yourself wanting that, you have mis-picked the class tier in question 4.
+
+### Which invariants travel
+
+ADR 0004 states its invariants in general terms, but it was written about the
+expression chain and **two of them do not hold on the tabular/geom side**.
+Check which chain you are on before applying them.
+
+| Invariant | Tabular / geom | Expression |
+|---|---|---|
+| Records are pure data, no closures | yes | yes |
+| Executors keyed by (type, carrier), not by phase | yes | yes |
+| Payloads keyed by on-disk id, per source (ADR 0003) | n/a — no axis payloads | yes |
+| **Producers append and never revisit** | **no** — see below | yes, enforced by convention |
+| **Monotonic phase rule** (nothing on `@ops` once `@post_ops` is non-empty) | **no** — nothing enforces it | yes, enforced by `.pe_push_op` |
+| Chain editors are the only way to move where a step runs | n/a — no chain editors exist here | yes |
+| Window-dependent ops bake at push time (ADR 0006) | yes — `crop()` freezes half-plane coefficients into an injected `filter` op | yes — `libraryNormParam` freezes its factors |
+
+The revisit exception is deliberate, not an oversight: `.pgeom_set_transform()`
+in `R/methods-transforms.R` filters the existing `"transform"` record out of
+`@post_ops` and re-adds the composed one, so the chain holds at most one. That
+is sound *there* because affine composition is associative and a store has
+exactly one pending transform — collapsing loses nothing. It is not sound on
+the expression chain, where
+arbitrary steps may sit between two records of the same type, which is
+precisely the bug ADR 0004 records.
+
+So, both directions:
+
+- Do **not** "fix" the geom transform collapse to satisfy invariant 2. It is
+  correct and AGENTS.md documents the auto-collapse as intended behaviour.
+- Do **not** copy the collapse idiom into an expression op. Reaching back to
+  find and rewrite an earlier record of your own type is the specific mistake
+  that `norm_libsize` made; re-running a producer must compose instead.
+
+A new op type on either chain that is **not** associative-and-unique like the
+transform gets append-only semantics regardless of chain.
 
 **Slot means position, not capability** (ADR 0005). `@ops` is the prefix that
 runs *before* materialization; `@post_ops` is the suffix that runs *after*.
@@ -161,12 +205,15 @@ slot holds it, and never "fix" a lowerable op you find in `@post_ops`.
    `norm_libsize`. Intent belongs to the param class or the verb.
 2. Record it as pure data: `list(type = "…", …params)`. **No closures** — the
    record must survive `saveRDS`/`load` and travel to parallel workers.
-3. Producer appends, never revisits:
+3. Append directly — there is no push helper on this chain:
    ```r
    x@ops <- c(x@ops, list(list(type = "myop", ...)))
    ```
-   Re-running a producer must compose, not rewrite an earlier record — the
-   chain cannot promise nothing was inserted in between.
+   Default to append-only: re-running a producer should compose, not rewrite
+   an earlier record, because the chain cannot promise nothing was inserted in
+   between. Collapsing to a single record (as `"transform"` does) is only
+   sound when the operation is associative *and* the store can hold at most
+   one — if you are not sure both hold, append. See *Which invariants travel*.
 4. Add the Arrow arm to `.ptabular_apply_op`.
 5. **Add the SQL arm to `.pstore_sql_inner`.** If you skip this, `output =
    "duckdb"` and `output = "sedona"` warn-and-skip your op and return *wrong
@@ -186,12 +233,13 @@ Follow ADR 0004's checklist; it is the authority. Condensed:
 
 1. Pick a primitive name; add it to the registry header in
    `R/utils-pestore-ops.R` with its params and phase.
-2. Decide which **carriers** can express it (lazy Arrow query / collected
-   triplet `data.table`). One executor per `(type, carrier)` that cannot be
-   shared — a pure elementwise expression on `value` can share one
-   (`.op_transform_log` does, since `dplyr::mutate` is generic over both);
-   anything carrying per-axis state cannot, because Arrow cannot index an R
-   vector from inside a plan.
+2. Decide which **carriers** can express it. There are exactly two on this
+   chain — lazy Arrow query and collected triplet `data.table`; there is no
+   SQL carrier, so unlike Checklist A there is no third arm to add. Write one
+   executor per `(type, carrier)` that cannot be shared: a pure elementwise
+   expression on `value` can share one (`.op_transform_log` does, since
+   `dplyr::mutate` is generic over both); anything carrying per-axis state
+   cannot, because Arrow cannot index an R vector from inside a plan.
 3. Key payloads **by on-disk id, per source** (ADR 0003) — a named list of
    per-substore vectors, not one stacked vector. This is what makes payloads
    invariant under `[`. Note that `cell_idx`/`gene_idx` are **not** guaranteed
@@ -200,11 +248,28 @@ Follow ADR 0004's checklist; it is the authority. Condensed:
 4. Push with `.pe_push_op(pe, record, phase = "lazy" | "post")`. It enforces
    the monotonic rule: once `@post_ops` is non-empty, nothing may go on
    `@ops`. That rule is **sequencing, not a defect** — do not remove it.
-5. Have the producing **verb** append it (`processData(·, someParam)`), and
+5. **If the op's meaning depends on the open window, bake it at push time**
+   (ADR 0006). An op defined by a population statistic over the current view —
+   as `multiply` from `libraryNormParam` is, its factors being
+   `scalefactor / colSums` — must run its aggregate in the producer and freeze
+   the answer into the record. From then on the record is a pure function of a
+   value and an axis id, so `[` can narrow freely without invalidating it.
+   Consequences to accept deliberately: the producer is an eager full pass, not
+   a queued recipe, and the frozen payload rides on the store through
+   `saveRDS` and every subset.
+
+   An op that *cannot* bake — one that would have to re-derive its statistic
+   against whatever window is open at read time — **does not belong on the
+   chain.** The escape is materialization: `storeWrite` bakes the chain into
+   on-disk values and returns a store with empty chains, after which the
+   statistic can be taken over the new population by re-running the verb.
+   Re-running the producer is how a caller asks for a statistic over a new
+   population; subsetting is not.
+6. Have the producing **verb** append it (`processData(·, someParam)`), and
    check which consumer verbs will encounter it: `reduceData`, `analyzeData`,
    `filterData`, `storeRead`, `storeWrite`. Every consumer reaches the chain
    through `storeRead`.
-6. A store's `@uid` must match the on-disk `source_id` partition. Minting a
+7. A store's `@uid` must match the on-disk `source_id` partition. Minting a
    fresh store from a path via `new()`/`initialize()` gives a new uid, and
    `source_id`-keyed payload filters then silently return zeros. Assert
    non-empty results against independent ground truth — identical-looking

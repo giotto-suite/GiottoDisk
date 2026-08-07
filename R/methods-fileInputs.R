@@ -147,9 +147,7 @@ setMethod("storeRead", signature("tenxH5Input"), function(store, ...) {
             if (slice_hi >= slice_lo) break
             c_lo <<- c_hi + 1L
         }
-        # `lo:hi` (ALTREP compact sequence -> hyperslab), never
-        # `seq.int(lo, hi)` (materialized vector -> point selection). See the
-        # note in `.tenxh5_read_range()`; same 4x time / 4x memory penalty.
+        # `lo:hi`, never `seq.int(lo, hi)` -- adr/0007.
         vals <- as.double(data_ds[slice_lo:slice_hi])
         gidx <- as.integer(indices_ds[slice_lo:slice_hi])
         nnz_per_cell   <- diff(indptr[c_lo:(c_hi + 1L)])
@@ -515,14 +513,10 @@ setMethod(
     if (slice_hi < slice_lo) return(NULL)   # empty batch
     h5 <- hdf5r::H5File$new(h5_path, mode = "r")
     on.exit(try(h5$close_all(), silent = TRUE), add = TRUE)
-    # Index as `lo:hi`, NOT `seq.int(lo, hi)`.  `:` yields an ALTREP compact
-    # integer sequence, which hdf5r recognizes as contiguous and serves with
-    # a single hyperslab read.  `seq.int()` materializes a real 47.6M-element
-    # vector, so hdf5r falls back to point selection: measured on Atera
-    # (25k-cell batch) that is 1.20 s / +2.16 GB per read versus 0.27 s /
-    # +0.55 GB, for byte-identical output.  There are two such reads per
-    # batch, so at 7 concurrent workers this alone accounted for ~15 GB of
-    # peak RSS and roughly half the ingest wall-clock.
+    # Index as `lo:hi`, NOT `seq.int(lo, hi)`. `:` is an ALTREP compact
+    # sequence that hdf5r serves as one hyperslab; a materialized vector falls
+    # back to point selection, at 4x the time and memory for identical output.
+    # Load-bearing, and invisible at the call site -- see adr/0007.
     vals <- as.double(h5[[paste0(root, "/data")]][slice_lo:slice_hi])
     gidx <- as.integer(h5[[paste0(root, "/indices")]][slice_lo:slice_hi])
     nnz_per_cell   <- diff(indptr[c_lo:(c_hi + 1L)])

@@ -28,6 +28,39 @@ High-level direction for GiottoDisk. Specific features land in the
   on the GiottoClass side.
 - **`bpcMatrixStore` as a wrapping store** — see below.
 
+### An `add` op for centred display values
+
+`multiply` is implemented; its counterpart `add` is registered as a refused
+stub. Both triplet executors reject it, and no verb emits one.
+
+The asymmetry is real: multiplying preserves sparsity, so it lowers to Acero and
+applies over a collected triplet frame alike. Adding does not — every implicit
+zero becomes the offset — so it cannot be expressed over triplets at all.
+
+Recording it is still cheap; only materialising it is not. That is the bargain
+the rest of the suite already strikes: `BPCells::add_rows()` appends a node to
+the op graph and `ScaledMatrix(center=)` keeps the sparse seed, and neither
+expands anything until a chunk is pulled through. Both are reached via
+`GiottoClass::standardise_flex()`, which is the shape a `parquetExprStore`
+branch should match — today a pestore matches neither branch and falls through
+to arithmetic it cannot do, which is why `zscoreScaleParam` is refused upstream.
+
+At materialisation the frame densifies **into triplet form**: `CJ(row_id,
+col_id)` over the slice, the stored nonzeros joined onto it, `NA` filled with 0.
+The offset is then an ordinary mutate, and every op after it keeps working on
+triplets in the same phase — no matrix-tier executor, no chain split. What does
+change is payload size: from the `add` onward the frame is dense, so the read
+window has to be sized against density 1.0 rather than the store's actual fill.
+`.pe_window_cells()` derives the window per read, so it can account for that.
+
+**Scope, so this does not get over-built.** The only consumer is *display* — the
+`"scaled"` expression slot behind heatmaps and similar. Analysis never needs it:
+every path that mathematically requires centring already folds it into algebra
+instead of materialising, in Halko's rank-1 term, the gram path's `n·μμᵀ`, and
+the Pearson residual zero-block. So the slice is small by nature, and
+`.pe_check_dgc_dims()` already refuses anything large. A straightforward `CJ`
+expansion is sufficient; it does not need to be fast.
+
 ### `bpcMatrixStore` as a wrapping store
 
 Sequenced after the scstream feature-adoption work.

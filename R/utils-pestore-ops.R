@@ -60,29 +60,9 @@ NULL
 #
 #   add               (STUB -- recorded and refused, not implemented)
 #     Add a per-axis offset. Params mirror `multiply`, with `terms` in place
-#     of `factors`. No verb emits one yet.
-#
-#     Recording it is cheap; only materializing it is not.
-#
-#     At materialization the frame densifies INTO TRIPLET FORM: `CJ(row_id,
-#     col_id)` over the slice, the stored nonzeros joined onto it, NA filled
-#     with 0. The offset is then an ordinary mutate, and every op after it
-#     keeps working on triplets in the same phase -- no matrix-tier executor,
-#     no chain split.
-#
-#     What does change is the payload size: from the `add` onward the frame is
-#     dense, so the read window has to be sized against density 1.0 rather
-#     than the store's actual fill. `.pe_window_cells()` derives the window per
-#     read, so it can account for that -- a stored chunk_size could not have.
-#
-#     Scope, so this does not get over-built: the only consumer is DISPLAY --
-#     the "scaled" expression slot behind heatmaps and similar. Analysis never
-#     needs it; every path that mathematically requires centering already
-#     folds it into algebra instead of materializing (Halko's rank-1 term, the
-#     gram path's n*mu*mu^T, the Pearson residual zero-block). So the slice is
-#     small by nature, and `.pe_check_dgc_dims()` already refuses anything
-#     large. A straightforward CJ expansion is sufficient; it does not need to
-#     be fast.
+#     of `factors`. Both executors refuse it; no verb emits one. Intended
+#     shape, scope and why it is deferred are in
+#     vignettes/articles/roadmap.Rmd, "An `add` op for centred display values".
 #
 #   log               (phase: post)
 #     log1p / log(base). Carries no axis-keyed state.
