@@ -8,6 +8,5 @@
 #' @importFrom GiottoUtils %null%
 #' @importClassesFrom terra SpatVector
 #' @importClassesFrom Matrix Matrix
-#' @importClassesFrom DelayedArray DelayedArray
 #' @import data.table
 NULL
