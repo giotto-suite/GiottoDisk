@@ -47,6 +47,21 @@ A `SLOWER` flag is a prompt for an explanation, not a verdict. Some are correct:
 store's op chain, which that version skipped entirely — they were reporting
 statistics on unnormalized values. The flag is doing its job by making you say so.
 
+## Verbs and one pipeline
+
+Most cases time a single verb against a fixture built in setup, which is what
+localizes a regression to the step that caused it. But verb-level measurement
+misses a slowdown spread too thinly across steps to trip any single threshold,
+so there is one end-to-end case: `filter -> norm -> HVF -> PCA` from a raw
+store, with the HVGs taken from HVF output rather than faked. It is the only
+case exercising the HVF -> PCA handoff, and it runs at `reps = 1` because its
+job is a trend line, not precision.
+
+Both PCA methods are timed. `random` (Halko) and `gram` are separate
+implementations with their own chain-demotion and fallback paths, and the
+feature ratio here (1000 of 4000) trips the transient bake, so that is the path
+being measured rather than the un-baked one.
+
 ## Real data
 
 `GD_BENCH_STORE` points at an existing store instead of generating one, for

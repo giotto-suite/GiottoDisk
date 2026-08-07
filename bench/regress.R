@@ -70,8 +70,13 @@ CASES <- list(
     c("analyzeData cov_loess    [norm]", "HVF(pn)",                              ""),
     c("filterData               [norm]", "FILT(pn)",                             ""),
     c("reduceData random PCA    [norm]", "PCA(pn)",                              "2"),
+    c("reduceData gram PCA      [norm]", "PCAG(pn)",                             "2"),
     c("analyzeData featStats  [union]",  "FS(u)",                                ""),
-    c("analyzeData cov_loess  [union]",  "HVF(u)",                               "")
+    c("analyzeData cov_loess  [union]",  "HVF(u)",                               ""),
+    # End to end, from a raw store, with HVGs actually chosen by HVF rather
+    # than faked. Catches a slowdown spread too thinly across steps to trip any
+    # single threshold, and is the only case exercising the HVF -> PCA handoff.
+    c("PIPELINE filter->norm->HVF->PCA",  "PIPELINE()",                           "1")
 )
 
 # ---- harness ----------------------------------------------------------------
@@ -109,9 +114,34 @@ HVF <- function(p) suppressWarnings(GiottoClass::analyzeData(p, Giotto::analyzeP
 FILT <- function(p) GiottoClass::filterData(p, Giotto::filterParam(
     expression_threshold = 1, feat_det_in_min_cells = 5, min_det_feats_per_cell = 5))
 hvg <- rownames(pe)[seq_len(min(1000L, nrow(pe)))]
-PCA <- function(p) suppressWarnings(GiottoClass::reduceData(p,
-    Giotto::pcaParam("random", ncp = 20, feats_to_use = hvg,
-        center = TRUE, scale = FALSE, set_seed = TRUE, seed_number = 42L)))
+# `gramEigenPcaParam` is exported by GiottoDisk itself rather than routed
+# through `Giotto::pcaParam()` (see R/pca-param.R) -- still public API, just a
+# different package.
+.pca <- function(p, feats, gram = FALSE) {
+    prm <- if (gram) {
+        gramEigenPcaParam(ncp = 20, feats_to_use = feats,
+            center = TRUE, scale = FALSE)
+    } else {
+        Giotto::pcaParam("random", ncp = 20, feats_to_use = feats,
+            center = TRUE, scale = FALSE, set_seed = TRUE, seed_number = 42L)
+    }
+    suppressWarnings(GiottoClass::reduceData(p, prm))
+}
+PCA  <- function(p) .pca(p, hvg)
+PCAG <- function(p) .pca(p, hvg, gram = TRUE)
+
+# Whole workflow from raw, HVGs taken from HVF output. `reps = 1` in the case
+# list -- this is the slowest entry and its job is a trend line, not precision.
+# `filterData` returns the surviving ids (masks), not a narrowed store -- the
+# caller applies them. That is the shape a gobject-level filterGiotto wraps.
+PIPELINE <- function() {
+    m <- FILT(pe)
+    keep <- pe[m$feats_keep, m$cells_keep]
+    p  <- LG(LN(keep))
+    st <- HVF(p)
+    data.table::setorder(st, -cov_diff)
+    .pca(p, utils::head(st$feats, 1000L))
+}
 
 pn  <- LG(LN(pe))
 sub <- pn[seq_len(min(80L, nrow(pn))), seq_len(min(80L, ncol(pn)))]
