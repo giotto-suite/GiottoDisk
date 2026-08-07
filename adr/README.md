@@ -64,8 +64,10 @@ Not: bug fixes, refactors that preserve behaviour, or naming conventions
 | # | Title | Status | Date |
 |---|---|---|---|
 | [0001](0001-no-positional-row-indexing.md) | No positional row indexing | Accepted | 2026-04-17 |
-| [0002](0002-post-ops-phase-split.md) | Two-phase `@ops` / `@post_ops` split on `parquetExprStore` | Accepted, revision pending | 2026-07-22 |
+| [0002](0002-post-ops-phase-split.md) | Two-phase `@ops` / `@post_ops` split on `parquetExprStore` | Superseded by 0005 | 2026-07-22 |
 | [0003](0003-op-payloads-keyed-by-on-disk-id.md) | Op payloads keyed by on-disk id; `[` needs no subset slicing | Accepted | 2026-07-22 |
+| [0004](0004-op-machinery-roles.md) | Op machinery roles, and the invariants that connect them | Accepted | 2026-08-07 |
+| [0005](0005-ops-is-the-pre-materialization-prefix.md) | `@ops` is the pre-materialization prefix, not the set of lowerable ops | Accepted | 2026-08-07 |
 
 ## Backfill candidates
 

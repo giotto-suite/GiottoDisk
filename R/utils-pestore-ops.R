@@ -36,29 +36,14 @@ NULL
 # routing around it: .pe_demote_ops moves the op and everything after it to
 # @post_ops (same monotonic rule, expressed as a rewrite).
 #
-# KNOWN MISCLASSIFICATION -- do not build on the current placement.
-# `multiply` and `log` sit on @post_ops even though both lower to Acero --
-# `.pe_apply_op()` has a branch for each. They are there because the producing
-# verbs still push `phase = "post"`; the R-side executors
-# are faster for materializing reads, not because they must run in R -- a
-# deliberate move (fa3ee64) that bought 2-3x on the norm hot path and retired
-# the `v_norm` sidecar column. It cited parquetGeomBase as precedent, but that
-# store's @post_ops holds WKB transforms which genuinely cannot be lowered, so
-# the same slot ended up carrying two different criteria: "must run in R"
-# there, "faster in R" here. There is no way to express the latter, so it got
-# encoded in the slot. Two consequences: storeRead cannot tell a lowerable
-# post-op from an R-only one, so consumers wanting pushdown route around it via
-# output = "query" and reimplement the ops; and the monotonic rule above fires
-# spuriously -- a lazy op queued after a norm gets refused, not because the
-# sequence demands materialization (it does not; the norm lowers) but because
-# the norm was parked in the slot that means it does. The rule itself is
-# right: @ops is the prefix that runs BEFORE materialization, so once anything
-# is on @post_ops the chain has left Acero and everything after it must follow.
-# What is wrong is the placement that triggers it.
-# .pe_demote_ops is the first half of the fix and is in place; the token swap
-# and the move of these two records back onto @ops are not. The full contract
-# is written up in vignettes/articles/roadmap.Rmd, "Restore the @ops /
-# @post_ops contract".
+# The roles in this file (producer / record / payload / carrier / executor /
+# fold / chain editor / consumer) and the invariants connecting them are
+# recorded in adr/0004-op-machinery-roles.md. The two that bite most often:
+# executors are keyed by (record type, carrier) and NOT by phase, and a
+# consumer must never infer what an op is capable of from which slot it is in.
+#
+# Why the slot means position rather than capability: adr/0005. Why payloads
+# are keyed by on-disk id: adr/0003.
 #
 # Op types currently supported:
 #

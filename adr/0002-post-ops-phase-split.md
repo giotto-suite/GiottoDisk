@@ -1,9 +1,9 @@
 # 0002. Two-phase `@ops` / `@post_ops` split on `parquetExprStore`
 
-- **Status:** Accepted; revision pending (see *Consequences*)
+- **Status:** Superseded by 0005
 - **Date:** 2026-07-22
 - **Supersedes:** —
-- **Superseded by:** —
+- **Superseded by:** 0005
 
 ## Context
 
