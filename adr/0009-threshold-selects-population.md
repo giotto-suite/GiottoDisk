@@ -1,4 +1,4 @@
-# 0009. A detection threshold selects which entries count, and never reduces a magnitude
+# 0009. Detection thresholds gate counts, not magnitudes
 
 - **Status:** Accepted
 - **Date:** 2026-08-07

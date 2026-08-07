@@ -1,4 +1,4 @@
-# 0008. Axis subsets emit range, range-plus-anti-set, or kept-set — never a range "for good measure"
+# 0008. Arrow axis predicates never add a range "for good measure"
 
 - **Status:** Accepted
 - **Date:** 2026-06-12

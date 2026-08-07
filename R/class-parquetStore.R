@@ -164,6 +164,10 @@ setMethod("initialize", signature("parquetStore"), function(.Object, ...) {
             paste0("\n  ", toString(names(atypes[is_int64])))))
     }
   
+    # `row_index` is intrinsic row ordering within a source -- a stable join
+    # key, not an addressable offset. Positional row indexing is deliberately
+    # unsupported; row access is value-based (`subset`, `[i, on = ]`) or
+    # statistical (`rowSample`). adr/0001.
     if (!"row_index" %in% .pstore_disk_fields(.Object)) {
         stop("[initialize] no 'row_index' column", call. = FALSE)
     }

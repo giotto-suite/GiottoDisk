@@ -1,4 +1,4 @@
-# 0007. Index ALTREP-aware readers with `lo:hi`, never `seq.int(lo, hi)`
+# 0007. HDF5 slice reads index with `lo:hi`, not `seq.int()`
 
 - **Status:** Accepted
 - **Date:** 2026-05-30

@@ -59,6 +59,17 @@ or has a cost worth remembering.
 Not: bug fixes, refactors that preserve behaviour, or naming conventions
 (those go in AGENTS.md "Conventions").
 
+## Finding these
+
+The index below is the fallback. The primary path is a pointer **from the code
+the decision constrains** — `adr/NNNN` in a comment at the site someone would
+edit. That is where an ADR gets read: at the moment you are about to change the
+thing, not while browsing.
+
+So when you add one, add the pointer too, and put it where the tempting edit
+would be made rather than where the topic is documented. Every ADR here has at
+least one.
+
 ## Index
 
 | # | Title | Status | Date |
@@ -69,9 +80,9 @@ Not: bug fixes, refactors that preserve behaviour, or naming conventions
 | [0004](0004-op-machinery-roles.md) | Op machinery roles, and the invariants that connect them | Accepted | 2026-08-07 |
 | [0005](0005-ops-is-the-pre-materialization-prefix.md) | `@ops` is the pre-materialization prefix, not the set of lowerable ops | Accepted | 2026-08-07 |
 | [0006](0006-view-state-is-not-chain-state.md) | View state is not chain state; window-dependent ops bake at push time | Accepted | 2026-08-07 |
-| [0007](0007-altrep-range-indexing.md) | Index ALTREP-aware readers with `lo:hi`, never `seq.int()` | Accepted | 2026-05-30 |
-| [0008](0008-axis-predicate-shapes.md) | Axis subsets emit range, range+anti-set, or kept-set — never a range "for good measure" | Accepted | 2026-06-12 |
-| [0009](0009-threshold-selects-population.md) | A detection threshold selects which entries count, never reduces a magnitude | Accepted | 2026-08-07 |
+| [0007](0007-altrep-range-indexing.md) | HDF5 slice reads index with `lo:hi`, not `seq.int()` | Accepted | 2026-05-30 |
+| [0008](0008-axis-predicate-shapes.md) | Arrow axis predicates never add a range "for good measure" | Accepted | 2026-06-12 |
+| [0009](0009-threshold-selects-population.md) | Detection thresholds gate counts, not magnitudes | Accepted | 2026-08-07 |
 
 ## Backfill candidates
 
