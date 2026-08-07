@@ -1,6 +1,6 @@
 # Measured side of the benchmark. Invoked once per tree by bench/regress.R:
 #
-#   Rscript bench/_runner.R <pkg_path> <label> <reps> <h5|""> <out.tsv> <cap_s> <workers>
+#   Rscript bench/_runner.R <pkg> <label> <reps> <h5|""> <out.tsv> <cap_s> <workers> [case_regex]
 #
 # A real file rather than a template written at runtime: the previous version
 # built this with sprintf + writeLines, which meant %% escaping throughout, no
@@ -12,6 +12,7 @@
 a <- commandArgs(trailingOnly = TRUE)
 PKG <- a[1]; LBL <- a[2]; REPS <- as.integer(a[3]); H5SRC <- a[4]
 OUT <- a[5]; CAP <- as.numeric(a[6]); WORKERS <- as.integer(a[7])
+CASESEL <- if (length(a) >= 8L) a[8] else ""
 
 suppressMessages(pkgload::load_all(PKG, quiet = TRUE))
 suppressWarnings(suppressMessages({library(Matrix); library(data.table)}))
@@ -139,22 +140,39 @@ E$FILT <- function(p) GiottoClass::filterData(p, Giotto::filterParam(
 
 # Ingest is the fixture AND the first timed case -- one pass, not three. At
 # Atera scale a spare ingest is minutes and tens of GB of temp parquet.
+# Ingest always runs -- it is the fixture -- but is only *reported* when it
+# passes the case filter.
 ing <- BENCH_CASES[[1L]]
-.emit(ing[[1L]], .timed(quote(pe <- INGEST()), 1L, E))
+r_ing <- .timed(quote(pe <- INGEST()), 1L, E)
+if (!nzchar(CASESEL) || grepl(CASESEL, ing[[1L]])) .emit(ing[[1L]], r_ing)
 cat(sprintf("  store: %s feats x %s cells\n",
     format(nrow(E$pe), big.mark = ","), format(ncol(E$pe), big.mark = ",")))
 
 E$pn  <- E$LG(E$LN(E$pe))
 E$sub <- E$pn[seq_len(min(80L, nrow(E$pn))), seq_len(min(80L, ncol(E$pn)))]
-E$hvg <- rownames(E$pe)[seq_len(min(1000L, nrow(E$pe)))]
+# Parameters aligned with the original Atera harness (NCP 30, HVG_N 2000) so
+# the overlapping cases are comparable to its recorded profile.csv rather than
+# being a fourth incompatible configuration.
+E$NCP <- 30L; E$HVG_N <- 2000L
+
+# HVGs come from HVF output, not `rownames(pe)[1:n]`. Feature selection picks
+# the DENSEST rows on purpose (adr/0008), so an arbitrary prefix reads a
+# sparser band than any real workflow would and makes PCA look faster than it
+# is. Derived once here, outside any timed case.
+E$hvg <- local({
+    st <- E$HVF(E$pn)
+    data.table::setorder(st, -cov_diff)
+    utils::head(st$feats, min(E$HVG_N, nrow(E$pn)))
+})
 E$.pca <- function(p, feats, gram = FALSE) {
     # gramEigenPcaParam is exported by GiottoDisk itself rather than routed
     # through Giotto::pcaParam() -- see R/pca-param.R. Still public API.
     prm <- if (gram) {
-        gramEigenPcaParam(ncp = 20, feats_to_use = feats, center = TRUE, scale = FALSE)
+        gramEigenPcaParam(ncp = E$NCP, feats_to_use = feats,
+            center = TRUE, scale = FALSE)
     } else {
-        Giotto::pcaParam("random", ncp = 20, feats_to_use = feats, center = TRUE,
-            scale = FALSE, set_seed = TRUE, seed_number = 42L)
+        Giotto::pcaParam("random", ncp = E$NCP, feats_to_use = feats,
+            center = TRUE, scale = FALSE, set_seed = TRUE, seed_number = 42L)
     }
     suppressWarnings(GiottoClass::reduceData(p, prm))
 }
@@ -176,6 +194,7 @@ if (!E$h5mode) E$u <- local({
 
 for (cs in BENCH_CASES[-1L]) {
     if (E$h5mode && !isTRUE(cs[[4L]])) next
+    if (nzchar(CASESEL) && !grepl(CASESEL, cs[[1L]])) next
     reps <- if (is.na(cs[[3L]])) REPS else cs[[3L]]
     .emit(cs[[1L]], .timed(cs[[2L]], reps, E))
 }

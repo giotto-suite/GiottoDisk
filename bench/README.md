@@ -5,11 +5,26 @@ here asserts a correct answer. `regress.R` prints a table of ratios between two
 trees and exits non-zero if anything crossed the threshold.
 
 ```sh
-Rscript bench/regress.R                    # vs upstream/dev, synthetic data
-Rscript bench/regress.R --ref=HEAD~1
-Rscript bench/regress.R --ref=e120c82 --reps=5 --threshold=1.1
-GD_BENCH_STORE=/path/to/store Rscript bench/regress.R
+Rscript bench/regress.R                          # every dataset, every case
+Rscript bench/regress.R --data=synthetic         # one dataset
+Rscript bench/regress.R --data=atera
+Rscript bench/regress.R --cases=PCA              # one slice of cases (regex)
+Rscript bench/regress.R --cases='featStats|cellStats' --reps=5
+Rscript bench/regress.R --ref=HEAD~1 --workers=1 --threshold=1.1
+Rscript bench/regress.R --report                 # re-print, no work
 ```
+
+Three files: `regress.R` drives, `_runner.R` measures one tree, `_cases.R` is
+the list. Datasets and cases are independently selectable and everything runs by
+default. `atera` needs `GD_BENCH_H5` pointing at a `cell_feature_matrix.h5`;
+without it the default run does synthetic only and says so.
+
+Parameters are aligned with the original Atera harness — `ncp = 30`, 2000 HVGs,
+`batch_cells = 25000`, 8 workers, cap 300 s — so the overlapping cases are
+comparable to its recorded `profile.csv` rather than being a fourth
+configuration. HVGs come from HVF output, not `rownames(pe)[1:n]`: feature
+selection picks the densest rows on purpose (adr/0008), so an arbitrary prefix
+reads a sparser band than any real workflow and makes PCA look faster than it is.
 
 ## Why it is shaped this way
 
@@ -62,13 +77,36 @@ implementations with their own chain-demotion and fallback paths, and the
 feature ratio here (1000 of 4000) trips the transient bake, so that is the path
 being measured rather than the un-baked one.
 
+## Memory
+
+Peak footprint is sampled system-wide (`vm_stat` / `MemAvailable`) and reported
+as the largest drop in free memory, because arrow allocates in C++ where R's
+`gc()` accounting cannot see it. Two consequences:
+
+- anything below 50 MB reads as `-`, since background activity dominates there
+- the number is attributed to whichever case was running, so a concurrent
+  allocation elsewhere on the machine lands on that case. Treat single-sample
+  memory differences with more suspicion than timings, and re-run with
+  `--reps=3` before acting on one.
+
+Worker startup is a specific trap: eight mirai daemons each attach arrow and
+data.table, and although they are warmed outside any timed case, arrow's
+per-worker pools can still grow during the first parallel case.
+
 ## Real data
 
-`GD_BENCH_STORE` points at an existing store instead of generating one, for
+`GD_BENCH_H5` points at a 10x/Xenium `cell_feature_matrix.h5` and the run starts
+from ingest, for
 confirming that synthetic conclusions survive real skew — feature density
 concentrated in the HVGs, a wide library-size spread. On Atera the whole sweep is
 a couple of minutes, so this is cheap enough to run when a result looks
-surprising. `storeWrite` is skipped in that mode, having nothing to ingest.
+surprising. Ingest is a measured case there rather than a skipped one — it is the
+largest single memory consumer in the run (~16.7 GB on Atera), and it is the
+stage that has historically trailed BPCells and scstream.
+
+A store serialized from an older tree is deliberately not supported as an input:
+it will not deserialize against a changed class definition, and going through the
+Input path is what yields real ids.
 
 Heavier work — cross-toolbox comparisons, scale studies — does not belong here.
 It needs its own dependency set and does not have to track this package's API

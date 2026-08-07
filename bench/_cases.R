@@ -20,6 +20,7 @@ BENCH_CASES <- list(
     list("processData logNorm      [raw]",  quote(LG(pe)),                          NA, TRUE),
     list("storeRead dgcmatrix      [norm]", quote(storeRead(sub, output = "dgcmatrix")), NA, TRUE),
     list("analyzeData featStats    [raw]",  quote(FS(pe)),                          NA, TRUE),
+    list("analyzeData cellStats    [raw]",  quote(CS(pe)),                          NA, TRUE),
     list("analyzeData featStats    [norm]", quote(FS(pn)),                          NA, TRUE),
     list("analyzeData cellStats    [norm]", quote(CS(pn)),                          NA, TRUE),
     list("analyzeData cov_loess    [norm]", quote(HVF(pn)),                         NA, TRUE),
