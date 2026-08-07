@@ -299,7 +299,6 @@ importCosMxDisk <- function(cosmx_dir = NULL,
 
     # Reconstruct globally-unique cell IDs `c_<slide>_<fov>_<cell_ID>`
     # by re-reading just the (fov, cell_ID) columns from the source CSV.
-    # Mirrors dev_stream's .cosmx_expression_parquet logic.
     cell_ID <- NULL  # NSE binding
     id_dt <- data.table::fread(path, select = c("fov", "cell_ID"))
     id_dt <- id_dt[cell_ID != 0L, ]

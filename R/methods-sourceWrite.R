@@ -27,7 +27,7 @@ NULL
 #' Write data to a [gDirSource] managed project directory. Defaults for
 #' different data types are settable via global options:
 #' 
-#' * *sparse matrices:* `giotto.gdsrc_sparsematrix_format` (default = "bpcells")
+#' * *sparse matrices:* `giotto.gdsrc_sparsematrix_format` (default = "parquetExpr")
 #' * *dense matrices:* `"giotto.gdsrc_densematrix_format"` (default = "h5")
 #' * *dataframes:* `"giotto.gdsrc_dataframe_format"` (default = "parquet")
 #' * *spatvector:* `"giotto.gdsrc_spatvector_format"` (default = "parquetGeom")
@@ -52,7 +52,7 @@ setMethod("sourceWrite", signature("gDirSource", "memoryMatrix"),
     function(src, data, meta = NULL, store_type = NULL, ...) {
         if (is.null(store_type)) {
             store_type <- if (.is_sparse_matrix(data)) {
-                getOption("giotto.gdsrc_sparsematrix_format", "bpcells")
+                getOption("giotto.gdsrc_sparsematrix_format", "parquetExpr")
             } else {
                 getOption("giotto.gdsrc_densematrix_format", "h5")
             }

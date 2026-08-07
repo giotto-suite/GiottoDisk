@@ -56,7 +56,7 @@ setMethod("subset", signature("parquetBase"), function(x, subset, select,
             # to reference any of these without being treated as local
             # vars. The lazy_fields path re-widens at storeRead time so
             # the upstream projection includes referenced cols, and
-            # .do_op's join handler materializes y-side cols post-join.
+            # .apply_op's join handler materializes y-side cols post-join.
             expr <- .inline_local_vars(expr, .pstore_effective_schema(x), env)
         } else {
             expr <- subset  # pre-quoted expression passed directly
@@ -286,37 +286,62 @@ setMethod("window<-", signature("parquetGeomBase"), function(x, ..., value) {
     list(x = x, e = ext(e), base_e = base_e)
 }
 
-.do_op <- function(atab, op) {
+# apply arrow-compatible operations
+#
+# op chains in stores store operations as an ordered list of
+# param lists. Acero-compatible operations can be performed by passing
+# a pristine arrow table through .apply_op with the ops in sequence to
+# apply the lazy steps.
+#
+# `storeRead()` methods control and enforce the application of ops.
+# This helper should only be used in low-level `storeRead` methods
+# that define how to apply ops to the object being read from.
+#
+# atab : arrow table
+# op   : op item (usually from store@ops)
+
+.ptabular_apply_op <- function(atab, op) {
     type <- op$type
     switch(type,
         "filter" = dplyr::filter(atab, !!op$expr),
         "head"   = head(atab, op$n),
         "tail"   = tail(atab, op$n),
         "sample" = .arrow_sample_max_rows(atab, op$size),
-        "distinct" = dplyr::distinct(atab, dplyr::across(dplyr::all_of(op$cols))),
-        "join"   = {
-            y_q <- storeRead(op$y, output = "query")
-            # drop y's special cols except join keys
-            y_drop <- setdiff(specialCols(op$y), unname(op$by))
-            y_drop <- intersect(y_drop, names(y_q))
-            if (length(y_drop) > 0L) {
-                y_q <- dplyr::select(y_q, -dplyr::all_of(y_drop))
-            }
-            join_fn <- if (op$nomatch == "inner") dplyr::inner_join else dplyr::left_join
-            join_fn(atab, y_q, by = op$by)
-        },
+        "distinct" = .op_distinct(atab, op),
+        "join"   = .op_join(atab, op),
         # `spat_relate` is handled at the `.pbase_storeread_processing`
-        # level (not via `.do_op`) so it can route through sedonadb.
+        # level (not via `.apply_op`) so it can route through sedonadb.
         # Reaching here means something bypassed the processing loop.
         "spat_relate" = stop(
-            "[.do_op] 'spat_relate' must be handled by ",
-            ".pbase_storeread_processing; reached .do_op unexpectedly",
+            "[.apply_op] 'spat_relate' must be handled by ",
+            ".pbase_storeread_processing; reached .apply_op unexpectedly",
             call. = FALSE),
         # Internal op type created ephemerally by the spat_relate
         # evaluation path to inject cached surviving ids without re-running
         # the spatial predicate. Carries an arrow Table of id cols and the
         # join keys. Not part of the public API.
         "id_filter" = dplyr::semi_join(atab, op$ids_tab, by = op$by),
-        stop(sprintf("[.do_op] unknown op type: '%s'", type), call. = FALSE)
+        # fallback error
+        stop(sprintf("[.apply_op] unknown op type: '%s'", type), call. = FALSE)
     )
+}
+
+.op_distinct <- function(atab, op) {
+    dplyr::distinct(atab, dplyr::across(dplyr::all_of(op$cols)))
+}
+
+.op_join <- function(atab, op) {
+    y_q <- storeRead(op$y, output = "query")
+    # drop y's special cols except join keys
+    y_drop <- setdiff(specialCols(op$y), unname(op$by))
+    y_drop <- intersect(y_drop, names(y_q))
+    if (length(y_drop) > 0L) {
+        y_q <- dplyr::select(y_q, -dplyr::all_of(y_drop))
+    }
+    join_fn <- if (op$nomatch == "inner") {
+        dplyr::inner_join 
+    } else {
+        dplyr::left_join
+    }
+    join_fn(atab, y_q, by = op$by)
 }

@@ -36,24 +36,30 @@ setMethod("snapshotLoad", signature("gDirSource"), function(src,
     checkmate::assert_list(load_params)
     p <- src@path
     snaps_dir <- .gdsrc_giottosave_dir(p)
-    
-    # get path to gobject snapshot
-    if (is.null(name)) { # find most recent snapshot if name = NULL
-        existing_snaps <- list.files(snaps_dir, 
-            pattern = "\\.rds|\\.qs", 
-            full.names = TRUE,
-            recursive = FALSE
-        )
-        modtimes <- file.info(existing_snaps)$mtime
-        snap_path <- existing_snaps[which(modtimes == max(modtimes))][1L]
-    } else {
-        snap_path <- list.files(snaps_dir,
-            pattern = paste0("^", name, "\\."),
-            full.names = TRUE,
-            recursive = FALSE
-        )[1L]
+
+    existing_snaps <- list.files(snaps_dir,
+        pattern = "\\.(rds|qs)$",
+        full.names = TRUE,
+        recursive = FALSE
+    )
+    if (length(existing_snaps) == 0L) {
+        stop("[snapshotLoad] no snapshots found in '", snaps_dir, "'",
+            call. = FALSE)
     }
-  
+
+    if (is.null(name)) { # find most recent snapshot if name = NULL
+        modtimes <- file.info(existing_snaps)$mtime
+        snap_path <- existing_snaps[which.max(modtimes)]
+    } else {
+        hits <- existing_snaps[grepl(paste0("^", name, "\\."),
+            basename(existing_snaps))]
+        if (length(hits) == 0L) {
+            stop(.snapshot_name_not_found_msg(name, existing_snaps),
+                call. = FALSE)
+        }
+        snap_path <- hits[1L]
+    }
+
     gobject <- .load_serialized(snap_path, load_params = load_params)
     return(gobject)
     
@@ -65,6 +71,33 @@ setMethod("snapshotLoad", signature("gDirSource"), function(src,
 })
 
 # internals ####
+
+# Build a "no snapshot named X" error message, with fuzzy suggestions when
+# `name` is close to one of the available snapshot names. Uses base::adist
+# (edit distance) so no new dep.
+.snapshot_name_not_found_msg <- function(name, existing_snaps) {
+    available <- tools::file_path_sans_ext(basename(existing_snaps))
+    head_msg <- paste0("[snapshotLoad] no snapshot named '", name, "'.")
+    if (length(available) == 0L) return(head_msg)
+
+    # Suggest by: (1) substring containment in either direction, then
+    # (2) close edit distance (<= 2, or <= 25% of name length).
+    contains <- available[grepl(name, available, fixed = TRUE) |
+        vapply(available, grepl, logical(1L), x = name, fixed = TRUE)]
+    d <- as.integer(utils::adist(name, available))
+    threshold <- max(2L, ceiling(nchar(name) * 0.25))
+    close <- available[!is.na(d) & d <= threshold]
+    sugg <- unique(c(contains, close))
+
+    if (length(sugg) > 0L) {
+        sugg <- head(sugg, 5L)
+        return(paste0(head_msg, " Did you mean: ",
+            paste(shQuote(sugg), collapse = ", "), "?"))
+    }
+    paste0(head_msg, " Available: ",
+        paste(shQuote(head(available, 10L)), collapse = ", "),
+        if (length(available) > 10L) ", ..." else "")
+}
 
 .load_serialized <- function(path, load_params = list()) {
     fext <- tail(file_extension(path), 1L)

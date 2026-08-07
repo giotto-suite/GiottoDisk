@@ -9,6 +9,7 @@
 \alias{storeWrite,parquetExprStore,exprInput-method}
 \alias{storeWrite,parquetExprStore,parquetExprStore-method}
 \alias{storeWrite,parquetExprStore,unionParquetExprStore-method}
+\alias{storeWrite,parquetExprStore,memoryMatrix-method}
 \alias{storeWrite}
 \alias{storeWrite,fileStore,fileStore-method}
 \alias{storeWrite,h5ArrayStore,memoryMatrix-method}
@@ -54,6 +55,8 @@
 
 \S4method{storeWrite}{parquetExprStore,unionParquetExprStore}(store, data, ...)
 
+\S4method{storeWrite}{parquetExprStore,memoryMatrix}(store, data, ...)
+
 \S4method{storeWrite}{fileStore,fileStore}(store, data, ...)
 
 \S4method{storeWrite}{h5ArrayStore,memoryMatrix}(store, data, ...)
@@ -76,8 +79,8 @@
 \item{...}{additional params to pass}
 }
 \description{
-Direct data.table dispatch: the in-memory caller (e.g. Giotto's
-\code{.finalize_network}) hands a pre-canonicalized edge data.table with
+Direct data.table dispatch: the in-memory caller (e.g. GiottoClass's
+\code{createNetwork()} machinery) hands a pre-canonicalized edge data.table with
 character \code{from} / \code{to} columns plus optional \code{weight} / \code{distance} /
 \code{shared}. Trusts the caller for canonical form — no swap, no dedup.
 

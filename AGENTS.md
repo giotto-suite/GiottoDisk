@@ -16,9 +16,12 @@ walkthroughs live in `vignettes/articles/`:
 | `vignettes/articles/gsource.Rmd` | `gDirSource` walkthrough (the directory-backed `gsource` — the only backend currently shipped): source verbs (`sourceWrite`/`sourceContains`/`sourceAdopt`/`sourcePrune`), snapshot lifecycle, deployment patterns. |
 | `vignettes/articles/roadmap.Rmd` | Public-facing direction. Headline items: `parquetMutableStore`, partition hardlink utility, `gSdataSource`. |
 | `vignettes/articles/parquetEdgeStore.Rmd` | Edge-store (graph) specifics. |
+| `adr/` | Architecture Decision Records: why a choice was made, what was rejected, what it costs. Dated and immutable — read when you are about to change a decision, not to learn current behaviour. |
 
 When in doubt, search AGENTS.md first; for deeper "why" follow the
-pointers to the relevant vignette.
+pointers to the relevant vignette. If a decision looks arbitrary and you
+are tempted to undo it, check `adr/` before doing so — the alternatives
+were often already tried.
 
 ## Package Structure
 
@@ -36,7 +39,7 @@ R/
   class-fileInputs.R     # exprInput, mtxInput, tenxH5Input, cellbinGefInput, etc.
   class-gsource.R        # gsource, gDirSource
   methods-accessors.R    # [,j] indexing, [i, on] join, colnames, nrow, dim, ext, window
-  methods-ops.R          # subset, rowSample, head, tail, unique, crop, window<-; .do_op()
+  methods-ops.R          # subset, rowSample, head, tail, unique, crop, window<-; .ptabular_apply_op()
   methods-transforms.R   # affine, spin, rescale, shear, spatShift, t, flip; transform helpers
   methods-spatRelate.R   # spat_relate op + engine dispatch (sedona/duckdb/terra)
   methods-storeRead.R    # storeRead + .pstore_to_sedona / .pstore_to_duckdb /
@@ -137,17 +140,17 @@ avoid breaking sample/count ops.
 
 `crop` and `window` are NOT ops — they use dedicated slots on `parquetGeomBase`.
 
-Most ops are arrow-evaluable via `.do_op()` (filter / head / tail / sample /
+Most ops are arrow-evaluable via `.ptabular_apply_op()` (filter / head / tail / sample /
 distinct / join / id_filter). Two ops route through specialized handlers:
 
 - **`spat_relate`** is engine-evaluated (sedona / duckdb / terra) — see
   *spat_relate op + engine dispatch* below. `.pbase_storeread_processing()`
   intercepts spat_relate ops in the op loop and calls `.spat_relate_narrow()`,
   which returns an arrow Table of surviving ids; arrow then `semi_join`s the
-  main query. Never reaches `.do_op`.
+  main query. Never reaches `.ptabular_apply_op`.
 - **`id_filter`** is an internal op type created ephemerally by the spat_relate
   narrow path to cache surviving ids across chained spat_relate ops. Has both
-  an arrow handler (`.do_op` "id_filter" → `semi_join`) and a SQL handler
+  an arrow handler (`.ptabular_apply_op` "id_filter" → `semi_join`) and a SQL handler
   (`.pstore_sql_inner` "id_filter" → correlated `EXISTS` subquery).
 
 `@post_ops` holds R-level post-materialization ops with no Arrow equivalent.
@@ -270,7 +273,7 @@ carrying cached surviving ids), runs the engine to collect surviving
 `(source_id, row_index[, tile_index])` as an arrow Table, then `semi_join`s the
 main arrow query — arrow stays lazy past the spatial step.
 
-**`id_filter` is an internal op type** (`.do_op` "id_filter" + `.pstore_sql_inner`
+**`id_filter` is an internal op type** (`.ptabular_apply_op` "id_filter" + `.pstore_sql_inner`
 "id_filter") used only inside the trim store during narrow eval; never reaches
 the user's `@ops`. SQL form is a correlated `EXISTS` subquery against a temp
 view registered from the cached id arrow Table — DataFusion doesn't support

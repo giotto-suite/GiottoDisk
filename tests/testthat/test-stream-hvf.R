@@ -14,14 +14,65 @@
 }
 
 
-test_that("analyzeData(parquetExprStore, covLoessParam) requires JIT recipe", {
+# Raw store carrying a library-size + log2 recipe on @post_ops, i.e. values
+# normalized just-in-time on read. Built through the public verbs rather than
+# by assembling an op record by hand, so the test exercises the same path a
+# caller takes.
+.norm_recipe_pe <- function(mat) {
+    storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat) |>
+        GiottoClass::processData(
+            Giotto::normParam("library", scalefactor = 1e4)) |>
+        GiottoClass::processData(
+            Giotto::normParam("log", base = 2, offset = 1))
+}
+
+
+# A norm recipe on @post_ops is a fast path, not a requirement. A store whose
+# values were normalized at write time has an empty op chain and is just as
+# valid an input -- it used to be rejected outright. Both routes must agree.
+test_that("covLoessParam works on values normalized on disk (no recipe)", {
     skip_if_not_installed("Giotto")
     mat <- .tiny_mat()
-    pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
-    expect_error(
-        GiottoClass::analyzeData(pe, Giotto::analyzeParam("cov_loess")),
-        "no normalization recipe"
+
+    # (a) raw store + JIT recipe on @post_ops
+    jit <- .norm_recipe_pe(mat)
+
+    # (b) the same normalized values written to disk, empty op chain
+    libsz <- as.numeric(Matrix::colSums(mat))
+    libsz[libsz == 0] <- 1
+    mat_norm <- log1p(t(t(mat) * (1e4 / libsz))) / log(2)
+    baked <- storeWrite(
+        parquetExprStore(path = tempfile(fileext = ".parquet")),
+        methods::as(mat_norm, "CsparseMatrix"))
+    expect_length(baked@post_ops, 0L)
+
+    a <- GiottoClass::analyzeData(jit, Giotto::analyzeParam("cov_loess"))
+    b <- GiottoClass::analyzeData(baked, Giotto::analyzeParam("cov_loess"))
+
+    data.table::setorder(a, feats)
+    data.table::setorder(b, feats)
+    expect_equal(a$mean_expr, b$mean_expr, tolerance = 1e-10)
+    expect_equal(a$cov, b$cov, tolerance = 1e-10)
+    expect_equal(a$cov_diff, b$cov_diff, tolerance = 1e-10)
+})
+
+
+# The recipe is gone, so nothing structural says "these are counts" -- the
+# per-gene totals do. Integer totals reaching a COV statistic is a mistake
+# worth flagging, but not one worth blocking.
+test_that("covLoessParam warns when handed raw integer counts", {
+    skip_if_not_installed("Giotto")
+    mat <- .tiny_mat()
+    raw <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        mat)
+    expect_warning(
+        GiottoClass::analyzeData(raw, Giotto::analyzeParam("cov_loess")),
+        "look like raw integer counts"
     )
+    # ...and normalized values do not trip it
+    expect_silent(
+        GiottoClass::analyzeData(.norm_recipe_pe(mat),
+            Giotto::analyzeParam("cov_loess")))
 })
 
 
@@ -71,11 +122,18 @@ test_that("streaming covLoessParam matches in-memory selection on a tiny matrix"
 })
 
 
-test_that("varParam errors clearly on parquet backend (cov_groups is supported)", {
+test_that("cov_groups and var are both supported on the parquet backend", {
     skip_if_not_installed("Giotto")
     mat <- .tiny_mat(seed = 19)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
-    pe@params$norm <- list(scale_factors = rep(1, ncol(mat)))
+    # unit scale factors + no log == an identity recipe; kept explicit so the
+    # test still exercises a populated op chain rather than an empty one
+    pe@post_ops <- list(list(
+        type    = "multiply",
+        axis    = "cell",
+        factors = stats::setNames(
+            list(rep(1, ncol(mat))), pe@uid)
+    ))
 
     # cov_groups is supported by the streaming backend — returns stats
     # data.table without erroring.
@@ -83,19 +141,61 @@ test_that("varParam errors clearly on parquet backend (cov_groups is supported)"
     expect_s3_class(res, "data.table")
     expect_true("cov_group_zscore" %in% colnames(res))
 
-    # var (per-feature variance on a scaled matrix) requires densifying
-    # the streaming reads and is intentionally unsupported.
-    expect_error(
-        GiottoClass::analyzeData(pe, Giotto::analyzeParam("var")),
-        "not supported for streaming"
+    # var returns analytic Pearson residual variance from RAW counts, so it
+    # runs even with a norm recipe present (@post_ops is not applied).
+    v <- GiottoClass::analyzeData(pe, Giotto::analyzeParam("var"))
+    expect_s3_class(v, "data.table")
+    expect_identical(colnames(v), c("feats", "var"))
+    expect_setequal(v$feats, rownames(mat))
+    expect_equal(v$var, sort(v$var, decreasing = TRUE))  # Giotto's convention
+    expect_true(all(is.finite(v$var)))
+
+    # a non-"raw" name warns rather than erroring -- the store's values may
+    # well be counts under a different slot name -- and raw is used regardless
+    expect_warning(
+        v2 <- GiottoClass::analyzeData(pe,
+            Giotto::analyzeParam("var", expression_values = "normalized")),
+        "is ignored"
     )
+    expect_equal(v2$var, v$var)
+    expect_identical(v2$feats, v$feats)
+})
+
+
+test_that("varParam matches a dense Pearson-residual reference", {
+    skip_if_not_installed("Giotto")
+    set.seed(5)
+    n_g <- 60L; n_c <- 250L
+    cnt <- matrix(rpois(n_g * n_c, lambda = 1.5), nrow = n_g)
+    rownames(cnt) <- sprintf("g%03d", seq_len(n_g))
+    colnames(cnt) <- sprintf("c%03d", seq_len(n_c))
+    cnt <- cnt[rowSums(cnt) > 0, , drop = FALSE]
+    cnt <- cnt[, colSums(cnt) > 0, drop = FALSE]
+    mat <- methods::as(cnt, "dgCMatrix")
+    pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+
+    # dense reference: mu = g_i c_j / T, z = (x - mu)/sqrt(mu), sample var
+    g <- rowSums(cnt); cvec <- colSums(cnt); Tt <- sum(g)
+    MU  <- outer(g, cvec) / Tt
+    ref <- apply((cnt - MU) / sqrt(MU), 1, var)
+
+    v <- GiottoClass::analyzeData(pe, Giotto::analyzeParam("var"))
+    got <- v$var[match(names(ref), v$feats)]
+    expect_equal(got, unname(ref), tolerance = 1e-10)
 })
 
 
 test_that("covLoessParam output schema matches Giotto convention", {
     mat <- .tiny_mat(seed = 23)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
-    pe@params$norm <- list(scale_factors = rep(1, ncol(mat)))
+    # unit scale factors + no log == an identity recipe; kept explicit so the
+    # test still exercises a populated op chain rather than an empty one
+    pe@post_ops <- list(list(
+        type    = "multiply",
+        axis    = "cell",
+        factors = stats::setNames(
+            list(rep(1, ncol(mat))), pe@uid)
+    ))
 
     dt <- GiottoClass::analyzeData(pe, Giotto::analyzeParam("cov_loess"))
 
@@ -114,7 +214,14 @@ test_that("covLoessParam output schema matches Giotto convention", {
 test_that("covGroupsParam output schema matches Giotto convention", {
     mat <- .tiny_mat(seed = 29)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
-    pe@params$norm <- list(scale_factors = rep(1, ncol(mat)))
+    # unit scale factors + no log == an identity recipe; kept explicit so the
+    # test still exercises a populated op chain rather than an empty one
+    pe@post_ops <- list(list(
+        type    = "multiply",
+        axis    = "cell",
+        factors = stats::setNames(
+            list(rep(1, ncol(mat))), pe@uid)
+    ))
 
     dt <- GiottoClass::analyzeData(pe, Giotto::analyzeParam("cov_groups"))
 
@@ -130,7 +237,14 @@ test_that("covGroupsParam output schema matches Giotto convention", {
 test_that("streaming + in-memory analyzeData share column schema", {
     mat <- .tiny_mat(seed = 31)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
-    pe@params$norm <- list(scale_factors = rep(1, ncol(mat)))
+    # unit scale factors + no log == an identity recipe; kept explicit so the
+    # test still exercises a populated op chain rather than an empty one
+    pe@post_ops <- list(list(
+        type    = "multiply",
+        axis    = "cell",
+        factors = stats::setNames(
+            list(rep(1, ncol(mat))), pe@uid)
+    ))
 
     for (method in c("cov_loess", "cov_groups")) {
         p <- Giotto::analyzeParam(method)

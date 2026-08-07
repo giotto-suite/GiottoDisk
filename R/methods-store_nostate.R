@@ -59,13 +59,16 @@ setMethod(".store_nostate", "parquetGeomTileStore", function(x, ...) {
     x
 })
 
-# parquetExprStore (queryableStore -> fileStore): strips subset state.
-# @cell_ids / @feat_ids are left narrowed — they're not read by the
-# read_fun (which only consults @path), so they don't affect hashing.
+# parquetExprStore (queryableStore -> fileStore): strips subset state +
+# both halves of the op chain (@ops prefix, @post_ops suffix). @cell_ids /
+# @feat_ids are left narrowed — they're not read by the read_fun (which
+# only consults @path), so they don't affect hashing.
 setMethod(".store_nostate", "parquetExprStore", function(x, ...) {
     x <- callNextMethod()
     x@cell_idx <- integer(0L)
     x@gene_idx <- integer(0L)
+    x@ops      <- list()
+    x@post_ops <- list()
     x
 })
 
@@ -88,11 +91,12 @@ setMethod(".store_nostate", "unionParquetGeomStore", function(x, ...) {
     x
 })
 
-# unionParquetExprStore: contains "dataStore" only — strip @params and
-# recurse .store_nostate into substores so per-substore subset state is also
-# zeroed.
+# unionParquetExprStore: contains "dataStore" only — strip @params,
+# both phase chains, and recurse into substores.
 setMethod(".store_nostate", "unionParquetExprStore", function(x, ...) {
-    x@params <- list()
-    x@stores <- lapply(x@stores, .store_nostate)
+    x@params   <- list()
+    x@ops      <- list()
+    x@post_ops <- list()
+    x@stores   <- lapply(x@stores, .store_nostate)
     x
 })

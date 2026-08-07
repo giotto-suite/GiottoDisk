@@ -267,7 +267,7 @@ setMethod("storeRead", signature("unionParquetGeomStore"), function(store,
     omit_internals = TRUE,
     ...) {
 
-    # `spat_relate` ops are handled at this level (not via `.do_op`) so we
+    # `spat_relate` ops are handled at this level (not via `.apply_op`) so we
     # can route the predicate through sedonadb and narrow the arrow query
     # with the surviving id rows, keeping the rest of the chain lazy on
     # the arrow side. The local `sr_cache` caches the id arrow Table per
@@ -283,7 +283,7 @@ setMethod("storeRead", signature("unionParquetGeomStore"), function(store,
             id_cols <- names(ids_tab)
             atab <- dplyr::semi_join(atab, ids_tab, by = id_cols)
         } else {
-            atab <- .do_op(atab, op)
+            atab <- .ptabular_apply_op(atab, op)
         }
     }
 
@@ -763,7 +763,8 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
             sprintf("SELECT * FROM (%s) AS _probe LIMIT 0", sql)
         ))
     }
-    inner_sql <- .pstore_sql_affine_wrap(inner_sql, aff, sedona_probe_fn)
+    inner_sql <- .pstore_sql_affine_wrap(inner_sql, aff, sedona_probe_fn,
+        engine = "sedona")
 
     sdf <- sedonadb::sd_sql(inner_sql)
     attr(sdf, "view_name") <- base_view_name
@@ -889,7 +890,8 @@ sd_view_ref <- function(sdf) {
         DBI::dbGetQuery(conn,
             sprintf("SELECT * FROM (%s) AS _probe LIMIT 0", sql))
     }
-    inner_sql <- .pstore_sql_affine_wrap(inner_sql, aff, duckdb_probe_fn)
+    inner_sql <- .pstore_sql_affine_wrap(inner_sql, aff, duckdb_probe_fn,
+        engine = "duckdb")
 
     # Register final view + return a lazy tbl. Final-view registration lets
     # the user reference it via plain `tbl(conn, name)` and gives dbplyr a
@@ -986,7 +988,15 @@ sd_view_ref <- function(sdf) {
 .pstore_tile_literal_cols <- function(spec) {
     uid_lit <- gsub("'", "''", spec$uid, fixed = TRUE)
     if (spec$has_tile_index) {
-        sprintf("'%s' AS source_id, %d AS tile_index", uid_lit, spec$tile_index)
+        # CAST AS INT keeps the literal at int32 so it matches the on-disk
+        # hive partition column type. Without the cast, DataFusion infers
+        # Int64 (default for integer literals); sd_collect then surfaces
+        # that as R `numeric`, and arrow::as_arrow_table() promotes it to
+        # float64 -- which then fails to semi_join against the int32
+        # tile_index column from the parquet schema. `INT` is the
+        # portable Int32 name across DataFusion / DuckDB.
+        sprintf("'%s' AS source_id, CAST(%d AS INT) AS tile_index",
+            uid_lit, spec$tile_index)
     } else {
         sprintf("'%s' AS source_id", uid_lit)
     }
@@ -1100,18 +1110,38 @@ sd_view_ref <- function(sdf) {
 # `schema_probe_fn(inner_sql)` returns a data.frame whose names enumerate
 # the projection's columns (used to emit non-geom cols verbatim and
 # replace geom with ST_Affine(geom, ...)).
-.pstore_sql_affine_wrap <- function(inner_sql, aff, schema_probe_fn) {
+#
+# `engine` selects the ST_Affine argument convention:
+#   * "duckdb" (PostGIS) -- x' = a*x + b*y + xoff, y' = d*x + e*y + yoff
+#   * "sedona"           -- x' = a*x + d*y + xoff, y' = b*x + e*y + yoff
+# SedonaDB's ST_Affine uses the transposed convention relative to PostGIS;
+# verified empirically (sd_sql("ST_Affine(ST_Point(3622,-2142),
+# 0.866,0.5,-0.5,0.866,0,0)") returns (4207.65, -43.97) rather than
+# PostGIS's (2065.65, -3665.97)). Without this engine-aware swap, any
+# pending @post_ops rotation on a backed polygon store via the sedona
+# engine silently emits the wrong transform -- the geom never rotates,
+# ST_Intersects against the rotated-frame query returns nothing.
+.pstore_sql_affine_wrap <- function(inner_sql, aff, schema_probe_fn,
+    engine = c("duckdb", "sedona")) {
     if (is.null(aff)) return(inner_sql)
+    engine <- match.arg(engine)
     schema_df <- schema_probe_fn(inner_sql)
     other_cols <- setdiff(names(schema_df), "geom")
     m <- aff@affine
     # Post-multiply convention: [x, y, 1] %*% M
     #   x' = x*M[1,1] + y*M[2,1] + M[3,1],  y' = x*M[1,2] + y*M[2,2] + M[3,2]
-    # ST_Affine(geom, a, b, d, e, xoff, yoff):
-    #   x' = a*x + b*y + xoff,  y' = d*x + e*y + yoff
+    coefs <- if (engine == "sedona") {
+        # transposed arg order: ST_Affine(geom, a, b, d, e, ...) with
+        # x' = a*x + d*y, so we feed (M[1,1], M[1,2], M[2,1], M[2,2]).
+        c(m[1L, 1L], m[1L, 2L], m[2L, 1L], m[2L, 2L], m[3L, 1L], m[3L, 2L])
+    } else {
+        # PostGIS / duckdb: ST_Affine(geom, a, b, d, e, ...) with
+        # x' = a*x + b*y, so (M[1,1], M[2,1], M[1,2], M[2,2]).
+        c(m[1L, 1L], m[2L, 1L], m[1L, 2L], m[2L, 2L], m[3L, 1L], m[3L, 2L])
+    }
     affine_expr <- sprintf(
         "ST_Affine(geom, %.17g, %.17g, %.17g, %.17g, %.17g, %.17g) AS geom",
-        m[1L, 1L], m[2L, 1L], m[1L, 2L], m[2L, 2L], m[3L, 1L], m[3L, 2L]
+        coefs[1L], coefs[2L], coefs[3L], coefs[4L], coefs[5L], coefs[6L]
     )
     outer_select <- if (length(other_cols) > 0L) {
         paste(c(paste(sprintf('"%s"', other_cols), collapse = ", "), affine_expr),
@@ -1199,7 +1229,7 @@ sd_view_ref <- function(sdf) {
 
     # Restrict user fields to upstream-available (on-disk) cols. Any
     # requested fields that come from queued join ops' y-stores will be
-    # materialized post-join by `.do_op` and narrowed back via the final
+    # materialized post-join by `.apply_op` and narrowed back via the final
     # select in `.pbase_storeread_processing` -- they must NOT appear in
     # the upstream parquet projection.
     disk <- .pstore_disk_fields(store) %||% character(0L)
@@ -1239,7 +1269,7 @@ sd_view_ref <- function(sdf) {
 # symbols (already inlined by `.inline_local_vars`) don't leak through, and
 # so that y-side cols referenced by post-join filters don't get projected
 # from the upstream (x-only) parquet -- those come in naturally via the
-# join op's .do_op handler.
+# join op's .apply_op handler.
 .pstore_op_referenced_cols <- function(store) {
     if (length(store@ops) == 0L) return(character(0L))
     refs <- lapply(store@ops, function(op) {
@@ -1247,7 +1277,7 @@ sd_view_ref <- function(sdf) {
             "filter"   = all.vars(op$expr),
             "distinct" = op$cols,
             # Join keys must be visible in the upstream projection so
-            # `.do_op`'s dplyr::inner_join can find them on the x side.
+            # `.apply_op`'s dplyr::inner_join can find them on the x side.
             # `op$by` follows data.table syntax: names() = x cols, values
             # = y cols (or unnamed for same-name joins).
             "join"     = {
@@ -1269,7 +1299,7 @@ sd_view_ref <- function(sdf) {
 # Effective schema of a store at the point downstream code is about to add
 # the next op. Equals on-disk cols plus any cols recursively brought in by
 # already-queued join ops. y's specials (row_index, source_id, etc.) are
-# dropped except for the join keys, mirroring `.do_op`'s join compile.
+# dropped except for the join keys, mirroring `.apply_op`'s join compile.
 #
 # Used to decide what symbols in `subset()` predicates and `[, j]` selectors
 # are legitimate column references vs local R variables to inline. Computed

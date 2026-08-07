@@ -243,7 +243,7 @@ The cache is local to one `storeRead` call. Never written to `store@ops`;
 
 `id_filter` is engine-aware:
 
-- Arrow side (`.do_op` "id_filter") → `dplyr::semi_join(atab, op$ids_tab,
+- Arrow side (`.ptabular_apply_op` "id_filter") → `dplyr::semi_join(atab, op$ids_tab,
   by = op$by)`.
 - SQL side (`.pstore_sql_inner` "id_filter") → register cached ids as an
   engine-side view, emit

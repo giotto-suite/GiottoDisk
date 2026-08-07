@@ -11,7 +11,7 @@
   name = "raw",
   sort = TRUE,
   count_col = NULL,
-  store_type = getOption("giotto.gdsrc_matrix_format", "bpcells"),
+  store_type = getOption("giotto.gdsrc_sparsematrix_format", "parquetExpr"),
   path = .dump_tempfile(),
   output = c("store", "exprObj"),
   ...
@@ -23,7 +23,7 @@
   feat_id_col = "feat_ID",
   poly_id_col = "poly_ID",
   count_col = NULL,
-  store_type = getOption("giotto.gdsrc_matrix_format", "bpcells"),
+  store_type = getOption("giotto.gdsrc_sparsematrix_format", "parquetExpr"),
   sort = TRUE,
   all_feat_ids = NULL,
   all_cell_ids = NULL,

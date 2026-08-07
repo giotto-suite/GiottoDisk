@@ -35,14 +35,22 @@
 
 \S4method{storeRead}{csvWideInput}(store, ...)
 
-\S4method{storeRead}{parquetExprStore}(store, ...)
+\S4method{storeRead}{parquetExprStore}(
+  store,
+  output = c("query", "tibble", "duckdb", "dgcmatrix"),
+  max_rows = NULL,
+  max_cols = NULL,
+  ...
+)
 
 \S4method{storeRead}{unionParquetExprStore}(
   store,
   fields = NULL,
-  output = c("query", "tibble", "duckdb"),
+  output = c("query", "tibble", "duckdb", "dgcmatrix"),
   callback = NULL,
   duckdb_params = list(),
+  max_rows = NULL,
+  max_cols = NULL,
   ...
 )
 
@@ -139,6 +147,16 @@ use SedonaDB spatial functions for geometry-based filtering.
 
 \item{...}{additional params to pass (if any implemented)}
 
+\item{max_rows, max_cols}{integer or \code{Inf} (optional). Set a dimension
+guard for \code{output = "dgcmatrix"}. A materialized sparseMatrix must
+have at least one axis narrowed to within the cap — both exceeding
+errors. Defaults via \code{getOption("giottodisk.dgc_max_rows", 100L)} /
+\code{getOption("giottodisk.dgc_max_cols", 100L)}. Asymmetric so
+"narrow slice" usage (100 × Inf or Inf × 100) is allowed; the
+intent is \code{[}-subset along one axis before materializing. Pass
+\code{Inf} to disable the cap on an axis (\code{Inf}/\code{Inf} disables the
+guard entirely).}
+
 \item{fields}{\code{character} (optional) specific fields/columns to read}
 
 \item{callback}{(optional) \code{function} where the first param
@@ -172,3 +190,32 @@ all columns).}
 Read from a \code{dataStore} inheriting object. The output should be a useful
 representation of the contained data.
 }
+\section{Index coordinates by output mode}{
+
+\code{parquetExprStore} / \code{unionParquetExprStore} outputs differ on \emph{two}
+independent axes, and switching \code{output} changes both.
+
+Beyond whether \verb{@post_ops} are applied (see Details), the \code{row_id} /
+\code{col_id} columns are not in the same coordinate system across modes:
+\itemize{
+\item \code{output = "dgcmatrix"} returns values indexed by \strong{subset position},
+with \verb{@feat_ids} / \verb{@cell_ids} attached as dimnames. Rows whose ids
+fall outside the store's current \code{[}-subset are dropped.
+\item \code{output = "tibble"} and \code{output = "data.table"} return the raw
+\strong{on-disk} \code{row_id} / \code{col_id}, without remapping and without
+unmappable-row filtering, even though \verb{@post_ops} \emph{are} applied. A
+caller that needs subset positions applies \code{.pe_remap_row()} /
+\code{.pe_remap_col()} itself, and is usually better off doing so after
+aggregating -- remapping is a per-row \code{match()} against \verb{@cell_idx} /
+\verb{@gene_idx}, so it is far cheaper on a per-gene aggregate than on a
+full triplet stream.
+\item \code{output = "query"} and \code{output = "duckdb"} never materialize, so ids
+are likewise raw on-disk values.
+}
+
+The practical consequence: moving from \code{"dgcmatrix"} to a tabular
+output does not error, but \code{row_id} / \code{col_id} silently change meaning.
+The tabular modes are expected to converge on the remapped coordinates
+in a later release; until then, treat their id columns as on-disk.
+}
+

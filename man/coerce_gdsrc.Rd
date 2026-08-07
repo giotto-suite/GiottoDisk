@@ -8,7 +8,7 @@
 \usage{
 \method{as.list}{gDirSource}(x)
 
-as.data.frame.gDirSource(x, ...)
+\method{as.data.frame}{gDirSource}(x, ...)
 }
 \arguments{
 \item{x}{object to coerce}

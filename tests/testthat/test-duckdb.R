@@ -95,6 +95,23 @@ test_that("duckdb: pending affine applies via ST_Affine", {
     expect_equal(sort(coords$y_post), seq_len(5),     tolerance = 1e-6)
 })
 
+# Regression guard for the duckdb ST_Affine branch (untouched by the
+# sedona transpose fix). Shear catches any future coefficient swap.
+test_that("duckdb: pending affine applies via ST_Affine (shear, off-diagonal)", {
+    skip_if_not_installed("duckdb")
+    pgs <- parquetGeomStore() |> storeWrite(make_pts_dd(5))
+    # Row-vector post-mult M = [[1, 0.5], [0, 1]]: (n, n) -> (n, 1.5*n).
+    aff <- GiottoClass::affine(matrix(c(1, 0, 0.5, 1), nrow = 2L))
+    pgs2 <- affine(pgs, aff)
+    tbl <- storeRead(pgs2, output = "duckdb")
+    coords <- DBI::dbGetQuery(tbl$src$con, sprintf(
+        'SELECT ST_X(geom) AS x_post, ST_Y(geom) AS y_post FROM "%s"',
+        dbplyr::remote_name(tbl)
+    ))
+    expect_equal(sort(coords$x_post), as.numeric(seq_len(5)),       tolerance = 1e-6)
+    expect_equal(sort(coords$y_post), as.numeric(seq_len(5)) * 1.5, tolerance = 1e-6)
+})
+
 
 # spatial predicates ####
 
