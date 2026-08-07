@@ -189,8 +189,15 @@ setMethod(".show_info", signature("parquetExprStore"), function(object, .print =
             collapse = " -> "
         )
     }
-    info[["chunk"]] <- sprintf("%s cells",
-        format(object@chunk_size, big.mark = ",", scientific = FALSE))
+    # Marginals are a cached property of the file; the streaming window is
+    # derived from them per read, so there is no stored chunk size to print.
+    nnz <- .pestore_view_nnz(object)
+    if (isTRUE(is.finite(nnz))) {
+        info[["nonzeros"]] <- sprintf("%s (%.1f%% dense)",
+            format(round(nnz), big.mark = ",", scientific = FALSE),
+            100 * nnz / max(as.numeric(object@n_cells) *
+                            as.numeric(object@n_genes), 1))
+    }
     if (.print) return(.print_show(object, info))
     invisible(info)
 })
@@ -268,7 +275,8 @@ setMethod(".show_info", signature("unionParquetExprStore"), function(object, .pr
             }
             sprintf("%s [%s] %s", step$relation, step$form, y_str)
         },
-        "norm_libsize" = sprintf("%d cells", nrow(step$scalef)),
+        "multiply" = sprintf("x %s", .format_axis_payload(step$factors, step$axis)),
+        "add"      = sprintf("+ %s", .format_axis_payload(step$terms, step$axis)),
         "log"           = sprintf("base = %g", step$base %null% 2),
         "transform" = {
             aff <- step$affine2d
@@ -286,4 +294,14 @@ setMethod(".show_info", signature("unionParquetExprStore"), function(object, .pr
         "..."
     )
     sprintf("  %-10s: %s\n", step$type, args)
+}
+
+
+# Compact description of a multiply / add payload for show().
+.format_axis_payload <- function(payload, axis) {
+    if (is.null(payload)) return("?")
+    if (!is.list(payload)) return(format(as.numeric(payload), digits = 4))
+    n <- sum(vapply(payload, function(v) sum(!is.na(v)), numeric(1L)))
+    sprintf("%s %s", format(n, big.mark = ","),
+            if (identical(axis, "feat")) "feats" else "cells")
 }

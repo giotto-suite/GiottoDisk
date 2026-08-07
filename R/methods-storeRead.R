@@ -283,7 +283,7 @@ setMethod("storeRead", signature("unionParquetGeomStore"), function(store,
             id_cols <- names(ids_tab)
             atab <- dplyr::semi_join(atab, ids_tab, by = id_cols)
         } else {
-            atab <- .apply_op(atab, op)
+            atab <- .ptabular_apply_op(atab, op)
         }
     }
 

@@ -17,3 +17,4 @@ setGeneric("snapshotDelete", function(src, name, ...) standardGeneric("snapshotD
 setGeneric("rowSample", function(x, size, ...) standardGeneric("rowSample"))
 setGeneric("storePaths", function(x, ...) standardGeneric("storePaths"))
 setGeneric("storeUID", function(x, ...) standardGeneric("storeUID"))
+setGeneric("storeChunkInfo", function(x, ...) standardGeneric("storeChunkInfo"))

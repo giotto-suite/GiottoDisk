@@ -129,9 +129,10 @@ test_that("cov_groups and var are both supported on the parquet backend", {
     # unit scale factors + no log == an identity recipe; kept explicit so the
     # test still exercises a populated op chain rather than an empty one
     pe@post_ops <- list(list(
-        type   = "norm_libsize",
-        scalef = GiottoDisk:::.pe_norm_libsize_scalef_slice(
-            pe, scalef = rep(1, ncol(mat)))
+        type    = "multiply",
+        axis    = "cell",
+        factors = stats::setNames(
+            list(rep(1, ncol(mat))), pe@uid)
     ))
 
     # cov_groups is supported by the streaming backend — returns stats
@@ -190,9 +191,10 @@ test_that("covLoessParam output schema matches Giotto convention", {
     # unit scale factors + no log == an identity recipe; kept explicit so the
     # test still exercises a populated op chain rather than an empty one
     pe@post_ops <- list(list(
-        type   = "norm_libsize",
-        scalef = GiottoDisk:::.pe_norm_libsize_scalef_slice(
-            pe, scalef = rep(1, ncol(mat)))
+        type    = "multiply",
+        axis    = "cell",
+        factors = stats::setNames(
+            list(rep(1, ncol(mat))), pe@uid)
     ))
 
     dt <- GiottoClass::analyzeData(pe, Giotto::analyzeParam("cov_loess"))
@@ -215,9 +217,10 @@ test_that("covGroupsParam output schema matches Giotto convention", {
     # unit scale factors + no log == an identity recipe; kept explicit so the
     # test still exercises a populated op chain rather than an empty one
     pe@post_ops <- list(list(
-        type   = "norm_libsize",
-        scalef = GiottoDisk:::.pe_norm_libsize_scalef_slice(
-            pe, scalef = rep(1, ncol(mat)))
+        type    = "multiply",
+        axis    = "cell",
+        factors = stats::setNames(
+            list(rep(1, ncol(mat))), pe@uid)
     ))
 
     dt <- GiottoClass::analyzeData(pe, Giotto::analyzeParam("cov_groups"))
@@ -237,9 +240,10 @@ test_that("streaming + in-memory analyzeData share column schema", {
     # unit scale factors + no log == an identity recipe; kept explicit so the
     # test still exercises a populated op chain rather than an empty one
     pe@post_ops <- list(list(
-        type   = "norm_libsize",
-        scalef = GiottoDisk:::.pe_norm_libsize_scalef_slice(
-            pe, scalef = rep(1, ncol(mat)))
+        type    = "multiply",
+        axis    = "cell",
+        factors = stats::setNames(
+            list(rep(1, ncol(mat))), pe@uid)
     ))
 
     for (method in c("cov_loess", "cov_groups")) {

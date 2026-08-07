@@ -145,12 +145,35 @@ setMethod("reduceData",
 
 # ---- Streaming Halko core --------------------------------------------------
 
+# Demote a value-transform chain to the R side for the band readers.
+#
+# The band loops read a narrow slice per chunk and apply the chain over a
+# collected triplet frame. For a `multiply` that is a positional vector index;
+# in Acero it is a hash join against a rebuilt table, once per chunk. The
+# R side measured 2-3x faster on that hot path (fa3ee64), which is why these
+# ops were originally parked on @post_ops -- a placement that broke every
+# other consumer. Expressing it as a chain edit instead keeps @ops meaning
+# "the prefix that runs in Acero" while letting this one consumer opt out.
+#
+# The cascade is not optional and comes from .pe_demote_ops(): once the
+# multiply runs R-side, everything after it must too.
+#
+# No-op when there is nothing to demote (raw store, or a chain already
+# materialized by the transient bake).
+.pe_pca_demote_chain <- function(pe) {
+    i <- .pe_find_op_type(pe@ops, "multiply")
+    if (is.na(i)) return(pe)
+    .pe_demote_ops(pe, i)
+}
+
+
 .stream_random_svd <- function(pe, k, n_oversamples = 10L, n_power_iter = 2L,
                                 feats_to_use = NULL, center = TRUE,
                                 scale = FALSE,
                                 set_seed = TRUE, seed_number = 1234L) {
     if (set_seed) set.seed(seed_number)
 
+    pe <- .pe_pca_demote_chain(pe)
     n_cells <- as.integer(pe@n_cells)
     # chunk_size lives on parquetExprStore; the union doesn't carry one,
     # so fall back to the first substore's value (or a sane default).
@@ -449,19 +472,12 @@ setMethod("reduceData",
 }
 
 
-# Helper: pick a chunk_size for the streaming chunk reader. parquetExprStore
-# carries @chunk_size directly; for a union store, defer to the first
-# substore's value (substores can have different chunk sizes in principle,
-# but the union-axis chunking is uniform so we use one — the first is a
-# safe default given the constructor enforces compatible substores).
+# Streaming window for readers whose chunk lands in a sparse matrix -- the
+# PCA band loop and the storeWrite bake. 12 bytes per stored value (4-byte
+# index + 8-byte value); see `.pe_window_cells()` for why this is derived
+# rather than stored.
 .exprbase_chunk_size <- function(pe) {
-    if (inherits(pe, "parquetExprStore")) {
-        return(pe@chunk_size %null% 250000L)
-    }
-    if (inherits(pe, "unionParquetExprStore") && length(pe@stores) > 0L) {
-        return(pe@stores[[1L]]@chunk_size %null% 250000L)
-    }
-    250000L
+    .pe_window_cells(pe, bytes_per_nz = 12, k = 50L)
 }
 
 
@@ -476,6 +492,8 @@ setMethod("reduceData",
                               fallback_relerr = 0.01,
                               set_seed = TRUE, seed_number = 1234L,
                               n_oversamples = 10L, n_power_iter = 2L, ...) {
+    pe <- .pe_pca_demote_chain(pe)
+
     # feats_to_use = NULL -> use every feature.
     hvg_idx <- if (is.null(feats_to_use)) {
         seq_along(pe@feat_ids)

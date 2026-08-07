@@ -41,14 +41,20 @@ NULL
 #' @slot params list. Reserved for downstream pipeline metadata
 #'   (e.g. HVG indices after `sc_hvg`). Not used for normalization recipes
 #'   anymore — those live on `@ops`.
-#' @slot ops list. Ordered chain of lazy arrow step recipes. Each entry
-#'   is a pure-data `list(type, ...params)` record (no closures). At
-#'   `storeRead()` time the executor `.pe_apply_op()` translates each record
-#'   into composed arrow steps applied to the lazy query; the whole chain
-#'   compiles into one arrow plan executed once at collect / output
-#'   dispatch. Records survive `saveRDS` cleanly. Empty by default;
-#'   populated by `processData()` methods (libraryNorm, logNorm, ...).
-#'   See `R/utils-pestore-ops.R` for the op type registry.
+#' @slot ops list. The part of the op chain that runs **before**
+#'   materialization. `@ops` and `@post_ops` are one ordered sequence split at
+#'   the point where execution leaves Acero — this is the prefix, not a
+#'   collection of whichever steps happen to be lowerable.
+#'
+#'   Each entry is a pure-data `list(type, ...params)` record (no closures),
+#'   so the chain survives `saveRDS` cleanly. At `storeRead()` time
+#'   `.pe_apply_op()` translates each into arrow-dplyr steps on the lazy
+#'   query, and the whole prefix compiles into one plan executed once at
+#'   collect. Every record here must therefore lower to arrow — a consequence
+#'   of the position rather than the slot's definition.
+#'
+#'   Empty by default; populated by `processData()` methods. See
+#'   `R/utils-pestore-ops.R` for the op type registry.
 #' @slot n_cells numeric. Number of cells in the dataset
 #'   (length of `cell_ids`).
 #' @slot n_genes numeric. Number of genes / features
@@ -57,8 +63,34 @@ NULL
 #'   `row_id == i` in the Parquet file.
 #' @slot feat_ids character. Gene / feature IDs; index `j` corresponds to
 #'   `col_id == j` in the Parquet file.
-#' @slot chunk_size numeric. Default Arrow read-chunk size in cells
-#'   (default 250,000).
+#' @slot stats list. Cached marginal counts for the Parquet payload, filled
+#'   by `storeWrite()`. Two integer vectors:
+#'
+#'   \describe{
+#'     \item{`col_nnz`}{stored-entry count per feature, indexed by on-disk
+#'       `col_id`.}
+#'     \item{`row_nnz`}{stored-entry count per cell, indexed by on-disk
+#'       `row_id`.}
+#'   }
+#'
+#'   Keyed by **on-disk id**, not by identifier name and not by view position,
+#'   which is what makes them invariant under `[`: subsetting only narrows
+#'   `@cell_idx` / `@gene_idx` against the same file, so
+#'   `sum(stats$col_nnz[gene_idx])` is the exact nonzero count of a
+#'   gene-narrowed view. Names would break under feature renaming; view
+#'   positions would be invalidated by every subset.
+#'
+#'   Their lengths are the *file's* dimensions, which after a subset is the
+#'   only place that survives — `@n_genes` / `@n_cells` describe the view.
+#'
+#'   A subset on one axis is exact; a subset on both scales the exact axis by
+#'   the other's kept fraction, which assumes nonzeros spread uniformly across
+#'   the cell axis. Empty for a store whose Parquet was not written through
+#'   `storeWrite()`; consumers fall back to counting.
+#'
+#'   Note `storeWrite()` **renumbers** ids when the input is subset, so a
+#'   written store's marginals are computed against the new file rather than
+#'   inherited from its parent.
 #' @family store types
 #' @seealso [parquetExprStore()], [mtxInput()]
 NULL
@@ -105,9 +137,9 @@ setClass("parquetExprStore",
         feat_ids   = "character",
         cell_idx   = "integer",
         gene_idx   = "integer",
-        chunk_size = "numeric",
-        ops        = "list",   # arrow-lazy phase
-        post_ops   = "list"    # R-side post-collect phase
+        stats      = "list",   # cached on-disk marginals (see @stats)
+        ops        = "list",   # chain prefix, run in Acero
+        post_ops   = "list"    # chain suffix, run R-side after collect
     ),
     prototype = list(
         n_cells    = 0,
@@ -116,7 +148,7 @@ setClass("parquetExprStore",
         feat_ids   = character(0L),
         cell_idx   = integer(0L),
         gene_idx   = integer(0L),
-        chunk_size = 250000,
+        stats      = list(),
         ops        = list(),
         post_ops   = list()
     )
@@ -143,8 +175,15 @@ setClass("parquetExprStore",
 #'   `length(cell_ids)`.
 #' @param n_genes numeric. Total number of genes. Defaults to
 #'   `length(feat_ids)`.
-#' @param chunk_size numeric. Default Arrow read-chunk size in cells
-#'   (default 250,000).
+#' @param scan_stats logical. Scan the Parquet at `path` to cache its marginal
+#'   nonzero counts on `@stats` (default `FALSE`). Only meaningful when `path`
+#'   already holds data: the usual pattern is to construct an empty handle and
+#'   populate it with [storeWrite()], which caches the marginals itself. Set
+#'   `TRUE` when attaching to a Parquet written elsewhere and you would rather
+#'   pay the scan now than have the first consumer pay it. Leaving it `FALSE`
+#'   costs correctness nothing — consumers that need the counts fall back to
+#'   counting on demand — so this is purely about when the scan happens.
+#'   Reachable through [storeCreate()], which forwards `...` here.
 #' @param ... additional slots passed through to `new()`.
 #' @return A `parquetExprStore` S4 object.
 #' @family store constructors
@@ -155,7 +194,7 @@ parquetExprStore <- function(
     feat_ids   = character(0L),
     n_cells    = length(cell_ids),
     n_genes    = length(feat_ids),
-    chunk_size = 250000,
+    scan_stats = FALSE,
     ...
 ) {
     if (length(cell_ids) > 0L && length(cell_ids) != n_cells) {
@@ -166,15 +205,16 @@ parquetExprStore <- function(
         stop("[parquetExprStore] length(feat_ids) (", length(feat_ids),
              ") != n_genes (", n_genes, ").", call. = FALSE)
     }
-    new("parquetExprStore",
+    store <- new("parquetExprStore",
         path       = path,
         n_cells    = as.numeric(n_cells),
         n_genes    = as.numeric(n_genes),
         cell_ids   = as.character(cell_ids),
         feat_ids   = as.character(feat_ids),
-        chunk_size = as.numeric(chunk_size),
         ...
     )
+    if (isTRUE(scan_stats)) store <- .pestore_finalize_stats(store)
+    store
 }
 
 # initialize ####
@@ -209,12 +249,27 @@ setMethod("initialize", signature("parquetExprStore"), function(.Object, ...) {
 #' @slot n_cells numeric. Sum of substore n_cells.
 #' @slot n_genes numeric. Shared feature count.
 #' @slot params list. Reserved for downstream pipeline metadata.
-#' @slot ops list. Ordered chain of lazy arrow step recipes. Mirrors
-#'   `parquetExprStore@ops` — same op record schema, same `.pe_apply_op`
-#'   executor. Composite (source_id, orig_row_id) cell-axis keys let one
-#'   op table span all substores in a single arrow join. Substores must
-#'   have empty `@ops` at union construction time (see constructor); the
-#'   union's own `@ops` carries any subsequent normalization recipes.
+#' @slot ops list. The pre-materialization prefix of the chain. Mirrors
+#'   `parquetExprStore@ops` — same record schema, same `.pe_apply_op`
+#'   executor. Axis-keyed payloads carry one entry per substore keyed by
+#'   `uid`, so a single union-level record covers every substore. Substores
+#'   must have empty `@ops` at union construction time (see constructor); the
+#'   union's own `@ops` carries any subsequent recipes.
+#' @slot post_ops list. The suffix of the chain, running from the first step
+#'   that cannot execute in Acero onward — applied R-side to the materialized
+#'   `data.table` after the `@ops` plan has run. A lowerable record can sit
+#'   here legitimately: once something has forced materialization, everything
+#'   after it must follow. Same pure-data record schema as `@ops`; the
+#'   executor is `.pe_apply_post_ops_df()`. Axis-keyed payloads (e.g. a
+#'   `multiply` op's factor vectors) carry one entry per substore keyed by
+#'   `uid`. Substores must have empty `@post_ops` at construction
+#'   (see constructor); at read time the union transplants its own `@ops`
+#'   and `@post_ops` onto each substore via
+#'   `.exprbase_inject_parent_ops()` so per-substore chunk reads stay
+#'   self-sufficient. `storeWrite()` bakes the chain into on-disk values,
+#'   leaving the output store with empty chains. Once `@post_ops` is
+#'   non-empty, subsequent op pushes are routed here regardless of their
+#'   natural phase (monotonic phase rule). See `R/utils-pestore-ops.R`.
 #' @family store types
 NULL
 
@@ -227,8 +282,8 @@ setClass("unionParquetExprStore",
         n_cells  = "numeric",
         n_genes  = "numeric",
         params   = "list",
-        ops      = "list",     # arrow-lazy phase
-        post_ops = "list"      # R-side post-collect phase
+        ops      = "list",     # chain prefix, run in Acero
+        post_ops = "list"      # chain suffix, run R-side after collect
     ),
     prototype = list(
         stores   = list(),

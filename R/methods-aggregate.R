@@ -818,5 +818,7 @@ setMethod("overlapToMatrix", signature("parquetStore"),
             file.path(partition_dir, "part-0.parquet"))
     }
 
-    pe
+    # Parquet is written directly here rather than through `storeWrite()`, so
+    # the marginal cache has to be filled explicitly.
+    .pestore_finalize_stats(pe)
 }

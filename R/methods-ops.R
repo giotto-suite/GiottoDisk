@@ -286,25 +286,29 @@ setMethod("window<-", signature("parquetGeomBase"), function(x, ..., value) {
     list(x = x, e = ext(e), base_e = base_e)
 }
 
-.apply_op <- function(atab, op) {
+# apply arrow-compatible operations
+#
+# op chains in stores store operations as an ordered list of
+# param lists. Acero-compatible operations can be performed by passing
+# a pristine arrow table through .apply_op with the ops in sequence to
+# apply the lazy steps.
+#
+# `storeRead()` methods control and enforce the application of ops.
+# This helper should only be used in low-level `storeRead` methods
+# that define how to apply ops to the object being read from.
+#
+# atab : arrow table
+# op   : op item (usually from store@ops)
+
+.ptabular_apply_op <- function(atab, op) {
     type <- op$type
     switch(type,
         "filter" = dplyr::filter(atab, !!op$expr),
         "head"   = head(atab, op$n),
         "tail"   = tail(atab, op$n),
         "sample" = .arrow_sample_max_rows(atab, op$size),
-        "distinct" = dplyr::distinct(atab, dplyr::across(dplyr::all_of(op$cols))),
-        "join"   = {
-            y_q <- storeRead(op$y, output = "query")
-            # drop y's special cols except join keys
-            y_drop <- setdiff(specialCols(op$y), unname(op$by))
-            y_drop <- intersect(y_drop, names(y_q))
-            if (length(y_drop) > 0L) {
-                y_q <- dplyr::select(y_q, -dplyr::all_of(y_drop))
-            }
-            join_fn <- if (op$nomatch == "inner") dplyr::inner_join else dplyr::left_join
-            join_fn(atab, y_q, by = op$by)
-        },
+        "distinct" = .op_distinct(atab, op),
+        "join"   = .op_join(atab, op),
         # `spat_relate` is handled at the `.pbase_storeread_processing`
         # level (not via `.apply_op`) so it can route through sedonadb.
         # Reaching here means something bypassed the processing loop.
@@ -317,6 +321,27 @@ setMethod("window<-", signature("parquetGeomBase"), function(x, ..., value) {
         # the spatial predicate. Carries an arrow Table of id cols and the
         # join keys. Not part of the public API.
         "id_filter" = dplyr::semi_join(atab, op$ids_tab, by = op$by),
+        # fallback error
         stop(sprintf("[.apply_op] unknown op type: '%s'", type), call. = FALSE)
     )
+}
+
+.op_distinct <- function(atab, op) {
+    dplyr::distinct(atab, dplyr::across(dplyr::all_of(op$cols)))
+}
+
+.op_join <- function(atab, op) {
+    y_q <- storeRead(op$y, output = "query")
+    # drop y's special cols except join keys
+    y_drop <- setdiff(specialCols(op$y), unname(op$by))
+    y_drop <- intersect(y_drop, names(y_q))
+    if (length(y_drop) > 0L) {
+        y_q <- dplyr::select(y_q, -dplyr::all_of(y_drop))
+    }
+    join_fn <- if (op$nomatch == "inner") {
+        dplyr::inner_join 
+    } else {
+        dplyr::left_join
+    }
+    join_fn(atab, y_q, by = op$by)
 }

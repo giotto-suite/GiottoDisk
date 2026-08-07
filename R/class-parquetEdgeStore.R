@@ -577,7 +577,7 @@ setMethod("storeRead", signature(store = "parquetEdgeStore"),
         # .pbase_storeread_processing isn't in our dispatch chain).
         ds <- callNextMethod(store, output = "query", ...)
         for (op in store@ops) {
-            ds <- .apply_op(ds, op)
+            ds <- .ptabular_apply_op(ds, op)
         }
 
         if (output == "arrow") return(ds)

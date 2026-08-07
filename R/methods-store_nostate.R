@@ -60,7 +60,7 @@ setMethod(".store_nostate", "parquetGeomTileStore", function(x, ...) {
 })
 
 # parquetExprStore (queryableStore -> fileStore): strips subset state +
-# both phase chains (@ops arrow-lazy, @post_ops R-side). @cell_ids /
+# both halves of the op chain (@ops prefix, @post_ops suffix). @cell_ids /
 # @feat_ids are left narrowed — they're not read by the read_fun (which
 # only consults @path), so they don't affect hashing.
 setMethod(".store_nostate", "parquetExprStore", function(x, ...) {

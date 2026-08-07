@@ -28,6 +28,9 @@ NULL
     n_cells <- as.numeric(pe@n_cells)
     n_genes <- as.numeric(pe@n_genes)
     if (n_cells <= 0 || n_genes <= 0) return(0)
+    # Cached marginals answer this without touching the data.
+    cached <- .pestore_view_nnz(pe)
+    if (isTRUE(is.finite(cached))) return(cached / (n_cells * n_genes))
     nnz <- storeRead(pe) |>
         dplyr::count() |>
         dplyr::collect() |>
@@ -35,20 +38,168 @@ NULL
     as.numeric(nnz) / (n_cells * n_genes)
 }
 
-# Finalizer: auto-tune store@chunk_size from dataset shape + density,
-# using sc_recommend_chunk's defaults (n_hvg = min(2000L, n_genes),
-# k = 50L, ram_frac = 0.25). Restores the auto-sizing legacy did via
-# createGiottoFromParquet, but applied at storeWrite time so every
-# Input pathway and the direct memoryMatrix path benefit.
-.pestore_finalize_chunk_size <- function(pe, verbose = FALSE) {
+# Streaming window, in cells, for a pass that materializes `bytes_per_nz`
+# bytes per stored value.
+#
+# Derived per call rather than stored on the object. The window depends on
+# free RAM, which is a property of the machine doing the reading -- baking it
+# into the store at write time made it stale the moment the store moved. What
+# IS machine-independent is the payload size, and that is what `@stats` caches.
+#
+# Two options steer this. `giottodisk.chunk_size` serves double duty: set
+# explicitly it pins the window (an escape hatch for constrained environments
+# and for tests), and unset its default is the value used when the derivation
+# cannot run -- no cached marginals, or a machine whose free RAM cannot be
+# read. `giottodisk.chunk_ram_frac` instead scales the budget the derivation
+# works from, which is the knob to reach for when the shape is fine but the
+# machine is busier than the default assumes.
+#
+# Union stores carry no marginals of their own; sum the substores'.
+.pe_window_cells <- function(pe, bytes_per_nz = 12, k = 50L) {
+    pinned <- getOption("giottodisk.chunk_size")
+    n_cells <- as.numeric(pe@n_cells)
+    n_genes <- as.numeric(pe@n_genes)
+    if (!is.null(pinned)) {
+        return(as.integer(max(1, min(n_cells, as.numeric(pinned)))))
+    }
+    # fallback value for unknown cases
+    if (n_cells <= 0 || n_genes <= 0) return(250000L)
+
+    dens <- tryCatch(.pe_view_density(pe), error = function(e) NA_real_)
+    if (!isTRUE(is.finite(dens)) || dens <= 0) {
+        return(as.integer(min(n_cells, 250000L)))
+    }
+
+    as.integer(.recommend_chunk_size(
+        n_cells      = n_cells,
+        n_genes      = n_genes,
+        density      = dens,
+        k            = k,
+        bytes_per_nz = bytes_per_nz
+    ))
+}
+
+
+# Fill fraction of the current view, for either store kind.
+#
+# `.pestore_density()` reads the cached marginals when they exist and counts
+# when they do not -- a store handed a path directly (`storeCreate()`, or the
+# constructor) never went through `storeWrite()` and has none, and one scan
+# beats sizing a window blind.
+.pe_view_density <- function(pe) {
+    n_cells <- as.numeric(pe@n_cells)
+    n_genes <- as.numeric(pe@n_genes)
+    if (n_cells <= 0 || n_genes <= 0) return(0)
+    if (inherits(pe, "unionParquetExprStore")) {
+        return(sum(vapply(pe@stores, .pestore_view_nnz, numeric(1L))) /
+               (n_cells * n_genes))
+    }
+    .pestore_density(pe)
+}
+
+
+# Finalizer: cache the Parquet's marginal nonzero counts on @stats.
+#
+# Two grouped counts over the freshly written file, one per axis. Replaces
+# the old chunk_size finalizer, which spent a density pass at write time to
+# bake a RAM-derived window into the store -- a value that goes stale the
+# moment the store is opened on a different machine. Counting instead gives
+# a machine-independent fact, and every later consumer derives its own window
+# from it without touching the data again.
+#
+# Called on the store as written, so no subset or op chain is in play and the
+# ids are the file's own. `[` never invalidates the result.
+.pestore_finalize_stats <- function(pe, verbose = FALSE) {
     if (pe@n_cells <= 0 || pe@n_genes <= 0) return(pe)
-    pe@chunk_size <- sc_recommend_chunk(
-        n_cells = pe@n_cells,
-        n_genes = pe@n_genes,
-        density = .pestore_density(pe),
-        verbose = verbose
+    row_id <- col_id <- NULL   # NSE bindings
+
+    .marginal <- function(key, n_out) {
+        agg <- storeRead(pe, output = "query") |>
+            dplyr::count(!!rlang::sym(key)) |>
+            dplyr::collect()
+        out <- integer(n_out)
+        idx <- as.integer(agg[[key]])
+        keep <- !is.na(idx) & idx >= 1L & idx <= n_out
+        out[idx[keep]] <- as.integer(agg[["n"]][keep])
+        out
+    }
+
+    pe@stats <- list(
+        col_nnz = .marginal("col_id", as.integer(pe@n_genes)),
+        row_nnz = .marginal("row_id", as.integer(pe@n_cells))
     )
+    if (isTRUE(verbose)) {
+        message("[storeWrite] cached marginals: ",
+                format(sum(pe@stats$col_nnz), big.mark = ","), " nonzeros")
+    }
     pe
+}
+
+
+# Total stored values in the CURRENT VIEW, from the cached marginals.
+#
+# Exact when at most one axis is narrowed. With both narrowed, the gene axis
+# stays exact and the cell axis contributes its kept fraction -- nonzeros are
+# far from uniform across features (HVG selection picks the densest rows on
+# purpose) but reasonably uniform across cells, so the exact axis is the one
+# that matters. Returns NA when no marginals are cached.
+.pestore_view_nnz <- function(pe) {
+    st <- pe@stats
+    if (!length(st) || is.null(st$col_nnz) || is.null(st$row_nnz)) {
+        return(NA_real_)
+    }
+    gi <- pe@gene_idx
+    ci <- pe@cell_idx
+    n_cells_file <- length(st$row_nnz)
+
+    # Neither axis narrowed, or exactly one: read the answer off the marginal
+    # for that axis. Only a two-axis subset needs the uniformity assumption,
+    # and there the gene axis stays exact -- it is the one where nonzeros are
+    # genuinely skewed, since feature selection targets the densest rows.
+    if (length(gi) == 0L && length(ci) == 0L) {
+        return(sum(as.numeric(st$col_nnz), na.rm = TRUE))
+    }
+    if (length(ci) == 0L) {
+        return(sum(as.numeric(st$col_nnz[gi]), na.rm = TRUE))
+    }
+    if (length(gi) == 0L) {
+        return(sum(as.numeric(st$row_nnz[ci]), na.rm = TRUE))
+    }
+    sum(as.numeric(st$col_nnz[gi]), na.rm = TRUE) *
+        (length(ci) / max(n_cells_file, 1L))
+}
+
+
+# ---- op payloads -----------------------------------------------------------
+#
+# Same indexing convention as the `@stats` marginals above: a numeric vector
+# whose POSITION is the on-disk row_id / col_id. Kept together because that
+# convention is the thing to preserve -- it is what makes both invariant under
+# `[`, and what lets the R-side executor index directly where arrow has to
+# join.
+
+# Resolve a payload to a full-length numeric vector for one substore.
+.pe_axis_payload_vec <- function(payload, uid, n) {
+    if (is.null(payload)) return(NULL)
+    if (!is.list(payload)) return(rep_len(as.numeric(payload), n))
+    v <- payload[[as.character(uid)]]
+    if (is.null(v)) return(NULL)
+    as.numeric(v)
+}
+
+# Build the joinable (source_id, <key>, w) table an Acero plan needs. Arrow
+# cannot index an R vector from inside a query, so per-axis state has to arrive
+# as a table -- rebuilt per call, which is what the previous executor did too.
+.pe_axis_payload_table <- function(payload, key) {
+    src <- names(payload)
+    data.table::rbindlist(lapply(src, function(u) {
+        v <- as.numeric(payload[[u]])
+        data.table::data.table(
+            source_id = rep_len(as.character(u), length(v)),
+            key_id    = seq_along(v),
+            w         = v
+        )
+    }))[!is.na(w)]
 }
 
 

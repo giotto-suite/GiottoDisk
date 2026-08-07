@@ -3,9 +3,9 @@ NULL
 
 # storeRead ####
 # Two-phase op execution:
-#   @ops       arrow-lazy: folded into the composed query via @read_fun
+#   @ops       chain prefix: folded into the composed query via @read_fun
 #              wrap + .pe_apply_ops before materialization.
-#   @post_ops  R-side post-collect: applied AFTER the arrow query has been
+#   @post_ops  chain suffix: applied AFTER the arrow query has been
 #              collected, mutating `value` in place. Only applied for
 #              output modes that materialize (tibble / data.table /
 #              dgcmatrix). `query` and `duckdb` outputs return the
@@ -354,9 +354,9 @@ setMethod("storeRead", signature("unionParquetExprStore"), function(store,
     source_id <- row_id <- col_id <- value <- NULL  # NSE
 
     # Apply @post_ops R-side; mutates df$value in place. Post-op union
-    # payload (e.g., norm_libsize's scalef table) carries composite
-    # (source_id, orig_row_id) keys — the R-side update-join in
-    # .pe_apply_post_op_norm_libsize_df resolves across substores.
+    # payload (e.g. a `multiply` op's per-substore factor vectors) is keyed
+    # by uid + on-disk id, so .pe_apply_post_op_multiply_df resolves it across
+    # substores.
     df <- .pe_apply_post_ops_df(df, store@post_ops)
 
     # j: union-global cell position from (source_id, row_id). Build a
@@ -514,7 +514,7 @@ setMethod(
     store@feat_ids <- data@feat_ids
     store@n_cells  <- as.numeric(data@n_cells)
     store@n_genes  <- as.numeric(data@n_genes)
-    .pestore_finalize_chunk_size(store)
+    .pestore_finalize_stats(store)
 }
 
 
@@ -717,7 +717,7 @@ setMethod(
             store@cell_ids <- as.character(colnames(data))
         if (length(store@feat_ids) == 0L && !is.null(rownames(data)))
             store@feat_ids <- as.character(rownames(data))
-        .pestore_finalize_chunk_size(store)
+        .pestore_finalize_stats(store)
     }
 )
 
@@ -768,10 +768,26 @@ setMethod("dimnames", "parquetExprStore",
 setMethod("dimnames<-",
     signature(x = "parquetExprStore", value = "list"),
     function(x, value) {
+        # Length is checked here because nothing downstream does. `@feat_ids`
+        # is the VIEW's names and must stay parallel to `@gene_idx`; a
+        # mismatched assignment is not caught until a materializing read
+        # fails inside Matrix with a message that points nowhere near the
+        # rename. Dims of 0 are an unpopulated store, where assignment is how
+        # the axis gets named.
+        .check <- function(v, n, axis) {
+            if (n > 0L && length(v) != n) {
+                stop("[parquetExprStore] ", axis, " names length (",
+                     length(v), ") != ", axis, " count (", n,
+                     "). Names apply to the current view, which a subset ",
+                     "may have narrowed.", call. = FALSE)
+            }
+        }
         if (length(value) >= 1L && !is.null(value[[1L]])) {
+            .check(value[[1L]], as.integer(x@n_genes), "feature")
             x@feat_ids <- as.character(value[[1L]])
         }
         if (length(value) >= 2L && !is.null(value[[2L]])) {
+            .check(value[[2L]], as.integer(x@n_cells), "cell")
             x@cell_ids <- as.character(value[[2L]])
         }
         x
@@ -864,19 +880,6 @@ setMethod("[",
             x@feat_ids <- new_feat_ids
             x@gene_idx <- as.integer(new_gene_idx)
             x@n_genes  <- as.numeric(length(x@feat_ids))
-            # Slice gene-axis op tables on both phase chains. Current op
-            # kinds have no gene-axis tables; this is a no-op for
-            # the current kinds but generic for future ones.
-            surviving_genes <- data.table::data.table(
-                feat_id = as.character(new_feat_ids))
-            if (length(x@ops) > 0L) {
-                x@ops <- .pe_slice_ops(x@ops, axis = "gene",
-                    surviving_keys = surviving_genes)
-            }
-            if (length(x@post_ops) > 0L) {
-                x@post_ops <- .pe_slice_ops(x@post_ops, axis = "gene",
-                    surviving_keys = surviving_genes)
-            }
         }
         if (!missing(j)) {
             j_int <- .resolve_subset_idx(j, x@cell_ids, "col (cell)")
@@ -888,21 +891,6 @@ setMethod("[",
             x@cell_ids <- x@cell_ids[j_int]
             x@cell_idx <- as.integer(new_cell_idx)
             x@n_cells  <- as.numeric(length(x@cell_ids))
-            # Slice cell-axis op tables on both phase chains. Composite
-            # key (source_id, orig_row_id); source_id is constant (=
-            # x@uid) for a single store.
-            surviving_cells <- data.table::data.table(
-                source_id   = rep_len(as.character(x@uid),
-                                      length(new_cell_idx)),
-                orig_row_id = as.integer(new_cell_idx))
-            if (length(x@ops) > 0L) {
-                x@ops <- .pe_slice_ops(x@ops, axis = "cell",
-                    surviving_keys = surviving_cells)
-            }
-            if (length(x@post_ops) > 0L) {
-                x@post_ops <- .pe_slice_ops(x@post_ops, axis = "cell",
-                    surviving_keys = surviving_cells)
-            }
         }
         x
     }
@@ -947,44 +935,11 @@ setMethod("[",
         }
         new_union <- unionParquetExprStore(new_stores)
 
-        # Inherit + slice union-level phase chains along the axes being
-        # narrowed. Substore @ops / @post_ops stay empty by constraint;
-        # only the union carries ops, and slicing applies on cell axis
-        # with the composite (source_id, orig_row_id) key spanning
-        # surviving substores.
+        # The union carries the chains; substores stay ops-clean by
+        # constraint. Nothing to slice: op payloads are keyed by on-disk id,
+        # which a narrowing view cannot move.
         new_union@ops      <- x@ops
         new_union@post_ops <- x@post_ops
-        has_any_ops <- length(new_union@ops) > 0L ||
-                       length(new_union@post_ops) > 0L
-        if (has_any_ops) {
-            if (!missing(i)) {
-                surviving_genes <- data.table::data.table(
-                    feat_id = as.character(new_union@feat_ids))
-                if (length(new_union@ops) > 0L)
-                    new_union@ops <- .pe_slice_ops(new_union@ops,
-                        axis = "gene", surviving_keys = surviving_genes)
-                if (length(new_union@post_ops) > 0L)
-                    new_union@post_ops <- .pe_slice_ops(new_union@post_ops,
-                        axis = "gene", surviving_keys = surviving_genes)
-            }
-            if (!missing(j)) {
-                surviving_cells <- data.table::rbindlist(lapply(
-                    new_stores, function(s) {
-                        ci <- if (length(s@cell_idx) > 0L) s@cell_idx
-                              else seq_len(as.integer(s@n_cells))
-                        data.table::data.table(
-                            source_id   = rep_len(as.character(s@uid),
-                                                  length(ci)),
-                            orig_row_id = as.integer(ci))
-                    }))
-                if (length(new_union@ops) > 0L)
-                    new_union@ops <- .pe_slice_ops(new_union@ops,
-                        axis = "cell", surviving_keys = surviving_cells)
-                if (length(new_union@post_ops) > 0L)
-                    new_union@post_ops <- .pe_slice_ops(new_union@post_ops,
-                        axis = "cell", surviving_keys = surviving_cells)
-            }
-        }
         new_union
     }
 )

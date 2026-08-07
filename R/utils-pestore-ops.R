@@ -1,82 +1,129 @@
 #' @include class-parquetExprStore.R
 NULL
 
-# parquetExprStore op chain — two-phase design.
+# parquetExprStore op chain — one sequence, split at materialization.
 #
-# @ops       arrow-lazy phase. Ops that translate to arrow-dplyr steps
-#            on the lazy query (filter, distinct, head, tail, sample,
-#            future arrow-native transforms). Composed at storeRead time
-#            via .pe_apply_ops before collect.
+# The chain is ONE ordered sequence. The two slots record WHERE that sequence
+# materializes, not which ops happen to be lowerable:
 #
-# @post_ops  R-side post-collect phase. Ops that operate on the materialized
-#            data.table, for every output mode and for streaming consumers
-#            alike -- they all reach it through storeRead. Composed at
-#            output-materialization time via .pe_apply_post_ops_df.
+# @ops       the prefix that runs BEFORE materialization. Folded into the lazy
+#            arrow query at storeRead time via .pe_apply_ops and executed by
+#            Acero as a single plan. Necessarily composed only of ops that
+#            lower to arrow -- but that is a CONSEQUENCE of the position, not
+#            the definition of the slot.
+#
+# @post_ops  everything from the first step that cannot run in Acero onward.
+#            Applied R-side to the collected data.table via
+#            .pe_apply_post_ops_df, for every output mode and for streaming
+#            consumers alike -- they all reach it through storeRead.
+#
+# So a perfectly lowerable op can legitimately sit on @post_ops: if it comes
+# after a step that forced materialization, it has nowhere else to go. Reading
+# @post_ops as "the ops that cannot be lowered" is the mistake -- it is "the
+# suffix that runs after we left Acero."
 #
 # Each op is a pure-data record `list(type = <character>, ...params)`.
 # No closures, no phase field on the record — the phase is determined by
 # which slot the op lives in.
 #
-# Monotonic phase rule: once @post_ops has an entry, subsequent pushes go
-# to @post_ops regardless of the op's natural phase. Enforced by
-# .pe_push_op. Users needing a lazy op after a post op must materialize
-# first (storeWrite bakes @post_ops into on-disk values; new pe starts
-# with empty chains).
+# Monotonic phase rule: once @post_ops has an entry, a later op cannot go on
+# @ops -- it would execute before the post op rather than after it, since the
+# fold applies all of @ops, collects, then all of @post_ops. Enforced by
+# .pe_push_op. Materializing resets the split (storeWrite bakes the chain into
+# on-disk values; the new store starts with both slots empty).
+#
+# A consumer that wants a lowerable op run R-side edits the chain rather than
+# routing around it: .pe_demote_ops moves the op and everything after it to
+# @post_ops (same monotonic rule, expressed as a rewrite).
 #
 # KNOWN MISCLASSIFICATION -- do not build on the current placement.
-# `norm_libsize` and `log` sit on @post_ops even though both lower to Acero
-# (see `.pe_post_op_arrow_ok`). They are there because the R-side executors
+# `multiply` and `log` sit on @post_ops even though both lower to Acero --
+# `.pe_apply_op()` has a branch for each. They are there because the producing
+# verbs still push `phase = "post"`; the R-side executors
 # are faster for materializing reads, not because they must run in R -- a
 # deliberate move (fa3ee64) that bought 2-3x on the norm hot path and retired
 # the `v_norm` sidecar column. It cited parquetGeomBase as precedent, but that
 # store's @post_ops holds WKB transforms which genuinely cannot be lowered, so
 # the same slot ended up carrying two different criteria: "must run in R"
 # there, "faster in R" here. There is no way to express the latter, so it got
-# encoded in the slot. Two
-# consequences: storeRead cannot tell a lowerable post-op from an R-only one,
-# so consumers wanting pushdown route around it via output = "query" and
-# reimplement the ops (hence the duplicated norm math below); and the
-# monotonic rule above will wrongly reject a lazy op queued after a norm,
-# which will bite as soon as a real lazy pestore op exists. The intended
-# contract and the demotion/token mechanism that restores it are written up
-# in vignettes/articles/roadmap.Rmd, "Restore the @ops / @post_ops contract".
+# encoded in the slot. Two consequences: storeRead cannot tell a lowerable
+# post-op from an R-only one, so consumers wanting pushdown route around it via
+# output = "query" and reimplement the ops; and the monotonic rule above fires
+# spuriously -- a lazy op queued after a norm gets refused, not because the
+# sequence demands materialization (it does not; the norm lowers) but because
+# the norm was parked in the slot that means it does. The rule itself is
+# right: @ops is the prefix that runs BEFORE materialization, so once anything
+# is on @post_ops the chain has left Acero and everything after it must follow.
+# What is wrong is the placement that triggers it.
+# .pe_demote_ops is the first half of the fix and is in place; the token swap
+# and the move of these two records back onto @ops are not. The full contract
+# is written up in vignettes/articles/roadmap.Rmd, "Restore the @ops /
+# @post_ops contract".
 #
 # Op types currently supported:
 #
-#   norm_libsize      (phase: post)
-#     Per-cell library-size scaling. Mutates `value` in place, R-side.
+#   multiply          (phase: either)
+#     Multiply `value` by a per-axis factor. Sparsity-preserving, so it
+#     lowers to Acero and applies over a collected triplet frame alike.
 #     Params:
-#       scalef   data.table(source_id, orig_row_id, scalef). One row per
-#                cell present in the store's current view at processData
-#                time. Composite (source_id, orig_row_id) key so the same
-#                op record carries scalefs for all substores of a union.
+#       axis     "cell" | "feat" | "all"
+#       factors  scalar (axis "all"), or a named list mapping a substore uid
+#                to a numeric vector INDEXED BY ON-DISK ID. Invariant under
+#                `[` -- on-disk ids do not move when a view narrows.
+#
+#   add               (STUB -- recorded and refused, not implemented)
+#     Add a per-axis offset. Params mirror `multiply`, with `terms` in place
+#     of `factors`. No verb emits one yet.
+#
+#     Recording it is cheap; only materializing it is not.
+#
+#     At materialization the frame densifies INTO TRIPLET FORM: `CJ(row_id,
+#     col_id)` over the slice, the stored nonzeros joined onto it, NA filled
+#     with 0. The offset is then an ordinary mutate, and every op after it
+#     keeps working on triplets in the same phase -- no matrix-tier executor,
+#     no chain split.
+#
+#     What does change is the payload size: from the `add` onward the frame is
+#     dense, so the read window has to be sized against density 1.0 rather
+#     than the store's actual fill. `.pe_window_cells()` derives the window per
+#     read, so it can account for that -- a stored chunk_size could not have.
+#
+#     Scope, so this does not get over-built: the only consumer is DISPLAY --
+#     the "scaled" expression slot behind heatmaps and similar. Analysis never
+#     needs it; every path that mathematically requires centering already
+#     folds it into algebra instead of materializing (Halko's rank-1 term, the
+#     gram path's n*mu*mu^T, the Pearson residual zero-block). So the slice is
+#     small by nature, and `.pe_check_dgc_dims()` already refuses anything
+#     large. A straightforward CJ expansion is sufficient; it does not need to
+#     be fast.
 #
 #   log               (phase: post)
 #     log1p / log(base). Carries no axis-keyed state.
 #     Params:
 #       base     numeric. log base (default 2).
 #
-# These are independent records, not a fused one, so either may be used
-# alone and in either order -- the chain supplies the sequencing.
+# Records are positional and self-contained: each does its work at the
+# position it occupies, and a verb appends rather than revisiting anything it
+# wrote earlier. Nothing needs to be applied in a particular order or to be
+# present at all -- the chain supplies the sequencing.
 #
 # Extension protocol:
-#   - Lazy op: add a branch to .pe_apply_op (arrow-side switch), and a
-#     .pe_op_table_keys entry if the op carries axis-keyed state that
-#     `[`-subset should narrow.
-#   - Post op: add a branch to .pe_apply_post_op_df, plus a
-#     .pe_op_table_keys entry if axis-keyed, and an arrow lowering in
-#     `.pe_post_op_arrow` if the op can be pushed down. Add a
-#     natural-phase-"post" case in the verb that produces it.
+#   - Add a branch to .pe_apply_op (arrow) and/or .pe_apply_post_op_df
+#     (triplets), depending on which engines can express it.
+#   - Key any payload by ON-DISK id, not by view position. That is what makes
+#     it invariant under `[` -- see the subset-slice note at the bottom.
+#   - Have the producing verb append the record; never edit an existing one.
 
 
 # ---- @ops arrow-side executor ---------------------------------------------
 
-# Apply a single arrow-lazy op record to a lazy arrow query.
+# Apply a single prefix op record to the lazy arrow query.
 # Returns the augmented query.
 .pe_apply_op <- function(atab, op) {
     switch(op$type,
-        # Future arrow-native op types dispatch here. norm_libsize / log
-        # moved to @post_ops; not an arrow-side op.
+        "log"      = .op_transform_log(atab, op),
+        "multiply" = .op_multiply(atab, op),
+        "add"      = .op_add_refuse(op),
         stop("[.pe_apply_op] unknown arrow-side op type: ", op$type,
             call. = FALSE)
     )
@@ -89,6 +136,79 @@ NULL
     atab
 }
 
+.op_transform_log <- function(x, op) {
+    value <- NULL # NSE
+    base <- op$base %||% 2
+    if (data.table::is.data.table(x)) {
+        return(x[, value := log1p(value) / log(base)])
+    }
+    dplyr::mutate(x, value = log1p(value) / log(!!base))
+}
+
+# ---- multiply / add ---------------------------------------------------------
+#
+# Two primitives, matching the vocabulary the rest of the suite already uses
+# for the same job (`BPCells::multiply_rows` / `add_rows`, and ScaledMatrix's
+# `scale` / `center`). The axis lives on the record, so no axis suffix here.
+#
+#   list(type = "multiply", axis = "cell"|"feat"|"all", factors = <payload>)
+#   list(type = "add",      axis = "cell"|"feat"|"all", terms   = <payload>)
+#
+# `<payload>` is either a scalar (axis "all") or a named list mapping a
+# substore's uid to a numeric vector INDEXED BY ON-DISK ID -- `factors[[uid]][id]`
+# is the multiplier for that row_id / col_id. Same shape as the `@stats`
+# marginals, and invariant under `[` for the same reason: on-disk ids do not
+# move when a view narrows, so nothing has to be sliced or re-derived.
+#
+# NOT named "scale": at the workflow tier that word means standardize, centring
+# included (`scaleParam`, the "scaled" expression slot, `ScaledMatrix` itself),
+# while at the operation tier it means multiply only. `multiply` is unambiguous
+# and leaves `add` free for its counterpart.
+#
+# The two are NOT interchangeable in where they can run:
+#
+#   multiply  preserves sparsity -- an implicit zero stays zero -- so it lowers
+#             to Acero, applies over a collected triplet frame, and survives
+#             any output mode.
+#   add       destroys it -- every implicit zero becomes the offset -- so it
+#             CANNOT be expressed over triplets at all. It is honored only when
+#             a bounded chunk is materialized, by wrapping rather than by
+#             mutating values (see .pe_add_wrap and the ScaledMatrix note on
+#             .pe_check_dgc_dims).
+
+.op_multiply <- function(atab, op) {
+    value <- w <- NULL   # NSE
+    axis <- op$axis %||% "cell"
+    if (identical(axis, "all")) {
+        k <- as.numeric(op$factors)
+        return(dplyr::mutate(atab, value = value * !!k))
+    }
+    key <- if (identical(axis, "feat")) "col_id" else "row_id"
+    tbl <- .pe_axis_payload_table(op$factors, key)
+    tbl_a <- arrow::as_arrow_table(data.frame(
+        source_id = as.character(tbl$source_id),
+        key_id    = as.integer(tbl$key_id),
+        w         = as.numeric(tbl$w),
+        stringsAsFactors = FALSE
+    ))
+    by <- c("source_id" = "source_id"); by[key] <- "key_id"
+    atab |>
+        dplyr::left_join(tbl_a, by = by) |>
+        dplyr::mutate(value = value * w) |>
+        dplyr::select(-w)
+}
+
+# `add` is recorded but not yet executable. It cannot be lowered to Acero
+# (arrow has no way to synthesize the implicit zeros), and the R-side executor
+# would need to densify the slice into triplet form first -- see the op
+# inventory above for the intended shape.
+.op_add_refuse <- function(op) {
+    stop("[.pe_apply_op] `add` ops are recorded but not yet executable. ",
+         "Adding a per-", op$axis %||% "cell", " offset requires densifying ",
+         "the slice (every implicit zero becomes the offset), which no ",
+         "executor does yet.", call. = FALSE)
+}
+
 
 # ---- @post_ops R-side executor (data.table shape) --------------------------
 #
@@ -98,8 +218,9 @@ NULL
 
 .pe_apply_post_op_df <- function(df, op) {
     switch(op$type,
-        "norm_libsize" = .pe_apply_post_op_norm_libsize_df(df, op),
-        "log"          = .pe_apply_post_op_log_df(df, op),
+        "log"      = .op_transform_log(df, op),
+        "multiply" = .pe_apply_post_op_multiply_df(df, op),
+        "add"      = .op_add_refuse(op),
         stop("[.pe_apply_post_op_df] unknown post op type: ", op$type,
             call. = FALSE)
     )
@@ -111,89 +232,38 @@ NULL
     df
 }
 
-.pe_apply_post_op_log_df <- function(df, op) {
-    value <- NULL   # NSE
-    df[, value := log1p(value) / log(op$base %null% 2)]
-    df
-}
+.pe_apply_post_op_multiply_df <- function(df, op) {
+    value <- source_id <- NULL   # NSE
+    axis <- op$axis %||% "cell"
+    if (identical(axis, "all")) {
+        k <- as.numeric(op$factors)
+        df[, value := value * k]
+        return(df)
+    }
+    key <- if (identical(axis, "feat")) "col_id" else "row_id"
 
-.pe_apply_post_op_norm_libsize_df <- function(df, op) {
-    # NSE bindings
-    row_id <- source_id <- value <- scalef <- NULL
-    # For a single-source scalef payload, replace the (source_id,
-    # orig_row_id) update-join with a plain positional vector index:
-    # build a numeric vector where `scalef_by_row_id[orig_row_id]` is
-    # the scalef for that on-disk cell, then look up per df row via
-    # `scalef_by_row_id[df$row_id]`.  No composite hash, no per-row
-    # join dispatch — a native vector index.
-    # Union collected chunks (multi-source scalef) still use the
-    # update-join because source_id disambiguates overlapping row_ids
-    # across substores.
-    sids <- unique(op$scalef$source_id)
-    if (length(sids) == 1L) {
-        n_slots <- max(op$scalef$orig_row_id)
-        scalef_by_row_id <- numeric(n_slots)
-        scalef_by_row_id[op$scalef$orig_row_id] <- op$scalef$scalef
-        df[, value := value * scalef_by_row_id[row_id]]
+    # Positional index rather than a join: the payload is already a vector
+    # keyed by on-disk id, so `w[id]` is the whole lookup. A union carries one
+    # vector per substore, so split on source_id and index within each.
+    #
+    # `uniqueN` rather than `length(unique(...))`: the single-source branch
+    # only needs the COUNT, and materializing every distinct string first
+    # costs 20x more than counting them (0.061 s vs 0.003 s over 9.6M rows) --
+    # which was two thirds of this executor's runtime.
+    if (data.table::uniqueN(df$source_id) == 1L) {
+        w <- .pe_axis_payload_vec(op$factors, df$source_id[1L], 0L)
+        df[, value := value * w[get(key)]]
     } else {
-        df[op$scalef,
-            on = c("source_id", "row_id" = "orig_row_id"),
-            scalef := i.scalef]
-        df[, value := value * scalef]
-        df[, scalef := NULL]
+        for (u in unique(df$source_id)) {
+            w <- .pe_axis_payload_vec(op$factors, u, 0L)
+            if (is.null(w)) next
+            df[source_id == u, value := value * w[get(key)]]
+        }
     }
     df
 }
 
-
-# ---- @post_ops arrow lowering ----------------------------------------------
-#
-# Some post ops can be pushed into the lazy query instead of being applied
-# R-side after collect. When every op in a chain can be, a consumer may run
-# the whole thing in Acero and pull back only the aggregate -- see
-# `.stream_gene_stats_arrow()`.
-#
-# The math here MIRRORS the `_df` executors above and must stay in step with
-# them. It is duplicated rather than shared because arrow cannot index an R
-# vector positionally inside a query, so per-cell state has to arrive as a
-# joinable table rather than a lookup.
-#
-# `nv` is the column being transformed; callers seed it with `value`.
-
-# Can this op be lowered? Gate for the fast path.
-.pe_post_op_arrow_ok <- function(op) {
-    isTRUE(op$type %in% c("norm_libsize", "log"))
-}
-
-# Lower one op onto a lazy query. Only call when `.pe_post_op_arrow_ok()`.
-.pe_post_op_arrow <- function(q, op) {
-    nv <- value <- scalef <- source_id <- row_id <- NULL   # NSE
-    switch(op$type,
-        "log" = {
-            base <- op$base %null% 2
-            dplyr::mutate(q, nv = log1p(nv) / log(!!base))
-        },
-        "norm_libsize" = {
-            sf <- data.table::as.data.table(op$scalef)
-            scalef_tbl <- arrow::as_arrow_table(data.frame(
-                source_id   = as.character(sf$source_id),
-                orig_row_id = as.integer(sf$orig_row_id),
-                scalef      = as.numeric(sf$scalef),
-                stringsAsFactors = FALSE
-            ))
-            q |>
-                dplyr::left_join(scalef_tbl,
-                    by = c("source_id" = "source_id",
-                           "row_id" = "orig_row_id")) |>
-                dplyr::mutate(nv = nv * scalef)
-        },
-        stop("[.pe_post_op_arrow] op type not lowerable to arrow: ",
-             op$type, call. = FALSE)
-    )
-}
-
-
-# ---- Push helper: monotonic phase enforcement ------------------------------
+# ---- Chain edit helpers ----------------------------------------------------
 
 # Route an op record to the appropriate slot on the store. Enforces the
 # monotonic-phase rule: once @post_ops has an entry, subsequent lazy
@@ -220,6 +290,66 @@ NULL
 }
 
 
+# Read the store as it stands with NOTHING queued -- the values on disk,
+# ignoring every op in either phase.
+#
+# For a consumer whose statistic is defined on the stored values rather than
+# on whatever the chain produces. `.stream_filter_masks()` is the case: Giotto
+# filter thresholds are count thresholds, and nothing stops a caller from
+# filtering after normalizing, so the chain is suppressed explicitly rather
+# than relied on to be absent.
+#
+# Note there is deliberately no "prefix up to op i" variant. Ops are
+# positional and self-contained: a verb writes its record at the end of the
+# chain and never revisits it, so no producer needs a basis cut partway
+# through. An earlier version grew one to serve replace-in-place, which is
+# exactly the reach-back that discipline forbids.
+.pe_chain_none <- function(pe) {
+    pe@ops <- list()
+    pe@post_ops <- list()
+    pe
+}
+
+
+# Demote an @ops entry, and every op after it, to the front of @post_ops.
+#
+# For a consumer that wants a lowerable op run R-side instead of in Acero:
+# rather than routing around the chain (read `output = "query"` and reimplement
+# the steps), it edits the chain and lets storeRead execute what it is given.
+#
+# The cascade is not optional. Materialization is one-way, so once op i runs
+# R-side every op after it must too — this is the monotonic rule of
+# .pe_push_op() expressed as a rewrite instead of a prohibition. Order within
+# the chain is preserved end to end: the moved block keeps its internal order
+# and lands ahead of whatever @post_ops already held, which by construction
+# came after all of @ops.
+#
+# `from` selects the first op to demote, as either an @ops index or an op type
+# (first match). A type with no match is an error — a consumer meaning "demote
+# it if present" should guard with .pe_find_op_type().
+.pe_demote_ops <- function(pe, from) {
+    n <- length(pe@ops)
+    if (is.character(from)) {
+        idx <- .pe_find_op_type(pe@ops, from)
+        if (is.na(idx)) {
+            stop("[.pe_demote_ops] no op of type '", from, "' on @ops.",
+                 call. = FALSE)
+        }
+        from <- idx
+    }
+    from <- as.integer(from)
+    if (length(from) != 1L || is.na(from) || from < 1L || from > n) {
+        stop("[.pe_demote_ops] `from` must select one of the ", n,
+             " ops on @ops.", call. = FALSE)
+    }
+
+    moved <- pe@ops[from:n]
+    pe@ops <- if (from == 1L) list() else pe@ops[seq_len(from - 1L)]
+    pe@post_ops <- c(moved, pe@post_ops)
+    pe
+}
+
+
 # ---- parquetExprBase substore iteration protocol ---------------------------
 #
 # Stream-pipeline methods (filterData, processData, analyzeData, ...) that
@@ -236,7 +366,7 @@ NULL
 #                   unionParquetExprStore)
 
 # Project a parent (union) @ops chain onto a single substore so its
-# `storeRead()` carries the same arrow-lazy recipe restricted to this
+# `storeRead()` carries the same pre-materialization recipe restricted to this
 # substore's rows. For arrow-native ops with source-keyed payload the
 # per-substore filter is applied here. The norm ops now live on
 # @post_ops (not @ops), so this projection currently no-ops for it —
@@ -252,14 +382,11 @@ NULL
 # the store itself, which already carries its @post_ops, and re-adding them
 # would double-apply.
 #
-# Injecting @post_ops here rather than at chunk-read time is what lets `[`
-# slice them: narrowing the substore's cell axis runs the surviving keys
-# (source_id = this substore's uid, orig_row_id = kept cells) through
-# `.pe_slice_ops`, which inner-joins the parent's global scalef table down to
-# just this chunk's rows.  That leaves a single source_id, so the executor
-# takes the positional-lookup branch instead of the keyed-join branch.
+# Injecting @post_ops here rather than at chunk-read time keeps the substore
+# self-sufficient: `[` narrows its cell axis and `storeRead` applies the chain,
+# with the payload carried through untouched (it is keyed by on-disk id).
 .exprbase_inject_parent_ops <- function(sub, parent_ops,
-                                         parent_post_ops = list()) {
+    parent_post_ops = list()) {
     if (length(parent_ops) > 0L) {
         sub@ops <- c(sub@ops, parent_ops)
     }
@@ -332,61 +459,4 @@ NULL
     idx <- which(vapply(ops, function(op) identical(op$type, type),
         logical(1L)))
     if (length(idx) == 0L) NA_integer_ else as.integer(idx[1L])
-}
-
-# ---- subset slice ----------------------------------------------------------
-#
-# Ops (both phases) are frozen snapshots of population stats captured at
-# trigger time. Subsetting cells / genes never invalidates them — every
-# op with axis-keyed lookup tables gets those tables filtered by the
-# surviving axis keys. Survivors retain their captured-population stats;
-# the user re-runs processData(...) if they want stats over the new
-# population.
-#
-# Slice dispatch walks the registry and filters rows.
-
-# Registry: per op type, list of (table_field_name -> list of axes -> key
-# columns). The key columns are the field names in the lookup table that
-# match the parquet's hive-partition / row-id schema.
-#   cell axis key: c("source_id", "orig_row_id") composite — row_id
-#                  restarts per substore so source_id disambiguates
-#   gene axis key: "feat_id" — names, since col_id positional layout can
-#                  differ across substores (alignment not guaranteed)
-.pe_op_table_keys <- list(
-    norm_libsize = list(
-        scalef = list(cell = c("source_id", "orig_row_id"))
-    )
-    # `log` carries no axis-keyed state, so it needs no entry.
-    # Future kinds add theirs here.
-)
-
-
-# Slice one op record along one axis. Returns the updated op (with axis-
-# keyed tables filtered to surviving keys). Ops that don't have a table
-# on the given axis are returned unchanged.
-#
-# `surviving_keys` is a data.table:
-#   axis == "cell": data.table(source_id, orig_row_id) of surviving cells
-#   axis == "gene": data.table(feat_id) of surviving features
-.pe_slice_op <- function(op, axis, surviving_keys) {
-    spec <- .pe_op_table_keys[[op$type]]
-    if (is.null(spec)) return(op)  # unknown kind: leave untouched
-    for (tname in names(spec)) {
-        axis_spec <- spec[[tname]][[axis]]
-        if (is.null(axis_spec)) next  # this table isn't axis-keyed
-        tbl <- op[[tname]]
-        if (is.null(tbl) || nrow(tbl) == 0L) next
-        join_cols <- axis_spec
-        op[[tname]] <- tbl[surviving_keys, on = join_cols,
-                            nomatch = NULL, allow.cartesian = FALSE]
-    }
-    op
-}
-
-
-# Slice every op in a chain along one axis. Chain-agnostic; caller passes
-# @ops or @post_ops as `ops`.
-.pe_slice_ops <- function(ops, axis, surviving_keys) {
-    if (length(ops) == 0L) return(ops)
-    lapply(ops, .pe_slice_op, axis = axis, surviving_keys = surviving_keys)
 }
