@@ -3,3 +3,4 @@
 README_files
 tests
 vignettes
+^adr$

@@ -16,9 +16,12 @@ walkthroughs live in `vignettes/articles/`:
 | `vignettes/articles/gsource.Rmd` | `gDirSource` walkthrough (the directory-backed `gsource` — the only backend currently shipped): source verbs (`sourceWrite`/`sourceContains`/`sourceAdopt`/`sourcePrune`), snapshot lifecycle, deployment patterns. |
 | `vignettes/articles/roadmap.Rmd` | Public-facing direction. Headline items: `parquetMutableStore`, partition hardlink utility, `gSdataSource`. |
 | `vignettes/articles/parquetEdgeStore.Rmd` | Edge-store (graph) specifics. |
+| `adr/` | Architecture Decision Records: why a choice was made, what was rejected, what it costs. Dated and immutable — read when you are about to change a decision, not to learn current behaviour. |
 
 When in doubt, search AGENTS.md first; for deeper "why" follow the
-pointers to the relevant vignette.
+pointers to the relevant vignette. If a decision looks arbitrary and you
+are tempted to undo it, check `adr/` before doing so — the alternatives
+were often already tried.
 
 ## Package Structure
 
