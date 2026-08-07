@@ -10,7 +10,7 @@ parquetExprStore(
   feat_ids = character(0L),
   n_cells = length(cell_ids),
   n_genes = length(feat_ids),
-  chunk_size = 250000,
+  scan_stats = FALSE,
   ...
 )
 }
@@ -29,8 +29,15 @@ chunks.}
 \item{n_genes}{numeric. Total number of genes. Defaults to
 \code{length(feat_ids)}.}
 
-\item{chunk_size}{numeric. Default Arrow read-chunk size in cells
-(default 250,000).}
+\item{scan_stats}{logical. Scan the Parquet at \code{path} to cache its marginal
+nonzero counts on \verb{@stats} (default \code{FALSE}). Only meaningful when \code{path}
+already holds data: the usual pattern is to construct an empty handle and
+populate it with \code{\link[=storeWrite]{storeWrite()}}, which caches the marginals itself. Set
+\code{TRUE} when attaching to a Parquet written elsewhere and you would rather
+pay the scan now than have the first consumer pay it. Leaving it \code{FALSE}
+costs correctness nothing — consumers that need the counts fall back to
+counting on demand — so this is purely about when the scan happens.
+Reachable through \code{\link[=storeCreate]{storeCreate()}}, which forwards \code{...} here.}
 
 \item{...}{additional slots passed through to \code{new()}.}
 }

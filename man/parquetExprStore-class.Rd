@@ -41,14 +41,28 @@ handles both transparently.}
 (e.g. HVG indices after \code{sc_hvg}). Not used for normalization recipes
 anymore — those live on \verb{@ops}.}
 
-\item{\code{ops}}{list. Ordered chain of lazy arrow step recipes. Each entry
-is a pure-data \code{list(type, ...params)} record (no closures). At
-\code{storeRead()} time the executor \code{.pe_apply_op()} translates each record
-into composed arrow steps applied to the lazy query; the whole chain
-compiles into one arrow plan executed once at collect / output
-dispatch. Records survive \code{saveRDS} cleanly. Empty by default;
-populated by \code{processData()} methods (libraryNorm, logNorm, ...).
-See \code{R/utils-pestore-ops.R} for the op type registry.}
+\item{\code{ops}}{list. The part of the op chain that runs \strong{before}
+materialization. \verb{@ops} and \verb{@post_ops} are one ordered sequence split at
+the point where execution leaves Acero — this is the prefix, not a
+collection of whichever steps happen to be lowerable.
+
+Each entry is a pure-data \code{list(type, ...params)} record (no closures),
+so the chain survives \code{saveRDS} cleanly. At \code{storeRead()} time
+\code{.pe_apply_op()} translates each into arrow-dplyr steps on the lazy
+query, and the whole prefix compiles into one plan executed once at
+collect. Every record here must therefore lower to arrow — a consequence
+of the position rather than the slot's definition.
+
+Independent of \verb{@cell_idx} / \verb{@gene_idx}: \code{[} narrows the window and never
+touches the chain, and the chain never consults the window at read time. An
+op whose meaning depends on the window (library normalization, whose
+factors come from column sums over the features in view) freezes that
+statistic into its payload when the producing verb runs. Re-running the
+verb is how you ask for a statistic over a new population; subsetting is
+not. See \code{adr/0006}.
+
+Empty by default; populated by \code{processData()} methods. See
+\code{R/utils-pestore-ops.R} for the op type registry.}
 
 \item{\code{n_cells}}{numeric. Number of cells in the dataset
 (length of \code{cell_ids}).}
@@ -62,12 +76,41 @@ See \code{R/utils-pestore-ops.R} for the op type registry.}
 \item{\code{feat_ids}}{character. Gene / feature IDs; index \code{j} corresponds to
 \code{col_id == j} in the Parquet file.}
 
-\item{\code{chunk_size}}{numeric. Default Arrow read-chunk size in cells
-(default 250,000).}
+\item{\code{stats}}{list. Cached marginal counts for the Parquet payload, filled
+by \code{storeWrite()}. Two integer vectors:
+
+\describe{
+\item{\code{col_nnz}}{stored-entry count per feature, indexed by on-disk
+\code{col_id}.}
+\item{\code{row_nnz}}{stored-entry count per cell, indexed by on-disk
+\code{row_id}.}
+}
+
+Keyed by \strong{on-disk id}, not by identifier name and not by view position,
+which is what makes them invariant under \code{[}: subsetting only narrows
+\verb{@cell_idx} / \verb{@gene_idx} against the same file, so
+\code{sum(stats$col_nnz[gene_idx])} is the exact nonzero count of a
+gene-narrowed view. Names would break under feature renaming; view
+positions would be invalidated by every subset.
+
+Their lengths are the \emph{file's} dimensions, which after a subset is the
+only place that survives — \verb{@n_genes} / \verb{@n_cells} describe the view.
+
+A subset on one axis is exact; a subset on both scales the exact axis by
+the other's kept fraction, which assumes nonzeros spread uniformly across
+the cell axis. Empty for a store whose Parquet was not written through
+\code{storeWrite()}; consumers fall back to counting.
+
+Note \code{storeWrite()} \strong{renumbers} ids when the input is subset, so a
+written store's marginals are computed against the new file rather than
+inherited from its parent.}
 
 \item{\code{cell_idx}}{integer. Active cell positions in the original Parquet
 (length 0 = no subset, all cells are active). When non-empty:
-\verb{length(cell_idx) == length(cell_ids) == n_cells}.}
+\verb{length(cell_idx) == length(cell_ids) == n_cells}. This is \emph{view} state and
+is independent of the op chain — narrowing it never invalidates a queued
+op, because window-dependent ops froze their statistic at push time
+(\code{adr/0006}).}
 
 \item{\code{gene_idx}}{integer. Active gene positions in the original Parquet
 (length 0 = no subset).}

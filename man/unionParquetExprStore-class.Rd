@@ -29,12 +29,28 @@ No data is rewritten; substores remain independently usable.
 
 \item{\code{params}}{list. Reserved for downstream pipeline metadata.}
 
-\item{\code{ops}}{list. Ordered chain of lazy arrow step recipes. Mirrors
-\code{parquetExprStore@ops} — same op record schema, same \code{.pe_apply_op}
-executor. Composite (source_id, orig_row_id) cell-axis keys let one
-op table span all substores in a single arrow join. Substores must
-have empty \verb{@ops} at union construction time (see constructor); the
-union's own \verb{@ops} carries any subsequent normalization recipes.}
+\item{\code{ops}}{list. The pre-materialization prefix of the chain. Mirrors
+\code{parquetExprStore@ops} — same record schema, same \code{.pe_apply_op}
+executor. Axis-keyed payloads carry one entry per substore keyed by
+\code{uid}, so a single union-level record covers every substore. Substores
+must have empty \verb{@ops} at union construction time (see constructor); the
+union's own \verb{@ops} carries any subsequent recipes.}
+
+\item{\code{post_ops}}{list. The suffix of the chain, running from the first step
+that cannot execute in Acero onward — applied R-side to the materialized
+\code{data.table} after the \verb{@ops} plan has run. A lowerable record can sit
+here legitimately: once something has forced materialization, everything
+after it must follow. Same pure-data record schema as \verb{@ops}; the
+executor is \code{.pe_apply_post_ops_df()}. Axis-keyed payloads (e.g. a
+\code{multiply} op's factor vectors) carry one entry per substore keyed by
+\code{uid}. Substores must have empty \verb{@post_ops} at construction
+(see constructor); at read time the union transplants its own \verb{@ops}
+and \verb{@post_ops} onto each substore via
+\code{.exprbase_inject_parent_ops()} so per-substore chunk reads stay
+self-sufficient. \code{storeWrite()} bakes the chain into on-disk values,
+leaving the output store with empty chains. Once \verb{@post_ops} is
+non-empty, subsequent op pushes are routed here regardless of their
+natural phase (monotonic phase rule). See \code{R/utils-pestore-ops.R}.}
 }}
 
 \seealso{
