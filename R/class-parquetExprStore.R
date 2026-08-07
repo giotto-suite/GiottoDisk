@@ -53,6 +53,14 @@ NULL
 #'   collect. Every record here must therefore lower to arrow — a consequence
 #'   of the position rather than the slot's definition.
 #'
+#'   Independent of `@cell_idx` / `@gene_idx`: `[` narrows the window and never
+#'   touches the chain, and the chain never consults the window at read time. An
+#'   op whose meaning depends on the window (library normalization, whose
+#'   factors come from column sums over the features in view) freezes that
+#'   statistic into its payload when the producing verb runs. Re-running the
+#'   verb is how you ask for a statistic over a new population; subsetting is
+#'   not. See `adr/0006`.
+#'
 #'   Empty by default; populated by `processData()` methods. See
 #'   `R/utils-pestore-ops.R` for the op type registry.
 #' @slot n_cells numeric. Number of cells in the dataset
@@ -125,7 +133,10 @@ setClass("parquetExprBase",
 #' using the recorded indices, so chained subsets stay cheap.
 #' @slot cell_idx integer. Active cell positions in the original Parquet
 #'   (length 0 = no subset, all cells are active). When non-empty:
-#'   `length(cell_idx) == length(cell_ids) == n_cells`.
+#'   `length(cell_idx) == length(cell_ids) == n_cells`. This is *view* state and
+#'   is independent of the op chain — narrowing it never invalidates a queued
+#'   op, because window-dependent ops froze their statistic at push time
+#'   (`adr/0006`).
 #' @slot gene_idx integer. Active gene positions in the original Parquet
 #'   (length 0 = no subset).
 setClass("parquetExprStore",

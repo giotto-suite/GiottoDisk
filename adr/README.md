@@ -68,6 +68,7 @@ Not: bug fixes, refactors that preserve behaviour, or naming conventions
 | [0003](0003-op-payloads-keyed-by-on-disk-id.md) | Op payloads keyed by on-disk id; `[` needs no subset slicing | Accepted | 2026-07-22 |
 | [0004](0004-op-machinery-roles.md) | Op machinery roles, and the invariants that connect them | Accepted | 2026-08-07 |
 | [0005](0005-ops-is-the-pre-materialization-prefix.md) | `@ops` is the pre-materialization prefix, not the set of lowerable ops | Accepted | 2026-08-07 |
+| [0006](0006-view-state-is-not-chain-state.md) | View state is not chain state; window-dependent ops bake at push time | Accepted | 2026-08-07 |
 
 ## Backfill candidates
 

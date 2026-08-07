@@ -43,7 +43,9 @@ NULL
 # consumer must never infer what an op is capable of from which slot it is in.
 #
 # Why the slot means position rather than capability: adr/0005. Why payloads
-# are keyed by on-disk id: adr/0003.
+# are keyed by on-disk id: adr/0003. Why an op whose meaning depends on the
+# current window must freeze that statistic when it is pushed, rather than
+# consulting the window at read time: adr/0006.
 #
 # Op types currently supported:
 #
