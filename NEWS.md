@@ -1,6 +1,13 @@
 # GiottoDisk 0.0.0.2
 
 ## changes
+- `DESCRIPTION` now carries a `Remotes:` field pinning the upstream development
+  branches this package builds against (`GiottoClass@gsource`, `Giotto@gsource`,
+  `GiottoUtils@dev`, `drieslab/tilework`), so `remotes::install_github()` and
+  `pak` resolve them without a manual install order. Note that Giotto's general
+  integration branch is `suite_dev`, not `dev`, and does not satisfy this
+  package. Why each pin exists, and what has to land upstream before it can be
+  dropped, is in *Upstream branch pins* in `AGENTS.md`.
 - `parquetExprStore` no longer has a `@chunk_size` slot. The streaming window is
   derived per read instead of stored, because it depends on free RAM — a
   property of the machine doing the reading, so a value baked in at write time
