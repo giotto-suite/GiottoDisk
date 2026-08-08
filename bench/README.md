@@ -78,8 +78,10 @@ localizes a regression to the step that caused it. But verb-level measurement
 misses a slowdown spread too thinly across steps to trip any single threshold,
 so there is one end-to-end case: `filter -> norm -> HVF -> PCA` from a raw
 store, with the HVGs taken from HVF output rather than faked. It is the only
-case exercising the HVF -> PCA handoff, and it runs at `reps = 1` because its
-job is a trend line, not precision.
+case exercising the HVF -> PCA handoff. Only `storeWrite (ingest)` is pinned to
+one rep — it is the fixture every other case reads from, so a second pass costs
+minutes and tens of GB of temp parquet for no signal. Everything else honours
+`--reps`.
 
 Both PCA methods are timed. `random` (Halko) and `gram` are separate
 implementations with their own chain-demotion and fallback paths, and the
@@ -101,6 +103,15 @@ as the largest drop in free memory, because arrow allocates in C++ where R's
 Worker startup is a specific trap: eight mirai daemons each attach arrow and
 data.table, and although they are warmed outside any timed case, arrow's
 per-worker pools can still grow during the first parallel case.
+
+## Re-run at `--workers=1` before diagnosing
+
+A change that is fine serially and bad in parallel is a fan-out problem, not an
+algorithmic one, and the two have entirely different fixes. Running the same
+case at one worker separates them in a single command, and the answer is often
+the opposite of what the default run suggests: issue #35 reads as a 1.6x
+slowdown with 4x the memory at eight workers, and as *faster with 2.8x less
+memory* at one. Do this before forming any hypothesis about the cause.
 
 ## Real data
 

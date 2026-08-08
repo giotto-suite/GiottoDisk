@@ -17,11 +17,17 @@ walkthroughs live in `vignettes/articles/`:
 | `vignettes/articles/roadmap.Rmd` | Public-facing direction. Headline items: `parquetMutableStore`, partition hardlink utility, `gSdataSource`. |
 | `vignettes/articles/parquetEdgeStore.Rmd` | Edge-store (graph) specifics. |
 | `adr/` | Architecture Decision Records: why a choice was made, what was rejected, what it costs. Dated and immutable — read when you are about to change a decision, not to learn current behaviour. |
+| `bench/` | Re-runnable regression benchmark (see *Benchmarks* below). Not part of the package — Rbuildignored, results gitignored. |
+| `NEWS.md` | User-visible changes per version. Add an entry when you change behaviour, an argument, or an export. |
 
 When in doubt, search AGENTS.md first; for deeper "why" follow the
 pointers to the relevant vignette. If a decision looks arbitrary and you
 are tempted to undo it, check `adr/` before doing so — the alternatives
-were often already tried.
+were often already tried. Write a new ADR when you make a call a future
+reader could reasonably reverse, especially one backed by a measurement;
+format, criteria and the numbering convention are in `adr/README.md`.
+Each ADR carries a code pointer, which is the intended discovery path —
+you should meet the relevant ADR by following it from the code.
 
 ## Package Structure
 
@@ -487,6 +493,26 @@ High-level public-facing direction is in `vignettes/articles/roadmap.Rmd`. Headl
     composition path covers it; no new transform machinery needed.
   - sdata tables (AnnData/Zarr) and OME-NGFF image pyramids are the heavier mappings;
     points/shapes are the cheap wins to land first.
+
+## Benchmarks
+
+`bench/` is a re-runnable regression benchmark, not part of the package
+(Rbuildignored; `bench/results/` gitignored).
+
+```sh
+Rscript bench/regress.R                        # every dataset, every case
+Rscript bench/regress.R --cases=PCA --reps=5   # one slice (regex)
+Rscript bench/regress.R --ref=A --now=B        # pin both ends
+```
+
+It reports the **ratio** between two trees measured back to back, never absolute
+times — **below 1.00 means slower than the ref**. `--ref` compares against your
+working tree; `--now` replaces the working-tree side with a second worktree, so
+pin both ends for any number that lands in an issue, commit message or ADR,
+since otherwise the comparison drifts as the branch moves. `--data=atera` needs
+`GD_BENCH_H5` pointing at a `cell_feature_matrix.h5`; without it the default run
+does synthetic only and says so. Reasoning and the full flag list are in
+`bench/README.md`.
 
 ## Conventions
 - Internal helpers: `.` prefix, snake_case
