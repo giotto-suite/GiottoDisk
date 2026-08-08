@@ -130,8 +130,11 @@ local({
     }
 })
 
-E$LN  <- function(p) GiottoClass::processData(p, Giotto::normParam("library", scalefactor = 6e3))
-E$LG  <- function(p) GiottoClass::processData(p, Giotto::normParam("log", base = 2, offset = 1))
+# scalefactor 1e4 is the original's `target_sum`; base exp(1) reproduces its
+# plain `log1p()` (Giotto's house default is base 2, which is NOT what the
+# reference profile was recorded with).
+E$LN  <- function(p) GiottoClass::processData(p, Giotto::normParam("library", scalefactor = 1e4))
+E$LG  <- function(p) GiottoClass::processData(p, Giotto::normParam("log", base = exp(1), offset = 1))
 E$FS  <- function(p) suppressWarnings(GiottoClass::analyzeData(p, Giotto::analyzeParam("feat_stats")))
 E$CS  <- function(p) suppressWarnings(GiottoClass::analyzeData(p, Giotto::analyzeParam("cell_stats")))
 E$HVF <- function(p) suppressWarnings(GiottoClass::analyzeData(p, Giotto::analyzeParam("cov_loess")))
@@ -178,12 +181,16 @@ E$.pca <- function(p, feats, gram = FALSE) {
 }
 E$PCA  <- function(p) E$.pca(p, E$hvg)
 E$PCAG <- function(p) E$.pca(p, E$hvg, gram = TRUE)
+# `HVG_N` and gram, not 1000 features and randomized: the original ran
+# sc_pca(method = "gram") over n_top = 2000. The standalone PCA cases already
+# use both, so hardcoding otherwise here made the end-to-end case the one
+# configuration that matched nothing.
 E$PIPELINE <- function() {
     mk <- E$FILT(E$pe)
     keep <- E$pe[mk$feats_keep, mk$cells_keep]
     p <- E$LG(E$LN(keep)); st <- E$HVF(p)
     data.table::setorder(st, -cov_diff)
-    E$.pca(p, utils::head(st$feats, 1000L))
+    E$.pca(p, utils::head(st$feats, min(E$HVG_N, nrow(p))), gram = TRUE)
 }
 if (!E$h5mode) E$u <- local({
     half <- seq_len(ncol(E$pe) %/% 2L)
