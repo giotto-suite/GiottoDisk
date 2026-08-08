@@ -87,17 +87,29 @@ if ("atera" %in% DATASETS && !nzchar(H5SRC)) {
 
 if (!REPORT) {
     wt <- file.path(tempdir(), paste0("gd-ref-", gsub("[^A-Za-z0-9]", "", REF)))
-    if (dir.exists(wt)) system2("git", c("worktree", "remove", "--force", shQuote(wt)))
+    # `prune` sweeps registrations whose directory is already gone -- a run
+    # killed mid-flight leaves the metadata behind even though tempdir() went
+    # with the session.
+    .wt_clean <- function() {
+        system2("git", c("worktree", "remove", "--force", shQuote(wt)),
+                stdout = FALSE, stderr = FALSE)
+        system2("git", c("worktree", "prune"), stdout = FALSE, stderr = FALSE)
+    }
+    .wt_clean()
     if (system2("git", c("worktree", "add", "-f", shQuote(wt), shQuote(REF)),
                 stdout = FALSE, stderr = FALSE) != 0L)
         stop("could not create a worktree at ref '", REF, "'", call. = FALSE)
-    on.exit(system2("git", c("worktree", "remove", "--force", shQuote(wt)),
-                    stdout = FALSE, stderr = FALSE), add = TRUE)
     cat(sprintf(paste0("\n  ref     : %s\n  now     : %s\n  data    : %s\n",
                        "  cases   : %s\n  reps    : %d   cap %.0fs   workers %d\n"),
         REF, PKG, toString(DATASETS),
         if (nzchar(CASESEL)) CASESEL else "all", REPS, CAP, WORKERS))
-    for (ds in DATASETS) { .run(wt, "REF", ds); .run(PKG, "NOW", ds) }
+    # `finally`, not on.exit(): this is top-level script code, so there is no
+    # function frame whose exit on.exit() could fire on. It silently registered
+    # nothing and leaked one worktree per run.
+    tryCatch(
+        for (ds in DATASETS) { .run(wt, "REF", ds); .run(PKG, "NOW", ds) },
+        finally = .wt_clean()
+    )
 }
 
 FLOOR <- 0.005      # timer resolution

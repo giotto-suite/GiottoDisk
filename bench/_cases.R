@@ -4,7 +4,11 @@
 # `deparse()`, which strips `quote()` and silently evaluated every case at
 # list-construction time, before any timing began.
 #
-# Columns: label, expression, reps ("" = default), real-data ("no" = skip).
+# Columns: label, expression, reps (NA = honour --reps), real-data (FALSE = skip).
+#
+# Only `storeWrite (ingest)` is pinned, to 1: it is the fixture every other case
+# reads from, so it runs once outside the loop and a second pass would cost
+# minutes and tens of GB of temp parquet for no signal.
 #
 # Chain state is in the label because it is the axis that matters most: the same
 # verb on a raw store and a normalized one can take entirely different execution
@@ -25,9 +29,9 @@ BENCH_CASES <- list(
     list("analyzeData cellStats    [norm]", quote(CS(pn)),                          NA, TRUE),
     list("analyzeData cov_loess    [norm]", quote(HVF(pn)),                         NA, TRUE),
     list("filterData               [norm]", quote(FILT(pn)),                        NA, TRUE),
-    list("reduceData random PCA    [norm]", quote(PCA(pn)),                         2L, TRUE),
-    list("reduceData gram PCA      [norm]", quote(PCAG(pn)),                        2L, TRUE),
+    list("reduceData random PCA    [norm]", quote(PCA(pn)),                         NA, TRUE),
+    list("reduceData gram PCA      [norm]", quote(PCAG(pn)),                        NA, TRUE),
     list("analyzeData featStats  [union]",  quote(FS(u)),                           NA, FALSE),
     list("analyzeData cov_loess  [union]",  quote(HVF(u)),                          NA, FALSE),
-    list("PIPELINE filter->norm->HVF->PCA", quote(PIPELINE()),                      1L, TRUE)
+    list("PIPELINE filter->norm->HVF->PCA", quote(PIPELINE()),                      NA, TRUE)
 )
