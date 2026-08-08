@@ -19,6 +19,7 @@ walkthroughs live in `vignettes/articles/`:
 | `adr/` | Architecture Decision Records: why a choice was made, what was rejected, what it costs. Dated and immutable — read when you are about to change a decision, not to learn current behaviour. |
 | `bench/` | Re-runnable regression benchmark (see *Benchmarks* below). Not part of the package — Rbuildignored, results gitignored. |
 | `NEWS.md` | User-visible changes per version. Add an entry when you change behaviour, an argument, or an export. |
+| `DESCRIPTION` `Remotes:` | Authoritative upstream branch pins. See *Upstream branch pins* below for why each one exists. |
 
 When in doubt, search AGENTS.md first; for deeper "why" follow the
 pointers to the relevant vignette. If a decision looks arbitrary and you
@@ -28,6 +29,38 @@ reader could reasonably reverse, especially one backed by a measurement;
 format, criteria and the numbering convention are in `adr/README.md`.
 Each ADR carries a code pointer, which is the intended discovery path —
 you should meet the relevant ADR by following it from the code.
+
+## Upstream branch pins
+
+GiottoDisk builds against **development branches** of the suite. `Remotes:` in
+`DESCRIPTION` is the authoritative, machine-enforced list; this section is the
+*why*, and the exit criterion for each pin.
+
+| Package | Branch | Required because | Drop the pin when |
+|---|---|---|---|
+| `GiottoClass` | `gsource` | `analyzeData`, `reduceData`, `filterData` generics (all in `NAMESPACE` imports) and `labelProportionsParam` (`R/stream-labelProportions.R`) are gsource-only. | those four are exported on `dev`. |
+| `Giotto` | `gsource` | The whole param layer dispatched on: `pcaParam` / `autoPcaParam` / `randomPcaParam` / `irlbaPcaParam` / `exactPcaParam`, `varParam`, `covLoessParam`, `covGroupsParam`, `cellStatsParam`, `featStatsParam`, `logNormParam`, `filterParam`. | `suite_dev` exports them. |
+| `GiottoUtils` | `dev` | Suite convention; `dev` carries everything used. | `main` catches up. |
+| `tilework` | default | Hard `Imports:` dependency, `drieslab/tilework`, not on CRAN. | it ships to CRAN. |
+
+Two traps worth knowing:
+
+- **Giotto has no `dev` branch.** Its general integration line is `suite_dev`,
+  which carries only `libraryNormParam` out of the list above. "Just use dev"
+  fails differently here than for GiottoClass.
+- `gramEigenPcaParam` looks upstream but is **GiottoDisk-owned** (`R/pca-param.R`).
+  Do not go looking for it in Giotto.
+
+Not dependencies, so not pinned: `GiottoVisuals` (not imported; arrives via
+Giotto), `GiottoData` (one `skip_if_not_installed()` test — worth adding to
+`Suggests:` if more tests come to need it). No branch of any package with gmulti,
+`@mapping`, `giottoView`, or `giottoSpace` work is required.
+
+**Keeping this current:** when a pin's exit criterion is met, change
+`DESCRIPTION` `Remotes:` and this table in the same commit, and add a `NEWS.md`
+entry — a loosened build requirement is user-visible. When you add an import
+that only exists on a non-default upstream branch, add the symbol to the
+"Required because" cell rather than starting a new row.
 
 ## Package Structure
 

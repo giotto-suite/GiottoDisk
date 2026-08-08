@@ -20,10 +20,32 @@ Additionally, {GiottoDisk} provides a project management system (`gDirSource`)
 for tracking on-disk artifacts, managing snapshots, and pruning unused data.
 
 ## Installation
+
+GiottoDisk currently builds against **development branches** of the Giotto
+suite, not the release branches. `Remotes:` in `DESCRIPTION` records them, so
+installing with a tool that honours it pulls the right ones automatically:
+
 ```r
-# Install from GitHub
-remotes::install_github("drieslab/GiottoDisk")
+remotes::install_github("drieslab/GiottoDisk")   # honours Remotes
+# or
+pak::pkg_install("drieslab/GiottoDisk")
 ```
+
+To install the upstream packages explicitly:
+
+```r
+remotes::install_github("drieslab/tilework")
+remotes::install_github("giotto-suite/GiottoUtils@dev")
+remotes::install_github("giotto-suite/GiottoClass@gsource")
+remotes::install_github("giotto-suite/Giotto@gsource")
+```
+
+`GiottoVisuals` and `GiottoData` are not GiottoDisk dependencies — any branch
+that satisfies Giotto works. Note that Giotto's general integration branch is
+`suite_dev`, not `dev`, and it does **not** carry what GiottoDisk needs.
+
+Why each pin exists, and what has to land upstream before it can be dropped,
+is in *Upstream branch pins* in `AGENTS.md`.
 
 ## Quick Start
 

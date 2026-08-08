@@ -49,7 +49,12 @@ Suggests:
     testthat,
     wk,
     TileDBArray
-Collate: 
+Remotes:
+    drieslab/tilework,
+    giotto-suite/GiottoUtils@dev,
+    giotto-suite/GiottoClass@gsource,
+    giotto-suite/Giotto@gsource
+Collate:
     'AllGenerics.R'
     'pkg_imports.R'
     'utils.R'
