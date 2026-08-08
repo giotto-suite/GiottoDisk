@@ -7,7 +7,14 @@
 #   Rscript bench/regress.R --cases=PCA            # one slice of cases (regex)
 #   Rscript bench/regress.R --cases='featStats|cellStats' --reps=5
 #   Rscript bench/regress.R --ref=HEAD~1 --workers=1
+#   Rscript bench/regress.R --ref=A --now=B        # pin both ends (reproducible)
 #   Rscript bench/regress.R --report               # re-print, no work
+#
+# `--ref` compares against the working tree. `--now` replaces the working tree
+# with a second worktree, so a comparison stays reproducible after the branch
+# moves on -- use it when citing numbers anywhere durable. The harness itself
+# (_runner.R, _cases.R) always comes from the working tree either way, so both
+# trees are measured by the same code and only the package differs.
 #
 # `atera` needs GD_BENCH_H5 pointing at a cell_feature_matrix.h5. Without it
 # the default run does synthetic only and says so, so the default works
@@ -35,6 +42,7 @@ args <- commandArgs(trailingOnly = TRUE)
     if (length(h) == 0L) d else sub(paste0("^--", nm, "="), "", h[1L])
 }
 REF     <- .arg("ref", "upstream/dev")
+NOWREF  <- .arg("now", "")   # "" = the working tree
 DATA    <- .arg("data", "all")
 CASESEL <- .arg("cases", "")
 REPS    <- as.integer(.arg("reps", "3"))
@@ -86,30 +94,48 @@ if ("atera" %in% DATASETS && !nzchar(H5SRC)) {
 }
 
 if (!REPORT) {
-    wt <- file.path(tempdir(), paste0("gd-ref-", gsub("[^A-Za-z0-9]", "", REF)))
+    # Both sides are just package paths, so either can be a worktree. With
+    # `--now` unset the working tree is NOW, which is the development case;
+    # supplying it pins both ends, which is what a bug report needs -- the
+    # comparison then reproduces from any checkout state instead of silently
+    # depending on where the working tree happens to sit.
+    #
     # `prune` sweeps registrations whose directory is already gone -- a run
     # killed mid-flight leaves the metadata behind even though tempdir() went
     # with the session.
+    created <- character(0)
     .wt_clean <- function() {
-        system2("git", c("worktree", "remove", "--force", shQuote(wt)),
-                stdout = FALSE, stderr = FALSE)
+        for (p in created)
+            system2("git", c("worktree", "remove", "--force", shQuote(p)),
+                    stdout = FALSE, stderr = FALSE)
         system2("git", c("worktree", "prune"), stdout = FALSE, stderr = FALSE)
     }
+    # Role is in the path so `--ref=X --now=X` does not collide on one dir.
+    .wt_add <- function(ref, role) {
+        p <- file.path(tempdir(),
+                       sprintf("gd-%s-%s", role, gsub("[^A-Za-z0-9]", "", ref)))
+        system2("git", c("worktree", "remove", "--force", shQuote(p)),
+                stdout = FALSE, stderr = FALSE)
+        system2("git", c("worktree", "prune"), stdout = FALSE, stderr = FALSE)
+        if (system2("git", c("worktree", "add", "-f", shQuote(p), shQuote(ref)),
+                    stdout = FALSE, stderr = FALSE) != 0L)
+            stop("could not create a worktree at ref '", ref, "'", call. = FALSE)
+        created <<- c(created, p)
+        p
+    }
     .wt_clean()
-    if (system2("git", c("worktree", "add", "-f", shQuote(wt), shQuote(REF)),
-                stdout = FALSE, stderr = FALSE) != 0L)
-        stop("could not create a worktree at ref '", REF, "'", call. = FALSE)
-    cat(sprintf(paste0("\n  ref     : %s\n  now     : %s\n  data    : %s\n",
-                       "  cases   : %s\n  reps    : %d   cap %.0fs   workers %d\n"),
-        REF, PKG, toString(DATASETS),
-        if (nzchar(CASESEL)) CASESEL else "all", REPS, CAP, WORKERS))
     # `finally`, not on.exit(): this is top-level script code, so there is no
     # function frame whose exit on.exit() could fire on. It silently registered
     # nothing and leaked one worktree per run.
-    tryCatch(
-        for (ds in DATASETS) { .run(wt, "REF", ds); .run(PKG, "NOW", ds) },
-        finally = .wt_clean()
-    )
+    tryCatch({
+        wt_ref <- .wt_add(REF, "ref")
+        wt_now <- if (nzchar(NOWREF)) .wt_add(NOWREF, "now") else PKG
+        cat(sprintf(paste0("\n  ref     : %s\n  now     : %s\n  data    : %s\n",
+                           "  cases   : %s\n  reps    : %d   cap %.0fs   workers %d\n"),
+            REF, if (nzchar(NOWREF)) NOWREF else PKG, toString(DATASETS),
+            if (nzchar(CASESEL)) CASESEL else "all", REPS, CAP, WORKERS))
+        for (ds in DATASETS) { .run(wt_ref, "REF", ds); .run(wt_now, "NOW", ds) }
+    }, finally = .wt_clean())
 }
 
 FLOOR <- 0.005      # timer resolution

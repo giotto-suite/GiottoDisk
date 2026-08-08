@@ -11,8 +11,15 @@ Rscript bench/regress.R --data=atera
 Rscript bench/regress.R --cases=PCA              # one slice of cases (regex)
 Rscript bench/regress.R --cases='featStats|cellStats' --reps=5
 Rscript bench/regress.R --ref=HEAD~1 --workers=1 --threshold=1.1
+Rscript bench/regress.R --ref=A --now=B          # pin both ends
 Rscript bench/regress.R --report                 # re-print, no work
 ```
+
+`--ref` compares against your working tree, which is what you want while
+developing. `--now` replaces the working-tree side with a second worktree, so the
+comparison no longer depends on where the working tree happens to sit — **use it
+for any number you record somewhere durable**, such as an issue, since otherwise
+the same command produces a different comparison once the branch moves on.
 
 Three files: `regress.R` drives, `_runner.R` measures one tree, `_cases.R` is
 the list. Datasets and cases are independently selectable and everything runs by
@@ -47,8 +54,10 @@ the internals — or the exported names — the other does. An earlier ad-hoc ve
 died on `Giotto::reduceParam` not existing on the older ref.
 
 **One runner, two trees.** The working tree's copy of the script always does the
-measuring; only the package under test differs. Never run the ref's own copy, or
-you are comparing two different measurements.
+measuring; only the package under test differs. This holds under `--now` too —
+both sides are worktrees, but `_runner.R` and `_cases.R` still come from the
+working tree. Never run the ref's own copy, or you are comparing two different
+measurements.
 
 ## Reading the output
 
