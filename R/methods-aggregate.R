@@ -588,7 +588,11 @@ setMethod("overlapToMatrix", signature("overlapPointDisk"),
     switch(output,
         "store" = mat_store,
         "exprobj" = createExprObj(
-            expression_data = storeRead(mat_store),
+            expression_data = if (inherits(mat_store, "parquetExprStore")) {
+                mat_store
+            } else {
+                storeRead(mat_store)
+            },
             name = name,
             spat_unit = spatUnit(x),
             feat_type = featType(x),
