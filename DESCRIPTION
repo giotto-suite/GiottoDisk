@@ -44,6 +44,7 @@ Suggests:
     hdf5r,
     nanoarrow,
     qs,
+    RcppHNSW,
     rhdf5,
     sedonadb,
     testthat,
@@ -97,6 +98,7 @@ Collate:
     'pca-param.R'
     'stream-filter.R'
     'stream-labelProportions.R'
+    'stream-network.R'
     'stream-normalize.R'
     'stream-pca.R'
     'utils-spatial.R'
