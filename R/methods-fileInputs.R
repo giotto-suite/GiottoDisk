@@ -188,11 +188,24 @@ setMethod("storeRead", signature("cellbinGefInput"), function(store, ...) {
     chunk_i <- 0L
     closed  <- FALSE
 
+    # Columns whose raw gene rows may straddle chunks; their records are
+    # held back and flushed as one aggregated batch. See .gef_dup_cols().
+    dup_cols <- .gef_dup_cols(name_to_row)
+    deferred <- list()
+    flushed  <- FALSE
+
     close_fn <- function() { closed <<- TRUE; invisible(NULL) }
 
     next_batch <- function() {
+        row_id <- col_id <- value <- NULL  # NSE bindings
         repeat {
             if (closed || chunk_i >= length(chunks)) {
+                if (!closed && !flushed) {
+                    flushed <<- TRUE
+                    fl <- .gef_flush_deferred(deferred)
+                    deferred <<- list()
+                    if (!is.null(fl)) return(fl)
+                }
                 close_fn(); return(NULL)
             }
             chunk_i <<- chunk_i + 1L
@@ -216,6 +229,13 @@ setMethod("storeRead", signature("cellbinGefInput"), function(store, ...) {
         # Aggregate duplicate-name collapses within the chunk.
         out <- out[!is.na(row_id) & !is.na(col_id),
                    .(value = sum(value)), keyby = .(row_id, col_id)]
+        if (length(dup_cols)) {
+            hold <- out[col_id %in% dup_cols]
+            if (nrow(hold)) {
+                deferred[[length(deferred) + 1L]] <<- hold
+                out <- out[!col_id %in% dup_cols]
+            }
+        }
         out
     }
 
@@ -239,11 +259,19 @@ setMethod("storeRead", signature("binGefInput"), function(store, ...) {
     cnt         <- store@params$gene_cnt
     name_to_row <- store@params$name_to_row
     cum         <- store@params$cum_offsets
+    coord_env   <- store@params$coord_env
     expr_path   <- paste0("geneExp/", store@bin_size, "/expression")
 
     chunks <- .gef_safe_chunks(name_to_row, store@batch_genes)
     chunk_i <- 0L
     closed  <- FALSE
+    exhausted <- FALSE
+
+    # Columns whose raw gene rows may straddle chunks; their records are
+    # held back and flushed as one aggregated batch. See .gef_dup_cols().
+    dup_cols <- .gef_dup_cols(name_to_row)
+    deferred <- list()
+    flushed  <- FALSE
 
     # Running (x, y) -> bin_ID lookup. Persists across batches; published
     # to the iterator's metadata accessors when iteration completes.
@@ -253,13 +281,38 @@ setMethod("storeRead", signature("binGefInput"), function(store, ...) {
     data.table::setkey(xy_to_bin, x, y)
     n_bins <- 0L
 
-    close_fn <- function() { closed <<- TRUE; invisible(NULL) }
+    # Hand the finished coordinate map back to the input object, which
+    # outlives this iterator. Only on a full pass -- a partial map would
+    # silently produce spatial locations for a subset of the bins. See
+    # binGefInput()'s `coord_env` note.
+    .publish_coords <- function() {
+        if (!exhausted || is.null(coord_env)) return(invisible(NULL))
+        data.table::setorder(xy_to_bin, bin_ID)
+        coord_env$bin_coords <- data.table::copy(xy_to_bin)
+        invisible(NULL)
+    }
+
+    close_fn <- function() {
+        closed <<- TRUE
+        .publish_coords()
+        invisible(NULL)
+    }
 
     next_batch <- function() {
         # NSE bindings
-        x <- y <- bin_ID <- NULL
+        x <- y <- bin_ID <- row_id <- col_id <- value <- NULL
         repeat {
             if (closed || chunk_i >= length(chunks)) {
+                if (chunk_i >= length(chunks)) exhausted <<- TRUE
+                # Flush held-back duplicate-name records before closing. The
+                # coordinate map is already complete -- bin_IDs are assigned
+                # on the full chunk, ahead of the deferral split.
+                if (!closed && !flushed) {
+                    flushed <<- TRUE
+                    fl <- .gef_flush_deferred(deferred)
+                    deferred <<- list()
+                    if (!is.null(fl)) return(fl)
+                }
                 close_fn(); return(NULL)
             }
             chunk_i <<- chunk_i + 1L
@@ -294,6 +347,13 @@ setMethod("storeRead", signature("binGefInput"), function(store, ...) {
         )
         out <- out[!is.na(row_id) & !is.na(col_id),
                    .(value = sum(value)), keyby = .(row_id, col_id)]
+        if (length(dup_cols)) {
+            hold <- out[col_id %in% dup_cols]
+            if (nrow(hold)) {
+                deferred[[length(deferred) + 1L]] <<- hold
+                out <- out[!col_id %in% dup_cols]
+            }
+        }
         out
     }
 

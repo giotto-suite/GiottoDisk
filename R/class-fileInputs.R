@@ -447,7 +447,14 @@ binGefInput <- function(
         params      = list(
             gene_cnt    = cnt,
             name_to_row = match(all_names, feat_ids),
-            cum_offsets = c(0L, as.integer(cumsum(as.numeric(cnt))))
+            cum_offsets = c(0L, as.integer(cumsum(as.numeric(cnt)))),
+            # Reference cell for the (x, y) -> bin_ID map the iterator
+            # accumulates. An environment because the object is copied on
+            # the way into storeWrite(), so a plain slot could not carry a
+            # value back out. Bin coordinates only exist inside the
+            # expression records, so this is the one chance to capture them
+            # without a second full read of the gef.
+            coord_env   = new.env(parent = emptyenv())
         ),
         cell_ids    = character(0L),
         feat_ids    = feat_ids,
