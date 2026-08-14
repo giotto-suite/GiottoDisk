@@ -49,6 +49,27 @@
   in-memory closure had to pull the whole `geneExp/<bin>/expression` dataset
   into memory — the exact read the disk backend exists to avoid. Cellbin is
   unchanged; its coordinates come from the small `cellBin/cell` table.
+- `analyzeData(parquetExprBase, varParam)` now evaluates the same Pearson
+  residual as `Giotto`'s in-memory path: negative-binomial denominator
+  `sqrt(mu + mu^2/theta)` with `theta = 100` (was Poisson, `sqrt(mu)`) and
+  clipping to `±sqrt(n)` (was unclipped). Both omissions inflated the
+  variances, so **the features selected by `calculateHVF(method =
+  "var_p_resid")` change**: on a Stereo-seq cellbin sample the streaming and
+  in-memory results now agree exactly, where before they shared 3% of their
+  selections. Verified against an independent dense reference at
+  `theta = 100`, `10` and `1e6` to 6e-15. `theta` is settable through
+  `analyzeParam("var", theta = )`.
+- the result gains a `mean_expr` column, for the mean-versus-variance
+  diagnostic in `calculateHVF()`'s plot. Free: the gene totals are already
+  computed.
+- with a finite `theta` the all-zero block no longer collapses to a per-gene
+  scalar (`sum_j z^2 = g_i` held only for Poisson), so it is summed over cells
+  explicitly. To keep that affordable the cell totals are collapsed to their
+  **unique values with multiplicities**, since the term depends on a cell only
+  through `mu_ij = g_i c_j / T`. Measured on `C04687E314.tissue.gef`: bin1 has
+  60 unique totals across 5,043,144 bins, turning a 1.3e11 product into 1.6e6.
+  The gene axis is chunked so the intermediate stays bounded when a dataset
+  has many distinct totals (cellbin: 2,789 across 7,527 cells).
 - `DESCRIPTION` now carries a `Remotes:` field pinning the upstream development
   branches this package builds against (`GiottoClass@gsource`, `Giotto@gsource`,
   `GiottoUtils@dev`, `drieslab/tilework`), so `remotes::install_github()` and

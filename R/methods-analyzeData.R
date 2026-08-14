@@ -483,38 +483,49 @@ setMethod("analyzeData",
                  "remap resolves against a single store's @gene_idx.",
                  call. = FALSE)
         }
-        .stream_pearson_resid_var(x, size_factors = param$size_factors)
+        .stream_pearson_resid_var(x, size_factors = param$size_factors,
+                                  theta = param$theta %null% 100)
     }
 )
 
 ## internals --- hvf ####
 
-# Per-gene variance of analytic (Poisson) Pearson residuals, streamed.
+# Per-gene variance of analytic Pearson residuals (Lause/Kobak), streamed.
 #
-#   mu_ij = g_i * c_j / T        z_ij = (x_ij - mu_ij) / sqrt(mu_ij)
+#   mu_ij = g_i * c_j / T        d_ij = sqrt(mu_ij + mu_ij^2 / theta)
+#   z_ij  = clamp((x_ij - mu_ij) / d_ij,  -sqrt(n), +sqrt(n))
 #
-# with g_i the gene total, c_j the cell total (or a supplied size factor),
-# and T the grand total.  Residuals are dense, but the all-zero block folds
-# into closed form: treat every cell as zero, then correct only the stored
-# nonzeros.
+# with g_i the gene total, c_j the cell total (or a supplied size factor), and
+# T the grand total. Same formula as Giotto's `.prnorm()`, so the streaming
+# and in-memory routes cannot drift.
 #
-#   zeros:  sum_j z_ij^2 = sum_j mu_ij = g_i
-#           sum_j z_ij   = -sqrt(g_i / T) * S,      S = sum_j sqrt(c_j)
-#   stored nonzero (x > 0):
-#           dz  = x / sqrt(mu_ij)
-#           dz2 = x^2 / mu_ij - 2x
+# Residuals are dense, so the statistic is built as "assume every entry is
+# zero, then correct the stored nonzeros":
 #
-# So the whole statistic needs the gene totals, the cell totals, two scalars,
-# and ONE joined pass over the existing triplet stream -- all pushed into
-# Acero.  Validated against a dense reference to 2.7e-14; the same algebra
-# runs on a dgCMatrix via @i/@p/@x if an in-memory version is ever wanted.
+#   zeros:   z0_ij = clamp(-mu_ij / d_ij, -sqrt(n), Inf)
+#   stored:  dz  = z_ij - z0_ij,   dz2 = z_ij^2 - z0_ij^2
+#
+# With theta = Inf the zero block collapsed to `sum_j z0^2 = g_i`, a scalar per
+# gene. Finite theta breaks that -- `mu/(1 + mu/theta)` is not separable into
+# gene- and cell-side factors -- so the zero block is summed explicitly over
+# cells, which is O(n_genes * n_cells) and hopeless at bin1 scale
+# (2.6e4 * 5.0e6).
+#
+# The way out: the term depends on c_j only through mu_ij, so identical cell
+# totals contribute identically. Collapsing the totals to unique values with
+# multiplicities makes it O(n_genes * n_unique_totals). Measured on Stereo-seq
+# tissue.gef: bin1 has 60 unique totals across 5,043,144 bins (1.6e6 products,
+# an 80,000x reduction), cellbin 2,789 across 7,527. The collapse is largest
+# exactly where the naive form is unaffordable, because a bin1 bin is a single
+# DNB holding a handful of transcripts.
 #
 # @post_ops is deliberately NOT applied: the values must be counts.
 
-.stream_pearson_resid_var <- function(pe, size_factors = NULL) {
+.stream_pearson_resid_var <- function(pe, size_factors = NULL, theta = 100) {
     # NSE bindings
     row_id <- col_id <- value <- g <- cc <- mu <- dz <- dz2 <- NULL
     sum_dz <- sum_dz2 <- sum_z <- sum_z2 <- var <- feats <- NULL
+    dd <- zc <- z0c <- s0 <- s02 <- w <- mean_expr <- NULL
 
     n_genes <- as.integer(pe@n_genes)
 
@@ -525,7 +536,8 @@ setMethod("analyzeData",
         dplyr::collect() |> data.table::as.data.table()
     if (nrow(gt) == 0L) {
         return(data.table::data.table(feats = pe@feat_ids,
-                                      var = numeric(n_genes)))
+                                      var = numeric(n_genes),
+                                      mean_expr = numeric(n_genes)))
     }
     ct <- storeRead(pe, output = "query") |>
         dplyr::group_by(row_id) |>
@@ -557,12 +569,44 @@ setMethod("analyzeData",
     n_eff <- length(cvals)
     if (n_eff < 2L) {
         return(data.table::data.table(feats = pe@feat_ids,
-                                      var = numeric(n_genes)))
+                                      var = numeric(n_genes),
+                                      mean_expr = numeric(n_genes)))
     }
-    Tt <- sum(gt$g)
-    S  <- sum(sqrt(cvals))
+    Tt   <- sum(gt$g)
+    thta <- as.numeric(theta)
+    if (!is.finite(thta) || thta <= 0) {
+        stop("[analyzeData(varParam)] theta must be a positive finite number.",
+             call. = FALSE)
+    }
+    # Clip bound follows `.prnorm()`: +/- sqrt(n) over the cells in play.
+    clip <- sqrt(n_eff)
 
-    # Pass 2: per-nonzero corrections, joined and aggregated in Acero.
+    # Pass 2a: the all-zero block, summed over UNIQUE cell totals.
+    # z0 = -mu / sqrt(mu + mu^2/theta), clamped below at -clip. |z0| is at most
+    # sqrt(theta), so the clamp only ever binds for absurdly small n; it is
+    # applied anyway so the two backends agree by construction rather than by
+    # a size argument.
+    uc <- data.table::data.table(cc = cvals)[, .(w = .N), keyby = "cc"]
+    gvec <- as.numeric(gt$g)
+    n_u <- nrow(uc)
+    s0 <- numeric(length(gvec))
+    s02 <- numeric(length(gvec))
+    # Chunk the gene axis so the gene x unique-total outer stays bounded
+    # regardless of how many distinct totals a dataset has.
+    blk <- max(1L, as.integer(5e6 %/% max(1L, n_u)))
+    for (lo in seq.int(1L, length(gvec), by = blk)) {
+        hi <- min(lo + blk - 1L, length(gvec))
+        mu <- outer(gvec[lo:hi], uc$cc / Tt)          # gene x unique total
+        z0 <- -mu / sqrt(mu + mu * mu / thta)
+        z0[z0 < -clip] <- -clip
+        s0[lo:hi]  <- as.vector(z0 %*% uc$w)
+        s02[lo:hi] <- as.vector((z0 * z0) %*% uc$w)
+    }
+    z0dt <- data.table::data.table(col_id = gt$col_id, s0 = s0, s02 = s02)
+
+    # Pass 2b: per-nonzero corrections, joined and aggregated in Acero. Each
+    # stored value replaces its assumed-zero contribution, so accumulate the
+    # difference.
     gt_a <- arrow::as_arrow_table(data.frame(
         col_id = as.integer(gt$col_id), g = as.numeric(gt$g)))
     ct_a <- arrow::as_arrow_table(data.frame(
@@ -571,18 +615,23 @@ setMethod("analyzeData",
         dplyr::left_join(gt_a, by = "col_id") |>
         dplyr::left_join(ct_a, by = "row_id") |>
         dplyr::mutate(mu = g * cc / !!Tt) |>
-        dplyr::mutate(dz  = value / sqrt(mu),
-                      dz2 = value * value / mu - 2 * value) |>
+        dplyr::mutate(dd = sqrt(mu + mu * mu / !!thta)) |>
+        dplyr::mutate(
+            zc  = pmin(pmax((value - mu) / dd, -!!clip), !!clip),
+            z0c = pmax(-mu / dd, -!!clip)
+        ) |>
+        dplyr::mutate(dz = zc - z0c, dz2 = zc * zc - z0c * z0c) |>
         dplyr::group_by(col_id) |>
         dplyr::summarise(sum_dz  = sum(dz,  na.rm = TRUE),
                          sum_dz2 = sum(dz2, na.rm = TRUE)) |>
         dplyr::collect() |> data.table::as.data.table()
 
     res <- merge(gt, corr, by = "col_id", all.x = TRUE)
+    res <- merge(res, z0dt, by = "col_id", all.x = TRUE)
     res[is.na(sum_dz),  sum_dz  := 0]
     res[is.na(sum_dz2), sum_dz2 := 0]
-    res[, sum_z  := -sqrt(g / Tt) * S + sum_dz]
-    res[, sum_z2 := g + sum_dz2]
+    res[, sum_z  := s0 + sum_dz]
+    res[, sum_z2 := s02 + sum_dz2]
     res[, var := (sum_z2 - sum_z * sum_z / n_eff) / (n_eff - 1L)]
     # Genes with no counts have undefined residuals; report 0 variance, which
     # is what rowVars() gives for an all-zero row in the in-memory path.
@@ -593,7 +642,14 @@ setMethod("analyzeData",
     keep <- !is.na(idx)
     out[idx[keep]] <- as.numeric(res$var[keep])
 
-    dt <- data.table::data.table(feats = pe@feat_ids, var = out)
+    # Per-gene mean of the raw counts, for the mean-vs-variance diagnostic.
+    # The gene totals are already in hand, so this costs nothing.
+    mout <- numeric(n_genes)
+    mout[idx[keep]] <- as.numeric(res$g[keep]) / as.numeric(pe@n_cells)
+
+    dt <- data.table::data.table(
+        feats = pe@feat_ids, var = out, mean_expr = mout
+    )
     data.table::setorder(dt, -var)
     dt
 }
