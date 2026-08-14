@@ -1,6 +1,54 @@
 # GiottoDisk 0.0.0.2
 
 ## changes
+- Stereo-seq is reachable from the public entry points. `Giotto`'s
+  `importStereoSeq()`, `createGiottoStereoSeqObjectBin()` and
+  `createGiottoStereoSeqObjectCell()` gained a `backend =` argument that routes
+  to `importStereoSeqDisk()`, mirroring what `createGiottoXeniumObject()`
+  already did. `StereoSeqDiskReader` and the GEF inputs existed before this but
+  had no caller. Requires `Giotto@gsource` at or past the matching commit.
+- `binGefInput()` addresses `geneExp/<bin_size>/` with the group key **as
+  given** (`bin100`), where it previously stripped the `bin` prefix and looked
+  under `geneExp/100/`. Real GEFs carry the prefix — Giotto's in-memory reader
+  hardcodes `geneExp/bin1/expression` — so the old key found nothing on an
+  actual file. Callers passing a bare `"50"` must now pass `"bin50"`.
+- `importStereoSeqDisk()` defaults now match `Giotto::importStereoSeq()`:
+  `bin_size` is `"bin100"` (was `"bin50"`) and `gef_type` for `type = "cell"`
+  is `"adjusted_cellbin"` (was `"cellbin"`). Adding `backend =` to a working
+  call no longer changes which file is read.
+- `StereoSeqDiskReader`'s `create_gobject()` took `gef_path` and `mask_path`
+  through recursive default argument references (`gef_path = gef_path`), so
+  neither auto-detected path ever reached the loader and ingest failed with
+  "no .gef path provided". Both now resolve.
+- `StereoSeqDiskReader`'s `load_expression()` returns `list(exprObj)`, matching
+  the in-memory `StereoSeqReader`. It previously returned a bare `exprObj`.
+  Both work through `setGiotto()`, so assembled objects were unaffected, but a
+  reader driven piecewise — as the Stereo-seq importer vignette does — has to
+  be substitutable with `backend =` set or unset.
+- upstream (`Giotto@gsource`): cellBorder polygons from
+  `.stereoseq_build_polygons_from_border()` now populate `unique_ID_cache`, as
+  every other polygon constructor does. Left at the prototype `NA_character_`,
+  the IDs get recomputed downstream with `unique(<spatVector>$poly_ID)`, which
+  fails on a backend-managed giotto because `setGiotto()` has by then swapped
+  the `SpatVector` for a `parquetGeomStore`. This is what made
+  `createGiottoStereoSeqObjectCell(load_polygons = TRUE, backend = ...)` — the
+  vignette's recommended default — error with "unique() applies only to
+  vectors".
+- both GEF inputs now sum records for duplicate gene names that sit in
+  different chunks. A gene table is ordered by geneID, so two rows sharing a
+  geneName scatter arbitrarily (a mouse `tissue.gef` has 16 such names, up to
+  25400 rows apart), and `.gef_safe_chunks()` only keeps *consecutive* runs
+  together. Their records were aggregated per chunk and written separately,
+  so the store held two rows for one `(cell, gene)` pair — 753 of them on that
+  file, inflating nnz and every marginal derived from it. Records for
+  duplicated columns are now held back and flushed as one aggregated batch at
+  end of stream, bounded by the duplicated genes rather than the matrix.
+- for `type = "bin"`, spatial locations are built from the `(x, y) -> bin_ID`
+  map accumulated during the expression stream rather than by re-reading the
+  gef. Bin coordinates live inside the expression records, so the inherited
+  in-memory closure had to pull the whole `geneExp/<bin>/expression` dataset
+  into memory — the exact read the disk backend exists to avoid. Cellbin is
+  unchanged; its coordinates come from the small `cellBin/cell` table.
 - `analyzeData(parquetExprBase, varParam)` now evaluates the same Pearson
   residual as `Giotto`'s in-memory path: negative-binomial denominator
   `sqrt(mu + mu^2/theta)` with `theta = 100` (was Poisson, `sqrt(mu)`) and

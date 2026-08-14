@@ -83,6 +83,7 @@ least one.
 | [0007](0007-altrep-range-indexing.md) | HDF5 slice reads index with `lo:hi`, not `seq.int()` | Accepted | 2026-05-30 |
 | [0008](0008-axis-predicate-shapes.md) | Arrow axis predicates never add a range "for good measure" | Accepted | 2026-06-12 |
 | [0009](0009-threshold-selects-population.md) | Detection thresholds gate counts, not magnitudes | Accepted | 2026-08-07 |
+| [0010](0010-gef-ingest-is-one-pass.md) | GEF ingest is a single pass: duplicates defer, coordinates ride out | Accepted | 2026-08-11 |
 
 ## Backfill candidates
 

@@ -203,10 +203,41 @@ NULL
 }
 
 
+# Feature indices (col_id) backed by more than one raw geneDT row. Two rows
+# with distinct geneIDs can carry the same geneName, and their records must
+# sum into one matrix entry.
+#
+# Adjacency cannot be assumed: a real gene table is ordered by geneID, so the
+# duplicates of a name scatter arbitrarily (measured on a mouse tissue.gef:
+# 16 duplicated names, gaps up to 25400 rows). `.gef_safe_chunks` only keeps
+# *consecutive* runs together, so these land in different chunks, get
+# aggregated separately, and reach the store as two rows for one (cell, gene)
+# pair. Callers hold records for these columns back and flush them once at
+# end of stream instead -- bounded by the duplicated genes alone, not the
+# matrix.
+.gef_dup_cols <- function(name_to_row) {
+    v <- name_to_row[!is.na(name_to_row)]
+    if (!length(v)) return(integer(0L))
+    tb <- tabulate(v)
+    which(tb > 1L)
+}
+
+# Aggregate the held-back records into one final batch. NULL when nothing
+# was deferred, which is the common case.
+.gef_flush_deferred <- function(deferred) {
+    row_id <- col_id <- value <- NULL  # data.table vars
+    if (!length(deferred)) return(NULL)
+    out <- data.table::rbindlist(deferred)
+    if (!nrow(out)) return(NULL)
+    out[, .(value = sum(value)), keyby = .(row_id, col_id)]
+}
+
+
 # Build chunk boundaries that respect duplicate-name groups: never split
 # a run of raw geneDT rows that share the same name_to_row between two
-# chunks. Returns a list of c(g_lo, g_hi) integer pairs covering 1..n.
-# `target_size` is the desired chunk size in raw geneDT rows.
+# chunks. Non-adjacent duplicates are out of reach here and are handled by
+# the deferral path above. Returns a list of c(g_lo, g_hi) integer pairs
+# covering 1..n. `target_size` is the desired chunk size in raw geneDT rows.
 .gef_safe_chunks <- function(name_to_row, target_size) {
     n <- length(name_to_row)
     if (n == 0L) return(list())

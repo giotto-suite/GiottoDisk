@@ -1,11 +1,11 @@
 # Stereo-seq ingest pipeline for `gDirSource`-managed projects.
 #
-# Disk-backed counterpart to Giotto's `StereoSeqReader`. Currently routes
-# only the expression matrix through GiottoDisk (`parquetExprStore`
-# written into the project vault via `sourceWrite`). Other modalities
-# (spatlocs, images, masks, binpoints, polygons) remain on the inherited
-# in-mem closures and can be ported following the same pattern when
-# needed.
+# Disk-backed counterpart to Giotto's `StereoSeqReader`. Routes the
+# expression matrix through GiottoDisk (`parquetExprStore` written into the
+# project vault via `sourceWrite`). Bin spatial locations come out of that
+# same streaming pass rather than a second read. The remaining modalities
+# (images, masks, binpoints, polygons) stay on the inherited in-mem closures
+# and can be ported following the same pattern when needed.
 
 
 
@@ -47,6 +47,17 @@ setMethod(
         # directly via default-arg expressions, same convention as
         # XeniumDiskReader.
         list2env(obj@paths, envir = environment())
+
+        # Distinct names for the detected paths that `gobject_fun` takes as
+        # parameters. `gef_path = gef_path` in its formals is a recursive
+        # default argument reference -- the promise resolves to the parameter
+        # itself, not to the binding above -- so the path never arrives.
+        # Giotto's own reader sidesteps this the same way, with
+        # `.default_mask_path2`.
+        .def_gef_path  <- gef_path
+        .def_bin1_path <- bin1_gef_path
+        .def_image_dir <- image_dir
+        .def_mask_path <- mask_path
 
         gsrc <- obj@backend
         type_       <- obj@type
@@ -96,10 +107,10 @@ setMethod(
             bin_size        = obj@bin_size,
             gene_column     = obj@gene_column,
             negative_y      = obj@negative_y,
-            gef_path        = gef_path,
-            bin1_path       = bin1_gef_path,
-            image_path      = image_dir,
-            mask_path       = mask_path,
+            gef_path        = .def_gef_path,
+            bin1_path       = .def_bin1_path,
+            image_path      = .def_image_dir,
+            mask_path       = .def_mask_path,
             instructions    = NULL,
             verbose         = NULL) {
 
@@ -121,6 +132,7 @@ setMethod(
             )
 
             # expression (disk; overridden closure)
+            bin_coords <- NULL
             if (load_expression) {
                 ex <- funs$load_expression(
                     path        = gef_path,
@@ -130,21 +142,36 @@ setMethod(
                     spat_unit   = spat_unit,
                     verbose     = verbose
                 )
+                bin_coords <- attr(ex, "bin_coords")
                 g <- GiottoClass::setGiotto(g, ex, verbose = verbose)
             }
 
-            # spatlocs (inherited; in-mem; reads gef separately from the
-            # disk expression path, so two reads when both are requested)
+            # spatlocs. For bins, the ingest stream already produced the
+            # (x, y) -> bin_ID map, so build from that. The inherited closure
+            # would otherwise read the whole `geneExp/<bin>/expression`
+            # dataset into memory a second time -- bin coordinates only exist
+            # inside the expression records -- which is exactly the read the
+            # disk backend exists to avoid. Cellbin keeps the inherited path:
+            # its coordinates come from the small `cellBin/cell` table.
             if (load_spatlocs) {
-                sl <- funs$load_spatlocs(
-                    path        = gef_path,
-                    type        = type,
-                    bin_size    = bin_size,
-                    gene_column = gene_column,
-                    negative_y  = negative_y,
-                    spat_unit   = spat_unit,
-                    verbose     = verbose
-                )
+                sl <- if (!is.null(bin_coords)) {
+                    .stereoseq_spatlocs_from_coords(
+                        bin_coords = bin_coords,
+                        negative_y = negative_y,
+                        spat_unit  = spat_unit,
+                        verbose    = verbose
+                    )
+                } else {
+                    funs$load_spatlocs(
+                        path        = gef_path,
+                        type        = type,
+                        bin_size    = bin_size,
+                        gene_column = gene_column,
+                        negative_y  = negative_y,
+                        spat_unit   = spat_unit,
+                        verbose     = verbose
+                    )
+                }
                 g <- GiottoClass::setGiotto(g, sl, verbose = verbose)
             }
 
@@ -195,6 +222,16 @@ setMethod(
                 }
             }
             if (!is.null(gpoly)) {
+                # Drop the terra centroids the in-memory loaders pre-compute,
+                # so they are derived from the `parquetGeomBase` at attach
+                # time instead. This is the same choice the Xenium disk
+                # reader makes (see `.xenium_polygons_disk`). Keeping them
+                # leaves a centroid SpatVector with no `poly_ID` attribute
+                # next to a store-backed `@spatVector`, and subsetting the
+                # polygon -- `subset(gpolygon@spatVectorCentroids, poly_ID
+                # %in% cell_ids)` in GiottoClass -- then fails, taking
+                # `filterGiotto()` / `subsetGiotto()` down with it.
+                gpoly@spatVectorCentroids <- NULL
                 g <- GiottoClass::setGiotto(g, gpoly, verbose = verbose)
             }
 
@@ -216,9 +253,10 @@ setMethod(
 #' Disk-backed counterpart to [Giotto::importStereoSeq()]. Produces a
 #' `StereoSeqDiskReader` whose `load_expression()` call streams the
 #' source `.gef` file into a `parquetExprStore` written to the
-#' `gDirSource`-managed project vault. Other modalities (spatlocs,
-#' images, masks, binpoints, polygons) remain in-memory via the
-#' inherited `StereoSeqReader` closures.
+#' `gDirSource`-managed project vault. For `type = "bin"`, spatial
+#' locations are derived from that same streaming pass. The remaining
+#' modalities (images, masks, binpoints, polygons, and cellbin spatial
+#' locations) come from the inherited `StereoSeqReader` closures.
 #' @param stereoseq_dir Stereo-seq output directory
 #' @param backend a `gsource` (typically `gDirSource`) project backend.
 #'   Naming matches [GiottoClass::createGiottoObject()]'s `backend` param.
@@ -231,7 +269,7 @@ importStereoSeqDisk <- function(
     stereoseq_dir = NULL,
     backend,
     type        = c("bin", "cell"),
-    bin_size    = "bin50",
+    bin_size    = "bin100",
     gene_column = c("geneName", "geneID"),
     negative_y  = TRUE,
     gef_type
@@ -241,8 +279,11 @@ importStereoSeqDisk <- function(
     }
     type <- match.arg(type)
     gene_column <- match.arg(gene_column)
+    # Must match Giotto::importStereoSeq()'s defaults. Switching a call from
+    # the in-mem reader to this one by adding `backend =` should not change
+    # which .gef gets read.
     if (missing(gef_type)) {
-        gef_type <- if (type == "bin") "tissue" else "cellbin"
+        gef_type <- if (type == "bin") "tissue" else "adjusted_cellbin"
     }
     a <- list(
         Class       = "StereoSeqDiskReader",
@@ -275,7 +316,7 @@ importStereoSeqDisk <- function(
     path,
     gsource,
     type        = c("bin", "cell"),
-    bin_size    = "bin50",
+    bin_size    = "bin100",
     gene_column = c("geneName", "geneID"),
     spat_unit   = NULL,
     output      = c("exprObj", "store"),
@@ -302,25 +343,75 @@ importStereoSeqDisk <- function(
     if (type == "cell") {
         inp <- cellbinGefInput(path, gene_column = gene_column)
     } else {
-        # binGefInput's bin_size slot is just the numeric key under
-        # geneExp/, e.g. "50" for bin50. The StereoSeqReader-side
-        # convention is "bin50"/"bin100"/... -- strip the "bin" prefix.
-        bin_key <- sub("^bin", "", as.character(bin_size))
+        # Passed through verbatim: the GEF group key carries the "bin"
+        # prefix (`geneExp/bin100/...`), matching StereoSeqReader's
+        # `$bin_size` and the hardcoded "geneExp/bin1/expression" that
+        # Giotto's binpoints reader uses.
         inp <- binGefInput(path,
-                            bin_size    = bin_key,
+                            bin_size    = as.character(bin_size),
                             gene_column = gene_column)
     }
 
     pe <- sourceWrite(gsource, inp, store_type = "parquetExpr",
                        verbose = verbose, ...)
 
-    if (output == "store") return(pe)
+    # Bin coordinates live inside the expression records, so the ingest pass
+    # is the only one that sees them for free. binGefInput's iterator
+    # accumulates the (x, y) -> bin_ID map and publishes it here; carried out
+    # as an attribute so `gobject_fun` can build spatlocs without a second
+    # full read of the gef. NULL for cellbin, whose coordinates come from the
+    # small cellBin/cell table instead.
+    bin_coords <- inp@params$coord_env$bin_coords
 
-    methods::new("exprObj",
-        name       = "raw",
-        exprMat    = pe,
-        spat_unit  = spat_unit,
-        feat_type  = "rna",
-        provenance = spat_unit
+    out <- if (output == "store") {
+        pe
+    } else {
+        # Wrapped in a list to match what the in-memory
+        # `StereoSeqReader$load_expression()` hands back. `setGiotto()` takes
+        # either, but a reader used piecewise -- as the importer vignette
+        # does -- must be substitutable with `backend =` set or unset.
+        list(methods::new("exprObj",
+            name       = "raw",
+            exprMat    = pe,
+            spat_unit  = spat_unit,
+            feat_type  = "rna",
+            provenance = spat_unit
+        ))
+    }
+
+    attr(out, "bin_coords") <- bin_coords
+    out
+}
+
+
+# Build a spatLocsObj from the (x, y) -> bin_ID map captured during ingest.
+# Mirrors `.stereoseq_build_spatlocs()`'s bin branch in Giotto exactly --
+# same `bin_<id>` naming, same y flip -- so IDs line up with the expression
+# store column names whichever path produced them.
+.stereoseq_spatlocs_from_coords <- function(
+    bin_coords, negative_y = TRUE, spat_unit = NULL, verbose = NULL
+) {
+    x <- y <- bin_ID <- cell_ID <- NULL  # data.table vars
+
+    spat_locs <- data.table::copy(bin_coords)
+    data.table::setorder(spat_locs, bin_ID)
+    spat_locs[, cell_ID := paste0("bin_", bin_ID)]
+    spat_locs <- spat_locs[, .(cell_ID, x, y)]
+    spat_locs[, x := as.integer(x)]
+    spat_locs[, y := as.integer(y)]
+    if (isTRUE(negative_y)) {
+        spat_locs[, y := 0L - y]
+    }
+
+    GiottoUtils::vmsg(.v = verbose,
+        "[stereoseq_spatlocs_disk]", nrow(spat_locs),
+        "bins from the ingest stream")
+
+    GiottoClass::createSpatLocsObj(
+        coordinates = spat_locs,
+        name        = "raw",
+        spat_unit   = spat_unit,
+        provenance  = spat_unit,
+        verbose     = FALSE
     )
 }
