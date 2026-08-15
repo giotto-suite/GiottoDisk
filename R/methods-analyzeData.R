@@ -263,54 +263,26 @@ setMethod("analyzeData",
 # Only use in memory-safe chunks. This is not memory-safe when there are
 # any post-ops applied (which should be assumed for generalizability)
 #
-# Used by:
-# - QC stats verbs (`analyzeData(featStatsParam / cellStatsParam)`)
-# - HVF stats verbs (`analyzeData(covLoessParam / covGroupsParam)`)
-# - grouped feature stats (`analyzeData(featStatsParam, groups = )`), which
-#   also supplies the per-group moments behind
-#   `analyzeData(scranMarkersParam)` in R/stream-markers.R
+# Reached by every statistic over expression values: QC stats, HVF, filtering,
+# normalization scale factors, and (through the grouped feature-stats verb)
+# marker moments. Mechanism -- the accumulator vocabulary, `by_cell` grouping,
+# the two execution shapes, the union `source_id` key and the on-disk-id fold
+# -- is in design.Rmd, "Expression Statistics". Only the local contract is
+# repeated here.
 #
-# Accumulators, returned as vectors indexed by position along `axis` in the
-# current view (n_genes long for "feat", n_cells for "cell"):
+# Returns vectors indexed by position along `axis` in the current view
+# (n_genes long for "feat", n_cells for "cell"):
 #
 #   sum      sum(value)                       every stored entry
 #   sumsq    sum(value^2)                     every stored entry
 #   nnz      count(value > thr)               detection count
 #   sum_det  sum(value where value > thr)     detected entries only
 #
-# `inclusive = TRUE` switches those two to `>=`, which is what filtering
-# means by a threshold.
-#
 # `thr` is a detection predicate: it selects which entries COUNT, and never
 # reduces a magnitude that participates. So `sum` / `sumsq` are unconditional
-# and only `nnz` / `sum_det` see it. adr/0009.
-#
-# One query, unions included. `storeRead()` on a union already opens every
-# substore as a single Dataset and composes their per-substore subset filters
-# and the union's @ops into one plan, so there is nothing to iterate: Acero
-# schedules all fragments together instead of running N plans in sequence.
-#
-# `source_id` joins the group key, which is what makes that safe. On the cell
-# axis it is mandatory -- `row_id` restarts per substore, so grouping on it
-# alone would merge cells from different samples. On the feature axis it keeps
-# the identifier remap *after* the aggregate: each group knows its substore,
-# so positions resolve against that substore's on-disk index without a join
-# over the full stream (and without depending on substores agreeing about
-# what a given `col_id` means).
-#
-# Two execution shapes:
-#   * `@post_ops` empty -- the whole aggregate is pushed into Acero and only
-#     the grouped result crosses into R.
-#   * otherwise -- collect, apply the R-side chain, aggregate with data.table.
-# Both hand off to the same join-and-fold tail.
+# and only `nnz` / `sum_det` see it (adr/0009). `inclusive = TRUE` switches
+# those two to `>=`, which is what filtering means by a threshold.
 
-# Build the `(source_id, key_id) -> pos` map for one axis. `key_id` is the
-# on-disk id, `pos` the position in the view's axis.
-#
-# Slicing state lives entirely on the substores: `[` on a union pushes both
-# axes down and rebuilds the parent, which carries no `@cell_idx`/`@gene_idx`
-# of its own. So each substore's index vector plus (for cells) its offset into
-# the union axis is the whole mapping.
 .stream_expr_accum <- function(pe,
     axis = c("feat", "cell"),
     thr = 0,
@@ -528,6 +500,13 @@ setMethod("analyzeData",
     data.table::rbindlist(parts)
 }
 
+# Build the `(source_id, key_id) -> pos` map for one axis. `key_id` is the
+# on-disk id, `pos` the position in the view's axis.
+#
+# Slicing state lives entirely on the substores: `[` on a union pushes both
+# axes down and rebuilds the parent, which carries no `@cell_idx`/`@gene_idx`
+# of its own. So each substore's index vector plus (for cells) its offset into
+# the union axis is the whole mapping.
 .pe_axis_pos_map <- function(pe, axis) {
     pos <- NULL   # NSE binding
 

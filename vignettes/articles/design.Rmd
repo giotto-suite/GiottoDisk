@@ -184,8 +184,8 @@ parameters with defaults of `"x_index"`/`"y_index"` before forwarding to the
 Every statistic taken over the values in a `parquetExprBase` goes through one
 function, `.pe_accum_raw()` in `R/methods-analyzeData.R`. QC stats, HVF
 selection, filtering, normalization scale factors and marker moments are all
-the same grouped aggregate over the triplet stream with a different choice of
-accumulator — five files and a dozen call sites share it.
+the same grouped aggregate over the triplet stream, differing only in which
+accumulators they ask for.
 
 **Reach for it whenever a statistic is a sum, a count, or anything derivable
 from them.** Writing a bespoke `storeRead()` + `summarise()`, or materializing
