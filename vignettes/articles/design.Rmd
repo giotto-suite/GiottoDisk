@@ -239,6 +239,26 @@ Neither shape builds a matrix. The chunked branch collects a triplet
 `data.table`, so the `storeRead()` dgc slice cap is not involved on this path
 at all.
 
+The two shapes are bounded for different reasons, which matters when judging a
+new path. Acero is bounded **by construction** — it streams the hash aggregate
+to its own budget, whatever the store's size. The chunked branch is bounded
+**only because the window is sized correctly**, by `.recommend_chunk_size()`
+against free RAM; it genuinely materializes rows, so its safety is an argument
+about that arithmetic rather than a guarantee from the engine.
+
+Both guarantees are properties of the framework, not of the data, and both are
+trivially bypassed:
+
+```r
+storeRead(x, output = "query") |> as.data.frame()   # collects everything
+```
+
+`output = "query"` hands back a lazy Arrow query on purpose — for composing
+further, or for feeding an aggregate that streams. Collecting it whole puts the
+entire store in memory with none of the above applying. The same is true of any
+`collect()` on that object. Stay inside a verb that streams, or size the read
+yourself; do not assume a path is safe because it started from a store.
+
 ### Identifier folding
 
 The aggregate keys on on-disk ids; results are keyed by position in the current

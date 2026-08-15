@@ -260,8 +260,16 @@ setMethod("analyzeData",
 # One grouped accumulator pass over the triplet stream, shared by every
 # per-axis statistic verb.
 #
-# Only use in memory-safe chunks. This is not memory-safe when there are
-# any post-ops applied (which should be assumed for generalizability)
+# Bounded, but for two different reasons. With `@post_ops` empty, Acero streams
+# the aggregate to its own budget -- bounded by construction, whatever the
+# store's size. With post-ops it must materialize rows, so it is bounded only
+# because `.recommend_chunk_size()` sized the window against free RAM. Assume
+# the post-ops shape when reasoning about a new caller: it is the weaker
+# guarantee, and the one an incorrect window breaks.
+#
+# Neither guarantee survives leaving the framework. `storeRead(output =
+# "query")` is lazy on purpose; `collect()` or `as.data.frame()` on it pulls
+# the whole store into memory with none of the above applying.
 #
 # Reached by every statistic over expression values: QC stats, HVF, filtering,
 # normalization scale factors, and (through the grouped feature-stats verb)
