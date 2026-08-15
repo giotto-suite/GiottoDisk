@@ -28,6 +28,73 @@ High-level direction for GiottoDisk. Specific features land in the
   on the GiottoClass side.
 - **`bpcMatrixStore` as a wrapping store** — see below.
 
+### Lowering peak memory in the pairwise marker tail
+
+`analyzeData(parquetExprBase, scranMarkersParam)` builds one statistic frame
+per ordered pair of groups — three dense vectors of `n_genes` — and hands each
+host's set to `scran::combineMarkers()`. Since the frames are built and
+released per host, the **live** set is `O(genes × G)` rather than
+`O(genes × G²)`; cell count does not enter at all.
+
+That does not translate into lower peak RSS on its own. Measured at 5000 genes
+× 40 groups, one shape per process:
+
+| shape | ΔRSS | time |
+|---|---|---|
+| all-at-once, `G(G−1)` frames live | 1388 MB | 10.5 s |
+| per-host, `G−1` frames live | 1365 MB | 11.4 s |
+| per-host + `gc()` each host | 688 MB | 28.2 s |
+
+R grows its heap to cumulative allocation and does not return freed frames
+without a collection, so bounding the live set is necessary but not sufficient.
+Forcing `gc()` per host halves peak at ~2.7× the runtime — a real trade, and
+the reason it is not the default. **Do not add an unconditional `gc()` to that
+loop**; if it ever becomes worth exposing, it should be an option with these
+numbers attached.
+
+Cheaper first move for anyone actually memory- or time-bound at high cluster
+counts: `comparison = "one_vs_rest"`, which runs `G` pooled two-group tests
+instead of `G(G−1)` pairwise ones.
+
+### A moments seam in scran, to retire our transcription
+
+`R/stream-markers.R` hand-rolls roughly 60 lines of scran's pairwise tail —
+`.pe_welch` (Welch standard error and Satterthwaite d.f.), `.pe_run_t` (two
+one-sided `pt()` calls), `.pe_choose_lr`, `.pe_logBH`, `.pe_full_stats`. Only
+`scran::combineMarkers()` is reused, because it is the one part that never
+touches expression values.
+
+That exists because `scran::findMarkers(test.type = "t")` needs a materialized
+matrix. It makes one C++ pass for per-(feature, group) moments and then does
+every pairwise comparison as arithmetic on a features × groups table — but
+exposes no way to hand it precomputed moments, so a backend that cannot produce
+a matrix has to reimplement that arithmetic.
+
+**The risk is drift, and it is guarded but not enforced.** The transcription is
+pinned two ways: `.pe_welch` / `.pe_run_t` against `stats::t.test`, `.pe_logBH`
+against `stats::p.adjust`, and the whole path elementwise against
+`scran::findMarkers()` at 1e-10. But the parity test sits behind
+`skip_if_not_installed("scran")`, so it only fires where scran is installed. If
+scran changes its statistic and that test has not run, the two backends diverge
+silently.
+
+**The fix belongs upstream.** scran already makes this split internally:
+`.test_block_internal()` computes moments via `.compute_mean_var()`, then hands
+a `STATFUN` closure to `.pairwise_blocked_template()`. Exposing that boundary —
+a `pairwiseTTests`-style entry point taking per-group `n` / `mean` / `var`
+instead of `x` — would delete our transcription outright, and would serve every
+other out-of-core backend facing the same wall: BPCells, DelayedArray,
+dbMatrix, TileDBArray.
+
+Worth recording why this is the ask rather than the obvious one: teaching scran
+a parquet schema would mean a C++ tatami backend, and it would still
+block-realize rather than hash-aggregate — no win on the axis that matters. The
+moments seam is a far smaller change with a far wider payoff.
+
+Until then: keep the parity test green, ensure scran is installed wherever the
+suite runs, and treat any divergence from `scran::findMarkers()` as a bug in
+the transcription rather than a reason to adjust the expectation.
+
 ### An `add` op for centred display values
 
 `multiply` is implemented; its counterpart `add` is registered as a refused

@@ -65,7 +65,17 @@ NULL
 #     shape, scope and why it is deferred are in
 #     vignettes/articles/roadmap.Rmd, "An `add` op for centred display values".
 #
-#   log               (phase: post)
+#     Note for whoever implements it: every sufficient-statistic verb here
+#     (`.pe_accum_raw` and its callers -- QC stats, grouped feature stats, HVF,
+#     marker moments) is correct only because an absent entry means 0 in the
+#     value space being aggregated. `multiply` has f(0) = 0 and `log` is log1p
+#     with `offset != 1` refused precisely to keep it. `add` is the first op
+#     that would break it, and it would break it SILENTLY -- wrong means, no
+#     error. The roadmap's densification into triplet form is what preserves
+#     the invariant, by making the zero block explicit before f(0) != 0 can
+#     matter. It is not an optimisation detail; ship it with the op.
+#
+#   log               (phase: lazy or post)
 #     log1p / log(base). Carries no axis-keyed state.
 #     Params:
 #       base     numeric. log base (default 2).

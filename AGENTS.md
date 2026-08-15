@@ -39,7 +39,7 @@ GiottoDisk builds against **development branches** of the suite. `Remotes:` in
 | Package | Branch | Required because | Drop the pin when |
 |---|---|---|---|
 | `GiottoClass` | `gsource` | `analyzeData`, `reduceData`, `filterData` generics (all in `NAMESPACE` imports) and `labelProportionsParam` (`R/stream-labelProportions.R`) are gsource-only. | those four are exported on `dev`. |
-| `Giotto` | `gsource` | The whole param layer dispatched on: `pcaParam` / `autoPcaParam` / `randomPcaParam` / `irlbaPcaParam` / `exactPcaParam`, `varParam`, `covLoessParam`, `covGroupsParam`, `cellStatsParam`, `featStatsParam`, `logNormParam`, `filterParam`. Also the `backend =` argument on `importStereoSeq()` / `createGiottoStereoSeqObjectBin()` / `createGiottoStereoSeqObjectCell()`, which `tests/testthat/test-stereoseq-gef.R` calls — its `skip_if_not_installed("Giotto")` skips on an absent Giotto but *errors* on one predating that argument. | `suite_dev` exports them. |
+| `Giotto` | `gsource` | The whole param layer dispatched on: `pcaParam` / `autoPcaParam` / `randomPcaParam` / `irlbaPcaParam` / `exactPcaParam`, `varParam`, `covLoessParam`, `covGroupsParam`, `cellStatsParam`, `featStatsParam`, `scranMarkersParam`, `logNormParam`, `filterParam`. Also the `backend =` argument on `importStereoSeq()` / `createGiottoStereoSeqObjectBin()` / `createGiottoStereoSeqObjectCell()`, which `tests/testthat/test-stereoseq-gef.R` calls — its `skip_if_not_installed("Giotto")` skips on an absent Giotto but *errors* on one predating that argument. | `suite_dev` exports them. |
 | `GiottoUtils` | `dev` | Suite convention; `dev` carries everything used. | `main` catches up. |
 | `tilework` | default | Hard `Imports:` dependency, `drieslab/tilework`, not on CRAN. | it ships to CRAN. |
 
@@ -105,10 +105,13 @@ R/
   methods-snapshotDelete.R # snapshotDelete
   stream-filter.R        # filterData(parquetExprStore, ...)
   stream-normalize.R     # processData(parquetExprStore, libraryNormParam/logNormParam)
-  stream-hvf.R           # processData(parquetExprStore, varParam) HVF selection
+  stream-markers.R       # analyzeData(parquetExprBase, markersParam) pairwise markers
   stream-pca.R           # reduceData(parquetExprStore, randomPcaParam)
-  stream-qc.R            # processData(parquetExprStore, cellStatsParam/featStatsParam)
-  stream-recommend.R     # streaming recommender utilities
+  methods-analyzeData.R  # analyzeData: cellStatsParam/featStatsParam (QC, and
+                         #   grouped feature stats), covLoessParam/covGroupsParam,
+                         #   varParam (HVF). Absorbed the old stream-qc.R and
+                         #   stream-hvf.R; both are gone.
+  stream-labelProportions.R # analyzeData(parquetEdgeStore, labelProportionsParam)
   convenience-cosmx.R    # CosMx import convenience
   convenience-stereoseq.R # Stereo-seq import convenience
   convenience-xenium.R   # Xenium import convenience

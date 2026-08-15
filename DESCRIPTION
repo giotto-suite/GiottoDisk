@@ -45,6 +45,8 @@ Suggests:
     nanoarrow,
     qs,
     rhdf5,
+    S4Vectors,
+    scran,
     sedonadb,
     testthat,
     wk,
@@ -97,6 +99,7 @@ Collate:
     'pca-param.R'
     'stream-filter.R'
     'stream-labelProportions.R'
+    'stream-markers.R'
     'stream-normalize.R'
     'stream-pca.R'
     'utils-spatial.R'

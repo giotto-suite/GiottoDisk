@@ -26,12 +26,37 @@ setMethod("analyzeData",
 )
 
 ## featStatsParam ####
-#' @rdname analyzeData
+#' @name analyzeData-featStatsParam
+#' @rdname analyzeData-featStatsParam
+#' @title Streaming per-feature statistics
+#' @description
+#' [GiottoClass::analyzeData()] method for a [Giotto::featStatsParam-class] on
+#' a disk-backed expression store. One streamed pass over the triplet stream,
+#' either over every cell or partitioned by a per-cell grouping.
+#'
+#' The grouped form is reusable beyond QC: per-cluster mean and
+#' percent-detected is the input to a dot plot, and the group means are a
+#' pseudobulk matrix.
+#' @param x a `parquetExprBase` store.
+#' @param param a [Giotto::featStatsParam-class].
+#' @param groups optional vector of group assignments, one per cell of the
+#'   current view, `NA` to exclude a cell. When supplied, the statistics are
+#'   taken per (feature, group) instead of over every cell, and the result gains
+#'   `group` and `n_cells` columns.
+#' @param stats optional character vector of accumulators to compute, any of
+#'   `"sum"`, `"sumsq"`, `"nnz"`, `"sum_det"`. Grouped path only. Emitted
+#'   columns are whichever the requested accumulators support, so asking for
+#'   less genuinely scans for less. Defaults to all four.
+#' @param ... additional arguments (none used).
+#' @returns A `data.table`, one row per feature, or per (feature, group) when
+#'   `groups` is supplied.
 #' @export
 setMethod("analyzeData",
     signature(x = "parquetExprBase", param = "featStatsParam"),
-    function(x, param, ...) {
-        do.call(.pe_featstats, c(list(pe = x), as.list(param@param)))
+    function(x, param, ..., groups = NULL, stats = NULL) {
+        do.call(.pe_featstats,
+            c(list(pe = x, groups = groups, stats = stats),
+                as.list(param@param)))
     }
 )
 
@@ -63,12 +88,23 @@ setMethod("analyzeData",
     )
 }
 
-.pe_featstats <- function(pe, detection_threshold = 0, ...) {
+.pe_featstats <- function(pe, detection_threshold = 0, groups = NULL,
+    stats = NULL, ...) {
     if (!inherits(pe, "parquetExprBase"))
         stop("[feat_qc_stats] pe must be a parquetExprBase.")
 
+    thr <- as.numeric(detection_threshold)
+    if (!is.null(groups)) {
+        return(.pe_featstats_grouped(pe, thr, groups,
+            stats = stats %null% c("sum", "sumsq", "nnz", "sum_det")))
+    }
+    if (!is.null(stats)) {
+        stop("[feat_qc_stats] `stats` selection is only available on the ",
+             "grouped path (pass `groups`). The ungrouped verb has a fixed ",
+             "column contract.", call. = FALSE)
+    }
+
     n_cells <- as.integer(pe@n_cells)
-    thr     <- as.numeric(detection_threshold)
 
     # `sum` and `sum_det` are separate accumulators because the threshold
     # picks the population for `mean_expr_det` without touching the totals
@@ -92,66 +128,235 @@ setMethod("analyzeData",
     )
 }
 
+
+# Grouped feature statistics: the same accumulators, partitioned by a per-cell
+# grouping instead of taken over every cell. One extra key on the aggregate,
+# one extra pass over nothing -- it is the same single scan.
+#
+# The statistics are unchanged in meaning; only the population each one is
+# taken over is narrower. So `n_cells` becomes a column (it varies by group,
+# where ungrouped it is a scalar) and `mean_expr` / `sd` are over ALL cells of
+# the group, absent entries included. adr/0009 still governs the threshold:
+# `nr_cells` sees it, the sums do not.
+#
+# Emits the complete feats x groups cross product, zeros filled. A feature with
+# no stored value in a group has mean 0 over that group's cells, not a missing
+# row -- and a consumer plotting group means needs the zeros present.
+#
+# Reusable well beyond markers: per-cluster mean + percent-detected is the
+# input to a dot plot, and the group means are a pseudobulk matrix.
+#
+# `stats` names ACCUMULATORS, not output columns, and passes straight through
+# to `.pe_accum_raw()` -- the same vocabulary the ungrouped verbs already select
+# from. Emitted columns are whichever the requested accumulators support:
+#
+#   sum             -> total_expr, mean_expr
+#   sum + sumsq     -> sumsq, sd
+#   nnz             -> nr_cells, perc_cells
+#   sum_det + nnz   -> mean_expr_det
+#   (always)        -> feats, group, n_cells
+#
+# `total_expr` and `sumsq` are the raw accumulators under their reporting
+# names, emitted alongside the derived `mean_expr` / `sd` because they are
+# already in hand. Keeping them visible is what lets a caller combine groups
+# by addition (they are additive; means and standard deviations are not)
+# instead of reconstructing them through a square root.
+#
+# Selection is at accumulator granularity only: columns sharing an accumulator
+# are free, so they are emitted together rather than trimmed. A caller that
+# wants only group moments asks for `c("sum", "sumsq")` and skips two of the
+# four accumulators; it does not describe the columns it wants and leave this
+# function to work backwards to a plan.
+.pe_featstats_grouped <- function(pe, thr, groups,
+    stats = c("sum", "sumsq", "nnz", "sum_det")) {
+    k <- pos <- NULL   # NSE bindings
+
+    stats <- match.arg(stats, several.ok = TRUE)
+
+    n_cells <- as.integer(pe@n_cells)
+    n_genes <- as.integer(pe@n_genes)
+    if (length(groups) != n_cells) {
+        stop("[feat_qc_stats] `groups` must have one entry per cell of the ",
+             "current view (", n_cells, "), got ", length(groups), ".",
+             call. = FALSE)
+    }
+
+    # `droplevels` so an unused level cannot surface as a group of zero cells.
+    g <- droplevels(if (is.factor(groups)) groups else factor(groups))
+    lvls <- levels(g)
+    if (length(lvls) < 1L) {
+        stop("[feat_qc_stats] `groups` has no non-empty levels.", call. = FALSE)
+    }
+    codes <- as.integer(g)
+
+    # Cells per group over the view. NA-group cells are excluded here and by
+    # the aggregate's inner join alike, so both sides see one population.
+    nk <- as.numeric(tabulate(codes, nbins = length(lvls)))
+    names(nk) <- lvls
+
+    # View position -> on-disk cell key, then attach the integer code. Keyed
+    # by on-disk id per adr/0003, which is what `.pe_accum_raw()` joins on.
+    map <- data.table::copy(.pe_axis_pos_map(pe, "cell"))
+    map[, k := codes[pos]]
+    map <- map[!is.na(k)]
+    data.table::setnames(map, "key_id", "row_id")
+    by_cell <- map[, c(
+        if ("source_id" %in% names(map)) "source_id", "row_id", "k"
+    ), with = FALSE]
+
+    acc <- lapply(stats, function(nm) matrix(0, n_genes, length(lvls)))
+    names(acc) <- stats
+
+    agg <- .pe_accum_raw(pe,
+        axis = "feat", thr = thr, stats = stats, by_cell = by_cell
+    )
+    if (!is.null(agg)) {
+        idx <- cbind(as.integer(agg$pos), as.integer(agg$k))
+        for (nm in stats) acc[[nm]][idx] <- as.numeric(agg[[nm]])
+    }
+
+    # Long form, groups varying slowest so `feats` cycles within a group --
+    # the order `matrix` unrolls in, so the accumulators drop straight in.
+    nn <- rep(nk, each = n_genes)
+    out <- data.table::data.table(
+        feats   = rep(pe@feat_ids, times = length(lvls)),
+        group   = rep(lvls, each = n_genes),
+        n_cells = nn
+    )
+
+    if ("sum" %in% stats) {
+        gene_sum <- as.numeric(acc$sum)
+        out[, "total_expr" := gene_sum]
+        out[, "mean_expr" := gene_sum / nn]
+
+        if ("sumsq" %in% stats) {
+            gene_sumsq <- as.numeric(acc$sumsq)
+            out[, "sumsq" := gene_sumsq]
+            # Sum-of-squares identity, clamped: the subtraction can go slightly
+            # negative when the mean dominates the spread, and a negative
+            # variance would surface downstream as an NaN standard deviation.
+            gene_var <- ifelse(nn > 1,
+                pmax((gene_sumsq - gene_sum * gene_sum / nn) / (nn - 1), 0),
+                0
+            )
+            out[, "sd" := sqrt(gene_var)]
+        }
+    }
+    if ("nnz" %in% stats) {
+        gene_nnz <- as.numeric(acc$nnz)
+        out[, "nr_cells" := as.integer(gene_nnz)]
+        out[, "perc_cells" := ifelse(nn > 0, gene_nnz / nn * 100, NaN)]
+
+        if ("sum_det" %in% stats) {
+            out[, "mean_expr_det" := ifelse(
+                gene_nnz > 0, as.numeric(acc$sum_det) / gene_nnz, NaN
+            )]
+        }
+    }
+
+    out[]
+}
+
 # One grouped accumulator pass over the triplet stream, shared by every
 # per-axis statistic verb.
 #
-# Only use in memory-safe chunks. This is not memory-safe when there are
-# any post-ops applied (which should be assumed for generalizability)
+# Bounded, but for two different reasons. With `@post_ops` empty, Acero streams
+# the aggregate to its own budget -- bounded by construction, whatever the
+# store's size. With post-ops it must materialize rows, so it is bounded only
+# because `.recommend_chunk_size()` sized the window against free RAM. Assume
+# the post-ops shape when reasoning about a new caller: it is the weaker
+# guarantee, and the one an incorrect window breaks.
 #
-# Used by:
-# - QC stats verbs (`analyzeData(featStatsParam / cellStatsParam)`)
-# - HVF stats verbs (`analyzeData(covLoessParam / covGroupsParam)`)
+# Neither guarantee survives leaving the framework. `storeRead(output =
+# "query")` is lazy on purpose; `collect()` or `as.data.frame()` on it pulls
+# the whole store into memory with none of the above applying.
 #
-# Accumulators, returned as vectors indexed by position along `axis` in the
-# current view (n_genes long for "feat", n_cells for "cell"):
+# Reached by every statistic over expression values: QC stats, HVF, filtering,
+# normalization scale factors, and (through the grouped feature-stats verb)
+# marker moments. Mechanism -- the accumulator vocabulary, `by_cell` grouping,
+# the two execution shapes, the union `source_id` key and the on-disk-id fold
+# -- is in design.Rmd, "Expression Statistics". Only the local contract is
+# repeated here.
+#
+# Returns vectors indexed by position along `axis` in the current view
+# (n_genes long for "feat", n_cells for "cell"):
 #
 #   sum      sum(value)                       every stored entry
 #   sumsq    sum(value^2)                     every stored entry
 #   nnz      count(value > thr)               detection count
 #   sum_det  sum(value where value > thr)     detected entries only
 #
-# `inclusive = TRUE` switches those two to `>=`, which is what filtering
-# means by a threshold.
-#
 # `thr` is a detection predicate: it selects which entries COUNT, and never
 # reduces a magnitude that participates. So `sum` / `sumsq` are unconditional
-# and only `nnz` / `sum_det` see it. adr/0009.
-#
-# One query, unions included. `storeRead()` on a union already opens every
-# substore as a single Dataset and composes their per-substore subset filters
-# and the union's @ops into one plan, so there is nothing to iterate: Acero
-# schedules all fragments together instead of running N plans in sequence.
-#
-# `source_id` joins the group key, which is what makes that safe. On the cell
-# axis it is mandatory -- `row_id` restarts per substore, so grouping on it
-# alone would merge cells from different samples. On the feature axis it keeps
-# the identifier remap *after* the aggregate: each group knows its substore,
-# so positions resolve against that substore's on-disk index without a join
-# over the full stream (and without depending on substores agreeing about
-# what a given `col_id` means).
-#
-# Two execution shapes:
-#   * `@post_ops` empty -- the whole aggregate is pushed into Acero and only
-#     the grouped result crosses into R.
-#   * otherwise -- collect, apply the R-side chain, aggregate with data.table.
-# Both hand off to the same join-and-fold tail.
+# and only `nnz` / `sum_det` see it (adr/0009). `inclusive = TRUE` switches
+# those two to `>=`, which is what filtering means by a threshold.
 
-# Build the `(source_id, key_id) -> pos` map for one axis. `key_id` is the
-# on-disk id, `pos` the position in the view's axis.
-#
-# Slicing state lives entirely on the substores: `[` on a union pushes both
-# axes down and rebuilds the parent, which carries no `@cell_idx`/`@gene_idx`
-# of its own. So each substore's index vector plus (for cells) its offset into
-# the union axis is the whole mapping.
 .stream_expr_accum <- function(pe,
     axis = c("feat", "cell"),
     thr = 0,
     stats = c("sum", "sumsq", "nnz", "sum_det"),
     inclusive = FALSE) {
 
+    axis  <- match.arg(axis)
+    stats <- match.arg(stats, several.ok = TRUE)
+
+    n_out <- as.integer(
+        if (identical(axis, "feat")) pe@n_genes else pe@n_cells
+    )
+    out <- lapply(stats, function(nm) {
+        if (identical(nm, "nnz")) integer(n_out) else numeric(n_out)
+    })
+    names(out) <- stats
+
+    folded <- .pe_accum_raw(pe,
+        axis = axis, stats = stats, thr = thr, inclusive = inclusive
+    )
+    if (is.null(folded)) return(out)
+
+    for (nm in stats) {
+        out[[nm]][folded$pos] <- if (identical(nm, "nnz")) {
+            as.integer(folded[[nm]])
+        } else {
+            as.numeric(folded[[nm]])
+        }
+    }
+
+    out
+}
+
+
+# Shared front of the accumulation: build the aggregate, run it on whichever
+# execution shape the chain allows, and resolve on-disk ids to axis positions.
+# Returns a LONG data.table -- `pos` (+ `k` when grouped), one column per
+# statistic -- or NULL when nothing survived. Absent combinations are simply
+# missing rows; it is the caller's job to decide what their absence means.
+#
+# `.stream_expr_accum()` layers the per-axis vector shape on top. Anything
+# needing a second grouping key (marker detection: per-(feature, cluster)
+# moments) reads this directly, because the vector shape cannot hold it.
+#
+# `by_cell` adds a cell-side grouping variable to the key: a data.table of
+# `row_id` (ON-DISK, per ADR 0003), `k` (integer group code), and `source_id`
+# on a union. It is joined into the plan before the aggregate, so it narrows
+# the scan as well as grouping it -- cells absent from the table never reach
+# the hash aggregate, which is how NA-group cells are excluded.
+#
+# `k` is an integer code, never a label string. Aggregating or joining strings
+# in Acero at scale leaves dangling `utf8_view` buffers; the caller maps codes
+# back to labels after collect. (`source_id` is already a string in the union
+# group key, unavoidably -- it is a hive partition value. The `by_cell` join
+# therefore adds a string join column on unions and none at all on a single
+# store, which is the common case. Worth measuring before assuming it is free
+# on a wide union.)
+.pe_accum_raw <- function(pe,
+    axis = c("feat", "cell"),
+    stats = c("sum", "sumsq", "nnz", "sum_det"),
+    thr = 0,
+    inclusive = FALSE,
+    by_cell = NULL) {
+
     if (!inherits(pe, "parquetExprBase")) {
-        stop("[.stream_expr_accum] pe must be a parquetExprBase.",
-             call. = FALSE)
+        stop("[.pe_accum_raw] pe must be a parquetExprBase.", call. = FALSE)
     }
     axis  <- match.arg(axis)
     stats <- match.arg(stats, several.ok = TRUE)
@@ -159,15 +364,7 @@ setMethod("analyzeData",
 
     value <- pos <- NULL   # NSE bindings
 
-    key   <- if (identical(axis, "feat")) "col_id" else "row_id"
-    n_out <- as.integer(
-        if (identical(axis, "feat")) pe@n_genes else pe@n_cells
-    )
-
-    out <- lapply(stats, function(nm) {
-        if (identical(nm, "nnz")) integer(n_out) else numeric(n_out)
-    })
-    names(out) <- stats
+    key <- if (identical(axis, "feat")) "col_id" else "row_id"
 
     # `!!thr` folds the threshold in as a literal, so these stay plain R calls
     # -- they splice into an arrow `summarise()` and evaluate in a data.table
@@ -198,13 +395,21 @@ setMethod("analyzeData",
     # widens the key with a constant string column -- measured at ~50% on the
     # aggregate, growing with the scan.
     is_union <- inherits(pe, "unionParquetExprStore")
-    grp      <- if (is_union) c("source_id", key) else key
+    has_by   <- !is.null(by_cell)
+    grp      <- c(if (is_union) "source_id", key, if (has_by) "k")
     join_by  <- if (is_union) c("source_id", "key_id") else "key_id"
 
     if (length(pe@post_ops) == 0L) {
         # Acero path: one plan over the whole store (union included), streamed
         # by the hash aggregate. Only the grouped result crosses into R.
-        agg <- storeRead(pe, output = "query") |>
+        q <- storeRead(pe, output = "query")
+        if (has_by) {
+            q <- dplyr::inner_join(
+                q, arrow::as_arrow_table(as.data.frame(by_cell)),
+                by = setdiff(names(by_cell), "k")
+            )
+        }
+        agg <- q |>
             dplyr::group_by(!!!rlang::syms(grp)) |>
             dplyr::summarise(!!!aggr_exprs) |>
             dplyr::collect() |>
@@ -212,9 +417,11 @@ setMethod("analyzeData",
     } else {
         # R path: the chain has to run on materialized rows, so this one is
         # chunked rather than collected whole.
-        agg <- .pe_accum_chunked_dt(pe, grp = grp, aggr_exprs = aggr_exprs)
+        agg <- .pe_accum_chunked_dt(pe,
+            grp = grp, aggr_exprs = aggr_exprs, by_cell = by_cell
+        )
     }
-    if (is.null(agg) || nrow(agg) == 0L) return(out)
+    if (is.null(agg) || nrow(agg) == 0L) return(NULL)
 
     # Arrow returns int64 for integer sums; normalize before any R arithmetic.
     for (nm in stats) {
@@ -229,21 +436,14 @@ setMethod("analyzeData",
     # one row per (substore, axis position), never per stored entry.
     data.table::setnames(agg, key, "key_id")
     agg <- merge(agg, .pe_axis_pos_map(pe, axis), by = join_by)
-    if (nrow(agg) == 0L) return(out)
+    if (nrow(agg) == 0L) return(NULL)
 
     # Fold by position: real summation on the feature axis (a feature spans
     # substores), a no-op on the cell axis (cell axes are disjoint, so every
-    # group is a singleton).
-    folded <- agg[, lapply(.SD, sum), by = pos, .SDcols = stats]
-    for (nm in stats) {
-        out[[nm]][folded$pos] <- if (identical(nm, "nnz")) {
-            as.integer(folded[[nm]])
-        } else {
-            as.numeric(folded[[nm]])
-        }
-    }
-
-    out
+    # group is a singleton). `k` joins the fold key when present -- a feature
+    # spans substores within a cluster, not across clusters.
+    agg[, lapply(.SD, sum),
+        by = c("pos", if (has_by) "k"), .SDcols = stats]
 }
 
 # Window for the chunked R-side pass. Not `.exprbase_chunk_size()`: this pass
@@ -273,10 +473,11 @@ setMethod("analyzeData",
 # Unions iterate substores here, unlike the Acero branch. A global cell range
 # is not a contiguous `row_id` range across a union (row_id restarts per
 # substore), so the window has to be taken per substore.
-.pe_accum_chunked_dt <- function(pe, grp, aggr_exprs) {
+.pe_accum_chunked_dt <- function(pe, grp, aggr_exprs, by_cell = NULL) {
     chunk_size <- .pe_accum_chunk_size(pe)
     dt_call    <- as.call(c(quote(list), aggr_exprs))
     is_union   <- inherits(pe, "unionParquetExprStore")
+    by_cols    <- if (!is.null(by_cell)) setdiff(names(by_cell), "k")
 
     parts <- list()
     for (sub_entry in .exprbase_substores(pe)) {
@@ -293,6 +494,11 @@ setMethod("analyzeData",
                 dplyr::collect(storeRead(w, output = "query")))
             if (nrow(df) > 0L) {
                 df <- .pe_apply_post_ops_df(df, w@post_ops)
+                # Inner, matching the Acero branch's join: a cell absent from
+                # `by_cell` is out of the grouping and drops here too.
+                if (!is.null(by_cell)) df <- merge(df, by_cell, by = by_cols)
+            }
+            if (nrow(df) > 0L) {
                 parts[[length(parts) + 1L]] <- df[, eval(dt_call), by = grp]
             }
             cs <- ce + 1L
@@ -302,6 +508,13 @@ setMethod("analyzeData",
     data.table::rbindlist(parts)
 }
 
+# Build the `(source_id, key_id) -> pos` map for one axis. `key_id` is the
+# on-disk id, `pos` the position in the view's axis.
+#
+# Slicing state lives entirely on the substores: `[` on a union pushes both
+# axes down and rebuilds the parent, which carries no `@cell_idx`/`@gene_idx`
+# of its own. So each substore's index vector plus (for cells) its offset into
+# the union axis is the whole mapping.
 .pe_axis_pos_map <- function(pe, axis) {
     pos <- NULL   # NSE binding
 
