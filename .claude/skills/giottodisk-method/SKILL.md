@@ -122,6 +122,7 @@ For each capability, the one place to attach, and the duplicate it prevents.
 | spatial extent narrowing | `.pstore_active_extent` (window-over-crop) / `.pgeom_ext_intrinsic` (intrinsic scan) / `.pgeom_ext_estimate` (no scan) | call `terra::ext()` on materialized data, or scan when `exact = FALSE` |
 | a spatial predicate | the `spat_relate` op + engine dispatch (`R/methods-spatRelate.R`); narrow via `.spat_relate_narrow` | add a fourth engine branch inside your own method |
 | shared read post-processing | `.pbase_storeread_processing(atab, store, …)` — the single op-fold + projection + output switch | re-implement the op loop; `parquetStore` and `unionParquetStore` share this on purpose |
+| **any statistic over expression values** | `.pe_accum_raw()` (`R/methods-analyzeData.R`) — pick from the `sum` / `sumsq` / `nnz` / `sum_det` accumulators, `axis` for the margin, `by_cell` for a grouped key | write a bespoke `storeRead` + `summarise`, or materialize to compute a mean. If your statistic is a sum, a count, or anything derivable from them, it is already an accumulator |
 | per-tile streaming | `tilework::tileApply` (see `R/methods-aggregate.R`) | loop over tile directories yourself |
 | a new materialized output format | a new arm in the `storeRead` `output` switch + a `.pstore_to_*` / `.p*_to_*` builder | return a different class from an existing arm |
 | writing to disk | `storeWrite` methods; GeoParquet metadata via `.arrow_meta_add_geoparquet()` | hand-roll `arrow::write_dataset` — you lose special cols, hive layout, and `geo` metadata |

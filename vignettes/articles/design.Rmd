@@ -179,6 +179,76 @@ parameters with defaults of `"x_index"`/`"y_index"` before forwarding to the
 `queryableStore` method. This prevents a duplicate-argument error when callers (such as
 `storeWrite`) already pass these params via `get_params_x`.
 
+## Expression Statistics (the accumulator)
+
+Every statistic taken over the values in a `parquetExprBase` goes through one
+function, `.pe_accum_raw()` in `R/methods-analyzeData.R`. QC stats, HVF
+selection, filtering, normalization scale factors and marker moments are all
+the same grouped aggregate over the triplet stream with a different choice of
+accumulator — five files and a dozen call sites share it.
+
+**Reach for it whenever a statistic is a sum, a count, or anything derivable
+from them.** Writing a bespoke `storeRead()` + `summarise()`, or materializing
+a matrix to take a mean, duplicates a path that already handles unions,
+chunking, threshold semantics and identifier remapping.
+
+### The accumulators
+
+Four, selected with `stats` (`match.arg(several.ok = TRUE)`), so asking for
+fewer genuinely scans for less:
+
+| accumulator | value |
+|---|---|
+| `sum` | `sum(value)` over every stored entry |
+| `sumsq` | `sum(value^2)`, which with `sum` and a count gives the variance |
+| `nnz` | count of entries passing the detection threshold |
+| `sum_det` | `sum(value)` over the detected entries only |
+
+`axis` picks the margin (`"feat"` or `"cell"`). Absent entries contribute
+nothing, so these plus the *full* population count give exactly the dense
+answer — which is why the population count must come from the caller, never
+from the aggregate.
+
+Per adr/0009 the threshold gates counts, not magnitudes: it reaches `nnz` and
+`sum_det` and never touches `sum` or `sumsq`.
+
+### Grouping
+
+`by_cell` adds a second key: a table of on-disk `row_id` to integer group code
+(plus `source_id` on a union), joined into the plan *before* the aggregate, so
+it narrows the scan as well as grouping it — cells absent from the table never
+reach the hash aggregate, which is how unassigned cells are excluded.
+
+Group codes are integers, never label strings. Aggregating or joining strings
+in Acero at scale leaves dangling `utf8_view` buffers; labels are re-attached
+after collect.
+
+### Two execution shapes
+
+| `@post_ops` | shape |
+|---|---|
+| empty | one Acero plan over the whole store, unions included. Only the grouped result crosses into R. |
+| non-empty | the chain must run on materialized rows, so `.pe_accum_chunked_dt()` reads a cell window at a time, applies `@post_ops`, and aggregates each window with `data.table`. |
+
+Windows come from `.pe_window_cells(bytes_per_nz = 48)` — a fraction of free
+RAM over the per-row payload — so peak stays at one window rather than the
+whole store. Partial aggregates concatenate without reconciliation because the
+accumulators are additive.
+
+Neither shape builds a matrix. The chunked branch collects a triplet
+`data.table`, so the `storeRead()` dgc slice cap is not involved on this path
+at all.
+
+### Identifier folding
+
+The aggregate keys on on-disk ids; results are keyed by position in the current
+view. `.pe_axis_pos_map()` supplies the lookup, and the fold that follows is a
+real summation on the feature axis — a feature spans substores — and a no-op on
+the cell axis, where substore cell axes are disjoint.
+
+`source_id` joins the group key only on a union, where `row_id` restarts per
+substore. On a single store it would just widen the key with a constant.
+
 ## Spatial Predicates (`spat_relate`)
 
 `spatRelate(x, y, relation = "intersects")` queues a `"spat_relate"` op on
