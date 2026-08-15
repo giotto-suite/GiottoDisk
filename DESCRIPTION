@@ -67,6 +67,7 @@ Collate:
     'class-parquetStore.R'
     'class-parquetEdgeStore.R'
     'convenience-cosmx.R'
+    'convenience-merscope.R'
     'convenience-stereoseq.R'
     'convenience-xenium.R'
     'methods-accessors.R'

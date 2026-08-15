@@ -46,6 +46,30 @@
   the resulting window across RAM budgets for both read shapes (a chunk landing
   in a sparse matrix versus a collected triplet frame, which differ ~4x in
   bytes per stored value).
+- MERSCOPE (Vizgen) is now a supported vendor format, mirroring the shape of the
+  Xenium and CosMx readers. `importMerscopeDisk()` builds a `MerscopeDiskReader`
+  and `createGiottoMerscopeObjectDisk()` takes a region directory to a
+  disk-backed `giotto` in one call. `data_to_use = "subcellular"` (default)
+  streams `detected_transcripts.parquet` and `cell_boundaries.parquet` into
+  stores; `"aggregate"` uses the vendor `cell_by_gene.csv` alone. Unlike Xenium,
+  a MERSCOPE region keeps `experiment.json` one level *above* the region
+  directory, so path detection looks upward as well as within.
+- MERSCOPE boundary exports are usually the same 2D segmentation replicated
+  across every z-plane, and reading them naively multiplies every cell by the
+  plane count. The reader samples cell IDs and serialized geometry across planes
+  and, when they are identical, keeps the lowest plane and reports what it
+  dropped. Genuine 3D segmentation is refused rather than silently flattened —
+  `poly_z_indices` selects planes explicitly, and combining them is
+  `aggregateStacks()`'s job, not the reader's.
+- expression routes through `csvWideInput` rather than the sparse
+  `mtxInput`/`tenxH5Input` path the 10x readers use, because `cell_by_gene.csv`
+  is a dense wide matrix. `split_keyword = list("Blank")` separates the
+  negative-control barcodes into their own feature type, so an 816-gene panel
+  with 85 controls lands as `[cell][rna]` and `[cell][Blank]` rather than one
+  901-feature block.
+- `polygon_format = "hdf5"` is accepted but not yet implemented; it errors
+  pointing at the per-FOV `cell_boundaries/feature_data_*.hdf5` layout it will
+  need. Parquet boundary exports are the supported path.
 - Halko PCA accepts `scale = TRUE`, applied without densifying.
 - an `add` op is registered as a refused stub for a future centred-display path;
   both executors reject it, and nothing emits one.

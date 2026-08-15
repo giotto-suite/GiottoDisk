@@ -651,7 +651,10 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
     # "terra": use WKB directly -- avoids sf R-level geometry allocation overhead
     wkb <- as.list(data$geom)
     data$geom <- NULL
-    sv <- terra::vect(wkb)
+    # Guard: a tile can legitimately hold no geometries (tissue rarely fills its
+    # bounding box) and terra::vect(list()) errors "x[[1]] subscript out of bounds".
+    # original: sv <- terra::vect(wkb)
+    sv <- if (length(wkb) == 0L) terra::vect() else terra::vect(wkb)
     if (!is.null(crs) && nzchar(crs)) {
         terra::crs(sv) <- crs
     }
