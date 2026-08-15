@@ -31,7 +31,20 @@ touch it. Results are verified elementwise against
 
 \code{test_type} must be \code{"t"}: it is the only test that reduces to per-group
 moments. \code{"wilcox"} needs the per-cell values to rank, and \code{"binom"} is not
-wired up. Materialize with \code{storeRead(x, output = "dgcmatrix")} for those.
+wired up.
+
+For those, fall back to the in-memory path. That means materializing the
+whole store, \strong{so it works only if the whole matrix fits in memory}:
+
+\if{html}{\out{<div class="sourceCode">}}\preformatted{m <- storeRead(x, output = "dgcmatrix", max_rows = Inf, max_cols = Inf)
+analyzeData(m, markersParam(method = "scran", test_type = "wilcox"),
+            groups = groups)
+}\if{html}{\out{</div>}}
+
+The cap arguments are required: \code{storeRead()} refuses a full-size
+materialization unless one axis is small, which is what forces that fit to
+be considered rather than discovered. Narrowing with \code{[} is not an
+alternative here — a rank test needs every gene and every cell.
 }
 \seealso{
 \code{\link[Giotto:markersParam]{Giotto::markersParam()}}, \code{\link[Giotto:findScranMarkers]{Giotto::findScranMarkers()}}

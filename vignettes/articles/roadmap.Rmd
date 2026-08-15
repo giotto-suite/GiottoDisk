@@ -28,6 +28,34 @@ High-level direction for GiottoDisk. Specific features land in the
   on the GiottoClass side.
 - **`bpcMatrixStore` as a wrapping store** — see below.
 
+### Lowering peak memory in the pairwise marker tail
+
+`analyzeData(parquetExprBase, scranMarkersParam)` builds one statistic frame
+per ordered pair of groups — three dense vectors of `n_genes` — and hands each
+host's set to `scran::combineMarkers()`. Since the frames are built and
+released per host, the **live** set is `O(genes × G)` rather than
+`O(genes × G²)`; cell count does not enter at all.
+
+That does not translate into lower peak RSS on its own. Measured at 5000 genes
+× 40 groups, one shape per process:
+
+| shape | ΔRSS | time |
+|---|---|---|
+| all-at-once, `G(G−1)` frames live | 1388 MB | 10.5 s |
+| per-host, `G−1` frames live | 1365 MB | 11.4 s |
+| per-host + `gc()` each host | 688 MB | 28.2 s |
+
+R grows its heap to cumulative allocation and does not return freed frames
+without a collection, so bounding the live set is necessary but not sufficient.
+Forcing `gc()` per host halves peak at ~2.7× the runtime — a real trade, and
+the reason it is not the default. **Do not add an unconditional `gc()` to that
+loop**; if it ever becomes worth exposing, it should be an option with these
+numbers attached.
+
+Cheaper first move for anyone actually memory- or time-bound at high cluster
+counts: `comparison = "one_vs_rest"`, which runs `G` pooled two-group tests
+instead of `G(G−1)` pairwise ones.
+
 ### A moments seam in scran, to retire our transcription
 
 `R/stream-markers.R` hand-rolls roughly 60 lines of scran's pairwise tail —

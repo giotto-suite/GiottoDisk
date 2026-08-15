@@ -5,39 +5,38 @@ NULL
 # stream-markers ####
 #
 # analyzeData(parquetExprBase, scranMarkersParam) — streaming pairwise marker
-# detection. Expression values in, one marker table per group out; nothing
-# partial crosses a package boundary.
+# detection: expression values in, one marker table per group out.
 #
-# Why this is cheap at all: scran's `findMarkers(test.type = "t")` never
-# compares cells pairwise. It makes ONE pass over the matrix for
-# per-(feature, group) n / mean / variance (`compute_blocked_stats_none` via
-# beachmat) and does every pairwise comparison as arithmetic on a
-# features x groups table — Welch error, Satterthwaite d.f., logFC, one-sided
-# log p-values, then `combineMarkers`. The pass is a group-by aggregate, so it
-# lowers into Acero via `.pe_accum_raw(by_cell = )`, and twenty clusters cost
-# 380 comparisons that never touch the store.
+# Why it is cheap: scran's `findMarkers(test.type = "t")` never compares cells
+# pairwise. It takes ONE pass for per-(feature, group) n / mean / variance, and
+# every comparison after that is arithmetic on a features x groups table. That
+# pass is a grouped aggregate, so it goes through the shared accumulator
+# (design.Rmd, "Expression Statistics") and twenty clusters cost 380
+# comparisons that never touch the store.
 #
-# The pairwise algebra below is a transcription of scran's, deliberately
-# duplicated rather than shared. It is a published statistic — a spec, not
-# GiottoDisk machinery — and the alternative was a cross-package helper API
-# that would have to be exported from Giotto and then kept stable, freezing
-# the on-disk/in-mem boundary at whatever shape it had on the day it was
-# written. Same call as the duplicated reader orchestration. So: do NOT
-# refactor this into a shared utility; if it drifts from scran, the fix is to
-# re-transcribe it, and the parity tests are what catch that.
+# The pairwise algebra below transcribes scran's, deliberately duplicated
+# rather than shared: it is a published statistic — a spec, not GiottoDisk
+# machinery — and the alternative was a cross-package helper API that would
+# freeze the on-disk/in-mem boundary. Do NOT refactor it into a shared utility.
+# If it drifts from scran, re-transcribe it; the parity tests are what catch
+# that.
 #
-# Correctness rests on absent entries meaning zero in the value space being
-# aggregated, which the op registry maintains rather than this file checking:
-# `multiply` has f(0) = 0, and `log` is log1p with `offset != 1` refused
-# precisely to keep it. An `add` op would be the exception, which is why the
-# roadmap pairs it with densification into triplet form — once the zero block
-# is explicit, `sum` / `sumsq` over stored entries stay exact.
+# Correctness rests on absent entries meaning zero, which the op registry
+# maintains rather than this file checking — see the `add` note in
+# R/utils-pestore-ops.R.
 #
-# No opinion is taken about which values these are. `expression_values` is
-# resolved upstream by `getExpression()`, so this aggregates whatever chain the
-# store carries. Unlike Pearson residual variance, a t-test is defined for any
-# real-valued input, and a backend that imposed its own normalization would
-# compute a different statistic from the in-memory one on the same input.
+# Nothing here takes a view on WHICH values these are; `expression_values` is
+# resolved upstream by `getExpression()`. Unlike Pearson residual variance, a
+# t-test is defined for any real-valued input, so imposing a normalization
+# would make this compute a different statistic from the in-memory backend.
+#
+# Memory: nothing on this path materializes a matrix, so `storeRead()`'s dgc
+# slice cap is not a consideration — the `dgcmatrix` in the fallback advice
+# below is about the in-memory path a user drops to. Frames are built and
+# released per host, which bounds the live set but NOT peak RSS; do not "fix"
+# that with a `gc()` in the loop, which halves peak at ~2.7x the runtime.
+# Numbers in roadmap.Rmd. Cell count does not enter at all; high cluster counts
+# are quadratic in time, where `comparison = "one_vs_rest"` is cheaper.
 
 
 #' @name analyzeData-scranMarkersParam
@@ -54,7 +53,21 @@ NULL
 #'
 #' `test_type` must be `"t"`: it is the only test that reduces to per-group
 #' moments. `"wilcox"` needs the per-cell values to rank, and `"binom"` is not
-#' wired up. Materialize with `storeRead(x, output = "dgcmatrix")` for those.
+#' wired up.
+#'
+#' For those, fall back to the in-memory path. That means materializing the
+#' whole store, **so it works only if the whole matrix fits in memory**:
+#'
+#' ```
+#' m <- storeRead(x, output = "dgcmatrix", max_rows = Inf, max_cols = Inf)
+#' analyzeData(m, markersParam(method = "scran", test_type = "wilcox"),
+#'             groups = groups)
+#' ```
+#'
+#' The cap arguments are required: `storeRead()` refuses a full-size
+#' materialization unless one axis is small, which is what forces that fit to
+#' be considered rather than discovered. Narrowing with `[` is not an
+#' alternative here — a rank test needs every gene and every cell.
 #' @param x a `parquetExprBase` store.
 #' @param param a [Giotto::scranMarkersParam-class].
 #' @param groups vector of cluster assignments, one per cell of the store's
@@ -81,9 +94,15 @@ setMethod("analyzeData",
                  test_type, "' is not available on the streaming backend. ",
                  "Only 't' reduces to per-group moments; 'wilcox' needs the ",
                  "per-cell values to rank, and 'binom' needs a per-group ",
-                 "detection count that is not wired up yet. Workaround: ",
-                 "materialize with storeRead(x, output = 'dgcmatrix') and ",
-                 "use the in-memory path.", call. = FALSE)
+                 "detection count that is not wired up yet. Fall back to the ",
+                 "in-memory path, which materializes the whole store and so ",
+                 "works only if the whole matrix fits in memory: ",
+                 "storeRead(x, output = 'dgcmatrix', max_rows = Inf, ",
+                 "max_cols = Inf). The cap arguments are required -- ",
+                 "storeRead() refuses a full-size materialization unless one ",
+                 "axis is small -- and `[`-subsetting is not an alternative, ",
+                 "since a rank test needs every gene and every cell.",
+                 call. = FALSE)
         }
 
         # Needed only by the pairwise tail, which reuses
@@ -117,25 +136,18 @@ setMethod("analyzeData",
 
 # ---- the statistic pass ----------------------------------------------------
 
-# Per-(feature, group) accumulators, from the grouped feature-statistics verb.
-# No aggregate of its own: `analyzeData(x, featStatsParam(), groups = )` is the
-# statistic pass, and going through the verb rather than reaching past it means
-# any backend that implements the verb supplies markers too.
+# Per-(feature, group) accumulators, from the grouped feature-statistics verb
+# rather than an aggregate of its own -- going through the verb means any
+# backend implementing it supplies markers too.
 #
-# Asks for `sum` and `sumsq` only -- two of the four accumulators, so the
-# `nnz` and `sum_det` work is never done. Those two plus the group's cell count
-# are the complete minimal sufficient statistic for a Welch t-test.
+# Asks for `sum` and `sumsq` only, so the `nnz` / `sum_det` work is never done;
+# those two plus the group's cell count are the complete minimal sufficient
+# statistic for a Welch t-test. Returned raw rather than as mean/sd so
+# `.pe_pool_moments()` can combine groups by addition instead of reconstructing
+# them through a square root.
 #
-# Returns the raw accumulators rather than mean/sd. Deriving the moments here
-# is trivial, and keeping `sum`/`sumsq` lets `.pe_pool_moments()` combine
-# groups by plain addition instead of reconstructing them through a square
-# root.
-#
-# Absent entries contribute nothing to either accumulator, so they plus the
-# group's FULL cell count give the dense mean and variance exactly. `n` comes
-# from the group assignment, never the aggregate, and the grouped verb emits
-# the complete cross product so a feature with no stored value in a group
-# arrives as a zero row rather than a missing one.
+# `n` comes from the group assignment, never the aggregate: a feature with no
+# stored value in a group still has a mean over that group's full cell count.
 .pe_group_moments <- function(pe, groups) {
     if (!inherits(pe, "parquetExprBase")) {
         stop("[.pe_group_moments] pe must be a parquetExprBase.",
@@ -225,9 +237,6 @@ setMethod("analyzeData",
 
 # ---- the pairwise tail (transcribed from scran) -----------------------------
 
-# Every ordered pair of groups, Welch-tested on the moments, then combined into
-# one table per group by `scran::combineMarkers()` — which is reused rather
-# than transcribed, because it never touches expression values.
 # One table per group, each testing that group against the pooled remainder.
 #
 # Level naming matches what `findScranMarkers(group_1 =, group_2 =)` produces
@@ -252,58 +261,75 @@ setMethod("analyzeData",
 
 
 .pe_markers_from_moments <- function(mom, param) {
+    lvls <- colnames(mom$means)
+
+    # Per host, not all at once. `combineMarkers()` takes the whole
+    # `G(G-1)`-long list but immediately splits it on `pairs[, 1]`, and each
+    # host's combination reads only its own frames. So calling it once per host
+    # is the same computation with `G-1` frames live instead of `G(G-1)`.
+    #
+    # This is the split scran already performs internally, not a
+    # reimplementation of the combination.
+    out <- lapply(lvls, function(host) {
+        # `setdiff` keeps level order, which is scran's target order within a
+        # host (`.reorder_pairwise_output()` sorts by host then target). Column
+        # order of the per-comparison stats depends on it.
+        targets <- setdiff(lvls, host)
+        frames <- lapply(targets, function(target) {
+            .pe_pair_stats(mom, host, target, param)
+        })
+        # `combineMarkers()` checks that rownames agree across the frames it is
+        # given and errors otherwise, so the assertion is already made for us.
+        res <- .pe_combine(frames, host, targets, param)
+        res[[host]]
+    })
+    names(out) <- lvls
+    S4Vectors::SimpleList(out)
+}
+
+
+# One ordered comparison, host vs target, as the statistic frame
+# `combineMarkers()` consumes. Three dense numeric vectors of length n_genes --
+# no expression values reach this point.
+.pe_pair_stats <- function(mom, host, target, param) {
     n <- mom$n
     means <- mom$means
     vars <- mom$vars
-    lvls <- colnames(means)
-    feats <- rownames(means)
-    direction <- param$direction %null% "any"
-    lfc_thresh <- param$lfc %null% 0
-    std_lfc <- isTRUE(param$std_lfc)
 
-    # scran's pair order: host in level order, target in level order within
-    # it. `.reorder_pairwise_output()` produces exactly this, and matching it
-    # keeps the per-comparison column order comparable between backends.
-    grid <- expand.grid(target = lvls, host = lvls, stringsAsFactors = FALSE)
-    grid <- grid[grid$host != grid$target, , drop = FALSE]
-    grid <- grid[
-        order(match(grid$host, lvls), match(grid$target, lvls)), ,
-        drop = FALSE
-    ]
+    tt <- .pe_welch(
+        host_s2 = vars[, host], target_s2 = vars[, target],
+        host_n = n[[host]], target_n = n[[target]]
+    )
+    cur_lfc <- means[, host] - means[, target]
+    p_out <- .pe_run_t(cur_lfc, tt$err, tt$df,
+        thresh_lfc = param$lfc %null% 0)
 
-    stat_list <- vector("list", nrow(grid))
-    for (i in seq_len(nrow(grid))) {
-        host <- grid$host[i]
-        target <- grid$target[i]
-
-        tt <- .pe_welch(
-            host_s2 = vars[, host], target_s2 = vars[, target],
-            host_n = n[[host]], target_n = n[[target]]
-        )
-        cur_lfc <- means[, host] - means[, target]
-        p_out <- .pe_run_t(cur_lfc, tt$err, tt$df, thresh_lfc = lfc_thresh)
-
-        effect <- cur_lfc
-        if (isTRUE(std_lfc)) {
-            pooled_s2 <- ((n[[host]] - 1) * vars[, host] +
-                (n[[target]] - 1) * vars[, target]) /
-                (n[[host]] + n[[target]] - 2)
-            is_zero <- effect == 0
-            effect <- effect / sqrt(pooled_s2)
-            effect[is_zero] <- 0
-        }
-
-        stat_list[[i]] <- .pe_full_stats(
-            effect = effect,
-            p = .pe_choose_lr(p_out$left, p_out$right, direction),
-            feats = feats
-        )
+    effect <- cur_lfc
+    if (isTRUE(param$std_lfc)) {
+        pooled_s2 <- ((n[[host]] - 1) * vars[, host] +
+            (n[[target]] - 1) * vars[, target]) /
+            (n[[host]] + n[[target]] - 2)
+        is_zero <- effect == 0
+        effect <- effect / sqrt(pooled_s2)
+        effect[is_zero] <- 0
     }
 
+    .pe_full_stats(
+        effect = effect,
+        p = .pe_choose_lr(p_out$left, p_out$right,
+            param$direction %null% "any"),
+        feats = rownames(means)
+    )
+}
+
+
+# One host's comparisons -> its marker table. Returns the one-element
+# `SimpleList` `combineMarkers()` gives back for a single `first` level.
+.pe_combine <- function(frames, host, targets, param) {
     scran::combineMarkers(
-        de.lists = stat_list,
+        de.lists = frames,
         pairs = S4Vectors::DataFrame(
-            first = grid$host, second = grid$target
+            first = rep(host, length(targets)), second = targets
         ),
         pval.field = "log.p.value",
         effect.field = "logFC",
