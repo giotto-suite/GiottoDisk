@@ -129,6 +129,47 @@ setMethod("analyzeData",
 }
 
 
+# Resolve a per-cell grouping against the cell axis of the current view.
+#
+# A grouping is a per-cell payload, so adr/0003 applies to it: keyed by view
+# position it reads the wrong entries the moment `[` narrows the store, and
+# nothing checks the keying. Named by cell ID it is keyed by identity, and the
+# conversion to the on-disk key happens at the point of use -- the axis map in
+# `.pe_featstats_grouped()`.
+#
+# Cells the grouping does not name resolve to NA and drop out of the aggregate.
+# That is `.pe_axis_pos_map()`'s convention for an id with no place on the axis,
+# and it is already what an NA label means here, so narrowing to a few groups by
+# masking the rest is a supported way to call this. No overlap at all is a
+# mistake rather than an empty selection, and says so.
+#
+# Unnamed input is positional against the view -- what a caller holding
+# `pe@cell_ids` already has -- and warns.
+.pe_cell_groups <- function(pe, groups) {
+    ids <- pe@cell_ids
+
+    if (!is.null(names(groups))) {
+        ord <- match(ids, names(groups))
+        if (all(is.na(ord))) {
+            stop("[feat_qc_stats] `groups` is named but none of its names are ",
+                 "cell IDs of the current view.", call. = FALSE)
+        }
+        return(groups[ord])
+    }
+
+    if (length(groups) != length(ids)) {
+        stop("[feat_qc_stats] `groups` must have one entry per cell of the ",
+             "current view (", length(ids), "), got ", length(groups), ".",
+             call. = FALSE)
+    }
+    warning("`groups` is unnamed and is being matched to the store by ",
+            "position. Pass a vector or factor named by cell ID to match on ",
+            "identity instead -- cell metadata and expression are not ",
+            "guaranteed to share an order.", call. = FALSE)
+    groups
+}
+
+
 # Grouped feature statistics: the same accumulators, partitioned by a per-cell
 # grouping instead of taken over every cell. One extra key on the aggregate,
 # one extra pass over nothing -- it is the same single scan.
@@ -175,11 +216,7 @@ setMethod("analyzeData",
 
     n_cells <- as.integer(pe@n_cells)
     n_genes <- as.integer(pe@n_genes)
-    if (length(groups) != n_cells) {
-        stop("[feat_qc_stats] `groups` must have one entry per cell of the ",
-             "current view (", n_cells, "), got ", length(groups), ".",
-             call. = FALSE)
-    }
+    groups <- .pe_cell_groups(pe, groups)
 
     # `droplevels` so an unused level cannot surface as a group of zero cells.
     g <- droplevels(if (is.factor(groups)) groups else factor(groups))
@@ -196,6 +233,9 @@ setMethod("analyzeData",
 
     # View position -> on-disk cell key, then attach the integer code. Keyed
     # by on-disk id per adr/0003, which is what `.pe_accum_raw()` joins on.
+    # Indexing by `pos` is sound because `.pe_cell_groups()` has already put the
+    # codes in the view's cell order by identity; the map is the position ->
+    # on-disk-key conversion the ADR asks consumers to do at the point of use.
     map <- data.table::copy(.pe_axis_pos_map(pe, "cell"))
     map[, k := codes[pos]]
     map <- map[!is.na(k)]
