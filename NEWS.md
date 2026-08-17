@@ -1,6 +1,12 @@
 # GiottoDisk 0.0.0.2
 
 ## changes
+- `analyzeData(x, featStatsParam, groups =)` resolves a grouping by `cell_ID`
+  when it is named or factored by one. A per-cell vector is a payload, and
+  adr/0003 keys those by on-disk id: keyed by view position it reads the wrong
+  entries once `[` has narrowed the store. Cells the grouping does not name now
+  drop, matching `.pe_axis_pos_map()`; no overlap at all errors. An unnamed
+  vector stays positional against the current view, with a warning.
 - Stereo-seq is reachable from the public entry points. `Giotto`'s
   `importStereoSeq()`, `createGiottoStereoSeqObjectBin()` and
   `createGiottoStereoSeqObjectCell()` gained a `backend =` argument that routes
