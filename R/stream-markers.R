@@ -153,15 +153,13 @@ setMethod("analyzeData",
         stop("[.pe_group_moments] pe must be a parquetExprBase.",
              call. = FALSE)
     }
-    # Length before level count: a mismatched `groups` is the more fundamental
-    # error, and checking levels first would report a store of 200 cells as
-    # having one group when really the caller passed 3 labels.
-    n_cells <- as.integer(pe@n_cells)
-    if (length(groups) != n_cells) {
-        stop("[.pe_group_moments] `groups` must have one entry per cell of ",
-             "the current view (", n_cells, "), got ", length(groups), ".",
-             call. = FALSE)
-    }
+    # Resolve against the view before factoring. A named `groups` legitimately
+    # covers cells the view does not hold -- built from the whole object's
+    # metadata against a `[`-narrowed store -- so factoring first would take its
+    # levels from the wrong population. Resolution also owns the length check
+    # for the unnamed case.
+    groups <- .pe_cell_groups(pe, groups)
+
     g <- droplevels(if (is.factor(groups)) groups else factor(groups))
     if (nlevels(g) < 2L) {
         stop("[.pe_group_moments] need at least 2 non-empty groups, got ",
