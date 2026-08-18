@@ -187,12 +187,14 @@ setMethod("storeRead", signature("unionParquetStore"), function(store,
 setMethod("storeRead", signature("unionParquetGeomStore"), function(store,
     extent = NULL,
     fields = NULL,
-    output = c("query", "tibble", "terra", "sf", "duckdb", "sedona"),
+    output = c("query", "tibble", "terra", "sf", "duckdb", "sedona",
+        "vertex_dt"),
     callback = NULL,
     duckdb_params = list(),
     omit_internals = TRUE,
     ...) {
-    output <- match.arg(output, choices = c("query", "tibble", "terra", "sf", "duckdb", "sedona"))
+    output <- match.arg(output, choices = c("query", "tibble", "terra",
+        "sf", "duckdb", "sedona", "vertex_dt"))
     if (output == "sedona") return(.pstore_to_sedona(store, fields = fields, extent = extent, ...))
     fields <- .pstore_fields_requested(store, fields)
     lazy_fields <- .pstore_lazy_fields(store, fields, output)
@@ -242,6 +244,13 @@ setMethod("storeRead", signature("unionParquetGeomStore"), function(store,
             source_order = source_order,
             omit_internals = omit_internals),
         "duckdb" = .arrow_to_duckdb(atab, duckdb_params = duckdb_params),
+        "vertex_dt" = .pgstore_to_vertex_dt(atab,
+            dropcols = dropcols,
+            arrangecols = c("source_id", "tile_index", "row_index"),
+            source_order = source_order,
+            crs = store@params$crs,
+            omit_internals = omit_internals
+        ),
         .pgstore_to_spatial(atab,
             output = output,
             dropcols = dropcols,
@@ -253,7 +262,8 @@ setMethod("storeRead", signature("unionParquetGeomStore"), function(store,
         )
     )
     r_ops <- store@post_ops
-    if (length(r_ops) > 0L && output %in% c("tibble", "terra", "sf")) {
+    if (length(r_ops) > 0L && output %in% c("tibble", "terra", "sf",
+        "vertex_dt")) {
         result <- .apply_post_ops(result, r_ops, output)
     }
     result
@@ -320,12 +330,14 @@ setMethod("storeRead", signature("unionParquetGeomStore"), function(store,
 setMethod("storeRead", signature("parquetGeomStore"), function(store,
     extent = NULL,
     fields = NULL,
-    output = c("query", "tibble", "terra", "sf", "duckdb", "sedona"),
+    output = c("query", "tibble", "terra", "sf", "duckdb", "sedona",
+        "vertex_dt"),
     callback = NULL,
     duckdb_params = list(),
     omit_internals = TRUE,
     ...) {
-    output <- match.arg(output, choices = c("query", "tibble", "terra", "sf", "duckdb", "sedona"))
+    output <- match.arg(output, choices = c("query", "tibble", "terra",
+        "sf", "duckdb", "sedona", "vertex_dt"))
     if (output == "sedona") return(.pstore_to_sedona(store, fields = fields, extent = extent, ...))
     if (output == "duckdb") return(.pstore_to_duckdb(store,
         fields = fields, extent = extent,
@@ -375,6 +387,11 @@ setMethod("storeRead", signature("parquetGeomStore"), function(store,
             dropcols = dropcols,
             omit_internals = omit_internals),
         "duckdb" = .arrow_to_duckdb(atab, duckdb_params = duckdb_params),
+        "vertex_dt" = .pgstore_to_vertex_dt(atab,
+            dropcols = dropcols,
+            crs = store@params$crs,
+            omit_internals = omit_internals
+        ),
         .pgstore_to_spatial(atab,
             output = output,
             dropcols = dropcols,
@@ -384,7 +401,8 @@ setMethod("storeRead", signature("parquetGeomStore"), function(store,
         )
     )
     r_ops <- store@post_ops
-    if (length(r_ops) > 0L && output %in% c("tibble", "terra", "sf")) {
+    if (length(r_ops) > 0L && output %in% c("tibble", "terra", "sf",
+        "vertex_dt")) {
         result <- .apply_post_ops(result, r_ops, output)
     }
     result
@@ -396,12 +414,14 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
     extent = NULL,
     tile_idx = NULL,
     fields = NULL,
-    output = c("query", "tibble", "terra", "sf", "duckdb", "sedona"),
+    output = c("query", "tibble", "terra", "sf", "duckdb", "sedona",
+        "vertex_dt"),
     callback = NULL,
     duckdb_params = list(),
     omit_internals = TRUE,
     ...) {
-    output <- match.arg(output, choices = c("query", "tibble", "terra", "sf", "duckdb", "sedona"))
+    output <- match.arg(output, choices = c("query", "tibble", "terra",
+        "sf", "duckdb", "sedona", "vertex_dt"))
     if (output == "sedona") return(.pstore_to_sedona(store, fields = fields, extent = extent, tile_idx = tile_idx, ...))
     if (output == "duckdb") return(.pstore_to_duckdb(store,
         fields = fields, extent = extent, tile_idx = tile_idx,
@@ -443,6 +463,12 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
             omit_internals = omit_internals),
         "duckdb" = .arrow_to_duckdb(atab,
             duckdb_params = duckdb_params),
+        "vertex_dt" = .pgstore_to_vertex_dt(atab,
+            dropcols = dropcols,
+            arrangecols = c("source_id", "tile_index", "row_index"),
+            crs = store@params$crs,
+            omit_internals = omit_internals
+        ),
         .pgstore_to_spatial(atab,
             output = output,
             dropcols = dropcols,
@@ -453,7 +479,8 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
         )
     )
     r_ops <- store@post_ops
-    if (length(r_ops) > 0L && output %in% c("tibble", "terra", "sf")) {
+    if (length(r_ops) > 0L && output %in% c("tibble", "terra", "sf",
+        "vertex_dt")) {
         result <- .apply_post_ops(result, r_ops, output)
     }
     result
@@ -659,6 +686,74 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
         terra::values(sv) <- data
     }
     sv
+}
+
+
+# Per-vertex data.table output. WKB → vertex coords via wk (no GDAL/GEOS,
+# no SpatVector intermediate). Returns one row per vertex with `poly_ID`
+# (from the store's `id` col) repeated per vertex plus any other attribute
+# columns; columns `x`, `y` are the vertex coords. `part_id` / `ring_id`
+# are preserved for multipart / hole geometry support — `geom_polygon`
+# typically just needs `group = poly_ID` (or `interaction(poly_ID, part_id)`
+# for multipart safety).
+#
+# Used by `storeRead(output = "vertex_dt")` and `as.data.table(pgb, geom = "XY")`.
+#' @keywords internal
+#' @noRd
+.pgstore_to_vertex_dt <- function(atab,
+    dropcols = character(0L),
+    arrangecols = character(0L),
+    crs = NULL,
+    omit_internals = TRUE,
+    ...) {
+    if (!requireNamespace("wk", quietly = TRUE)) {
+        stop("[storeRead][vertex_dt] package 'wk' is required for ",
+            "vertex_dt output. Install via install.packages('wk').",
+            call. = FALSE)
+    }
+
+    # enforced drops (never drop geom; we need it to extract vertices)
+    dropcols <- setdiff(
+        unique(c("x_index", "y_index", dropcols)),
+        "geom"
+    )
+
+    if (!"geom" %in% names(atab)) {
+        stop("[storeRead][parquet->vertex_dt] geom col missing\n")
+    }
+
+    data <- .pstore_to_tibble(atab, dropcols = dropcols,
+        arrangecols = arrangecols,
+        omit_internals = omit_internals, ...)
+
+    # Extract geom column, drop from attributes. The geom column may
+    # arrive as `blob`, `wk_wkb`, or a list of raw vectors depending on
+    # the upstream materialization. Coerce robustly.
+    wkb_col <- data$geom
+    data$geom <- NULL
+
+    wkb_vec <- if (inherits(wkb_col, "wk_wkb")) {
+        wkb_col
+    } else if (is.list(wkb_col)) {
+        wk::wkb(wkb_col)
+    } else {
+        wk::as_wkb(wkb_col)
+    }
+
+    # Per-vertex coords. wk::wk_coords returns feature_id (1..N polygon
+    # order), part_id, ring_id, x, y. feature_id maps back to the row
+    # order in `data`.
+    v <- data.table::as.data.table(wk::wk_coords(wkb_vec))
+
+    # Rejoin attributes by feature_id. data.table[v, on = "feature_id"]
+    # is a right join — every vertex gets the attributes of its polygon.
+    if (ncol(data) > 0L) {
+        attrs <- data.table::as.data.table(data)
+        attrs[, feature_id := seq_len(.N)]
+        v <- attrs[v, on = "feature_id"]
+    }
+
+    v
 }
 
 # .pstore_to_sedona ####
@@ -1257,7 +1352,7 @@ sd_view_ref <- function(sdf) {
     if (!output %in% c("query", "duckdb", "sedona")) { # if a materialized format...
         lazy <- unique(c("source_id", "row_index", lazy))
     }
-    if (output %in% c("terra", "sf")) {
+    if (output %in% c("terra", "sf", "vertex_dt")) {
         lazy <- unique(c("geom", lazy))
     }
     attr(lazy, "lazy") <- TRUE

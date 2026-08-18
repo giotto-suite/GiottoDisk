@@ -259,7 +259,9 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
         sl <- .apply_space_to_subobj(sl, gobject, space)
         return(.cells_in_region_dt(sl@coordinates, region, relation))
     }
-    # Multi: named list of spatLocsObj, one per sample.
+    # Multi: named list of spatLocsObj, one per sample. Per-child raw
+    # cell_IDs are namespaced with `<sample>::` so the result matches
+    # the joint @cell_metadata vocabulary downstream.
     if (is.list(sl)) {
         ids <- character(0L)
         for (samp_name in names(sl)) {
@@ -268,8 +270,11 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
             child_space <- .scope_space_to_sample_local(space, samp_name)
             child_sl <- .apply_space_to_subobj(child_sl, gobject,
                 child_space)
-            ids <- c(ids, .cells_in_region_dt(child_sl@coordinates,
-                region, relation))
+            child_ids <- .cells_in_region_dt(child_sl@coordinates,
+                region, relation)
+            if (length(child_ids) > 0L) {
+                ids <- c(ids, paste(samp_name, child_ids, sep = "::"))
+            }
         }
         return(unique(ids))
     }
@@ -388,8 +393,9 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
                 "no spatial locations available", call. = FALSE)
         } else {
             for (step in crop_steps) {
+                region <- GiottoClass:::.materialize_crop_region(step@region)
                 step_ids <- .cells_in_region_for_view(sl, gobject,
-                    pred_space, step@region, step@relation)
+                    pred_space, region, step@relation)
                 step_tab <- arrow::arrow_table(data.frame(
                     cell_ID = step_ids, stringsAsFactors = FALSE))
                 surviving <- if (is.null(surviving)) {
@@ -606,10 +612,11 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
                     "column to evaluate the predicate on)", call. = FALSE)
                 next
             }
-            region <- step@region
+            region <- GiottoClass:::.materialize_crop_region(step@region)
             # spatRelate accepts SpatVector / sf / giottoPolygon /
             # spatLocsObj / WKT / parquetGeomBase. Promote numeric /
-            # SpatExtent to a polygon SpatVector first.
+            # SpatExtent to a polygon SpatVector first. (Stored WKT was
+            # already turned into SpatVector by .materialize_crop_region.)
             y <- region
             if (is.numeric(region)) {
                 y <- terra::as.polygons(terra::ext(region))
@@ -792,14 +799,15 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
     if (is.null(dt) || nrow(dt) == 0L) return(dt)
 
     # Cache path: one semi_join against the view-wide intersection.
-    if (!is.null(.cache)) {
+    # Only applies to cell_ID-keyed targets — current view steps narrow
+    # on the cell axis. Non-cell keys (e.g. feat_metadata's feat_ID) fall
+    # through to the no-cache path, which handles them correctly:
+    # viewCrop steps are skipped with a warning, viewFilter steps go
+    # through the arrow bridge keyed appropriately.
+    if (!is.null(.cache) && identical(key, "cell_ID")) {
         surv <- .surviving_cell_ids_arrow(view, gobject, .cache,
             spat_unit = spat_unit, feat_type = feat_type)
         if (is.null(surv)) return(dt)
-        if (!identical(key, "cell_ID")) {
-            stop("[push_view_to_dt] cache mode supports cell_ID-keyed ",
-                "targets only (got key = '", key, "')", call. = FALSE)
-        }
         out <- dplyr::collect(
             dplyr::semi_join(arrow::arrow_table(dt), surv, by = "cell_ID")
         )
@@ -840,8 +848,9 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
             dt <- .narrow_dt_via_arrow(dt, step@predicate, gobject,
                 key = key, spat_unit = spat_unit, feat_type = feat_type)
         } else if (inherits(step, "viewCrop") && have_crops) {
+            region <- GiottoClass:::.materialize_crop_region(step@region)
             step_ids <- .cells_in_region_for_view(sl, gobject, pred_space,
-                step@region, step@relation)
+                region, step@relation)
             dt <- dt[cell_ID %in% step_ids]
         }
     }
