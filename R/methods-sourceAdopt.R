@@ -105,15 +105,27 @@ setMethod("sourceContains", signature("gDirSource", "unionParquetStore"),
 #' @export
 setMethod("sourceAdopt", signature("gDirSource", "fileStore"),
     function(src, store, meta = NULL, giottosave = NULL, depends = NULL, ...) {
+    old_path <- store@path
+    # A single on-disk store can back several handles: lazy ops mean `raw` and
+    # `normalized` are two objects sharing one @path (stream-normalize.R appends
+    # an op rather than writing a new store). Adoption below MOVES the files, so
+    # the second handle arrives with a path that no longer exists. Consult the
+    # session map -- kept by the IterableMatrix branch, reset per snapshotSave --
+    # BEFORE the existence check, or that check rejects the very handle we are
+    # here to remap.
+    if (!is.null(cached <- .adopt_session_lookup(old_path))) {
+        store@path <- cached
+        return(store)
+    }
     if (!storeExists(store)) {
         stop("[sourceAdopt] store does not exist at path:\n  ", store@path,
             call. = FALSE)
     }
-    old_path <- store@path
     uid <- store@uid
     new_path <- .gdsrc_allocate_artifact_dir(src@path, uid = uid, create = TRUE)
     .move_path(old_path, new_path)
     store@path <- new_path
+    .adopt_session_record(old_path, new_path)
     hash <- .hash(storeRead(.store_nostate(store)))
     .gdsrc_json_add_artifact(src@path,
         store_type = class(store),

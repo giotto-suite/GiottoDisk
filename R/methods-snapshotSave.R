@@ -135,7 +135,10 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     data_list <- gobject[["expression"]]
     for (x_i in data_list) {
         mat <- x_i[]
-        if (!inherits(mat, "IterableMatrix")) next
+        # fileStore covers this package's own parquetExprStore, which
+        # aggregateFeatures() produces; skipping it left the store in the
+        # session dump, so a reloaded snapshot pointed at a deleted tempdir.
+        if (!inherits(mat, c("IterableMatrix", "fileStore"))) next
         if (sourceContains(src, mat)) next
 
         vmsg(.v = verbose, sprintf(
