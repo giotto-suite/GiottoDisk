@@ -143,3 +143,71 @@ test_that("an unnamed grouping stays positional, with a warning", {
         suppressWarnings(.fsg(pe, unname(grp)[-1L])), "one entry per cell"
     )
 })
+
+
+# ---- cell windowing -------------------------------------------------------
+# The grouped pass windows its input because `by_cell` puts a join in front of
+# the aggregate whose output is O(nonzeros) (see `.pe_accum_acero_windowed()`).
+# Every fixture above fits one window, so these pin the window small enough to
+# force a fold across several and assert it is exact, not merely close.
+
+test_that("a grouped pass folds exactly across forced cell windows", {
+    skip_if_not_installed("Giotto")
+    mat <- .grp_mat(n_genes = 20L, n_cells = 90L, density = 0.4, seed = 31L)
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+
+    grp <- stats::setNames(rep(c("a", "b", "c"), length.out = ncol(mat)),
+        colnames(mat))
+    ref <- .ref_grouped(mat, grp)
+    one <- .fsg(pe, grp, stats = c("sum", "sumsq", "nnz"))
+
+    # 90 cells / 13 -> 7 windows. Sums, sums of squares and detection counts
+    # are all additive over cells, so windowing must be bit-for-bit invariant.
+    for (win in c(13L, 30L, 89L)) {
+        withr::local_options(list(giottodisk.chunk_size = win))
+        got <- .fsg(pe, grp, stats = c("sum", "sumsq", "nnz"))
+        expect_equal(got, one)
+        expect_equal(got$mean_expr, ref$mean)
+        expect_equal(as.numeric(got$nr_cells), ref$nnz)
+    }
+})
+
+
+test_that("windowing a grouped pass is invariant to `[` and to NA groups", {
+    skip_if_not_installed("Giotto")
+    mat <- .grp_mat(n_genes = 16L, n_cells = 80L, density = 0.4, seed = 37L)
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+
+    grp <- stats::setNames(rep(c("a", "b"), length.out = ncol(mat)),
+        colnames(mat))
+    # NA-group cells are excluded by the join, so they must not reappear when
+    # the join is executed once per window instead of once overall.
+    grp[seq(1L, length(grp), by = 4L)] <- NA
+
+    sub <- pe[, seq(2L, ncol(mat), by = 2L)]
+    one <- .fsg(sub, grp, stats = c("sum", "nnz"))
+    withr::local_options(list(giottodisk.chunk_size = 9L))
+    expect_equal(.fsg(sub, grp, stats = c("sum", "nnz")), one)
+})
+
+
+test_that("an ungrouped pass is not windowed", {
+    skip_if_not_installed("Giotto")
+    mat <- .grp_mat(n_genes = 12L, n_cells = 40L, seed = 41L)
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+
+    # Acero bounds the joinless aggregate on its own; routing it through the
+    # window machinery would cost setup per window for no bound.
+    called <- 0L
+    trace(".pe_accum_acero_windowed", where = asNamespace("GiottoDisk"),
+        print = FALSE, tracer = function() called <<- called + 1L)
+    on.exit(untrace(".pe_accum_acero_windowed",
+        where = asNamespace("GiottoDisk")), add = TRUE)
+
+    # No `stats =` here: the ungrouped verb has a fixed column contract and
+    # rejects an accumulator selection.
+    withr::local_options(list(giottodisk.chunk_size = 7L))
+    st <- GiottoClass::analyzeData(pe, Giotto::analyzeParam("feat_stats"))
+    expect_identical(called, 0L)
+    expect_equal(st$total_expr, unname(Matrix::rowSums(mat)))
+})
