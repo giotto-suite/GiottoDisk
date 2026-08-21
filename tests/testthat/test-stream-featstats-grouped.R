@@ -211,3 +211,30 @@ test_that("an ungrouped pass is not windowed", {
     expect_identical(called, 0L)
     expect_equal(st$total_expr, unname(Matrix::rowSums(mat)))
 })
+
+
+test_that("the data.table path folds exactly across cell windows", {
+    skip_if_not_installed("Giotto")
+    mat <- .grp_mat(n_genes = 18L, n_cells = 84L, density = 0.4, seed = 43L)
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+
+    # A `log` on @post_ops forces the R-side executor: the chain cannot be
+    # lowered, so `.pe_accum_chunked_dt()` runs instead of the Acero plan. That
+    # path windows too, and folds its partials the same way -- before this it
+    # was the only windowed path with no multi-window coverage.
+    pe_post <- .pe_push_op(pe, list(type = "log", base = 2), phase = "post")
+    expect_length(pe_post@post_ops, 1L)
+
+    grp <- stats::setNames(rep(c("a", "b", "c"), length.out = ncol(mat)),
+        colnames(mat))
+    one <- .fsg(pe_post, grp, stats = c("sum", "sumsq", "nnz"))
+
+    for (win in c(11L, 29L, 83L)) {
+        withr::local_options(list(giottodisk.chunk_size = win))
+        expect_equal(.fsg(pe_post, grp, stats = c("sum", "sumsq", "nnz")), one)
+    }
+
+    # Same statistic, computed in memory on the transformed values.
+    ref <- .ref_grouped(log2(mat + 1), grp)
+    expect_equal(one$mean_expr, ref$mean)
+})

@@ -391,6 +391,101 @@ NULL
 }
 
 
+# ---- cell windowing --------------------------------------------------------
+#
+# THE seam for streaming an expression store a cell window at a time. Every
+# bounded pass over expression values goes through here: the statistic
+# accumulators, the PCA forward/backward/gram/coords passes, and the
+# `storeWrite` bake. Do not hand-roll a `while (cs <= n)` walk -- that loop
+# existed in eight places before these two helpers, and the copies had already
+# drifted (one folded its partials eagerly, one retained one per window).
+#
+# Why cell ranges and not row counts, or a cell SET: a contiguous `row_id`
+# range is the gapless case in `.pe_axis_pred()`, so it lowers to a pure
+# `row_id >= lo & row_id <= hi` that prunes parquet row groups -- the store is
+# written cell-major (`setorder(row_id, col_id)`), so this is the only axis
+# where narrowing prunes. A scattered set lowers to `is_in` and reads
+# everything. It is also why windowing the FEATURE axis is a trap: it prunes
+# nothing, so each batch rescans the store in full.
+#
+# Two shapes, because the call sites genuinely differ:
+#
+#   .pe_chunk_ranges()  the primitive -- chunk boundaries within one range.
+#                       For a caller that already has its substore and a
+#                       sub-range of it, as the parallel PCA band workers do.
+#   .pe_windows()       substores x their full cell range, as descriptors.
+#                       For a caller that means "the whole view".
+#
+# Neither owns reduction, and that is deliberate: the four reductions in the
+# package are irreconcilable (eager fold, scatter into a preallocated matrix,
+# matrix accumulation, write a part-file). An iterator that tried to own them
+# would grow a mode argument per caller.
+
+# Chunk boundaries covering `[from, to]`. Returns a list of `c(cs, ce)`.
+.pe_chunk_ranges <- function(from, to, chunk_size) {
+    from <- as.integer(from)
+    to   <- as.integer(to)
+    if (is.na(from) || is.na(to) || to < from) return(list())
+    chunk_size <- max(1L, as.integer(chunk_size))
+    starts <- seq.int(from, to, by = chunk_size)
+    lapply(starts, function(cs) c(cs, min(cs + chunk_size - 1L, to)))
+}
+
+# Cell-window descriptors over a whole store or union. Each is
+#
+#   list(sub = <parquetExprStore>, cs = , ce = , offset = , index = )
+#
+# `sub` carries both op chains already (a union parent's are transplanted by
+# `.exprbase_inject_parent_ops`, which is what makes the substore
+# self-sufficient). `cs`/`ce` are positions in THAT substore's cell axis, not
+# the view's -- `offset` converts, and is what the write path and the PCA passes
+# use to place a window's rows globally. `index` is the substore's ordinal, for
+# a caller carrying its own per-substore struct to look up (PCA's `sub_infos`).
+#
+# Unions iterate substores rather than taking a global cell range because
+# `row_id` restarts per substore, so a global range is not a contiguous range
+# on either side of the boundary and would prune nothing.
+#
+# `inject_ops = FALSE` skips the parent-op transplant, for a caller that has
+# already prepared its substores.
+.pe_windows <- function(pe, chunk_size, inject_ops = TRUE) {
+    is_union <- inherits(pe, "unionParquetExprStore")
+    out <- list()
+    subs <- .exprbase_substores(pe)
+    for (i in seq_along(subs)) {
+        sub <- subs[[i]]$store
+        # Only a union needs the transplant: for a single store
+        # `.exprbase_substores()` yields the store itself, which already
+        # carries its chains, and re-adding them would double-apply.
+        if (is_union && isTRUE(inject_ops)) {
+            sub <- .exprbase_inject_parent_ops(sub, pe@ops, pe@post_ops)
+        }
+        n_sub <- as.integer(sub@n_cells)
+        for (rng in .pe_chunk_ranges(1L, n_sub, chunk_size)) {
+            out[[length(out) + 1L]] <- list(
+                sub    = sub,
+                cs     = rng[[1L]],
+                ce     = rng[[2L]],
+                offset = as.integer(subs[[i]]$cell_offset),
+                index  = i
+            )
+        }
+    }
+    out
+}
+
+# The window as a store to read from. Skips `[` when the window covers the
+# whole substore: the narrowing would add an exact-range predicate that admits
+# every row anyway, and a store with no `@cell_idx` is the cheaper plan.
+#
+# Index with `cs:ce`, never `seq.int(cs, ce)` -- an ALTREP compact seq becomes
+# one hyperslab where a materialized vector becomes a point selection.
+.pe_window_store <- function(d) {
+    if (d$cs == 1L && d$ce == as.integer(d$sub@n_cells)) return(d$sub)
+    d$sub[, d$cs:d$ce]
+}
+
+
 # ---- shared chunk reader (used by storeWrite baking) ------------------------
 #
 # Reads cells [sub_cs, sub_ce] from `info$sub` and returns the normalized

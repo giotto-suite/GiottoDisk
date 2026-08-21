@@ -464,11 +464,7 @@ setMethod("analyzeData",
             .pe_accum_acero_windowed(pe,
                 grp = grp, aggr_exprs = aggr_exprs, by_cell = by_cell)
         } else {
-            storeRead(pe, output = "query") |>
-                dplyr::group_by(!!!rlang::syms(grp)) |>
-                dplyr::summarise(!!!aggr_exprs) |>
-                dplyr::collect() |>
-                data.table::as.data.table()
+            .pe_agg_collect(pe, grp = grp, aggr_exprs = aggr_exprs)
         }
     } else {
         # R path: the chain has to run on materialized rows, so this one is
@@ -549,49 +545,66 @@ setMethod("analyzeData",
 # arithmetic the caller's fold does, so the result is unchanged and what is
 # held is O(groups) whatever the window count.
 .pe_accum_acero_windowed <- function(pe, grp, aggr_exprs, by_cell) {
-    chunk_size <- .pe_accum_chunk_size(pe)
-    is_union   <- inherits(pe, "unionParquetExprStore")
-    by_cols    <- setdiff(names(by_cell), "k")
-    acc_cols   <- names(aggr_exprs)
+    by_cols <- setdiff(names(by_cell), "k")
     # Built once, not per window: it is the join's build side, one row per
     # grouped cell, and it is the same table for every window.
-    bc_tab     <- arrow::as_arrow_table(as.data.frame(by_cell))
+    bc_tab  <- arrow::as_arrow_table(as.data.frame(by_cell))
 
     acc <- NULL
-    for (sub_entry in .exprbase_substores(pe)) {
-        sub <- sub_entry$store
-        if (is_union) {
-            sub <- .exprbase_inject_parent_ops(sub, pe@ops, pe@post_ops)
-        }
-        n_sub <- as.integer(sub@n_cells)
-        cs <- 1L
-        while (cs <= n_sub) {
-            ce <- min(cs + chunk_size - 1L, n_sub)
-            # Skip the `[` when the window is the whole substore: it would add
-            # an exact-range predicate that admits every row anyway.
-            w <- if (cs == 1L && ce == n_sub) sub else sub[, cs:ce]
-            agg <- storeRead(w, output = "query") |>
-                dplyr::inner_join(bc_tab, by = by_cols) |>
-                dplyr::group_by(!!!rlang::syms(grp)) |>
-                dplyr::summarise(!!!aggr_exprs) |>
-                dplyr::collect() |>
-                data.table::as.data.table()
-            if (nrow(agg) > 0L) {
-                # int64 from arrow's integer sums; fold in double so the
-                # running total does not depend on bit64 dispatch.
-                for (nm in acc_cols) {
-                    data.table::set(agg, j = nm,
-                        value = as.numeric(agg[[nm]]))
-                }
-                acc <- if (is.null(acc)) agg else {
-                    data.table::rbindlist(list(acc, agg))[
-                        , lapply(.SD, sum), by = grp, .SDcols = acc_cols]
-                }
-            }
-            cs <- ce + 1L
-        }
+    for (d in .pe_windows(pe, .pe_accum_chunk_size(pe))) {
+        acc <- .pe_fold_partial(acc,
+            .pe_agg_collect(.pe_window_store(d),
+                grp = grp, aggr_exprs = aggr_exprs,
+                join_tab = bc_tab, join_cols = by_cols),
+            grp = grp, cols = names(aggr_exprs))
     }
     acc
+}
+
+
+# ---- shared by both windowed accumulators ----------------------------------
+
+# One grouped aggregate as an arrow plan, collected. The whole-store branch of
+# `.pe_accum_raw()` and each window of `.pe_accum_acero_windowed()` are the
+# same plan differing only by the join, so they are the same function.
+#
+# `join_tab` is the join's BUILD side -- small by construction (one row per
+# grouped cell), streamed against by the scan. Inner, so a cell absent from it
+# drops, which is how NA-group cells are excluded without a predicate.
+.pe_agg_collect <- function(pe, grp, aggr_exprs,
+    join_tab = NULL, join_cols = NULL) {
+
+    q <- storeRead(pe, output = "query")
+    if (!is.null(join_tab)) {
+        q <- dplyr::inner_join(q, join_tab, by = join_cols)
+    }
+    q |>
+        dplyr::group_by(!!!rlang::syms(grp)) |>
+        dplyr::summarise(!!!aggr_exprs) |>
+        dplyr::collect() |>
+        data.table::as.data.table()
+}
+
+# Fold one window's partial into the running total.
+#
+# Eager, not a list of partials collected and reduced at the end: a partial is
+# one row per group, so retaining one per window would make the held state
+# O(groups x windows) -- tightening the window to save memory would cost
+# memory. Sound because the accumulators are additive and each window covers a
+# disjoint set of cells; this is the same arithmetic the caller's
+# fold-by-position does, applied earlier.
+#
+# Coerced to double on the way in: arrow hands back int64 for integer sums, and
+# a running total should not depend on bit64 dispatch. Counts stay exact well
+# past 2^53.
+.pe_fold_partial <- function(acc, part, grp, cols) {
+    if (is.null(part) || nrow(part) == 0L) return(acc)
+    for (nm in cols) {
+        data.table::set(part, j = nm, value = as.numeric(part[[nm]]))
+    }
+    if (is.null(acc)) return(part)
+    data.table::rbindlist(list(acc, part))[
+        , lapply(.SD, sum), by = grp, .SDcols = cols]
 }
 
 
@@ -604,47 +617,34 @@ setMethod("analyzeData",
 # accumulators are additive, and the caller's fold-by-position sums whatever
 # duplicate (source_id, key) rows the windowing produced.
 #
-# Windows are cell ranges, not row counts, for two reasons -- a contiguous
-# `row_id` range is the gapless case in `.pe_axis_pred()` so it prunes row
-# groups, and `[` slices `@post_ops` down to the window's cells so the chain
-# applies with exactly the state that window needs.
+# Windows come from `.pe_windows()`, the shared seam -- see its header for why
+# they are cell ranges rather than row counts or a cell set. The one thing
+# specific to this path: `[` also slices `@post_ops` down to the window's cells,
+# so the chain applies with exactly the state that window needs.
 #
-# Unions iterate substores here, unlike the Acero branch. A global cell range
-# is not a contiguous `row_id` range across a union (row_id restarts per
-# substore), so the window has to be taken per substore.
+# Note this path always narrows with `[`, where the Acero path can skip it on a
+# single full-substore window. `.pe_window_store()` handles that, and the
+# post-op slice is what makes taking it here correct rather than merely cheaper.
 .pe_accum_chunked_dt <- function(pe, grp, aggr_exprs, by_cell = NULL) {
-    chunk_size <- .pe_accum_chunk_size(pe)
-    dt_call    <- as.call(c(quote(list), aggr_exprs))
-    is_union   <- inherits(pe, "unionParquetExprStore")
-    by_cols    <- if (!is.null(by_cell)) setdiff(names(by_cell), "k")
+    dt_call <- as.call(c(quote(list), aggr_exprs))
+    by_cols <- if (!is.null(by_cell)) setdiff(names(by_cell), "k")
 
-    parts <- list()
-    for (sub_entry in .exprbase_substores(pe)) {
-        sub <- sub_entry$store
-        if (is_union) {
-            sub <- .exprbase_inject_parent_ops(sub, pe@ops, pe@post_ops)
+    acc <- NULL
+    for (d in .pe_windows(pe, .pe_accum_chunk_size(pe))) {
+        w  <- .pe_window_store(d)
+        df <- data.table::as.data.table(
+            dplyr::collect(storeRead(w, output = "query")))
+        if (nrow(df) > 0L) {
+            df <- .pe_apply_post_ops_df(df, w@post_ops)
+            # Inner, matching the Acero branch's join: a cell absent from
+            # `by_cell` is out of the grouping and drops here too.
+            if (!is.null(by_cell)) df <- merge(df, by_cell, by = by_cols)
         }
-        n_sub <- as.integer(sub@n_cells)
-        cs <- 1L
-        while (cs <= n_sub) {
-            ce <- min(cs + chunk_size - 1L, n_sub)
-            w  <- sub[, cs:ce]
-            df <- data.table::as.data.table(
-                dplyr::collect(storeRead(w, output = "query")))
-            if (nrow(df) > 0L) {
-                df <- .pe_apply_post_ops_df(df, w@post_ops)
-                # Inner, matching the Acero branch's join: a cell absent from
-                # `by_cell` is out of the grouping and drops here too.
-                if (!is.null(by_cell)) df <- merge(df, by_cell, by = by_cols)
-            }
-            if (nrow(df) > 0L) {
-                parts[[length(parts) + 1L]] <- df[, eval(dt_call), by = grp]
-            }
-            cs <- ce + 1L
-        }
+        if (nrow(df) == 0L) next
+        acc <- .pe_fold_partial(acc, df[, eval(dt_call), by = grp],
+            grp = grp, cols = names(aggr_exprs))
     }
-    if (length(parts) == 0L) return(NULL)
-    data.table::rbindlist(parts)
+    acc
 }
 
 # Build the `(source_id, key_id) -> pos` map for one axis. `key_id` is the
