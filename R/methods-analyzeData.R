@@ -597,6 +597,14 @@ setMethod("analyzeData",
 # Coerced to double on the way in: arrow hands back int64 for integer sums, and
 # a running total should not depend on bit64 dispatch. Counts stay exact well
 # past 2^53.
+#
+# NOT bitwise invariant, and cannot be. Folding on arrival reassociates the
+# summation relative to reducing all the partials at once, so a float
+# accumulator (`sum`, `sumsq`) can land 1 ULP away -- measured at 1.0-1.2 ULP,
+# max relative 2.7e-16, on a union with a multi-window post-op chain, where the
+# second fold level adds more reassociation. Integer accumulators (`nnz`) are
+# exact. Do not write a test that demands bitwise equality across window counts;
+# `expect_equal`'s default tolerance is the right strictness here.
 .pe_fold_partial <- function(acc, part, grp, cols) {
     if (is.null(part) || nrow(part) == 0L) return(acc)
     for (nm in cols) {

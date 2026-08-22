@@ -7,16 +7,24 @@
   nine places — both statistic accumulators, the `storeWrite` bake, four PCA
   passes and the band split — and the copies had drifted. All now route through
   it, and the seam is recorded in `AGENTS.md` and the `giottodisk-method` seam
-  table so the next windowed verb attaches instead of copying. Verified
-  bit-identical against the previous implementation at every site, PCA included
-  (`u`, `d`, `v`, `sdev`, `eigenvalues` and per-column magnitudes, since a
-  correlation check cannot see a scale change).
+  table so the next windowed verb attaches instead of copying. Verified against
+  the previous implementation at every site: bitwise for PCA (`u`, `d`, `v`,
+  `sdev`, `eigenvalues` and per-column magnitudes — a correlation check cannot
+  see a scale change) and for the `storeWrite` bake, and to within 1 ULP for the
+  float statistic accumulators, where eager folding reassociates the summation
+  (see below). Integer accumulators are exact.
 - One behaviour change comes with it: the R-side accumulator
   (`.pe_accum_chunked_dt()`, the path taken when `@post_ops` cannot be lowered)
   now folds each window's partial as it arrives instead of collecting one per
-  window and reducing at the end. Results are unchanged; held state drops from
-  `O(groups x windows)` to `O(groups)`, so tightening the window no longer
-  costs memory. The Acero path already did this.
+  window and reducing at the end. Held state drops from `O(groups x windows)` to
+  `O(groups)`, so tightening the window no longer costs memory. The Acero path
+  already did this.
+
+  The one visible consequence: folding on arrival reassociates the summation, so
+  a float accumulator can differ from the old reduce-at-the-end result by ~1 ULP
+  (measured 1.0-1.2 ULP, max relative 2.7e-16). Counts are unaffected. Results
+  are equal to tolerance, not bitwise, and comparisons across different window
+  counts should be written that way.
 
 ## changes
 - Grouped expression statistics — `analyzeData(x, featStatsParam, groups =)` and
