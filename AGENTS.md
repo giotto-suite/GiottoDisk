@@ -174,6 +174,24 @@ costs ~16GB. Use `subset()` for value-based filtering, `rowSample()` for downsam
 Handles counts up to 2^53. Arrow COUNT(*) returns int64 → `as.numeric()` converts cleanly.
 Always queries via COUNT(*) — no caching.
 
+### Bounded passes over expression values window the CELL axis
+Every streaming pass over a `parquetExprBase` — the statistic accumulators, the
+PCA passes, the `storeWrite` bake — takes its windows from `.pe_windows()` /
+`.pe_chunk_ranges()` (`R/utils-pestore-ops.R`). Do not hand-roll the walk.
+
+The axis is not a free choice. Stores are written cell-major
+(`setorder(row_id, col_id)`), so a contiguous cell range is the gapless case in
+`.pe_axis_pred()` and lowers to a `row_id` range predicate that prunes parquet
+row groups. Windowing the **feature** axis prunes nothing — every batch rescans
+the store in full, and the cost is linear in batch count rather than in features
+per batch. If a new statistic seems to want feature batching, it wants a cell
+window instead.
+
+Windows are exact rather than approximate only because the accumulators are
+additive over cells. A statistic that is not — anything needing a global order
+along the gene axis, e.g. a rank or a median — cannot be windowed this way and
+does not have a streaming path today.
+
 ### Lazy ops via @ops slot
 Operations recorded lazily as a list of steps. User-facing op types:
 `filter`, `head`, `tail`, `sample`, `distinct`, `join`, `spat_relate`. Applied

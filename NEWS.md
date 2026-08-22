@@ -1,5 +1,23 @@
 # GiottoDisk 0.0.0.2
 
+## internal
+- Cell-window streaming has one seam: `.pe_windows()` (substores x their cell
+  ranges), `.pe_chunk_ranges()` (a sub-range of one substore, for the parallel
+  PCA band workers) and `.pe_window_store()`. The walk had been hand-rolled in
+  nine places — both statistic accumulators, the `storeWrite` bake, four PCA
+  passes and the band split — and the copies had drifted. All now route through
+  it, and the seam is recorded in `AGENTS.md` and the `giottodisk-method` seam
+  table so the next windowed verb attaches instead of copying. Verified
+  bit-identical against the previous implementation at every site, PCA included
+  (`u`, `d`, `v`, `sdev`, `eigenvalues` and per-column magnitudes, since a
+  correlation check cannot see a scale change).
+- One behaviour change comes with it: the R-side accumulator
+  (`.pe_accum_chunked_dt()`, the path taken when `@post_ops` cannot be lowered)
+  now folds each window's partial as it arrives instead of collecting one per
+  window and reducing at the end. Results are unchanged; held state drops from
+  `O(groups x windows)` to `O(groups)`, so tightening the window no longer
+  costs memory. The Acero path already did this.
+
 ## changes
 - Grouped expression statistics — `analyzeData(x, featStatsParam, groups =)` and
   everything riding it, including scran marker detection — now window the scan
