@@ -123,6 +123,111 @@ NULL
 }
 
 
+# pestore-chunking ####
+#
+# The one user-facing page on windowing. Everything that streams links here
+# rather than restating a knob list that would drift. Prose lives in @sections
+# so a topic that needs one inline can `@inheritSection` it instead of copying.
+
+#' @name pestore-chunking
+#' @aliases chunking parquetExprStore-chunking
+#' @title How expression stores are streamed, and which knobs exist
+#' @description
+#' Passes over a `parquetExprStore` that cannot hold the whole store in memory
+#' read it in **cell windows**. This page is the reference for how a window is
+#' chosen, what the two options do, and what to expect of results. Individual
+#' verbs link here instead of restating it.
+#'
+#' [storeChunkInfo()] reports the numbers for a given store on the current
+#' machine.
+#'
+#' @section What a window is:
+#' A window is a contiguous range of cells. A pass visits the windows in cell
+#' order, does its work on each, and combines the parts; for a sum, a count or a
+#' sum of squares that combination is addition, so the answer is the same one an
+#' unwindowed pass would give.
+#'
+#' The axis is not a free choice. Stores are written cell-major, so a contiguous
+#' cell range narrows to a range predicate that lets the parquet reader skip row
+#' groups — each window reads only its own slice, and N windows still cost one
+#' pass over the data. Narrowing by **feature** cannot do this: features are not
+#' the sort key, so a feature batch reads the whole store and the cost grows with
+#' the number of batches. If you are tempted to loop over gene blocks to stay
+#' inside memory, ask for all the features at once instead and let the window do
+#' the bounding.
+#'
+#' Statistics that need a global ordering along the feature axis — a rank, a
+#' median, a Wilcoxon test — cannot be combined from windows at all, and have no
+#' streaming path today.
+#'
+#' @section Not a mode:
+#' There is no chunked mode and no unchunked mode, and neither option switches
+#' one on. The window loop always runs; when the budget covers the whole view it
+#' yields a single window, which is a single plan over the store. The options
+#' change the *bound*, not the code path.
+#'
+#' In particular, pinning `giottodisk.chunk_size` to a large value does not make
+#' a pass "unchunked" — it removes the memory bound that keeps the pass from
+#' failing on a large store. Reach for it when you know the data fits.
+#'
+#' Which passes window at all is narrower than it looks. Grouped statistics
+#' (marker detection, anything passing `groups =`) window because the grouping
+#' puts a join in front of an otherwise small aggregate. Ungrouped statistics on
+#' a lowerable chain run as one streamed plan and do not window. PCA windows, but
+#' accumulates in its own order.
+#'
+#' @section Steering the window:
+#' \describe{
+#'   \item{`giottodisk.chunk_ram_frac`}{fraction of free RAM to budget per
+#'     window (default 0.25). Lower it on a busy machine; raise it on a
+#'     dedicated one. Scales every pass without knowing any store's shape. This
+#'     is the one to reach for first.}
+#'   \item{`giottodisk.chunk_size`}{pins an absolute window in cells, overriding
+#'     the derivation entirely. An escape hatch — for a machine whose free
+#'     memory cannot be read, for a shape the model sizes badly, and for tests
+#'     that need to force several windows. Also the fallback value when the
+#'     derivation cannot run.}
+#' }
+#'
+#' Neither is a performance dial. A smaller window lowers peak memory and adds
+#' per-window overhead; a larger one does the reverse. The derived value is
+#' already the largest window the budget allows, which is the fastest one that
+#' stays bounded.
+#'
+#' @section Reproducibility:
+#' The window count is derived from free RAM **at call time**, so it is not a
+#' property of the store and can differ between runs on one machine.
+#'
+#' Combining window parts is exact for counts. For floating-point sums it
+#' reassociates the addition, so a float statistic can differ by a few units in
+#' the last place between runs with different window counts (measured 2-3 ULP).
+#' Results are reproducible to tolerance, not bitwise: compare them with a
+#' tolerance rather than hashing them or snapshotting exact digits.
+#'
+#' This is invisible to analysis — it is 15 significant figures in — with one
+#' thing to keep in view: a **discrete** choice taken on a float statistic, such
+#' as a top-N feature selection, can in principle land differently if two
+#' candidates are separated by less than that. Ties that close are not
+#' meaningful distinctions, but they can move a downstream result that is keyed
+#' to the selection.
+#'
+#' @section Why the window is not stored:
+#' It depends on free RAM, which is a property of the machine doing the reading,
+#' not of the data. Baking it in at write time would make it stale as soon as the
+#' store moved. What *is* machine-independent is the payload size per stored
+#' value, and that is what the `@stats` marginals cache.
+#'
+#' A store with no cached marginals — one built by [parquetExprStore()] straight
+#' from a path, where `scan_stats = FALSE` is the default — has to count its
+#' nonzeros before it can size a window, which costs one extra pass. Stores from
+#' `storeWrite()` and the convenience importers carry marginals already, and they
+#' survive `snapshotSave()` / `snapshotLoad()`.
+#'
+#' @seealso [storeChunkInfo()] for the numbers on a given store.
+#' @family chunking
+NULL
+
+
 # storeChunkInfo ####
 
 #' @name storeChunkInfo
@@ -145,15 +250,12 @@ NULL
 #'     when the op chain cannot be lowered to Acero.}
 #' }
 #'
-#' @section Steering the window:
-#' \describe{
-#'   \item{`giottodisk.chunk_ram_frac`}{fraction of free RAM to budget per
-#'     chunk (default 0.25). Lower it on a busy machine; raise it on a
-#'     dedicated one. Scales every pass without knowing any store's shape.}
-#'   \item{`giottodisk.chunk_size`}{pins an absolute window in rows,
-#'     overriding the derivation entirely. Also the value used when the
-#'     derivation cannot run.}
-#' }
+#' @inheritSection pestore-chunking Steering the window
+#' @inheritSection pestore-chunking Reproducibility
+#'
+#' @seealso [pestore-chunking] for what a window is, why the cell axis, and why
+#'   windowing is not a mode you opt into.
+#' @family chunking
 #'
 #' @param x a `parquetExprStore` or `unionParquetExprStore`.
 #' @param ram_frac numeric. Fractions to tabulate. Defaults to a spread around

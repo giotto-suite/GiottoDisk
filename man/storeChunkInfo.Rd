@@ -46,12 +46,39 @@ when the op chain cannot be lowered to Acero.}
 
 \describe{
 \item{\code{giottodisk.chunk_ram_frac}}{fraction of free RAM to budget per
-chunk (default 0.25). Lower it on a busy machine; raise it on a
-dedicated one. Scales every pass without knowing any store's shape.}
-\item{\code{giottodisk.chunk_size}}{pins an absolute window in rows,
-overriding the derivation entirely. Also the value used when the
+window (default 0.25). Lower it on a busy machine; raise it on a
+dedicated one. Scales every pass without knowing any store's shape. This
+is the one to reach for first.}
+\item{\code{giottodisk.chunk_size}}{pins an absolute window in cells, overriding
+the derivation entirely. An escape hatch — for a machine whose free
+memory cannot be read, for a shape the model sizes badly, and for tests
+that need to force several windows. Also the fallback value when the
 derivation cannot run.}
 }
+
+Neither is a performance dial. A smaller window lowers peak memory and adds
+per-window overhead; a larger one does the reverse. The derived value is
+already the largest window the budget allows, which is the fastest one that
+stays bounded.
+}
+
+\section{Reproducibility}{
+
+The window count is derived from free RAM \strong{at call time}, so it is not a
+property of the store and can differ between runs on one machine.
+
+Combining window parts is exact for counts. For floating-point sums it
+reassociates the addition, so a float statistic can differ by a few units in
+the last place between runs with different window counts (measured 2-3 ULP).
+Results are reproducible to tolerance, not bitwise: compare them with a
+tolerance rather than hashing them or snapshotting exact digits.
+
+This is invisible to analysis — it is 15 significant figures in — with one
+thing to keep in view: a \strong{discrete} choice taken on a float statistic, such
+as a top-N feature selection, can in principle land differently if two
+candidates are separated by less than that. Ties that close are not
+meaningful distinctions, but they can move a downstream result that is keyed
+to the selection.
 }
 
 \examples{
@@ -60,3 +87,11 @@ storeChunkInfo(pe)
 options(giottodisk.chunk_ram_frac = 0.10)   # halve every streaming window
 }
 }
+\seealso{
+\link{pestore-chunking} for what a window is, why the cell axis, and why
+windowing is not a mode you opt into.
+
+Other chunking:
+\code{\link{pestore-chunking}}
+}
+\concept{chunking}

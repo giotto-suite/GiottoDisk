@@ -37,6 +37,10 @@ setMethod("analyzeData",
 #' The grouped form is reusable beyond QC: per-cluster mean and
 #' percent-detected is the input to a dot plot, and the group means are a
 #' pseudobulk matrix.
+#'
+#' Passing `groups` also changes how the pass runs: the grouping is windowed
+#' over cells, where the ungrouped form streams as a single plan. See
+#' [pestore-chunking].
 #' @param x a `parquetExprBase` store.
 #' @param param a [Giotto::featStatsParam-class].
 #' @param groups optional vector of group assignments, one per cell of the

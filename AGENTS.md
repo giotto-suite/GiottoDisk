@@ -192,6 +192,40 @@ additive over cells. A statistic that is not — anything needing a global order
 along the gene axis, e.g. a rank or a median — cannot be windowed this way and
 does not have a streaming path today.
 
+**Windowing is not opt-in, and `giottodisk.chunk_size` does not switch it on.**
+There is no chunked mode and no unchunked mode. The window loop always runs; a
+budget that covers the view simply yields one window, which is one plan over the
+whole store. The option *pins* the window — an escape hatch for a constrained
+machine and for tests that need to force several — and pinning it large restores
+the single-plan shape but also removes the memory bound. Do not document or
+present it as a performance dial: it changes a bound, not a mode.
+
+The consequence to know: window count is derived from free RAM at call time, so
+it is not part of any output contract. Reassociating an additive fold is exact
+for integer accumulators (`nnz`) but not for float ones — measured 2-3 ULP on
+grouped statistics across window counts (`.pe_fold_partial`). So a windowed
+float statistic is **tolerance-reproducible, not bitwise-reproducible**, even on
+one machine. Never build a bitwise hash or snapshot test on one.
+
+Which verbs this reaches is narrower than it looks, and worth preserving. Only
+passes that actually window are exposed, and today that is the **grouped**
+statistics alone (`by_cell`, i.e. markers) — verified by tracing
+`.pe_fold_partial` through a normalize → stats → PCA sequence: 0 folds for
+normalization, 0 for ungrouped statistics, 0 for PCA. Two things hold that line:
+PCA does its own accumulation in an order the seam does not touch, and
+normalization lowers to `@ops`, which keeps the ungrouped accumulator on the
+single-plan Acero branch. Markers are also downstream of clustering, so nothing
+propagates into kNN / Leiden / UMAP.
+
+That line moves if an op ever lands on `@post_ops` (the stubbed `add`, or a
+z-score/scale op). A post-op chain is a different computation anyway, so its
+*values* are expected to differ — the thing to notice is structural: the
+ungrouped accumulator would become windowed, which makes HVG variance
+window-count dependent, and HVG selection is a discrete top-N cut **upstream**
+of PCA. That is the one route by which a last-bit difference could become a
+visibly different clustering. If you add such an op, check HVG selection
+stability across window counts before assuming it does not matter.
+
 ### Lazy ops via @ops slot
 Operations recorded lazily as a list of steps. User-facing op types:
 `filter`, `head`, `tail`, `sample`, `distinct`, `join`, `spat_relate`. Applied

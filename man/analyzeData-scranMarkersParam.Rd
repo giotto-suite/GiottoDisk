@@ -47,5 +47,7 @@ be considered rather than discovered. Narrowing with \code{[} is not an
 alternative here — a rank test needs every gene and every cell.
 }
 \seealso{
-\code{\link[Giotto:markersParam]{Giotto::markersParam()}}, \code{\link[Giotto:findScranMarkers]{Giotto::findScranMarkers()}}
+\code{\link[Giotto:markersParam]{Giotto::markersParam()}}, \code{\link[Giotto:findScranMarkers]{Giotto::findScranMarkers()}}.
+\link{pestore-chunking} for how the statistic pass is windowed and which
+options bound it — this is a grouped pass, so it always windows.
 }
