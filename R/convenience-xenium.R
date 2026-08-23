@@ -411,7 +411,17 @@ setMethod(
             }
 
             # centroids are attached as spatlocs at setGiotto time
-            # via `centroids_to_spatlocs = TRUE` (see polys block above)
+            # via `centroids_to_spatlocs = TRUE` (see polys block above).
+            # With no polygons loaded there are none, so fall back to the
+            # centroids recorded in the cell metadata file. Coordinates stay
+            # in-memory here, as cellmeta and featmeta already do.
+            if (length(GiottoClass::list_spatial_info_names(g)) == 0L) {
+                sl <- funs$load_spatlocs(verbose = verbose)
+                if (!is.null(sl)) {
+                    g <- GiottoClass::setGiotto(g, sl, verbose = FALSE)
+                }
+            }
+
             GiottoUtils::vmsg(.v = verbose, "done")
 
             return(g)
