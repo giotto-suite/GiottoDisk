@@ -70,6 +70,7 @@ Collate:
     'convenience-cosmx.R'
     'convenience-stereoseq.R'
     'convenience-xenium.R'
+    'convenience-atera.R'
     'methods-accessors.R'
     'methods-aggregate.R'
     'utils-pestore-ops.R'
