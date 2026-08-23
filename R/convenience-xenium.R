@@ -292,12 +292,18 @@ setMethod(
             }
 
             # feat metadata (in-mem; inherited closure)
-            fx <- funs$load_featmeta(
-                path = gene_panel_json_path,
-                gene_ids = "symbols",
-                verbose = verbose
-            )
-            g <- GiottoClass::setGiotto(g, fx, verbose = FALSE)
+            # optional: some Xenium-format exports ship no panel json, and
+            # feature metadata is generated from the expression matrix when
+            # it is absent. Mirrors the guard in Giotto's create path.
+            if (length(gene_panel_json_path) > 0L &&
+                nzchar(gene_panel_json_path[[1L]])) {
+                fx <- funs$load_featmeta(
+                    path = gene_panel_json_path,
+                    gene_ids = "symbols",
+                    verbose = verbose
+                )
+                g <- GiottoClass::setGiotto(g, fx, verbose = FALSE)
+            }
 
             # cell metadata (in-mem; inherited closure)
             if (load_cellmeta) {

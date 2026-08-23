@@ -1,5 +1,10 @@
 # GiottoDisk 0.0.0.2
 
+## bug fixes
+- `createGiottoXeniumObject(backend =)` no longer errors on Xenium-format
+  directories that ship no panel json. Feature metadata is generated from the
+  expression matrix when the panel is absent.
+
 ## changes
 - Grouped expression statistics — `analyzeData(x, featStatsParam, groups =)` and
   everything riding it, including scran marker detection — now window the scan
