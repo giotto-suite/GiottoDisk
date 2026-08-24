@@ -223,28 +223,39 @@ Group codes are integers, never label strings. Aggregating or joining strings
 in Acero at scale leaves dangling `utf8_view` buffers; labels are re-attached
 after collect.
 
-### Two execution shapes
+### Three execution shapes
 
-| `@post_ops` | shape |
-|---|---|
-| empty | one Acero plan over the whole store, unions included. Only the grouped result crosses into R. |
-| non-empty | the chain must run on materialized rows, so `.pe_accum_chunked_dt()` reads a cell window at a time, applies `@post_ops`, and aggregates each window with `data.table`. |
+Selected by two independent facts: whether the chain lowers (`@post_ops`), and
+whether a grouping was asked for (`by_cell`).
 
-Windows come from `.pe_window_cells(bytes_per_nz = 48)` — a fraction of free
-RAM over the per-row payload — so peak stays at one window rather than the
-whole store. Partial aggregates concatenate without reconciliation because the
-accumulators are additive.
+| chain | grouped | shape |
+|---|---|---|
+| lowers | no | one Acero plan over the whole store, unions included. Only the aggregate crosses into R. |
+| lowers | yes | one Acero plan **per cell window** (`.pe_accum_acero_windowed()`). The join stays in Acero; only its input is bounded. |
+| does not lower | either | rows must materialize, so `.pe_accum_chunked_dt()` collects a cell window at a time, applies `@post_ops`, and aggregates each window with `data.table`. |
 
-Neither shape builds a matrix. The chunked branch collects a triplet
-`data.table`, so the `storeRead()` dgc slice cap is not involved on this path
-at all.
+Windows for both windowed shapes come from the shared seam — `.pe_windows()` /
+`.pe_chunk_ranges()` in `R/utils-pestore-ops.R`, sized by
+`.pe_window_cells(bytes_per_nz = 48)` against a fraction of free RAM. Partials
+are folded as they arrive (`.pe_fold_partial()`), which is sound because the
+accumulators are additive and each window covers a disjoint cell set.
 
-The two shapes are bounded for different reasons, which matters when judging a
-new path. Acero is bounded **by construction** — it streams the hash aggregate
-to its own budget, whatever the store's size. The chunked branch is bounded
-**only because the window is sized correctly**, by `.recommend_chunk_size()`
-against free RAM; it genuinely materializes rows, so its safety is an argument
-about that arithmetic rather than a guarantee from the engine.
+No shape builds a matrix. The chunked branch collects a triplet `data.table`, so
+the `storeRead()` dgc slice cap is not involved on this path at all.
+
+The shapes are bounded for **different reasons**, which matters when judging a
+new path. Acero bounds the *ungrouped* aggregate by construction: the group key
+is small and the scan is never retained, whatever the store's size. That
+guarantee does **not** extend to the grouped form — the `by_cell` join in front
+of the aggregate emits `O(nonzeros)`, and Acero has no spill path, so the
+whole-store version fails rather than degrading. Both windowed shapes are
+therefore bounded only because the window is sized correctly, and their safety
+is an argument about that arithmetic rather than a guarantee from the engine.
+
+Why windowing rather than handing the join to a spilling engine, what it costs,
+and the reproducibility consequence of reassociating a float sum: see
+[Cell windows](chunking.html) for the long form and
+`adr/0011-cell-windowing-over-spill.md` for the decision.
 
 Both guarantees are properties of the framework, not of the data, and both are
 trivially bypassed:

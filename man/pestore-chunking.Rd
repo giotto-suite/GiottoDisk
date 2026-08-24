@@ -11,9 +11,41 @@ read it in \strong{cell windows}. This page is the reference for how a window is
 chosen, what the two options do, and what to expect of results. Individual
 verbs link here instead of restating it.
 
+A pass windows when an intermediate would otherwise scale with the data
+rather than with the answer — in practice, when a grouping puts a join in
+front of an otherwise small aggregate. Windowing bounds that join's input; it
+does not change the result, because the accumulators are additive over cells.
+
 \code{\link[=storeChunkInfo]{storeChunkInfo()}} reports the numbers for a given store on the current
-machine.
+machine. The long form — why not simply hand the join to a spilling query
+engine, what windows cost, and which passes window at all — is in the
+\emph{Cell windows} article, with the decision recorded in
+\code{adr/0011-cell-windowing-over-spill.md}.
 }
+\section{When windowing happens}{
+
+Automatically, and only when it is needed. The window is derived per read
+from the store's shape and a memory budget:
+
+\preformatted{  bytes per cell = features x density x bytes per stored value
+  budget         = free RAM x giottodisk.chunk_ram_frac   (default 0.25)
+  window         = min(cells, max(10000, budget / bytes per cell))
+}
+
+So a pass windows exactly when the whole view would not fit the budget. When
+it would, \code{window} comes back as the full cell count, the loop runs once, and
+the pass is the same single plan it always was — no branch, no mode.
+
+A worked case: 19,000 features at 6\% density is roughly 55 kB per cell, so
+500,000 cells is about 27 GB of payload against a ~1 GB budget on an 8 GB
+machine — around 27 windows. The same features over 40,000 cells fit in one.
+
+Two details worth knowing. The \code{10000} is a floor, not a guarantee: on very
+wide data a 10,000-cell window can exceed the budget, and no smaller window
+will be chosen. And the store must know its own density to size anything —
+see \emph{Why the window is not stored} for when that costs an extra pass.
+}
+
 \section{What a window is}{
 
 A window is a contiguous range of cells. A pass visits the windows in cell

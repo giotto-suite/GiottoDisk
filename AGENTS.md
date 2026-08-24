@@ -16,6 +16,7 @@ walkthroughs live in `vignettes/articles/`:
 | `vignettes/articles/gsource.Rmd` | `gDirSource` walkthrough (the directory-backed `gsource` — the only backend currently shipped): source verbs (`sourceWrite`/`sourceContains`/`sourceAdopt`/`sourcePrune`), snapshot lifecycle, deployment patterns. |
 | `vignettes/articles/roadmap.Rmd` | Public-facing direction. Headline items: `parquetMutableStore`, partition hardlink utility, `gSdataSource`. |
 | `vignettes/articles/parquetEdgeStore.Rmd` | Edge-store (graph) specifics. |
+| `vignettes/articles/chunking.Rmd` | Why bounded expression passes window the cell axis, when it happens, and why not a spilling engine. Long form behind `?chunking` and adr/0011. |
 | `adr/` | Architecture Decision Records: why a choice was made, what was rejected, what it costs. Dated and immutable — read when you are about to change a decision, not to learn current behaviour. |
 | `bench/` | Re-runnable regression benchmark (see *Benchmarks* below). Not part of the package — Rbuildignored, results gitignored. |
 | `NEWS.md` | User-visible changes per version. Add an entry when you change behaviour, an argument, or an export. |
