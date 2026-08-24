@@ -1,4 +1,4 @@
-# 0011. Bounded expression passes window the cell axis rather than spill
+# 0011. A decomposable statistic is computed by decomposition, not by a join over the whole store
 
 - **Status:** Accepted
 - **Date:** 2026-08-20
@@ -7,39 +7,52 @@
 
 ## Context
 
-A grouped expression statistic joins a per-cell group assignment onto the values
-before aggregating. The aggregate is `O(features × groups)`; the join in front of
-it emits `O(nonzeros)`. Acero has no spill path, so the whole-store form of that
-plan does not degrade — it fails. Measured on a 5,000 × 50,000 store at 3%
-density, 12 groups: 187 MB engine peak for the whole-store pass. At atlas scale
-(≈556M stored values) the same plan wanted roughly 21 GB against 8 GB of RAM.
+The grouped expression statistics (`sum`, `sumsq`, `nnz`, `sum_det`) are exactly
+additive over cells: the value for a set of cells is the sum of the values for
+any partition of it. `.pe_pool_moments()` already relied on this to build
+one-vs-rest groups without a second scan.
 
-Callers were working around it by batching the **feature** axis. That is the
-expensive workaround: stores are written cell-major, so a feature-side predicate
-prunes no row groups and every batch rescans in full. Cost is linear in batch
-count, not in features per batch — 20/10/5 batches measured at 1.77/0.57/0.31 s
-on the store above. One user run took 15 minutes for 76 batches.
+The plan they were being computed with does not use that. Joining a per-cell
+group assignment onto the values and then aggregating produces `O(nonzeros)`
+intermediate rows in order to return `O(features × groups)` — the intermediate
+exists because of the plan, not because of the problem. Nothing needs to see all
+those rows at once, and nothing downstream reads them.
 
-The statistics involved (`sum`, `sumsq`, `nnz`, `sum_det`) are exactly additive
-over cells. `.pe_pool_moments()` already relied on that to build one-vs-rest
-groups without a second scan.
+Acero's lack of a spill path is what made that visible rather than merely
+wasteful: the whole-store form does not degrade, it fails. Measured on a
+5,000 × 50,000 store at 3% density with 12 groups, 187 MB engine peak; at atlas
+scale (≈556M stored values) it wanted roughly 21 GB against 8 GB of RAM. The
+failure is the symptom. The mismatch between an additive statistic and a
+materializing plan is the cause.
+
+Callers had started batching the **feature** axis to get under the ceiling. That
+is a worse plan again: stores are written cell-major, so a feature-side predicate
+prunes no row groups and every batch rescans in full — cost linear in batch count
+rather than in features per batch (20/10/5 batches at 1.77/0.57/0.31 s on the
+store above; one real run took 15 minutes for 76 batches).
 
 ## Decision
 
-Bounded passes window the **cell** axis; the statistic accumulators combine the
-parts by addition. The window is derived per read from the store's shape against
-a fraction of free RAM (`.recommend_chunk_size()`); a budget that covers the view
-yields one window, which is the single plan that existed before. Windowing is not
-a mode and no option switches it on.
+Compute these statistics by decomposition: partition the **cell** axis, aggregate
+each part, add the parts. The window is derived per read from the store's shape
+against a fraction of free RAM (`.recommend_chunk_size()`); a budget that covers
+the view yields one part, which is the single plan that existed before. Windowing
+is not a mode and no option switches it on.
 
-Scope: windowing itself predates this decision — PCA and the `storeWrite()` bake
-already read a chunk at a time, because they materialize one by nature. What is
-decided here is that the **grouped statistic** windows too, rather than being
-handed to an engine that would spill. It is the only pass whose alternative was
-failure rather than a different chunk size.
+This is chosen as the *correct shape* for the computation, not as a way around an
+engine limitation. Partitioning does strictly less work than materializing: no
+`O(nonzeros)` frame is built, nothing is written out and read back, and a
+contiguous cell range prunes row groups a whole-store scan cannot. A spilling
+engine would make the materializing plan survivable; it would not make it right,
+which is why the arrival of one is not a reason to revisit this.
 
 Partials are folded as they arrive rather than collected and reduced at the end,
 so retained state is `O(groups)` rather than `O(groups × windows)`.
+
+Scope: windowing itself predates this decision — PCA and the `storeWrite()` bake
+already read a chunk at a time, because they materialize one by nature. What is
+decided here is that the grouped statistic is *computed differently*, not merely
+read in smaller pieces.
 
 ## Consequences
 
@@ -51,9 +64,16 @@ so retained state is `O(groups)` rather than `O(groups × windows)`.
   no streaming path as a result; `scranMarkersParam` refuses `test_type =
   "wilcox"` for this reason.
 - Windows cost. Roughly 45–65 ms per window of plan setup and fold on the
-  measured store: 0.27 s at one window, 1.60 s at twenty. This is an argument for
-  taking the largest window the budget allows — which is what the sizing returns
-  — not for a fixed window count.
+  measured store: 0.27 s at one window, 1.60 s at twenty. So where the whole-store
+  plan *fits*, it is the faster one (0.20 s), which is exactly why a budget that
+  covers the view yields a single window. Decomposition wins on work done, not on
+  constant factors, and the argument is for the largest window the budget allows —
+  not for a fixed window count.
+- The claim that this beats spilling is **reasoned, not measured**: no benchmark
+  against a spilling engine was run. What is measured is that it never builds the
+  intermediate at all (187 MB → 44 MB engine peak at 20 windows) and that a cell
+  range prunes row groups. Someone reversing this decision should measure that
+  comparison rather than inherit the assumption.
 - Reassociating a float sum is not bitwise invariant. Counts stay exact; float
   accumulators move by 2–3 ULP across window counts. Results are reproducible to
   tolerance, not bitwise, and tests must be written that way.
@@ -67,19 +87,23 @@ so retained state is `O(groups)` rather than `O(groups × windows)`.
 
 ## Alternatives considered
 
-- **Let Acero run the whole-store plan** — what existed. No spill, so it fails
-  rather than degrading. Rejected by the failure itself.
-- **DuckDB with spill enabled** — survives, but only by materializing the
-  intermediate, writing it out and reading it back. The statistic decomposes, so
-  nothing needs to exist at once; spill pays to store work that need not be
-  produced, and forgoes the row-group pruning a cell window gets. Also:
-  `@post_ops` has no SQL form, a spilling engine still needs the same memory
+- **Let Acero run the whole-store plan** — what existed. Rejected because it is
+  the wrong plan for an additive statistic, not because Acero lacks spill; the
+  missing spill only decided whether the waste showed up as a crash or as
+  latency.
+- **DuckDB with spill enabled** — the same wrong plan, made survivable. Spilling
+  materializes the `O(nonzeros)` intermediate, writes it out and reads it back, to
+  produce a result that never required it to exist; it also forgoes the row-group
+  pruning a contiguous cell range gets. Spill is the right tool for an aggregate
+  that genuinely cannot be decomposed — a rank, a median — and these are not
+  those. Three further practical limits: `@post_ops` has no SQL form, a spilling engine still needs the same memory
   limit the window is derived from, and `parquetExprStore` extends
   `queryableStore` rather than `parquetStore`, so `output = "duckdb"` is
   Arrow-backed today — the native scanner is not wired to this class and wiring
   it needs the axis predicates rendered as SQL.
-- **Batch the feature axis** — what callers were doing. Prunes nothing, cost
-  linear in batch count. Strictly worse than a cell window for the same bound.
+- **Batch the feature axis** — what callers were doing. Also a decomposition, but
+  along the axis that cannot prune: every batch rescans in full, so cost is linear
+  in batch count. Strictly worse than a cell window for the same bound.
 - **Window, but reduce partials at the end** — simpler, and one fewer fold per
   window. Retains `O(groups × windows)`, so tightening the window to save memory
   would cost memory. Rejected as backwards.

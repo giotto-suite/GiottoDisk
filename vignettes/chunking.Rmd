@@ -166,7 +166,9 @@ Ask for every feature at once and let the window do the bounding.
 ## Why not one engine pass
 
 The data is parquet. Both Arrow's engine and DuckDB will run a grouped aggregate
-over parquet unaided. Neither is a substitute here, and the reasons differ.
+over parquet unaided, and DuckDB will do it without running out of memory. The
+reason not to is not that they cannot — it is that the plan they would run is the
+wrong one for this statistic.
 
 ### Arrow (Acero)
 
@@ -174,9 +176,12 @@ Not a choice against Acero — Acero is what executes each window. It handles th
 joinless aggregates end to end, which is exactly why ungrouped statistics never
 window.
 
-What it cannot do is bound the grouping join, and it has no spill path. So the
-whole-store version of that plan does not degrade gracefully; it dies. Windowing
-is how Acero gets used on a pass it would otherwise fail.
+What it cannot do is bound the grouping join. Having no spill path, the
+whole-store version of that plan does not degrade gracefully — it dies. That
+failure is useful, though, because it is not really a memory problem: the plan
+builds one row per stored value to return one row per (feature, group), and
+nothing between those two ever needed to exist. Acero's strictness is what turned
+a wasteful plan into a visible one.
 
 ### DuckDB
 
@@ -192,8 +197,10 @@ attached. Windowing also prunes, as above: each window touches only its own row
 groups, where one pass reads everything.
 
 Put bluntly: spill is the right tool when an aggregate genuinely cannot be
-decomposed. A sum of squares can be. Reaching for spill here would be solving a
-problem the statistic does not have.
+decomposed — a rank, a median, anything needing every value in view at once. A
+sum of squares is not that. Spilling would make the materializing plan survive;
+it would not make it the right plan, which is also why a future engine that
+spills is not a reason to revisit this.
 
 Two further practical limits, for anyone tempted to wire it up:
 

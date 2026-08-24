@@ -84,7 +84,7 @@ least one.
 | [0008](0008-axis-predicate-shapes.md) | Arrow axis predicates never add a range "for good measure" | Accepted | 2026-06-12 |
 | [0009](0009-threshold-selects-population.md) | Detection thresholds gate counts, not magnitudes | Accepted | 2026-08-07 |
 | [0010](0010-gef-ingest-is-one-pass.md) | GEF ingest is a single pass: duplicates defer, coordinates ride out | Accepted | 2026-08-11 |
-| [0011](0011-cell-windowing-over-spill.md) | Bounded expression passes window the cell axis rather than spill | Accepted | 2026-08-20 |
+| [0011](0011-cell-windowing-over-spill.md) | A decomposable statistic is computed by decomposition, not by a whole-store join | Accepted | 2026-08-20 |
 
 ## Backfill candidates
 
