@@ -6,6 +6,7 @@
   expression matrix when the panel is absent.
 
 ## changes
+- `Giotto (>= 4.2.4)` in `Imports:`, for the `AteraReader` class `R/convenience-atera.R` subclasses. Below that the failure is an S4 inheritance error at load rather than a version message.
 - Grouped expression statistics — `analyzeData(x, featStatsParam, groups =)` and
   everything riding it, including scran marker detection — now window the scan
   by cells instead of running one arrow plan over the whole store. The aggregate
