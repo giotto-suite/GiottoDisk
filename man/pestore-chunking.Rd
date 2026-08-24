@@ -47,7 +47,7 @@ a pass "unchunked" — it removes the memory bound that keeps the pass from
 failing on a large store. Reach for it when you know the data fits.
 
 Which passes window at all is narrower than it looks. Grouped statistics
-(marker detection, anything passing \verb{groups =}) window because the grouping
+(marker detection, anything passing \code{groups}) window because the grouping
 puts a join in front of an otherwise small aggregate. Ungrouped statistics on
 a lowerable chain run as one streamed plan and do not window. PCA windows, but
 accumulates in its own order.
@@ -108,8 +108,4 @@ survive \code{snapshotSave()} / \code{snapshotLoad()}.
 
 \seealso{
 \code{\link[=storeChunkInfo]{storeChunkInfo()}} for the numbers on a given store.
-
-Other chunking:
-\code{\link[=storeChunkInfo]{storeChunkInfo()}}
 }
-\concept{chunking}

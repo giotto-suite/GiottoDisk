@@ -90,8 +90,4 @@ options(giottodisk.chunk_ram_frac = 0.10)   # halve every streaming window
 \seealso{
 \link{pestore-chunking} for what a window is, why the cell axis, and why
 windowing is not a mode you opt into.
-
-Other chunking:
-\code{\link{pestore-chunking}}
 }
-\concept{chunking}

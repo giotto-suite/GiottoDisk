@@ -171,7 +171,7 @@ NULL
 #' failing on a large store. Reach for it when you know the data fits.
 #'
 #' Which passes window at all is narrower than it looks. Grouped statistics
-#' (marker detection, anything passing `groups =`) window because the grouping
+#' (marker detection, anything passing `groups`) window because the grouping
 #' puts a join in front of an otherwise small aggregate. Ungrouped statistics on
 #' a lowerable chain run as one streamed plan and do not window. PCA windows, but
 #' accumulates in its own order.
@@ -224,7 +224,6 @@ NULL
 #' survive `snapshotSave()` / `snapshotLoad()`.
 #'
 #' @seealso [storeChunkInfo()] for the numbers on a given store.
-#' @family chunking
 NULL
 
 
@@ -255,7 +254,6 @@ NULL
 #'
 #' @seealso [pestore-chunking] for what a window is, why the cell axis, and why
 #'   windowing is not a mode you opt into.
-#' @family chunking
 #'
 #' @param x a `parquetExprStore` or `unionParquetExprStore`.
 #' @param ram_frac numeric. Fractions to tabulate. Defaults to a spread around

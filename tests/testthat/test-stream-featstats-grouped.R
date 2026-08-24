@@ -238,3 +238,34 @@ test_that("the data.table path folds exactly across cell windows", {
     ref <- .ref_grouped(log2(mat + 1), grp)
     expect_equal(one$mean_expr, ref$mean)
 })
+
+
+test_that("a union folds exactly when a window covers a whole substore", {
+    skip_if_not_installed("Giotto")
+    # `.pe_window_store()` skips `[` when the window is the whole substore, so
+    # a parent `@post_ops` payload is applied UNSLICED to one substore's frame.
+    # That is only correct because payloads are keyed by (uid, on-disk id) per
+    # adr/0003 — slicing is an optimisation, not a correctness requirement.
+    # Every other windowing test here is a single store, where this cannot arise.
+    m_a <- .grp_mat(n_genes = 14L, n_cells = 40L, density = 0.4, seed = 51L)
+    m_b <- .grp_mat(n_genes = 14L, n_cells = 26L, density = 0.4, seed = 52L)
+    colnames(m_a) <- paste0("a_", colnames(m_a))
+    colnames(m_b) <- paste0("b_", colnames(m_b))
+    u <- unionParquetExprStore(list(
+        storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), m_a),
+        storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), m_b)
+    ))
+    u <- .pe_push_op(u, list(type = "log", base = 2), phase = "post")
+
+    m_u <- cbind(m_a, m_b)
+    grp <- stats::setNames(rep(c("a", "b", "c"), length.out = ncol(m_u)),
+        colnames(m_u))
+
+    # One window per substore (each covering it whole), then several per
+    # substore. Both must agree with each other and with the in-memory value.
+    withr::local_options(list(giottodisk.chunk_size = 10000L))
+    whole <- .fsg(u, grp, stats = c("sum", "nnz"))
+    withr::local_options(list(giottodisk.chunk_size = 9L))
+    expect_equal(.fsg(u, grp, stats = c("sum", "nnz")), whole)
+    expect_equal(whole$mean_expr, .ref_grouped(log2(m_u + 1), grp)$mean)
+})
