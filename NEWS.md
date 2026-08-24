@@ -1,7 +1,27 @@
 # GiottoDisk 0.0.0.2
 
-## internal
-- Cell-window streaming has one seam: `.pe_windows()` (substores x their cell
+## bug fixes
+- `createGiottoXeniumObject(backend =)` no longer errors on Xenium-format
+  directories that ship no panel json. Feature metadata is generated from the
+  expression matrix when the panel is absent.
+
+## changes
+- Grouped expression statistics — `analyzeData(x, featStatsParam, groups =)` and
+  everything riding it, including scran marker detection — now window the scan
+  by cells instead of running one arrow plan over the whole store. The aggregate
+  is O(groups) either way, but a grouping puts a join in front of it whose output
+  is O(nonzeros), and Acero does not spill; at atlas scale that was the failure.
+  Windows are exact rather than approximate because the accumulators are
+  additive, they are folded as they arrive so the retained state does not grow
+  with window count, and a contiguous cell range prunes row groups (the store is
+  sorted cell-major). Sized by `.recommend_chunk_size()` against free RAM, so a
+  store the budget already covers is one window and behaves exactly as before.
+  Ungrouped statistics are unchanged. Callers batching the **feature** axis to
+  work around the old memory cost should stop: gene ids are not the sort key, so
+  every batch rescanned the store in full and the cost was linear in batch
+  count, not in genes per batch.
+- Internal refactor, no user-visible behaviour change: cell-window
+  streaming now has one seam — `.pe_windows()` (substores x their cell
   ranges), `.pe_chunk_ranges()` (a sub-range of one substore, for the parallel
   PCA band workers) and `.pe_window_store()`. The walk had been hand-rolled in
   nine places — both statistic accumulators, the `storeWrite` bake, four PCA
@@ -25,22 +45,6 @@
   (measured 1.0-1.2 ULP, max relative 2.7e-16). Counts are unaffected. Results
   are equal to tolerance, not bitwise, and comparisons across different window
   counts should be written that way.
-
-## changes
-- Grouped expression statistics — `analyzeData(x, featStatsParam, groups =)` and
-  everything riding it, including scran marker detection — now window the scan
-  by cells instead of running one arrow plan over the whole store. The aggregate
-  is O(groups) either way, but a grouping puts a join in front of it whose output
-  is O(nonzeros), and Acero does not spill; at atlas scale that was the failure.
-  Windows are exact rather than approximate because the accumulators are
-  additive, they are folded as they arrive so the retained state does not grow
-  with window count, and a contiguous cell range prunes row groups (the store is
-  sorted cell-major). Sized by `.recommend_chunk_size()` against free RAM, so a
-  store the budget already covers is one window and behaves exactly as before.
-  Ungrouped statistics are unchanged. Callers batching the **feature** axis to
-  work around the old memory cost should stop: gene ids are not the sort key, so
-  every batch rescanned the store in full and the cost was linear in batch
-  count, not in genes per batch.
 - `analyzeData(x, featStatsParam, groups =)` resolves a grouping by `cell_ID`
   when it is named or factored by one. A per-cell vector is a payload, and
   adr/0003 keys those by on-disk id: keyed by view position it reads the wrong

@@ -292,12 +292,18 @@ setMethod(
             }
 
             # feat metadata (in-mem; inherited closure)
-            fx <- funs$load_featmeta(
-                path = gene_panel_json_path,
-                gene_ids = "symbols",
-                verbose = verbose
-            )
-            g <- GiottoClass::setGiotto(g, fx, verbose = FALSE)
+            # optional: some Xenium-format exports ship no panel json, and
+            # feature metadata is generated from the expression matrix when
+            # it is absent. Mirrors the guard in Giotto's create path.
+            if (length(gene_panel_json_path) > 0L &&
+                nzchar(gene_panel_json_path[[1L]])) {
+                fx <- funs$load_featmeta(
+                    path = gene_panel_json_path,
+                    gene_ids = "symbols",
+                    verbose = verbose
+                )
+                g <- GiottoClass::setGiotto(g, fx, verbose = FALSE)
+            }
 
             # cell metadata (in-mem; inherited closure)
             if (load_cellmeta) {
@@ -405,7 +411,17 @@ setMethod(
             }
 
             # centroids are attached as spatlocs at setGiotto time
-            # via `centroids_to_spatlocs = TRUE` (see polys block above)
+            # via `centroids_to_spatlocs = TRUE` (see polys block above).
+            # With no polygons loaded there are none, so fall back to the
+            # centroids recorded in the cell metadata file. Coordinates stay
+            # in-memory here, as cellmeta and featmeta already do.
+            if (length(GiottoClass::list_spatial_info_names(g)) == 0L) {
+                sl <- funs$load_spatlocs(verbose = verbose)
+                if (!is.null(sl)) {
+                    g <- GiottoClass::setGiotto(g, sl, verbose = FALSE)
+                }
+            }
+
             GiottoUtils::vmsg(.v = verbose, "done")
 
             return(g)

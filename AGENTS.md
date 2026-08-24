@@ -115,6 +115,10 @@ R/
   convenience-cosmx.R    # CosMx import convenience
   convenience-stereoseq.R # Stereo-seq import convenience
   convenience-xenium.R   # Xenium import convenience
+  convenience-atera.R    # Atera import convenience (subclasses the
+                         #   Xenium disk reader; layouts are identical
+                         #   today, so it overrides nothing but the
+                         #   platform label)
   utils.R                # .dplyr_nrow, .dump_tempfile, .move_path, etc.
   utils-arrow.R          # .arrow_sample_max_rows, .dplyr_ext, .dplyr_crop, etc.
   utils-spatial.R        # affine half-plane helpers, AABB, etc.
