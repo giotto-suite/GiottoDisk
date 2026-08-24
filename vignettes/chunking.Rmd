@@ -35,8 +35,8 @@ and carries the two options. The decision is recorded in
 ## Which passes window, and why
 
 Several passes window, and they do it for two different reasons — worth
-separating, because only one of them is about rescuing a plan that would
-otherwise fail.
+separating, because in one case the window only chooses a chunk size, and in the
+other it is how the statistic is computed at all.
 
 Traced with the window pinned small enough to force several:
 
@@ -56,10 +56,11 @@ matrix, or a collected triplet frame. They were always going to read in pieces,
 and the window only decides how big a piece. Nothing here rescues them; it sizes
 them.
 
-**The grouped statistic is the one exception**, and the only case where the
-alternative is not "slower" but "fails". It has a perfectly good streaming plan;
-what it does not have is a bound on the join in front of the aggregate. That is
-what the rest of this article is about.
+**The grouped statistic is different in kind.** It is not a materializing pass
+that needed sizing — it is an additive statistic that was being computed by a
+plan which materializes, and the window is what lets it be computed by addition
+instead. That is also why it is the only one whose previous form did not merely
+run slowly; it failed. The rest of this article is about that case.
 
 An ungrouped statistic on a lowerable chain does not window at all — one
 streamed plan, the scan never retained, bounded by the engine however large the
