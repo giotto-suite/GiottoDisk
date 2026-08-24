@@ -84,14 +84,14 @@ so retained state is `O(groups)` rather than `O(groups × windows)`.
 
 ## References
 
-- `vignettes/articles/chunking.Rmd` — the long-form argument, with the
-  measurements and the worked sizing.
+- `vignettes/chunking.Rmd` (`vignette("chunking")`) — the long-form argument,
+  with the measurements and the worked sizing.
 - `R/utils-pestore-ops.R` — `.pe_windows()`, `.pe_chunk_ranges()`,
   `.pe_window_store()`: the seam every windowed pass attaches to.
 - `R/methods-analyzeData.R` — `.pe_accum_raw()` and the two windowed
   accumulators; `.pe_fold_partial()` carries the reassociation note.
-- `R/chunk-sizing.R` — `.recommend_chunk_size()`, `storeChunkInfo()`, and the
-  `?chunking` topic.
+- `R/chunk-sizing.R` — `.recommend_chunk_size()` and `storeChunkInfo()`, which
+  carries the two options.
 - adr/0003 (payloads keyed by on-disk id — why a window needs no payload
   slicing), adr/0008 (axis predicate shapes — why a cell range prunes and a
   feature predicate does not).

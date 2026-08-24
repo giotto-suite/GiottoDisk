@@ -6,7 +6,7 @@
   expression matrix when the panel is absent.
 
 ## changes
-- New article, *Cell windows* (`vignettes/articles/chunking.Rmd`): why bounded expression passes window the cell axis, when it happens, and why the grouping join is not handed to a spilling engine. Decision recorded in adr/0011. `?chunking` keeps the knobs.
+- New vignette, *Cell windows* (`vignette("chunking")`): why bounded expression passes window the cell axis, when it happens, and why the grouping join is not handed to a spilling engine. The package's first installed vignette, so `DESCRIPTION` gains `VignetteBuilder: knitr`. Decision recorded in adr/0011; `storeChunkInfo()` carries the options.
 - `Giotto (>= 4.2.4)` in `Imports:`, for the `AteraReader` class `R/convenience-atera.R` subclasses. Below that the failure is an S4 inheritance error at load rather than a version message.
 - Grouped expression statistics — `analyzeData(x, featStatsParam, groups =)` and
   everything riding it, including scran marker detection — now window the scan

@@ -48,6 +48,7 @@ alternative here — a rank test needs every gene and every cell.
 }
 \seealso{
 \code{\link[Giotto:markersParam]{Giotto::markersParam()}}, \code{\link[Giotto:findScranMarkers]{Giotto::findScranMarkers()}}.
-\link{pestore-chunking} for how the statistic pass is windowed and which
-options bound it — this is a grouped pass, so it always windows.
+\code{\link[=storeChunkInfo]{storeChunkInfo()}} for the memory bound on the statistic pass — this is a
+grouped pass, so it always windows;
+\code{vignette("chunking", package = "GiottoDisk")} covers why.
 }

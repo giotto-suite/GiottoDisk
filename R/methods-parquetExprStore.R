@@ -114,7 +114,7 @@ NULL
 #'   These are **not** a chunk size. They guard a single materialization
 #'   against accidentally pulling the whole store into memory; they do not
 #'   size or enable the streaming windows that bounded passes use. For those
-#'   see [pestore-chunking].
+#'   see [storeChunkInfo()].
 #' @section Index coordinates by output mode:
 #' `parquetExprStore` / `unionParquetExprStore` outputs differ on *two*
 #' independent axes, and switching `output` changes both.

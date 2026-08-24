@@ -160,7 +160,7 @@ guard entirely).
 These are \strong{not} a chunk size. They guard a single materialization
 against accidentally pulling the whole store into memory; they do not
 size or enable the streaming windows that bounded passes use. For those
-see \link{pestore-chunking}.}
+see \code{\link[=storeChunkInfo]{storeChunkInfo()}}.}
 
 \item{fields}{\code{character} (optional) specific fields/columns to read}
 

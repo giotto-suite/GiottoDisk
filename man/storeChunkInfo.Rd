@@ -56,10 +56,13 @@ that need to force several windows. Also the fallback value when the
 derivation cannot run.}
 }
 
-Neither is a performance dial. A smaller window lowers peak memory and adds
+Neither switches streaming on or off, and neither is a performance dial.
+Windowing is not a mode: the loop always runs, and a budget covering the whole
+view yields a single window. A smaller window lowers peak memory and adds
 per-window overhead; a larger one does the reverse. The derived value is
 already the largest window the budget allows, which is the fastest one that
-stays bounded.
+stays bounded — so pinning \code{giottodisk.chunk_size} large does not make a pass
+"unchunked", it removes the bound that keeps it from failing on a large store.
 }
 
 \section{Reproducibility}{
@@ -72,13 +75,14 @@ reassociates the addition, so a float statistic can differ by a few units in
 the last place between runs with different window counts (measured 2-3 ULP).
 Results are reproducible to tolerance, not bitwise: compare them with a
 tolerance rather than hashing them or snapshotting exact digits.
+}
 
-This is invisible to analysis — it is 15 significant figures in — with one
-thing to keep in view: a \strong{discrete} choice taken on a float statistic, such
-as a top-N feature selection, can in principle land differently if two
-candidates are separated by less than that. Ties that close are not
-meaningful distinctions, but they can move a downstream result that is keyed
-to the selection.
+\section{Further reading}{
+
+Why bounded passes window the cell axis rather than hand the work to a
+spilling query engine, when windowing kicks in, and which passes window at
+all: \code{vignette("chunking", package = "GiottoDisk")}. The decision is recorded
+in \code{adr/0011-cell-windowing-over-spill.md}.
 }
 
 \examples{
@@ -86,8 +90,4 @@ to the selection.
 storeChunkInfo(pe)
 options(giottodisk.chunk_ram_frac = 0.10)   # halve every streaming window
 }
-}
-\seealso{
-\link{pestore-chunking} for what a window is, why the cell axis, and why
-windowing is not a mode you opt into.
 }

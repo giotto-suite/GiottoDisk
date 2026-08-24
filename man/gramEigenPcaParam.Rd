@@ -53,6 +53,6 @@ the condition number; when the predicted rel-err on d_k exceeds
 # res <- reduceData(pes, p)
 }
 \seealso{
-\link{pestore-chunking} for how the passes are windowed and which
+\code{\link[=storeChunkInfo]{storeChunkInfo()}} for how the passes are windowed and which
 options bound their memory.
 }

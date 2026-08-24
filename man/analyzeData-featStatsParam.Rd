@@ -37,6 +37,7 @@ percent-detected is the input to a dot plot, and the group means are a
 pseudobulk matrix.
 
 Passing \code{groups} also changes how the pass runs: the grouping is windowed
-over cells, where the ungrouped form streams as a single plan. See
-\link{pestore-chunking}.
+over cells, where the ungrouped form streams as a single plan — see
+\code{\link[=storeChunkInfo]{storeChunkInfo()}} for the bound, and
+\code{vignette("chunking", package = "GiottoDisk")} for why the two differ.
 }

@@ -15,14 +15,22 @@ knitr::opts_chunk$set(
 )
 ```
 
-Some passes over a `parquetExprStore` read it in **cell windows** rather than in
-one go. This article is the long form: what forces that, when it happens, why
-the answer is still exact, and why the job is not simply handed to a query
-engine — which is the reasonable first question, and the one with the least
+Passes over a `parquetExprStore` that cannot hold the whole store in memory read
+it in **cell windows**.
+
+A pass windows when an intermediate would otherwise scale with the data rather
+than with the answer — in practice, when a grouping puts a join in front of an
+otherwise small aggregate. Windowing bounds that join's input; it does not change
+the result, because the accumulators are additive over cells.
+
+That is the whole idea. The rest of this article is why it has to be the cell
+axis, when it kicks in, what it costs, and why the work is not simply handed to a
+query engine — which is the reasonable first question and the one with the least
 obvious answer.
 
-For the knobs alone, `?chunking` is the short version. For the decision record,
-see `adr/0011-cell-windowing-over-spill.md`.
+`storeChunkInfo()` reports the numbers for a given store on the current machine,
+and carries the two options. The decision is recorded in
+`adr/0011-cell-windowing-over-spill.md`.
 
 ## Most passes do not need this
 
@@ -219,6 +227,18 @@ the largest window the budget allows, which is the fastest one that stays
 bounded. Measured on the store above, per-window overhead is roughly 45–65 ms:
 one window 0.27 s, twenty windows 1.60 s, fifty windows 2.29 s.
 
+## Why the window is not stored
+
+The window is derived on every read rather than recorded on the object, because
+it depends on free RAM — a property of the machine doing the reading, not of the
+data. Baking one in at write time would make it stale the moment the store moved
+to a different machine.
+
+What *is* machine-independent is the payload size per stored value, and that is
+what the `@stats` marginals cache. Sizing then costs arithmetic rather than a
+scan — provided the marginals are there, which is the case noted under *When it
+happens*.
+
 ## Reproducibility
 
 The window count comes from free RAM **at call time**, so it is a property of
@@ -263,7 +283,7 @@ reconciliation.
 
 ## See also
 
-- `?chunking` — the knobs, at the point of use.
-- `?storeChunkInfo` — the numbers for a given store on this machine.
+- `?storeChunkInfo` — the numbers for a given store on this machine, and the
+  two options that steer the window.
 - `adr/0011-cell-windowing-over-spill.md` — the decision record.
 - `design.Rmd`, *Expression Statistics* — where this sits in the accumulator.

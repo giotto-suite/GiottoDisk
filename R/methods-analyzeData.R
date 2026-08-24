@@ -39,8 +39,9 @@ setMethod("analyzeData",
 #' pseudobulk matrix.
 #'
 #' Passing `groups` also changes how the pass runs: the grouping is windowed
-#' over cells, where the ungrouped form streams as a single plan. See
-#' [pestore-chunking].
+#' over cells, where the ungrouped form streams as a single plan — see
+#' [storeChunkInfo()] for the bound, and
+#' `vignette("chunking", package = "GiottoDisk")` for why the two differ.
 #' @param x a `parquetExprBase` store.
 #' @param param a [Giotto::featStatsParam-class].
 #' @param groups optional vector of group assignments, one per cell of the
