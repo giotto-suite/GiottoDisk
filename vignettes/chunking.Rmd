@@ -32,23 +32,43 @@ obvious answer.
 and carries the two options. The decision is recorded in
 `adr/0011-cell-windowing-over-spill.md`.
 
-## Most passes do not need this
+## Which passes window, and why
 
-An ungrouped statistic — total counts per feature, detection per cell — is one
-streamed plan. The scan is never retained, the result is one row per feature,
-and Arrow's engine holds a bounded amount however large the store is. Those
-passes do not window at all, and nothing here applies to them.
+Several passes window, and they do it for two different reasons — worth
+separating, because only one of them is about rescuing a plan that would
+otherwise fail.
 
-That is worth stating first because it bounds the topic. Tracing the fold
-through a normalize → statistics → PCA sequence, with the window pinned small
-enough to force many windows:
+Traced with the window pinned small enough to force several:
 
-| pass | windows used |
-|---|---|
-| `processData(normParam("library"))` | none |
-| `analyzeData(featStatsParam)`, ungrouped | none |
-| `analyzeData(featStatsParam, groups = )` | 13 |
-| `reduceData(pcaParam("random"))` | none for the fold; see below |
+| pass | windows | folds | why it windows |
+|---|---|---|---|
+| `processData(normParam("library"))` | no | – | records an op; nothing is scanned |
+| `analyzeData(featStatsParam)`, ungrouped, lowerable chain | no | – | one streamed plan, bounded by the engine |
+| `analyzeData(featStatsParam, groups = )` | yes | yes | **to bound the grouping join** |
+| `analyzeData(featStatsParam)` with `@post_ops` | yes | yes | the chain must run on materialized rows |
+| `reduceData(pcaParam("random"))` | yes | no | reads a sparse chunk per window |
+| `reduceData(gramEigenPcaParam())` | yes | no | same, plus one band per worker |
+| `storeWrite()` bake | yes | no | builds and writes a chunk at a time |
+
+**Materializing passes** — PCA, the `storeWrite()` bake, and the `@post_ops`
+accumulator — window because they build something per chunk by nature: a sparse
+matrix, or a collected triplet frame. They were always going to read in pieces,
+and the window only decides how big a piece. Nothing here rescues them; it sizes
+them.
+
+**The grouped statistic is the one exception**, and the only case where the
+alternative is not "slower" but "fails". It has a perfectly good streaming plan;
+what it does not have is a bound on the join in front of the aggregate. That is
+what the rest of this article is about.
+
+An ungrouped statistic on a lowerable chain does not window at all — one
+streamed plan, the scan never retained, bounded by the engine however large the
+store is.
+
+Folding is a separate axis. Only the two accumulator paths fold, because only
+they produce partials that combine by addition. PCA and the bake write each
+window into a slice nothing else touches, so there is nothing to combine and no
+reassociation to worry about.
 
 ## What forces a window: the grouping join
 

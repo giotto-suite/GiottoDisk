@@ -26,11 +26,17 @@ groups without a second scan.
 
 ## Decision
 
-Bounded passes window the **cell** axis and combine the parts by addition. The
-window is derived per read from the store's shape against a fraction of free RAM
-(`.recommend_chunk_size()`); a budget that covers the view yields one window,
-which is the single plan that existed before. Windowing is not a mode and no
-option switches it on.
+Bounded passes window the **cell** axis; the statistic accumulators combine the
+parts by addition. The window is derived per read from the store's shape against
+a fraction of free RAM (`.recommend_chunk_size()`); a budget that covers the view
+yields one window, which is the single plan that existed before. Windowing is not
+a mode and no option switches it on.
+
+Scope: windowing itself predates this decision — PCA and the `storeWrite()` bake
+already read a chunk at a time, because they materialize one by nature. What is
+decided here is that the **grouped statistic** windows too, rather than being
+handed to an engine that would spill. It is the only pass whose alternative was
+failure rather than a different chunk size.
 
 Partials are folded as they arrive rather than collected and reduced at the end,
 so retained state is `O(groups)` rather than `O(groups × windows)`.

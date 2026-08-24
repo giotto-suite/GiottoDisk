@@ -212,14 +212,21 @@ grouped statistics across window counts (`.pe_fold_partial`). So a windowed
 float statistic is **tolerance-reproducible, not bitwise-reproducible**, even on
 one machine. Never build a bitwise hash or snapshot test on one.
 
-Which verbs this reaches is narrower than it looks, and worth preserving. Only
-passes that actually window are exposed, and today that is the **grouped**
-statistics alone (`by_cell`, i.e. markers) — verified by tracing
-`.pe_fold_partial` through a normalize → stats → PCA sequence: 0 folds for
-normalization, 0 for ungrouped statistics, 0 for PCA. Two things hold that line:
-PCA does its own accumulation in an order the seam does not touch, and
-normalization lowers to `@ops`, which keeps the ungrouped accumulator on the
-single-plan Acero branch. Markers are also downstream of clustering, so nothing
+Windowing and folding are **not** the same set, and conflating them is the easy
+mistake. Several passes window — both PCA flavours, the `storeWrite()` bake, and
+both accumulator paths. Only the two accumulator paths *fold*, and only folding
+reassociates, so only folding is exposed to the ULP note above. PCA and the bake
+write each window into a slice nothing else touches, so they have no partials to
+combine and stay bitwise reproducible.
+
+Of the two that fold, one is `by_cell` (grouped statistics) and the other is any
+statistic whose chain landed on `@post_ops`. In the current pipeline only the
+first arises, because normalization lowers to `@ops` — which is what keeps
+ungrouped statistics, including the variance feature selection ranks on, on the
+single-plan branch. Traced with the window pinned small: 0 windows for
+normalization and for ungrouped statistics on a lowerable chain; windows for
+grouped statistics, for ungrouped-with-`@post_ops`, for both PCA paths and for
+the bake. Grouped statistics are also downstream of clustering, so nothing
 propagates into kNN / Leiden / UMAP.
 
 That line moves if an op ever lands on `@post_ops` (the stubbed `add`, or a
