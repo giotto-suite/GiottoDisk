@@ -1,0 +1,744 @@
+# Architecture and Design
+
+This article describes the internal architecture of GiottoDisk for
+contributors and advanced users. It covers the class hierarchy, storage
+schema, lazy operation system, and the reasoning behind key design
+decisions.
+
+## Class Hierarchy
+
+GiottoDisk uses an S4 class hierarchy to support different storage
+backends through shared dispatch.
+
+    dataStore (VIRTUAL)
+    └── fileStore                         # path + read_fun + uid + params
+        └── queryableStore                # dplyr-queryable fileStore
+            └── parquetStore              # extends c("queryableStore", "parquetBase")
+                └── parquetGeomStore      # extends c("parquetStore", "parquetGeomBase")
+                    └── parquetGeomTileStore  # adds @tiles (tilePlan) + @tile_filter (integer) slots
+
+    parquetBase (VIRTUAL)                 # @fields, @ops — shared by parquet + union
+    parquetGeomBase (VIRTUAL)             # @window, @crop, @geomtype
+
+    unionParquetStore                     # extends "parquetBase" — multi-store union
+    └── unionParquetGeomStore             # extends c("unionParquetStore", "parquetGeomBase")
+
+`parquetBase` is a VIRTUAL class shared between the single-file
+(`parquetStore`) and multi-file union (`unionParquetStore`) branches.
+Methods defined on `parquetBase` — including `colnames`, `[,j]` column
+selection, `subset`, `nrow`, `unique`, and the lazy ops system — apply
+to both without duplication.
+
+Importantly, `parquetBase` methods must be self-contained and never call
+`callNextMethod()`, because `parquetStore` and `unionParquetStore` have
+incompatible inheritance chains above `parquetBase`. `storeRead` is not
+defined on `parquetBase` for this reason.
+
+## Special Column Schema
+
+Every parquet store maintains a set of internal columns that are hidden
+from [`colnames()`](https://rdrr.io/r/base/colnames.html) but available
+in queries. These are called *special columns* and are enforced via
+[`specialCols()`](https://giotto-suite.github.io/GiottoDisk/reference/specialCols.md).
+
+| Column | Stores | Purpose |
+|----|----|----|
+| `row_index` | all parquet | Intrinsic row ordering within a source |
+| `source_id` | all parquet | Stable sort key across rbind/union — hive partition (`source_id=<uid>/`) |
+| `x_index` | geom stores | Float centroid x coordinate for fast spatial filtering |
+| `y_index` | geom stores | Float centroid y coordinate for fast spatial filtering |
+| `geom` | geom stores | WKB geometry column (GeoParquet spec) |
+| `tile_index` | geom stores | Tile membership — hive partition (`tile_index=<n>/`) |
+
+Special cols are stripped from materialized outputs by default
+(`omit_internals = TRUE` strips `row_index`/`source_id`). The others are
+dropped via `dropcols` when they were injected lazily but not requested
+by the user.
+
+Flat `parquetGeomStore` writes use `tile_index=000` so joins always work
+on a uniform `(tile_index, row_index)` key regardless of whether a tiled
+or flat store is involved.
+
+## Lazy Operation System
+
+Operations on stores are recorded as a list of steps in the `@ops` slot
+and applied together at
+[`storeRead()`](https://giotto-suite.github.io/GiottoDisk/reference/storeRead.md)
+time. This means multiple operations are collapsed into a single Arrow
+query — only one parquet scan happens regardless of how many ops are
+chained.
+
+``` r
+
+x |>
+    subset(cell_type == "neuron") |>
+    unique() |>
+    head(100) |>
+    storeRead(output = "tibble")   # single scan
+```
+
+Supported op types:
+
+| Type | Method | Notes |
+|----|----|----|
+| `filter` | [`subset()`](https://giotto-suite.github.io/GiottoDisk/reference/subset.md) | NSE via [`rlang::enquo()`](https://rlang.r-lib.org/reference/enquo.html) |
+| `head` | [`head()`](https://rdrr.io/r/utils/head.html) |  |
+| `tail` | [`tail()`](https://rdrr.io/r/utils/head.html) |  |
+| `sample` | [`rowSample()`](https://giotto-suite.github.io/GiottoDisk/reference/rowSample.md) |  |
+| `distinct` | [`unique()`](https://rdrr.io/r/base/unique.html) | Deduplicates by user columns, ignores special cols |
+| `join` | `x[y, on = ...]` | Inner or left join against another store |
+
+`arrange` is intentionally deferred to `.pstore_to_tibble()` rather than
+recorded as an op. Applying arrange inside Arrow would break `sample`
+and `COUNT(*)` operations.
+
+### Spatial Operations are Not Ops
+
+`@crop` and `@window` on `parquetGeomBase` are not recorded in `@ops`.
+They are stored in dedicated slots and applied as upstream callbacks
+before the op chain runs:
+
+- `@crop`: permanent composable spatial subset (numeric(4): xmin, xmax,
+  ymin, ymax)
+- `@window`: temporary spatial filter (same format; `numeric(0)` =
+  unset)
+
+`storeRead` uses `.pstore_active_extent()` which gives window priority
+over crop.
+
+### Spatial Transforms are Post-Ops
+
+Affine transforms are recorded in `@post_ops` as a single `"transform"`
+entry. They have no Arrow equivalent and are applied to the materialized
+result by `.apply_post_ops()`. `output = "query"` is unaffected.
+
+All spatial transform verbs (`spin`, `rescale`, `shear`, `spatShift`,
+`t`, `flip`, `affine`) collapse their result into a single `affine2d`
+entry — no matter how many are chained, only one transform is stored at
+any time.
+
+**Back-projection for crop/window:** when a transform is pending,
+[`crop()`](https://giotto-suite.github.io/GiottoDisk/reference/crop.md)
+and `window<-` back-project the query extent through the inverse
+transform into intrinsic (on-disk) space before recording
+`@crop`/`@window`. For rotation/shear, an exact half-plane filter is
+also injected into `@ops` as an Arrow-native inequality filter on
+`x_index`/`y_index`. Axis-aligned transforms need only the AABB.
+
+### Tile Partition Pruning (`parquetGeomTileStore`)
+
+`parquetGeomTileStore` adds two slots beyond `parquetGeomStore`:
+
+- **`@tiles`** (`tilePlan`) — the full tile plan used at write time;
+  tile `i` maps to hive directory `tile_index=i/`.
+- **`@tile_filter`** (`integer`) — the set of tile indices that overlap
+  the current `@crop`. Empty (`integer(0)`) when no crop is set.
+
+`crop(parquetGeomTileStore, y)` first calls the parent
+`crop(parquetGeomBase, y)`, which handles affine back-projection and
+composes `@crop` in intrinsic space. It then selects the query region
+for tile intersection:
+
+- **No transform pending**: `@crop` is already the exact intrinsic-space
+  extent — `tilework::intersect(x@tiles, terra::ext(x@crop))` is used
+  directly.
+- **Transform pending**: `@crop` holds only the AABB of the
+  back-projected parallelogram, which would be over-inclusive at the
+  tile level. Instead, the original query `y` is back-projected through
+  the inverse affine to recover the exact parallelogram (`SpatVector`),
+  and [`tilework::intersect`](https://rdrr.io/r/base/sets.html) uses
+  AABB pre-cull followed by exact
+  [`terra::relate()`](https://rspatial.github.io/terra/reference/relate.html)
+  to find only tiles with genuine overlap.
+
+``` r
+
+aff <- .pgeom_pending_transform(x)
+query_region <- if (!is.null(aff)) {
+    affine(terra::as.polygons(terra::ext(y)), aff, inv = TRUE)
+} else {
+    terra::ext(x@crop)
+}
+tile_sel <- tilework::intersect(x@tiles, query_region)
+x@tile_filter <- as.integer(tile_sel$tile)
+```
+
+`@tile_filter` is always a coarse hint — tiles it selects may still have
+rows outside the crop region, which the AABB filter on
+`x_index`/`y_index` (and the half-plane op for rotated crops) removes at
+the row level.
+
+At `storeRead` time, `@tile_filter` is applied as an Arrow
+hive-partition pre-filter — directories for excluded tiles are never
+opened. When `tile_idx` is passed explicitly to `storeRead`, it takes
+precedence over `@tile_filter`. A second
+[`crop()`](https://giotto-suite.github.io/GiottoDisk/reference/crop.md)
+call overwrites `@tile_filter` (not accumulates), since the parent
+already composes `@crop` by intersecting with the existing value.
+
+#### `getBoundedData` parameter routing
+
+`getBoundedData(parquetGeomStore, SpatExtent)` promotes `sdimx`/`sdimy`
+to explicit parameters with defaults of `"x_index"`/`"y_index"` before
+forwarding to the `queryableStore` method. This prevents a
+duplicate-argument error when callers (such as `storeWrite`) already
+pass these params via `get_params_x`.
+
+## Expression Statistics (the accumulator)
+
+Every statistic taken over the values in a `parquetExprBase` goes
+through one function, `.pe_accum_raw()` in `R/methods-analyzeData.R`. QC
+stats, HVF selection, filtering, normalization scale factors and marker
+moments are all the same grouped aggregate over the triplet stream,
+differing only in which accumulators they ask for.
+
+**Reach for it whenever a statistic is a sum, a count, or anything
+derivable from them.** Writing a bespoke
+[`storeRead()`](https://giotto-suite.github.io/GiottoDisk/reference/storeRead.md) +
+`summarise()`, or materializing a matrix to take a mean, duplicates a
+path that already handles unions, chunking, threshold semantics and
+identifier remapping.
+
+### The accumulators
+
+Four, selected with `stats` (`match.arg(several.ok = TRUE)`), so asking
+for fewer genuinely scans for less:
+
+| accumulator | value |
+|----|----|
+| `sum` | `sum(value)` over every stored entry |
+| `sumsq` | `sum(value^2)`, which with `sum` and a count gives the variance |
+| `nnz` | count of entries passing the detection threshold |
+| `sum_det` | `sum(value)` over the detected entries only |
+
+`axis` picks the margin (`"feat"` or `"cell"`). Absent entries
+contribute nothing, so these plus the *full* population count give
+exactly the dense answer — which is why the population count must come
+from the caller, never from the aggregate.
+
+Per adr/0009 the threshold gates counts, not magnitudes: it reaches
+`nnz` and `sum_det` and never touches `sum` or `sumsq`.
+
+### Grouping
+
+`by_cell` adds a second key: a table of on-disk `row_id` to integer
+group code (plus `source_id` on a union), joined into the plan *before*
+the aggregate, so it narrows the scan as well as grouping it — cells
+absent from the table never reach the hash aggregate, which is how
+unassigned cells are excluded.
+
+Group codes are integers, never label strings. Aggregating or joining
+strings in Acero at scale leaves dangling `utf8_view` buffers; labels
+are re-attached after collect.
+
+### Two execution shapes
+
+| `@post_ops` | shape |
+|----|----|
+| empty | one Acero plan over the whole store, unions included. Only the grouped result crosses into R. |
+| non-empty | the chain must run on materialized rows, so `.pe_accum_chunked_dt()` reads a cell window at a time, applies `@post_ops`, and aggregates each window with `data.table`. |
+
+Windows come from `.pe_window_cells(bytes_per_nz = 48)` — a fraction of
+free RAM over the per-row payload — so peak stays at one window rather
+than the whole store. Partial aggregates concatenate without
+reconciliation because the accumulators are additive.
+
+Neither shape builds a matrix. The chunked branch collects a triplet
+`data.table`, so the
+[`storeRead()`](https://giotto-suite.github.io/GiottoDisk/reference/storeRead.md)
+dgc slice cap is not involved on this path at all.
+
+The two shapes are bounded for different reasons, which matters when
+judging a new path. Acero is bounded **by construction** — it streams
+the hash aggregate to its own budget, whatever the store’s size. The
+chunked branch is bounded **only because the window is sized
+correctly**, by `.recommend_chunk_size()` against free RAM; it genuinely
+materializes rows, so its safety is an argument about that arithmetic
+rather than a guarantee from the engine.
+
+Both guarantees are properties of the framework, not of the data, and
+both are trivially bypassed:
+
+``` r
+
+storeRead(x, output = "query") |> as.data.frame()   # collects everything
+```
+
+`output = "query"` hands back a lazy Arrow query on purpose — for
+composing further, or for feeding an aggregate that streams. Collecting
+it whole puts the entire store in memory with none of the above
+applying. The same is true of any `collect()` on that object. Stay
+inside a verb that streams, or size the read yourself; do not assume a
+path is safe because it started from a store.
+
+### Identifier folding
+
+The aggregate keys on on-disk ids; results are keyed by position in the
+current view. `.pe_axis_pos_map()` supplies the lookup, and the fold
+that follows is a real summation on the feature axis — a feature spans
+substores — and a no-op on the cell axis, where substore cell axes are
+disjoint.
+
+`source_id` joins the group key only on a union, where `row_id` restarts
+per substore. On a single store it would just widen the key with a
+constant.
+
+## Spatial Predicates (`spat_relate`)
+
+`spatRelate(x, y, relation = "intersects")` queues a `"spat_relate"` op
+on `parquetGeomBase` stores. Unlike the simple `@ops` types, spat_relate
+is evaluated by a pluggable engine and threads a small cached id table
+through the rest of the arrow pipeline so that downstream ops stay lazy.
+
+### Engines
+
+Three engines all return the same shape (an arrow Table of surviving
+`(source_id, row_index[, tile_index])`):
+
+| Engine | Path | Deps | Notes |
+|----|----|----|----|
+| `sedona` | DataFusion via `sedonadb::sd_sql` against a registered view | `{sedonadb}` | Lazy parquet scan; stats pushdown; SRID-aware `ST_GeomFromText` |
+| `duckdb` | DuckDB spatial extension via `read_parquet` SQL | [duckdb](https://r.duckdb.org/), [dbplyr](https://dbplyr.tidyverse.org/) | Same SQL shape as sedona; no CRS concept (no SRID arg) |
+| `terra` | [`terra::relate`](https://rspatial.github.io/terra/reference/relate.html) on tiles streamed via [`tilework::tileApply`](https://drieslab.github.io/tilework/reference/tileApply.html) (tile stores) or whole materialization (non-tile) | [terra](https://rspatial.org/) (hard import) | Deps-free fallback; bounded memory per tile |
+
+The two SQL engines share a builder
+(`.pstore_sql_inner(store, base_view, extent, lazy_fields, geom_sql_fn, register_id_fn, engine)`)
+for the `@crop`/`@window` AABB clause, `@ops` translation, outer SELECT,
+and LIMIT. The two engine-specific callbacks account for the dialect
+deltas (sedona includes SRID; duckdb uses `duckdb_register_arrow` for
+id_filter views).
+
+### Engine selection
+
+Precedence (highest first):
+
+1.  Per-call `engine` arg on `spatRelate()`. Stored on the op as
+    `op$engine`.
+2.  `getOption("giottodisk.spatial_query_engine", "auto")`.
+3.  `"auto"` — resolves to the best available: sedona \> duckdb \>
+    terra.
+
+When auto falls through to terra (neither SQL engine installed), a
+one-shot [`rlang::inform`](https://rlang.r-lib.org/reference/abort.html)
+nudges toward installing `{sedonadb}` or [duckdb](https://r.duckdb.org/)
+for performance. The nudge fires only when the user is on `"auto"`;
+explicit engine choices (arg or option) are treated as deliberate and
+stay quiet.
+
+A small `.spat_engine_available(pkg)` indirection lets
+`testthat::local_mocked_bindings` simulate “no engines installed”
+without touching
+[`base::requireNamespace`](https://rdrr.io/r/base/ns-load.html).
+
+### Narrow path with cached `id_filter` ops
+
+`.spat_relate_narrow(store, i, cache)` is the entry point. For the i-th
+`spat_relate` op in `@ops`:
+
+1.  Build a `trim_store` carrying `@ops[1:(i-1)]`, with any prior
+    `spat_relate` ops swapped for internal `id_filter` ops that hold the
+    previously-computed surviving ids as an arrow Table.
+2.  `@fields` is set to `NULL` on the trim — internal evaluation needs
+    `geom` regardless of what the caller projected.
+3.  Engine evaluates `trim_store + this op's predicate`, returns the
+    surviving ids as an arrow Table.
+4.  The main arrow query `semi_join`s on those ids by composite key
+    (`source_id`, `row_index`, and `tile_index` for tile stores). Arrow
+    stays lazy past the spatial step.
+
+The cache is local to one `storeRead` call. Never written to
+`store@ops`; `saveRDS(store)` sees no `id_filter`.
+
+`id_filter` is engine-aware:
+
+- Arrow side (`.ptabular_apply_op` “id_filter”) →
+  `dplyr::semi_join(atab, op$ids_tab, by = op$by)`.
+- SQL side (`.pstore_sql_inner` “id_filter”) → register cached ids as an
+  engine-side view, emit
+  `EXISTS (SELECT 1 FROM "<view>" WHERE <key conds>)`. DataFusion
+  doesn’t support tuple-IN subqueries; correlated `EXISTS` is equivalent
+  and works uniformly across DataFusion and DuckDB.
+
+### Performance shape
+
+Each spat_relate is a “checkpoint” — engine eval, then arrow continues.
+For a single spat_relate this is equivalent to a global plan. For chains
+the `id_filter` cache means each subsequent eval starts narrowed by
+prior survivor ids (DataFusion / DuckDB push the `EXISTS` down as a
+semi-join), so per-eval scans shrink geometrically with selectivity. id
+payload between checkpoints is small (~8 bytes per surviving row).
+
+The terra engine’s tile-streaming bounds peak memory by one tile’s data;
+persistent accumulation across tiles is just `(row_index, tile_index)`
+for surviving rows, merged via
+[`data.table::rbindlist`](https://rdrr.io/pkg/data.table/man/rbindlist.html)
+into a single arrow Table at the end (5×–275× faster than per-tile
+arrow + `concat_tables` across typical tile counts in benchmarking).
+
+## Spatial Extent Tracking
+
+Spatial location information for `parquetGeomBase`-inheriting stores is
+maintained across three independent layers.
+
+### Write-time cache (`@params`)
+
+Set when data is written; not updated afterward:
+
+- **`@params$disk_extent`** (`numeric(4)`) — bounding box from the
+  source data at write time. Used for GeoParquet `bbox` metadata and as
+  a fast display substitute in `show()`.
+- **`@params$crs`** — CRS string from
+  [`terra::crs()`](https://rspatial.github.io/terra/reference/crs.html)
+  at write time. Applied to materialized `SpatVector`/`sf` output at
+  read time.
+
+### Runtime slots (`@crop`, `@window`)
+
+User-applied spatial restrictions, composable and independent of the
+write-time cache:
+
+- **`@crop`** — permanent spatial subset applied every time the store is
+  read.
+- **`@window`** — temporary spatial filter; cleared by
+  `window<-(x, NULL)`.
+
+Both are stored as `numeric(4)`: `c(xmin, xmax, ymin, ymax)`. Both are
+validated against the current data extent via `ext(x)` at set time — so
+setting a crop outside the data extent is caught immediately.
+
+### Live query (`ext()`)
+
+`ext(parquetGeomBase, exact = TRUE)` (default) always scans
+`x_index`/`y_index` with all Arrow-phase filter ops applied (crop AABB,
+half-plane filters from back-projected rotations). Returns the true data
+extent. When a transform is pending, coordinates are projected through
+the affine before the scan via `.dplyr_ext_affine()`.
+
+`ext(parquetGeomBase, exact = FALSE)` returns a fast metadata estimate
+without scanning: `@crop` \> `disk_extent` \> live scan fallback,
+intersected with `@window`, corners projected through any pending
+transform. Axis-aligned result is exact; rotation/shear gives a
+conservative AABB. Used by `show()`.
+
+### Active extent resolution
+
+`.pstore_active_extent(store)` resolves what spatial filter is in effect
+at read time: 1. `@window` if set (takes priority) 2. `@crop` if set 3.
+`NULL` — no spatial filtering applied
+
+The result is converted to a `.dplyr_crop()` callback on
+`x_index`/`y_index` inside `storeRead`. An `extent =` argument passed
+directly to `storeRead` is intersected with the active extent if one is
+present.
+
+### Display extent in `show()`
+
+`show()` calls `ext(x, exact = FALSE)` — a single fast metadata path
+with no disk scan. Pending transforms are projected through the
+estimate.
+
+## Field Resolution
+
+When the user requests specific columns, two functions govern what
+actually gets read from disk:
+
+- **`.pstore_fields_requested(store, fields)`** — intersects the
+  user-requested fields with `store@fields` (set by a prior `[, j]`
+  select op). Returns `NULL` if no restriction is in effect.
+
+- **`.pstore_lazy_fields(store, fields, output)`** — expands the field
+  set with required special columns. Always adds
+  `x_index`/`y_index`/`tile_index` for geom stores; adds
+  `source_id`/`row_index` for materialized outputs; adds `geom` for
+  `"terra"`/`"sf"` output. Returns `NULL` if `fields` is `NULL` (fetch
+  all).
+
+The `dropcols` vector passed to `.pstore_to_tibble()` is then
+`setdiff(specialCols(store), fields)` — special cols that were injected
+lazily but were not in the user’s requested field set are dropped before
+the result is returned.
+
+## Design Decisions
+
+### Why a store contract?
+
+A store is an S4 object with four guaranteed properties: a designated
+on-disk location, a read spec, a write spec, and a stable uid.
+`storeRead` is the single point of materialization — output format is
+declared explicitly and all queued lazy ops are applied in one pass.
+`storeWrite` is the single point of persistence — it always produces a
+durable artifact at a known path. Because the store carries only
+metadata (path, uid, params, op queue), it is fully serializable: it can
+be saved to disk, passed to a parallel worker, embedded in a giotto
+object, and round-tripped across sessions without loss of state.
+
+Base R semantics (`$col`, `[i, ]`) imply eager in-memory output. At 1B+
+rows that is unsafe — a misplaced `$` materializes gigabytes. GiottoDisk
+addresses this two ways: lazy op queuing for Arrow-expressible
+operations, and explicit writes as the unit of work for everything else.
+The store contract is the common surface for both.
+
+A `parquetStore` is simultaneously a **handle** (path + read spec + uid)
+and a **manipulation surface** (lazy ops via `subset`, `head`, `crop`,
+transforms, joins). A well-parameterized handle and a manipulation
+surface are the same thing — BPCells `matrixDir` is already this
+pattern: a disk location with an implicit read spec. The store makes the
+read and write specs explicit and adds provenance tracking.
+
+Arrow Dataset objects carry a path, schema, and lazy query semantics,
+but cannot provide a stable `uid`, composable spatial state (`@crop`,
+`@window`, `@post_ops`), or project directory integration. Those are the
+additions that the store layer provides over a raw Dataset.
+
+`storeRead` and `storeWrite` as named verbs rather than `as.*` coercions
+mark an explicit I/O boundary. For Arrow-expressible ops, they queue
+lazily and collapse into a single scan at `storeRead` time. For
+non-Arrow ops — spatial transforms, tiled overlap computation —
+`storeWrite` with a callback or a `tileApply` pass expresses the write
+as the primary action.
+
+`parquetStore` carries the full manipulation surface because GiottoDisk
+owns the format. Stores for external formats (`h5ArrayStore`,
+`bpcMatrixStore`) are thin wrappers used primarily for project directory
+integration — uid tracking, `sourceAdopt`, `sourcePrune`. Those objects
+are used directly in the giotto object; the store wrapper provides the
+hook without duplicating the manipulation surface those packages already
+implement.
+
+### No positional row indexing
+
+Parquet is not row-addressable. Building a positional index over a 2
+billion row store would cost ~16GB on disk. Row access is value-based
+via
+[`subset()`](https://giotto-suite.github.io/GiottoDisk/reference/subset.md)
+or statistical via
+[`rowSample()`](https://giotto-suite.github.io/GiottoDisk/reference/rowSample.md).
+
+### `nrow()` returns numeric (double)
+
+Arrow’s `COUNT(*)` returns `int64`. Converting to `numeric` (double)
+gives exact integer representation up to 2^53 (~9 quadrillion rows)
+without overflow. `nrow` always queries via `COUNT(*)` — no caching.
+
+### XY centroid coordinates are always precomputed
+
+`x_index` and `y_index` store the centroid of each geometry at write
+time. This enables:
+
+- Fast spatial extent filtering without deserializing WKB geometry
+- [`terra::rasterize()`](https://rspatial.github.io/terra/reference/rasterize.html)
+  entirely in Arrow (no `SpatVector` materialization)
+- [`terra::centroids()`](https://rspatial.github.io/terra/reference/centroids.html)
+  as a lazy flag (`store@params$use_xy_as_geom = TRUE`,
+  `store@geomtype = "points"`) with no store rewrite — at read time
+  `x_index`/`y_index` are used as point coordinates instead of parsing
+  the `geom` WKB column
+
+### WKB direct path for terra output
+
+`output = "terra"` uses `terra::vect(as.list(geom_col))` directly from
+the WKB column, avoiding an sf intermediate (~6x faster at scale).
+
+### `unique()` as a lazy op
+
+[`unique()`](https://rdrr.io/r/base/unique.html) records a `"distinct"`
+step in `@ops` rather than immediately dispatching to Arrow. This keeps
+the result as a store that can be further composed, and ensures the
+distinct operation runs as part of the same Arrow scan as any preceding
+filters.
+
+### `as.vector()` returns a named list
+
+[`as.vector()`](https://rdrr.io/r/base/vector.html) on a single-column
+store returns `list(col = c(...))`, matching base R’s
+[`as.vector()`](https://rdrr.io/r/base/vector.html) on a one-column
+data.frame. This keeps pipelines interchangeable between in-memory
+objects and parquet stores:
+
+``` r
+
+# works the same whether x is a data.frame or parquetBase
+as.vector(x[, "feat_ID"])
+#> list(feat_ID = c("gene_1", "gene_2", ...))
+```
+
+[`as.vector()`](https://rdrr.io/r/base/vector.html) errors if more than
+one column is selected, directing users to
+[`as.data.frame()`](https://rdrr.io/r/base/as.data.frame.html) or
+`storeRead(output = "tibble")` for multi-column materialization.
+
+## Scale Targets
+
+Point/transcript stores are designed to handle **2 trillion+ rows**.
+Several design choices follow from this:
+
+- No full-column materialization by default — `$col` and
+  [`as.vector()`](https://rdrr.io/r/base/vector.html) require deliberate
+  use
+- Lazy ops collapse to a single scan regardless of chain length
+- `x_index`/`y_index` enable spatial filtering without reading `geom`
+- Tiled stores (`parquetGeomTileStore`) partition data spatially;
+  [`crop()`](https://giotto-suite.github.io/GiottoDisk/reference/crop.md)
+  prunes the active tile set so only relevant hive directories are
+  opened at read time
+
+## Project Management (gsource)
+
+`gDirSource` manages a project directory with the following layout:
+
+    <project_dir>/
+      giottodir.json       # manifest of all tracked artifacts
+      artifacts/<uid>/data # vault — artifact subdirs named by uid
+      _pending/            # WAL-style pending manifest edits
+      giottosave/          # .rds/.qs snapshots of giotto objects
+      dump/                # optional persistent staging area (see setArtifactDumpDir)
+
+Artifacts are written via
+[`sourceWrite()`](https://giotto-suite.github.io/GiottoDisk/reference/sourceWrite.md):
+allocate uid → write → hash → queue pending edit. Pending edits are
+consolidated into `giottodir.json` on-read, optionally with `filelock`
+for concurrent access safety. Consolidation is atomic: new JSON is
+written to a temp file then renamed to the final path.
+
+[`sourcePrune()`](https://giotto-suite.github.io/GiottoDisk/reference/sourcePrune.md)
+removes artifacts not referenced by any snapshot, using a BFS walk over
+a `depends` graph for transitive protection.
+
+### Manifest design
+
+The manifest uses JSON + a `_pending/` write-ahead log rather than a
+database. This is an intentional choice:
+
+- **Zero-serialization concurrent writes**: each process creates its own
+  `_pending/<uid>.json` via an atomic file creation — writers never
+  block or coordinate with each other. A database (DuckDB, SQLite in WAL
+  mode) serializes writers; the file-per-writer pattern has no
+  serialization at all.
+- **No binary dependency**: `duckdb` is in `Suggests`. The manifest must
+  work with base R file I/O only. Embedded database backends also carry
+  binary format stability risk — storage format changes across versions
+  can silently break an existing catalog on upgrade. JSON has no
+  equivalent risk.
+- **Human-readable and portable**: inspectable with any tool; the format
+  is stable across all versions of the package.
+- **Crash recovery**: pending file writes are atomic (write to temp →
+  rename into `_pending/`), so a crashed writer leaves nothing behind.
+  Consolidation is also atomic (write to temp → rename over
+  `giottodir.json`). No partial writes reach either the pending queue or
+  the main manifest.
+
+The only meaningful gap vs a database catalog is query performance at
+thousands of artifacts (JSON parse overhead at consolidation time).
+
+For S3/cloud deployments, file-based locking and atomic rename are
+unavailable. A future `gCloudSource` would need either S3 conditional
+PUT (Delta Lake pattern) or an external catalog service
+(DuckLake/Iceberg pattern) for atomic pointer updates. The JSON manifest
+itself could remain unchanged — only the catalog coordination layer
+differs.
+
+### Dump directory and artifact lifecycle
+
+The dump (`giottodisk.artifact_dump` option, default
+[`tempdir()`](https://rdrr.io/r/base/tempfile.html)) is the staging area
+where intermediate artifacts land before adoption into the vault.
+
+**Hot path — `setArtifactDumpDir(gsrc)`**: points the dump directly at
+the source’s vault (`artifacts/`). Artifacts are written to their final
+vault location immediately — adoption becomes a pure registration step
+with no file movement. The vault persists across R sessions (important
+for NFS/HPC environments where jobs end but project directories
+survive).
+
+**Vault-resident adoption**: when the dump is the vault, `sourceAdopt`
+detects the path is already vault-resident, extracts the uid via
+`basename(dirname(path))`, checks `src[uid]`, and writes a manifest
+entry if missing — no file movement.
+
+**Default [`tempdir()`](https://rdrr.io/r/base/tempfile.html) dump**:
+session-scoped, cleaned by the OS on session end. Suitable for local
+interactive use. Unadopted artifacts are lost if the session ends
+without a `snapshotSave`.
+
+Orphaned dump artifacts can be cleaned up via `dumpPrune(gsrc)` (not yet
+implemented).
+
+### IterableMatrix adoption
+
+`IterableMatrix` (BPCells) objects are adopted via the `ANY` fallback in
+`sourceAdopt`. Two traversal primitives handle all compound matrix
+structures:
+
+- **`.im_leaf_dirs(x)`**: returns all leaf `@dir` paths — used for vault
+  membership checks and canonical hashing
+- **`.im_map_leaves(x, f)`**: applies `f` to each leaf and rebuilds the
+  compound structure — used for adoption and path remapping
+
+This handles leaf matrices, lazy transforms (`@matrix`), and cbind/rbind
+compounds (`@matrix_list`) uniformly without knowing the specific
+BPCells subclass.
+
+**Session-scoped adoption cache**: `raw` and `normalized` matrices often
+share the same underlying BPCells leaf directory (same `@dir`). Without
+a cache, adopting `raw` moves the directory, then adopting
+`normalized`’s leaf fails with ENOENT. The `.adopt_session_map`
+environment records old → new path during each `snapshotSave` call.
+Subsequent adoptions of the same leaf redirect `@dir` to the cached
+vault path without attempting a second move. The cache is reset at the
+start of every `snapshotSave`.
+
+**External path guard**: adoption only proceeds for paths within the
+dump directory or when `giottodisk.adopt_external = TRUE`. Paths outside
+the dump are skipped with a warning to avoid silently moving data the
+user owns.
+
+### Multi-analysis / shared gsource
+
+Multiple gobjects can share one gsource. This is the recommended pattern
+when analyses share underlying data (same experiment, different
+processing pipelines):
+
+- Shared artifacts are stored once in the vault
+- `snapshotSave` for a second gobject sees shared artifacts via
+  `sourceContains` and only appends the new save name to the
+  `giottosave` tag
+- `sourcePrune` keeps any artifact referenced by at least one save
+  across all analyses in the project
+
+Gobjects have no gsource by default (in-memory). Sharing requires
+explicitly assigning the same gsource to all gobjects. Two gobjects with
+separate gsources are fully independent — this is correct for unrelated
+datasets.
+
+The tradeoff is deliberate: a small amount of upfront project setup in
+exchange for file safety (no broken links, no partial writes, no silent
+data loss on session end). A single gsource shared across an entire lab
+or across all analyses ever run would accumulate artifacts unboundedly
+and eventually slow manifest reads. The right granularity is
+per-experiment or per-sample-cohort — large enough to get deduplication
+benefits across related analyses, small enough that `sourcePrune` keeps
+the manifest tidy.
+
+### Deployment
+
+| Setting | Recommended dump | Notes |
+|----|----|----|
+| Local / workstation | [`tempdir()`](https://rdrr.io/r/base/tempfile.html) (default) | Session-scoped; works as long as `snapshotSave` is called before session end |
+| NFS / HPC (SLURM) | `setArtifactDumpDir(gsrc)` | Persistent dump in gsource dir; O(1) same-filesystem adoption; survives job end |
+| SLURM array jobs | Independent gsource per sample | No shared-manifest contention; each job manages its own vault |
+| Multi-analysis | Single shared gsource | All gobjects share one project dir; shared artifacts deduplicated automatically |
+
+`filelock` (Suggests) provides advisory locking for `_pending/`
+consolidation. On NFS, `flock` is unreliable — the `_pending/` design
+mitigates this by making each write an independent atomic file creation
+rather than a shared-file update.
+
+### Overlap Provenance
+
+`overlapPointDisk` (returned by
+[`calculateOverlap()`](https://giotto-suite.github.io/GiottoDisk/reference/calculateOverlap.md))
+stores `poly_uids` and `feat_uids` — the UIDs of the polygon and feature
+source stores captured at computation time. Access via
+`storeUID(overlap)` which returns `list(poly = ..., feat = ...)`. These
+slots are intended for future integration with the `depends` BFS walk in
+[`sourcePrune()`](https://giotto-suite.github.io/GiottoDisk/reference/sourcePrune.md).

@@ -1,0 +1,12 @@
+pandoc: 3.8.3
+pkgdown: 2.2.1
+pkgdown_sha: ~
+articles:
+  articles/design: design.html
+  articles/gsource: gsource.html
+  articles/parquetEdgeStore: parquetEdgeStore.html
+  articles/roadmap: roadmap.html
+last_built: 2026-08-25T23:34Z
+urls:
+  reference: https://giotto-suite.github.io/GiottoDisk/reference
+  article: https://giotto-suite.github.io/GiottoDisk/articles
