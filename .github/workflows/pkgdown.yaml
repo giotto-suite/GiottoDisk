@@ -57,20 +57,69 @@ jobs:
         with:
           use-public-rspm: true
 
-      - uses: r-lib/actions/setup-r-dependencies@v2
-        with:
-          dependencies: '"hard"'
-          extra-packages: any::pkgdown, local::.
-          needs: website
+      # pak cannot solve this package's dependencies:
+      #
+      #   Could not solve package dependencies: deps::.: dependency conflict
+      #
+      # GiottoDisk pins GiottoClass@gsource and GiottoUtils@dev, while
+      # Giotto@gsource and GiottoClass@gsource declare BARE remotes for those
+      # same packages. Pinned-versus-bare for one package is what pak refuses
+      # to solve, so setup-r-dependencies cannot be used here at all.
+      #
+      # Instead: resolve a clean tree against the release line, where every
+      # spec is bare and pak is happy, then overlay the gsource refs with
+      # dependency resolution switched off. Giotto@gsource and Giotto@suite
+      # declare identical Imports, so the tree installed below already
+      # satisfies gsource -- nothing is missing after the overlay.
+      - name: Resolve a clean dependency tree
+        run: |
+          Rscript -e 'install.packages("pak", repos = sprintf(
+            "https://r-lib.github.io/p/pak/stable/%s/%s/%s",
+            .Platform$pkgType, R.version$os, R.version$arch))'
+          Rscript -e '
+            pak::pkg_install(c(
+              "github::giotto-suite/Giotto@suite",
+              "github::drieslab/tilework",
+              "arrow", "checkmate", "data.table", "digest", "dplyr",
+              "igraph", "jsonlite", "Matrix", "rlang", "terra",
+              "pkgdown", "sessioninfo"
+            ))'
 
-      - name: Report the documented versions
+      # Overlay the gsource line. dependencies = FALSE throughout: everything
+      # is present already, and it is what stops any Remotes: field being read
+      # again -- a single bare giotto-suite/GiottoClass would otherwise pull
+      # main straight back over the pin. Order matters: Giotto@gsource imports
+      # symbols that exist only in GiottoClass 0.6.0, so it must be installed
+      # after it.
+      - name: Overlay the gsource refs
+        run: |
+          Rscript -e 'install.packages("remotes", repos = "https://cloud.r-project.org")'
+          Rscript -e '
+            gh <- function(spec) remotes::install_github(
+              spec, upgrade = "never", dependencies = FALSE, force = TRUE)
+            gh("giotto-suite/GiottoUtils@main")
+            gh("giotto-suite/GiottoClass@gsource")
+            gh("giotto-suite/GiottoVisuals@gsource")
+            gh("giotto-suite/Giotto@gsource")
+          '
+
+      # Fail loudly rather than document GiottoDisk against the wrong stack.
+      - name: Verify the installed stack
         run: |
           Rscript -e '
-            for (p in c("GiottoDisk", "Giotto", "GiottoClass", "GiottoUtils", "tilework"))
-              cat(sprintf("%-12s %s\n", p,
-                  tryCatch(as.character(utils::packageVersion(p)),
-                           error = function(e) "NOT INSTALLED")))
+            want <- c(GiottoClass = "0.6.0", Giotto = "4.2.4")
+            bad <- character()
+            for (p in c("Giotto", "GiottoClass", "GiottoVisuals", "GiottoUtils", "tilework")) {
+              v <- tryCatch(as.character(utils::packageVersion(p)), error = function(e) NA)
+              cat(sprintf("%-14s %s\n", p, v))
+              if (p %in% names(want) && !identical(v, want[[p]]))
+                bad <- c(bad, sprintf("%s is %s, expected %s", p, v, want[[p]]))
+            }
+            if (length(bad)) stop("wrong versions:\n  ", paste(bad, collapse = "\n  "))
           '
+
+      - name: Install GiottoDisk
+        run: R CMD INSTALL --no-multiarch --no-docs .
 
       - name: Build site
         run: |
