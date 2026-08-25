@@ -1,0 +1,86 @@
+# Builds the GiottoDisk documentation site and publishes it to
+# giotto-suite.github.io/GiottoDisk/
+#
+# ONE SITE, not the release/dev split the Giotto and GiottoClass sites use.
+# GiottoDisk is at 0.0.0.2 with no releases, so there is no released line for a
+# dev site to be distinguished from. This branch tracks `dev`, which is where
+# the work actually happens -- `main` lags it by weeks and carries the same
+# version number. Add the split when GiottoDisk starts cutting releases.
+#
+# Follows the sibling pattern (GiottoUtils, GiottoVisuals): a long-lived
+# `website` branch carrying _pkgdown.yml and this workflow alongside the
+# package, built in place with local::.
+
+name: pkgdown
+
+on:
+  push:
+    branches: [website]
+  pull_request:
+    branches: [website]
+  workflow_dispatch:
+
+jobs:
+  pkgdown:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pkgdown-${{ github.event_name != 'pull_request' || github.run_id }}
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # pak resolves no system requirements in these jobs -- its metadata comes
+      # back empty -- so RSPM binaries install cleanly and then fail at dlopen,
+      # deep inside reference rendering. Three GiottoClass builds died that way
+      # in turn on libproj, libudunits2 and libMagick++. Install the set up
+      # front instead of rediscovering it one failed build at a time.
+      - name: System libraries for the RSPM binaries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libudunits2-dev \
+            libgdal-dev libgeos-dev libproj-dev \
+            libmagick++-dev \
+            libglpk-dev \
+            libhdf5-dev \
+            libxml2-dev libssl-dev libcurl4-openssl-dev \
+            libfontconfig1-dev libfreetype6-dev libharfbuzz-dev libfribidi-dev \
+            libpng-dev libtiff5-dev libjpeg-dev
+
+      - uses: r-lib/actions/setup-pandoc@v2
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          dependencies: '"hard"'
+          extra-packages: any::pkgdown, local::.
+          needs: website
+
+      - name: Report the documented versions
+        run: |
+          Rscript -e '
+            for (p in c("GiottoDisk", "Giotto", "GiottoClass", "GiottoUtils", "tilework"))
+              cat(sprintf("%-12s %s\n", p,
+                  tryCatch(as.character(utils::packageVersion(p)),
+                           error = function(e) "NOT INSTALLED")))
+          '
+
+      - name: Build site
+        run: |
+          pkgdown::build_site(install = FALSE, examples = FALSE, new_process = FALSE)
+        shell: Rscript {0}
+
+      - name: Deploy to GitHub pages
+        if: github.event_name != 'pull_request'
+        uses: JamesIves/github-pages-deploy-action@v4.4.1
+        with:
+          branch: gh-pages
+          folder: docs
+          clean: false

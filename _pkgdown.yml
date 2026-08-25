@@ -1,0 +1,175 @@
+url: https://giotto-suite.github.io/GiottoDisk/
+
+authors:
+  Ruben Dries:
+    href: https://www.drieslab.com
+  Jiaji George Chen:
+    href: https://github.com/jiajic
+
+template:
+  bootstrap: 5
+  # katex, not the default mathml: mathml relies on pandoc, which Rd \deqn{}
+  # and \eqn{} never pass through, so formulae render as literal source.
+  math-rendering: katex
+  bslib:
+    bg: "#FFFFFF"
+    fg: "#000000"
+    primary: "#7E69AE"
+    code_font: {google: "JetBrains Mono"}
+  params:
+    search: true
+
+navbar:
+  bg: light
+  structure:
+    left:  [intro, reference, articles, news]
+    right: [search, suite, github, lightswitch]
+  components:
+    reference:
+      text: Documentation
+      href: reference/index.html
+    articles:
+      text: Articles
+      menu:
+      - text: Architecture and design
+        href: articles/design.html
+      - text: "gDirSource: the directory-backed source"
+        href: articles/gsource.html
+      - text: Disk-backed networks with parquetEdgeStore
+        href: articles/parquetEdgeStore.html
+      - text: Roadmap
+        href: articles/roadmap.html
+    suite:
+      text: Giotto Suite
+      href: https://giottosuite.com
+
+reference:
+- title: Sources
+  desc: >
+    A source owns a project directory and the stores inside it.
+- contents:
+  - gsource
+  - gDirSource
+  - gDirSource-class
+  - sourceCreate
+  - sourceWrite
+  - sourceWrite-gDirSource
+  - sourceAdopt
+  - sourceContains
+  - sourcePrune
+  - resolveSource
+  - coerce_gdsrc
+  - sd_view_ref
+
+- title: Stores
+  desc: >
+    The generic store interface, shared by every backend.
+- contents:
+  - dataStore-class
+  - storeCreate
+  - storeRead
+  - storeWrite
+  - storeWrite-parquetStore
+  - storeWrite-parquetGeomStore
+  - storeWrite-parquetGeomTileStore
+  - storeExists
+  - storePaths
+  - storeUID
+  - storeChunkInfo
+  - specialCols
+
+- title: Parquet stores
+  desc: >
+    Parquet-backed expression, geometry and edge storage.
+- contents:
+  - parquetStore
+  - parquetStore-class
+  - parquetExprStore
+  - parquetExprStore-class
+  - parquetEdgeStore
+  - parquetEdgeStore-class
+  - unionParquetExprStore
+  - unionParquetExprStore-class
+
+- title: Other backends
+- contents:
+  - fileStore
+  - fileStore-class
+  - arrayStore
+
+- title: Inputs
+  desc: >
+    Wrappers describing on-disk or in-memory data to be ingested.
+- contents:
+  - exprInput-class
+  - mtxInput
+  - mtxInput-class
+  - tenxH5Input
+  - tenxH5Input-class
+  - csvWideInput
+  - csvWideInput-class
+  - binGefInput
+  - binGefInput-class
+  - cellbinGefInput
+  - cellbinGefInput-class
+  - edgeInput-class
+  - edgeDTInput
+  - igraphInput
+  - nnSearchInput
+
+- title: Disk-backed importers
+  desc: >
+    Read a vendor run straight to disk, without loading it into memory.
+- contents:
+  - importXeniumDisk
+  - importCosMxDisk
+  - importStereoSeqDisk
+
+- title: Geometry
+- contents:
+  - createGiottoPoints
+  - createGiottoPolygon
+  - centroids
+  - expanse
+  - ext
+  - crop
+  - window
+  - getBoundedData
+  - getTile
+  - rasterize
+  - calculateOverlap
+  - overlapToMatrix
+
+- title: Spatial transforms
+- contents:
+  - affine
+  - flip
+  - spin
+  - shear
+  - rescale
+  - spatShift
+  - t
+
+- title: Subset, combine and inspect
+- contents:
+  - subset
+  - rowSample
+  - rbind
+  - parquet-headtail
+  - plot
+
+- title: Streaming analysis
+  desc: >
+    Parameter objects driving out-of-memory computation.
+- contents:
+  - analyzeData-featStatsParam
+  - analyzeData-scranMarkersParam
+  - gramEigenPcaParam
+
+- title: Snapshots and artifacts
+- contents:
+  - snapshotSave
+  - snapshotLoad
+  - snapshotDelete
+  - artifact_dump
+  - artifact_uid
