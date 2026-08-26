@@ -1,15 +1,25 @@
-# Builds the GiottoDisk documentation site and publishes it to
-# giotto-suite.github.io/GiottoDisk/
+# Builds https://giotto-suite.github.io/GiottoDisk/
 #
-# ONE SITE, not the release/dev split the Giotto and GiottoClass sites use.
-# GiottoDisk is at 0.0.0.2 with no releases, so there is no released line for a
-# dev site to be distinguished from. This branch tracks `dev`, which is where
-# the work actually happens -- `main` lags it by weeks and carries the same
-# version number. Add the split when GiottoDisk starts cutting releases.
+# The build itself lives in giotto-suite/.github and is shared by every package
+# site in the org. This file says which site this is, and carries the one thing
+# that is genuinely specific to GiottoDisk: how its dependencies are resolved.
 #
-# Follows the sibling pattern (GiottoUtils, GiottoVisuals): a long-lived
-# `website` branch carrying _pkgdown.yml and this workflow alongside the
-# package, built in place with local::.
+# WHY resolve-packages AND pins RATHER THAN ORDINARY RESOLUTION
+# pak cannot solve this package's dependency graph:
+#
+#   Could not solve package dependencies: deps::.: dependency conflict
+#
+# GiottoDisk pins GiottoClass@gsource and GiottoUtils@dev, while Giotto@gsource
+# and GiottoClass@gsource declare BARE remotes for those same packages. Pinned
+# versus bare for one package is what pak refuses to solve.
+#
+# So resolve a clean tree against the release line, where every spec is bare,
+# then pin the gsource refs on top with dependency resolution switched off.
+# Giotto@suite and Giotto@gsource declare identical Imports, so the tree
+# already satisfies gsource -- nothing is missing after the swap.
+#
+# Order in `pins` matters: Giotto@gsource imports symbols that exist only in
+# GiottoClass 0.6.0, so it has to come after it.
 
 name: pkgdown
 
@@ -18,118 +28,38 @@ on:
     branches: [website]
   pull_request:
     branches: [website]
+  release:
+    types: [published]
   workflow_dispatch:
 
 jobs:
-  pkgdown:
-    runs-on: ubuntu-latest
-    concurrency:
-      group: pkgdown-${{ github.event_name != 'pull_request' || github.run_id }}
-    env:
-      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+  site:
+    # The reusable workflow can only narrow what the caller grants, so the
+    # write permission the gh-pages deploy needs has to be declared here.
     permissions:
       contents: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      # pak resolves no system requirements in these jobs -- its metadata comes
-      # back empty -- so RSPM binaries install cleanly and then fail at dlopen,
-      # deep inside reference rendering. Three GiottoClass builds died that way
-      # in turn on libproj, libudunits2 and libMagick++. Install the set up
-      # front instead of rediscovering it one failed build at a time.
-      - name: System libraries for the RSPM binaries
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            libudunits2-dev \
-            libgdal-dev libgeos-dev libproj-dev \
-            libmagick++-dev \
-            libglpk-dev \
-            libhdf5-dev \
-            libxml2-dev libssl-dev libcurl4-openssl-dev \
-            libfontconfig1-dev libfreetype6-dev libharfbuzz-dev libfribidi-dev \
-            libpng-dev libtiff5-dev libjpeg-dev
-
-      - uses: r-lib/actions/setup-pandoc@v2
-
-      - uses: r-lib/actions/setup-r@v2
-        with:
-          use-public-rspm: true
-
-      # pak cannot solve this package's dependencies:
-      #
-      #   Could not solve package dependencies: deps::.: dependency conflict
-      #
-      # GiottoDisk pins GiottoClass@gsource and GiottoUtils@dev, while
-      # Giotto@gsource and GiottoClass@gsource declare BARE remotes for those
-      # same packages. Pinned-versus-bare for one package is what pak refuses
-      # to solve, so setup-r-dependencies cannot be used here at all.
-      #
-      # Instead: resolve a clean tree against the release line, where every
-      # spec is bare and pak is happy, then overlay the gsource refs with
-      # dependency resolution switched off. Giotto@gsource and Giotto@suite
-      # declare identical Imports, so the tree installed below already
-      # satisfies gsource -- nothing is missing after the overlay.
-      - name: Resolve a clean dependency tree
-        run: |
-          Rscript -e 'install.packages("pak", repos = sprintf(
-            "https://r-lib.github.io/p/pak/stable/%s/%s/%s",
-            .Platform$pkgType, R.version$os, R.version$arch))'
-          Rscript -e '
-            pak::pkg_install(c(
-              "github::giotto-suite/Giotto@suite",
-              "github::drieslab/tilework",
-              "arrow", "checkmate", "data.table", "digest", "dplyr",
-              "igraph", "jsonlite", "Matrix", "rlang", "terra",
-              "pkgdown", "sessioninfo"
-            ))'
-
-      # Overlay the gsource line. dependencies = FALSE throughout: everything
-      # is present already, and it is what stops any Remotes: field being read
-      # again -- a single bare giotto-suite/GiottoClass would otherwise pull
-      # main straight back over the pin. Order matters: Giotto@gsource imports
-      # symbols that exist only in GiottoClass 0.6.0, so it must be installed
-      # after it.
-      - name: Overlay the gsource refs
-        run: |
-          Rscript -e 'install.packages("remotes", repos = "https://cloud.r-project.org")'
-          Rscript -e '
-            gh <- function(spec) remotes::install_github(
-              spec, upgrade = "never", dependencies = FALSE, force = TRUE)
-            gh("giotto-suite/GiottoUtils@main")
-            gh("giotto-suite/GiottoClass@gsource")
-            gh("giotto-suite/GiottoVisuals@gsource")
-            gh("giotto-suite/Giotto@gsource")
-          '
-
-      # Fail loudly rather than document GiottoDisk against the wrong stack.
-      - name: Verify the installed stack
-        run: |
-          Rscript -e '
-            want <- c(GiottoClass = "0.6.0", Giotto = "4.2.4")
-            bad <- character()
-            for (p in c("Giotto", "GiottoClass", "GiottoVisuals", "GiottoUtils", "tilework")) {
-              v <- tryCatch(as.character(utils::packageVersion(p)), error = function(e) NA)
-              cat(sprintf("%-14s %s\n", p, v))
-              if (p %in% names(want) && !identical(v, want[[p]]))
-                bad <- c(bad, sprintf("%s is %s, expected %s", p, v, want[[p]]))
-            }
-            if (length(bad)) stop("wrong versions:\n  ", paste(bad, collapse = "\n  "))
-          '
-
-      - name: Install GiottoDisk
-        run: R CMD INSTALL --no-multiarch --no-docs .
-
-      - name: Build site
-        run: |
-          pkgdown::build_site(install = FALSE, examples = FALSE, new_process = FALSE)
-        shell: Rscript {0}
-
-      - name: Deploy to GitHub pages
-        if: github.event_name != 'pull_request'
-        uses: JamesIves/github-pages-deploy-action@v4.4.1
-        with:
-          branch: gh-pages
-          folder: docs
-          clean: false
+    uses: giotto-suite/.github/.github/workflows/pkgdown-site.yaml@main
+    with:
+      mode: release
+      examples: "false"
+      resolve-packages: |
+        github::giotto-suite/Giotto@suite
+        github::drieslab/tilework
+        arrow
+        checkmate
+        data.table
+        digest
+        dplyr
+        igraph
+        jsonlite
+        Matrix
+        rlang
+        terra
+        pkgdown
+        sessioninfo
+      pins: |
+        giotto-suite/GiottoUtils@main
+        giotto-suite/GiottoClass@gsource
+        giotto-suite/GiottoVisuals@gsource
+        giotto-suite/Giotto@gsource
+      expect-versions: "GiottoClass=0.6.0,Giotto=4.2.4"
