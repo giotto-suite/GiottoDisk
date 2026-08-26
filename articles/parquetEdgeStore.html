@@ -93,10 +93,10 @@ pipeline where the comments say so.</p>
 <span><span class="fu">igraph</span><span class="fu">::</span><span class="fu"><a href="https://r.igraph.org/reference/V.html" class="external-link">V</a></span><span class="op">(</span><span class="va">ig</span><span class="op">)</span><span class="op">$</span><span class="va">name</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste0</a></span><span class="op">(</span><span class="st">"cell_"</span>, <span class="fu"><a href="https://rdrr.io/r/base/sprintf.html" class="external-link">sprintf</a></span><span class="op">(</span><span class="st">"%02d"</span>, <span class="fu"><a href="https://rdrr.io/r/base/seq.html" class="external-link">seq_len</a></span><span class="op">(</span><span class="fl">20</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
 <span><span class="fu">igraph</span><span class="fu">::</span><span class="fu"><a href="https://r.igraph.org/reference/E.html" class="external-link">E</a></span><span class="op">(</span><span class="va">ig</span><span class="op">)</span><span class="op">$</span><span class="va">weight</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/stats/Uniform.html" class="external-link">runif</a></span><span class="op">(</span><span class="fl">50</span><span class="op">)</span></span>
 <span><span class="va">ig</span></span>
-<span><span class="co">#&gt; IGRAPH 1591aa4 UNW- 20 50 -- Erdos-Renyi (gnm) graph</span></span>
+<span><span class="co">#&gt; IGRAPH a74513a UNW- 20 50 -- Erdos-Renyi (gnm) graph</span></span>
 <span><span class="co">#&gt; + attr: name (g/c), type (g/c), loops (g/l), m (g/n), name (v/c),</span></span>
 <span><span class="co">#&gt; | weight (e/n)</span></span>
-<span><span class="co">#&gt; + edges from 1591aa4 (vertex names):</span></span>
+<span><span class="co">#&gt; + edges from a74513a (vertex names):</span></span>
 <span><span class="co">#&gt;  [1] cell_01--cell_02 cell_03--cell_04 cell_01--cell_05 cell_03--cell_05</span></span>
 <span><span class="co">#&gt;  [5] cell_02--cell_06 cell_04--cell_06 cell_06--cell_07 cell_02--cell_08</span></span>
 <span><span class="co">#&gt;  [9] cell_04--cell_08 cell_07--cell_08 cell_02--cell_09 cell_03--cell_09</span></span>
@@ -126,7 +126,7 @@ a <code>storeWrite</code> of the in-mem igraph, which is what
 <span><span class="va">edge_store</span></span>
 <span><span class="co">#&gt; &lt;parquetEdgeStore&gt; type=sNN directed=FALSE</span></span>
 <span><span class="co">#&gt;   n_cells: 20  n_edges: 50</span></span>
-<span><span class="co">#&gt;   path:    /tmp/RtmpkVkqTK/gdisk_dump/file35a6616ab4ed</span></span></code></pre></div>
+<span><span class="co">#&gt;   path:    /tmp/Rtmp50Y0WK/gdisk_dump/file365559b92a10</span></span></code></pre></div>
 <p>If a <code>gDirSource</code> is supplied, the artifact lands in the
 project vault instead of a tempdir. With the auto-write described below,
 you usually don’t have to set this flag explicitly.</p>
@@ -148,7 +148,7 @@ user-facing call site is unchanged from the in-memory case.</p>
 <span>                              <span class="fu"><a href="https://rdrr.io/r/base/paste.html" class="external-link">paste0</a></span><span class="op">(</span><span class="st">"cell_"</span>, <span class="fu"><a href="https://rdrr.io/r/base/sprintf.html" class="external-link">sprintf</a></span><span class="op">(</span><span class="st">"%02d"</span>, <span class="fl">1</span><span class="op">:</span><span class="fl">20</span><span class="op">)</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
 <span><span class="va">g</span> <span class="op">&lt;-</span> <span class="fu">GiottoClass</span><span class="fu">::</span><span class="fu"><a href="https://giotto-suite.github.io/GiottoClass/reference/create_giotto.html" class="external-link">createGiottoObject</a></span><span class="op">(</span>expression <span class="op">=</span> <span class="va">mat</span>, backend <span class="op">=</span> <span class="va">gdir</span><span class="op">)</span></span>
 <span><span class="co">#&gt; Setting up Giotto project directory at: </span></span>
-<span><span class="co">#&gt; /tmp/RtmpkVkqTK/vignette_autowrite</span></span>
+<span><span class="co">#&gt; /tmp/Rtmp50Y0WK/vignette_autowrite</span></span>
 <span><span class="co">#&gt; checking default envname 'giotto_env'</span></span>
 <span><span class="co">#&gt; a system default python environment was found</span></span>
 <span><span class="co">#&gt; Using python path:</span></span>
@@ -180,7 +180,7 @@ user-facing call site is unchanged from the in-memory case.</p>
 <span><span class="va">nn_back</span><span class="op">@</span><span class="va">network</span></span>
 <span><span class="co">#&gt; &lt;parquetEdgeStore&gt; type=sNN directed=FALSE</span></span>
 <span><span class="co">#&gt;   n_cells: 20  n_edges: 50</span></span>
-<span><span class="co">#&gt;   path:    /tmp/RtmpkVkqTK/vignette_autowrite/artifacts/13734_K0YaFjzb/data</span></span></code></pre></div>
+<span><span class="co">#&gt;   path:    /tmp/Rtmp50Y0WK/vignette_autowrite/artifacts/13909_vHKg5r52/data</span></span></code></pre></div>
 <p>The auto-write fires when both:</p>
 <ol style="list-style-type: decimal">
 <li>
@@ -227,7 +227,7 @@ be promoted in one shot:</p>
 <span><span class="fu"><a href="https://rdrr.io/r/base/unlink.html" class="external-link">unlink</a></span><span class="op">(</span><span class="va">gdir_bulk</span>, recursive <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span>
 <span><span class="va">g_backed</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/sourceWrite.html">sourceWrite</a></span><span class="op">(</span><span class="fu"><a href="../reference/gDirSource.html">gDirSource</a></span><span class="op">(</span>path <span class="op">=</span> <span class="va">gdir_bulk</span><span class="op">)</span>, <span class="va">g_inmem</span><span class="op">)</span></span>
 <span><span class="co">#&gt; Setting up Giotto project directory at: </span></span>
-<span><span class="co">#&gt; /tmp/RtmpkVkqTK/vignette_bulk_promote</span></span>
+<span><span class="co">#&gt; /tmp/Rtmp50Y0WK/vignette_bulk_promote</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/class.html" class="external-link">class</a></span><span class="op">(</span><span class="va">g_backed</span><span class="op">@</span><span class="va">source</span><span class="op">)</span></span>
 <span><span class="co">#&gt; [1] "gDirSource"</span></span>
 <span><span class="co">#&gt; attr(,"package")</span></span>
@@ -285,9 +285,9 @@ that doesn’t affect correctness.</p>
 <code class="sourceCode R"><span><span class="co"># In-memory igraph (vertex names preserved via V(g)$name)</span></span>
 <span><span class="va">g_back</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/storeRead.html">storeRead</a></span><span class="op">(</span><span class="va">edge_store</span>, output <span class="op">=</span> <span class="st">"igraph"</span><span class="op">)</span></span>
 <span><span class="va">g_back</span></span>
-<span><span class="co">#&gt; IGRAPH 070fdb6 UNW- 19 50 -- </span></span>
+<span><span class="co">#&gt; IGRAPH 6f01812 UNW- 19 50 -- </span></span>
 <span><span class="co">#&gt; + attr: name (v/c), weight (e/n)</span></span>
-<span><span class="co">#&gt; + edges from 070fdb6 (vertex names):</span></span>
+<span><span class="co">#&gt; + edges from 6f01812 (vertex names):</span></span>
 <span><span class="co">#&gt;  [1] cell_01--cell_02 cell_01--cell_05 cell_01--cell_12 cell_01--cell_13</span></span>
 <span><span class="co">#&gt;  [5] cell_01--cell_15 cell_01--cell_20 cell_02--cell_06 cell_02--cell_08</span></span>
 <span><span class="co">#&gt;  [9] cell_02--cell_09 cell_02--cell_12 cell_02--cell_14 cell_02--cell_15</span></span>
@@ -495,7 +495,7 @@ without going through <code>createNetwork()</code>:</p>
 <span><span class="va">store_from_igraph</span></span>
 <span><span class="co">#&gt; &lt;parquetEdgeStore&gt; type=sNN directed=FALSE</span></span>
 <span><span class="co">#&gt;   n_cells: 20  n_edges: 50</span></span>
-<span><span class="co">#&gt;   path:    /tmp/RtmpkVkqTK/gdisk_dump/file35a642027a52</span></span></code></pre></div>
+<span><span class="co">#&gt;   path:    /tmp/Rtmp50Y0WK/gdisk_dump/file36551589ff22</span></span></code></pre></div>
 <div class="sourceCode" id="cb20"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># From an arbitrary edge data.table with non-standard col names</span></span>
 <span><span class="va">my_dt</span> <span class="op">&lt;-</span> <span class="fu">data.table</span><span class="fu">::</span><span class="fu"><a href="https://rdrr.io/pkg/data.table/man/data.table.html" class="external-link">data.table</a></span><span class="op">(</span></span>
@@ -508,7 +508,7 @@ without going through <code>createNetwork()</code>:</p>
 <span>           type <span class="op">=</span> <span class="st">"kNN"</span>, directed <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span>
 <span><span class="co">#&gt; &lt;parquetEdgeStore&gt; type=kNN directed=TRUE</span></span>
 <span><span class="co">#&gt;   n_cells: 3  n_edges: 3</span></span>
-<span><span class="co">#&gt;   path:    /tmp/RtmpkVkqTK/gdisk_dump/file35a67d32b7c9</span></span></code></pre></div>
+<span><span class="co">#&gt;   path:    /tmp/Rtmp50Y0WK/gdisk_dump/file365535e24619</span></span></code></pre></div>
 <p>These input markers are escape hatches — the primary path for
 production work is <code>createNetwork(..., output = "parquet")</code>
 (or the backed-gobject auto-write). They exist for migration from

@@ -26,10 +26,10 @@ ig <- igraph::sample_gnm(20, 50, directed = FALSE)
 igraph::V(ig)$name <- paste0("cell_", sprintf("%02d", seq_len(20)))
 igraph::E(ig)$weight <- runif(50)
 ig
-#> IGRAPH 1591aa4 UNW- 20 50 -- Erdos-Renyi (gnm) graph
+#> IGRAPH a74513a UNW- 20 50 -- Erdos-Renyi (gnm) graph
 #> + attr: name (g/c), type (g/c), loops (g/l), m (g/n), name (v/c),
 #> | weight (e/n)
-#> + edges from 1591aa4 (vertex names):
+#> + edges from a74513a (vertex names):
 #>  [1] cell_01--cell_02 cell_03--cell_04 cell_01--cell_05 cell_03--cell_05
 #>  [5] cell_02--cell_06 cell_04--cell_06 cell_06--cell_07 cell_02--cell_08
 #>  [9] cell_04--cell_08 cell_07--cell_08 cell_02--cell_09 cell_03--cell_09
@@ -59,7 +59,7 @@ edge_store <- storeWrite(
 edge_store
 #> <parquetEdgeStore> type=sNN directed=FALSE
 #>   n_cells: 20  n_edges: 50
-#>   path:    /tmp/RtmpkVkqTK/gdisk_dump/file35a6616ab4ed
+#>   path:    /tmp/Rtmp50Y0WK/gdisk_dump/file365559b92a10
 ```
 
 If a `gDirSource` is supplied, the artifact lands in the project vault
@@ -84,7 +84,7 @@ mat <- matrix(rpois(20 * 50, 2), nrow = 50, ncol = 20,
                               paste0("cell_", sprintf("%02d", 1:20))))
 g <- GiottoClass::createGiottoObject(expression = mat, backend = gdir)
 #> Setting up Giotto project directory at: 
-#> /tmp/RtmpkVkqTK/vignette_autowrite
+#> /tmp/Rtmp50Y0WK/vignette_autowrite
 #> checking default envname 'giotto_env'
 #> a system default python environment was found
 #> Using python path:
@@ -116,7 +116,7 @@ class(nn_back@network)
 nn_back@network
 #> <parquetEdgeStore> type=sNN directed=FALSE
 #>   n_cells: 20  n_edges: 50
-#>   path:    /tmp/RtmpkVkqTK/vignette_autowrite/artifacts/13734_K0YaFjzb/data
+#>   path:    /tmp/Rtmp50Y0WK/vignette_autowrite/artifacts/13909_vHKg5r52/data
 ```
 
 The auto-write fires when both:
@@ -163,7 +163,7 @@ gdir_bulk <- file.path(tempdir(), "vignette_bulk_promote")
 unlink(gdir_bulk, recursive = TRUE)
 g_backed <- sourceWrite(gDirSource(path = gdir_bulk), g_inmem)
 #> Setting up Giotto project directory at: 
-#> /tmp/RtmpkVkqTK/vignette_bulk_promote
+#> /tmp/Rtmp50Y0WK/vignette_bulk_promote
 class(g_backed@source)
 #> [1] "gDirSource"
 #> attr(,"package")
@@ -231,9 +231,9 @@ head(storeRead(edge_store, output = "tibble"))
 # In-memory igraph (vertex names preserved via V(g)$name)
 g_back <- storeRead(edge_store, output = "igraph")
 g_back
-#> IGRAPH 070fdb6 UNW- 19 50 -- 
+#> IGRAPH 6f01812 UNW- 19 50 -- 
 #> + attr: name (v/c), weight (e/n)
-#> + edges from 070fdb6 (vertex names):
+#> + edges from 6f01812 (vertex names):
 #>  [1] cell_01--cell_02 cell_01--cell_05 cell_01--cell_12 cell_01--cell_13
 #>  [5] cell_01--cell_15 cell_01--cell_20 cell_02--cell_06 cell_02--cell_08
 #>  [9] cell_02--cell_09 cell_02--cell_12 cell_02--cell_14 cell_02--cell_15
@@ -459,7 +459,7 @@ store_from_igraph <- storeWrite(
 store_from_igraph
 #> <parquetEdgeStore> type=sNN directed=FALSE
 #>   n_cells: 20  n_edges: 50
-#>   path:    /tmp/RtmpkVkqTK/gdisk_dump/file35a642027a52
+#>   path:    /tmp/Rtmp50Y0WK/gdisk_dump/file36551589ff22
 ```
 
 ``` r
@@ -475,7 +475,7 @@ storeWrite(storeCreate(type = "parquetEdgeStore"), inp,
            type = "kNN", directed = TRUE)
 #> <parquetEdgeStore> type=kNN directed=TRUE
 #>   n_cells: 3  n_edges: 3
-#>   path:    /tmp/RtmpkVkqTK/gdisk_dump/file35a67d32b7c9
+#>   path:    /tmp/Rtmp50Y0WK/gdisk_dump/file365535e24619
 ```
 
 These input markers are escape hatches — the primary path for production
