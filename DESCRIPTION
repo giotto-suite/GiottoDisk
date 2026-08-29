@@ -89,6 +89,7 @@ Collate:
     'methods-show.R'
     'methods-snapshotDelete.R'
     'methods-snapshotLoad.R'
+    'methods-snapshotManifest.R'
     'methods-snapshotSave.R'
     'methods-sourceWrite.R'
     'methods-sourceAdopt.R'

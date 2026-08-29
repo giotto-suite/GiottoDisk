@@ -2,6 +2,7 @@
 % Please edit documentation in R/class-gsource.R
 \name{giotto_json}
 \alias{giotto_json}
+\alias{.atomic_write}
 \alias{.json_atomic_write}
 \alias{.json_read}
 \alias{.gdsrc_json_header}
@@ -12,6 +13,13 @@
 \alias{.gdsrc_json_consolidate}
 \title{Giotto Directory JSON}
 \usage{
+.atomic_write(
+  writer,
+  file,
+  temp_file = tempfile(tmpdir = dirname(file), fileext = ".tmp"),
+  cleanup = TRUE
+)
+
 .json_atomic_write(
   x,
   file,
@@ -59,6 +67,10 @@ Internal utilities for editing the \link{gDirSource} managed
 }
 \section{Functions}{
 \itemize{
+\item \code{.atomic_write()}: Safe atomic writes so that there is no instant
+at which the data does not exist on disk. \code{writer} is called with the
+path to write to.
+
 \item \code{.json_atomic_write()}: Safe atomic writes of information to json
 files so that there is no instant at which the data does not exist
 on disk.

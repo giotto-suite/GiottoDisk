@@ -104,6 +104,7 @@ R/
   methods-snapshotSave.R # snapshotSave (giottosave snapshot lifecycle)
   methods-snapshotLoad.R # snapshotLoad
   methods-snapshotDelete.R # snapshotDelete
+  methods-snapshotManifest.R # snapshotManifest, snapshotHistory (sidecars)
   stream-filter.R        # filterData(parquetExprStore, ...)
   stream-normalize.R     # processData(parquetExprStore, libraryNormParam/logNormParam)
   stream-markers.R       # analyzeData(parquetExprBase, markersParam) pairwise markers
@@ -521,7 +522,15 @@ rationale (manifest design, dump lifecycle, multi-analysis guarantees).
   artifacts/<uid>/...  # vault
   _pending/            # WAL-style pending manifest edits
   giottosave/          # .rds/.qs snapshots
+    <name>.manifest.json    # what the snapshot holds (GiottoClass::objManifest)
+    <name>.history.ndjson   # why, one operation per line
 ```
+
+Snapshot sidecars are derived from the gobject and written after the snapshot
+itself lands, so a failed write costs a convenience, never data. They exist so
+a snapshot's contents can be read (`snapshotManifest`, `snapshotHistory`)
+without loading it. `snapshotDelete` removes them with the snapshot, since its
+`^<name>\.` pattern already covers them.
 
 Manifest access: `src["uid"]`, `src["uid", "field"]`, `src[, "field"]`,
 `as.data.frame(src)`. Consolidation uses `.json_atomic_write` (temp →
@@ -549,8 +558,8 @@ advisory locking for the consolidation step.
   manifest entry if missing — no file movement.
 - **`snapshotSave` lifecycle**: session-reset → adopt external images
   → adopt external expression matrices → atomic snapshot write
-  (temp → rename) → tag artifacts (`name` appended to `giottosave`
-  manifest field; hash-based detection strips lazy `@ops`).
+  (temp → rename) → write sidecars → tag artifacts (`name` appended to
+  `giottosave` manifest field; hash-based detection strips lazy `@ops`).
 - **`sourcePrune`**: removes untagged artifacts; protection transitive
   via BFS over `depends`.
 

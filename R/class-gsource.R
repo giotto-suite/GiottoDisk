@@ -226,13 +226,13 @@ NULL
 
 ## tools ####
 
-#' @describeIn giotto_json Safe atomic writes of information to json
-#' files so that there is no instant at which the data does not exist
-#' on disk.
-.json_atomic_write <- function(x, file, 
-    temp_file = tempfile(tmpdir = dirname(file), fileext = ".tmp"), 
+#' @describeIn giotto_json Safe atomic writes so that there is no instant
+#' at which the data does not exist on disk. `writer` is called with the
+#' path to write to.
+.atomic_write <- function(writer, file,
+    temp_file = tempfile(tmpdir = dirname(file), fileext = ".tmp"),
     cleanup = TRUE) {
-    jsonlite::write_json(x, temp_file)
+    writer(temp_file)
 
     on.exit({
         if (cleanup) {
@@ -246,6 +246,18 @@ NULL
     }
     cleanup <- FALSE # disable cleanup on success
     invisible(TRUE)
+}
+
+#' @describeIn giotto_json Safe atomic writes of information to json
+#' files so that there is no instant at which the data does not exist
+#' on disk.
+.json_atomic_write <- function(x, file, 
+    temp_file = tempfile(tmpdir = dirname(file), fileext = ".tmp"), 
+    cleanup = TRUE) {
+    .atomic_write(
+        writer = function(f) jsonlite::write_json(x, f),
+        file = file, temp_file = temp_file, cleanup = cleanup
+    )
 }
 
 #' @describeIn giotto_json json reading with specific params to work
