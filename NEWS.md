@@ -21,6 +21,13 @@
 - `detectZarrLayout()`: versioned layout detection for zarr output
   directories; unsupported layouts (zarr v3, unknown structure) fail with
   an actionable message.
+- `snapshotSave()` writes `<name>.manifest.json` and `<name>.history.ndjson`
+  beside each snapshot in `giottosave/`, using the same temp-then-rename write
+  as the artifacts manifest. Derived from the gobject, so a failed write is
+  never fatal.
+- `snapshotManifest()` and `snapshotHistory()` read those sidecars, so what a
+  snapshot contains and how it was produced can be inspected without loading
+  it. Requires GiottoClass with `objManifest()`.
 
 ## bug fixes
 - `createGiottoXeniumObject(backend =)` no longer errors on Xenium-format
