@@ -57,13 +57,20 @@ setMethod("storeRead", signature("fileStore"), function(store, ...) {
 #'   applied.
 #' 
 #'   Mostly useful for outputs that require materialization.
-#' @param duckdb_params named `list`. Params to pass
-#'   to [duckdb::duckdb_register_arrow()] if `output = "duckdb"`.
-#'   Key params:
-#' 
-#'   * `conn` - DBI connection to a duckdb instance.
-#'   * `name` - `character` (optional) If not provided, a random ID
-#'     for the registered table will be generated
+#' @param duckdb_params named `list`. Settings for `output = "duckdb"`:
+#'
+#'   * `conn` - DBI connection to a duckdb instance. Optional for the stores
+#'     that compile a native scan (`parquetStore`, `parquetGeomBase` and
+#'     `parquetExprStore` families) — without one an ephemeral in-memory
+#'     connection is created and kept alive by the returned `tbl_dbi`. A
+#'     supplied connection is used as given, with no settings applied to it.
+#'   * `name` - `character` (optional) name for the object the returned
+#'     `tbl_dbi` points at. A random ID is generated if absent.
+#'
+#'   Stores that still bridge an Arrow scan forward the whole list to
+#'   [duckdb::duckdb_register_arrow()] and require `conn`. The native compile
+#'   paths do not call that function, so they read only the two keys above and
+#'   ignore anything else.
 #' @export
 setMethod("storeRead", signature("queryableStore"), function(store,
     fields = NULL, 
@@ -978,7 +985,12 @@ sd_view_ref <- function(sdf) {
     # Register the compiled query as a view so `dbplyr::remote_name()` on the
     # result is a handle a caller can hit with plain SQL, as it is for
     # `.pstore_to_duckdb`.
-    final_view_name <- tolower(paste0("gd_pe_final_", .make_uid()))
+    #
+    # `duckdb_params$name` names that handle. The arrow bridge this replaced
+    # applied it to the registered scanner, which was likewise the object the
+    # returned tbl pointed at, so the caller-visible meaning carries over.
+    final_view_name <- duckdb_params$name %||%
+        tolower(paste0("gd_pe_final_", .make_uid()))
     DBI::dbExecute(conn, sprintf('CREATE OR REPLACE TEMP VIEW "%s" AS %s',
         final_view_name, as.character(dbplyr::remote_query(x))))
     tbl <- dplyr::tbl(conn, final_view_name)

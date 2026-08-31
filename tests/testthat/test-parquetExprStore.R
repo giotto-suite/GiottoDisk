@@ -149,6 +149,19 @@ test_that("storeRead(output = 'duckdb') errors when @uid is not the on-disk part
     expect_error(storeRead(pe, output = "duckdb"), "must match the on-disk")
 })
 
+test_that("storeRead(output = 'duckdb') honours duckdb_params$name", {
+    # Documented, and honoured by the arrow bridge this path replaced -- it
+    # named the registered scanner, which was likewise what the returned tbl
+    # pointed at.
+    skip_if_no_duckdb()
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_mat())
+    tbl <- storeRead(pe, output = "duckdb",
+        duckdb_params = list(name = "my_pe_view"))
+    expect_equal(dbplyr::remote_name(tbl), "my_pe_view")
+    expect_gt(nrow(dplyr::collect(tbl)), 0L)
+})
+
 test_that("storeRead(output = 'duckdb') honours fields", {
     skip_if_no_duckdb()
     pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
