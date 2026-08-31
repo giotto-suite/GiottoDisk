@@ -17,6 +17,21 @@ make_pts_dd <- function(n = 5) {
 
 # output type ####
 
+test_that("duckdb: conn / name passed directly are rejected", {
+    # Same guard as the expression stores -- `...` is not read by any duckdb
+    # path, so a direct `conn` would silently give the caller a tbl_dbi on an
+    # ephemeral connection instead of theirs.
+    skip_if_not_installed("duckdb")
+    conn <- DBI::dbConnect(duckdb::duckdb())
+    on.exit(DBI::dbDisconnect(conn, shutdown = TRUE), add = TRUE)
+    ps <- storeWrite(parquetStore(path = tempfile(fileext = ".parquet")),
+        data.frame(a = 1:5, b = letters[1:5]))
+    expect_error(storeRead(ps, output = "duckdb", conn = conn),
+        "must be passed inside `duckdb_params`")
+    expect_error(storeRead(ps, output = "duckdb", name = "x"),
+        "must be passed inside `duckdb_params`")
+})
+
 test_that("duckdb: storeRead returns tbl_dbi", {
     skip_if_not_installed("duckdb")
     pgs <- parquetGeomStore() |> storeWrite(make_pts_dd())

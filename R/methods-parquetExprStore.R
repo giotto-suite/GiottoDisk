@@ -210,6 +210,7 @@ setMethod("storeRead", signature("parquetExprStore"), function(store,
     # `queryableStore`'s method through `...`, so read them off it.
     if (identical(output, "duckdb")) {
         dots <- list(...)
+        .check_duckdb_dots(dots)
         return(.pestore_to_duckdb(store,
             fields        = dots$fields,
             callback      = dots$callback,
@@ -367,6 +368,7 @@ setMethod("storeRead", signature("unionParquetExprStore"), function(store,
     # duckdb rebuilds the scan natively and returns before the arrow union
     # below. It applies the same composite substore filter and the same @ops.
     if (identical(output, "duckdb")) {
+        .check_duckdb_dots(list(...))
         return(.pestore_to_duckdb(store, fields = fields,
             callback = callback, duckdb_params = duckdb_params))
     }

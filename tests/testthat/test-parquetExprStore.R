@@ -162,6 +162,22 @@ test_that("storeRead(output = 'duckdb') honours duckdb_params$name", {
     expect_gt(nrow(dplyr::collect(tbl)), 0L)
 })
 
+test_that("storeRead(output = 'duckdb') rejects conn / name passed directly", {
+    # They land in `...`, which no duckdb path reads. Silently ignoring them
+    # hands back a working tbl_dbi on a connection the caller did not choose.
+    skip_if_no_duckdb()
+    conn <- DBI::dbConnect(duckdb::duckdb())
+    on.exit(DBI::dbDisconnect(conn, shutdown = TRUE), add = TRUE)
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_mat())
+    expect_error(storeRead(pe, output = "duckdb", conn = conn),
+        "must be passed inside `duckdb_params`")
+    expect_error(storeRead(pe, output = "duckdb", name = "x"),
+        "must be passed inside `duckdb_params`")
+    # ... and only on the duckdb path -- `...` is legitimate elsewhere.
+    expect_no_error(storeRead(pe, output = "query"))
+})
+
 test_that("storeRead(output = 'duckdb') honours fields", {
     skip_if_no_duckdb()
     pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),

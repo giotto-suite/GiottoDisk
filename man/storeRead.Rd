@@ -166,14 +166,26 @@ applied.
 
 Mostly useful for outputs that require materialization.}
 
-\item{duckdb_params}{named \code{list}. Params to pass
-to \code{\link[duckdb:duckdb_register_arrow]{duckdb::duckdb_register_arrow()}} if \code{output = "duckdb"}.
-Key params:
+\item{duckdb_params}{named \code{list}. Settings for \code{output = "duckdb"}:
 \itemize{
-\item \code{conn} - DBI connection to a duckdb instance.
-\item \code{name} - \code{character} (optional) If not provided, a random ID
-for the registered table will be generated
-}}
+\item \code{conn} - DBI connection to a duckdb instance. Optional for the stores
+that compile a native scan (\code{parquetStore}, \code{parquetGeomBase} and
+\code{parquetExprStore} families) — without one an ephemeral in-memory
+connection is created and kept alive by the returned \code{tbl_dbi}. A
+supplied connection is used as given, with no settings applied to it.
+\item \code{name} - \code{character} (optional) name for the object the returned
+\code{tbl_dbi} points at. A random ID is generated if absent.
+}
+
+Stores that still bridge an Arrow scan forward the whole list to
+\code{\link[duckdb:duckdb_register_arrow]{duckdb::duckdb_register_arrow()}} and require \code{conn}. The native compile
+paths do not call that function, so they read only the two keys above and
+ignore anything else.
+
+Both keys must go inside this list. Passing \code{conn} or \code{name} directly to
+\code{storeRead()} is an error rather than a silent no-op, since the result
+would otherwise be a valid \code{tbl_dbi} on a connection the caller did not
+choose.}
 
 \item{omit_internals}{\code{logical} (default \code{TRUE}). Whether to drop internal
 special columns (\code{row_index}, \code{source_id}) from materialized output

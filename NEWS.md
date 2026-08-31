@@ -19,6 +19,11 @@
     the returned `tbl_dbi`, matching the tabular stores.
   - `callback` is now applied on this path. A callback written against Arrow
     rather than plain dplyr will error here instead of being ignored.
+- `storeRead(output = "duckdb")` errors when `conn` or `name` is passed
+  directly rather than inside `duckdb_params`. Both previously landed in `...`,
+  which no duckdb path reads, so the setting was dropped and the caller got a
+  valid `tbl_dbi` on a connection they had not chosen. Applies to the tabular
+  and geometry stores as well.
   - New option `giottodisk.duckdb_in_subquery_threshold` (default 1000):
     membership predicates larger than this are registered and joined rather
     than inlined by dbplyr as a literal `IN` list.

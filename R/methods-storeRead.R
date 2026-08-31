@@ -71,6 +71,11 @@ setMethod("storeRead", signature("fileStore"), function(store, ...) {
 #'   [duckdb::duckdb_register_arrow()] and require `conn`. The native compile
 #'   paths do not call that function, so they read only the two keys above and
 #'   ignore anything else.
+#'
+#'   Both keys must go inside this list. Passing `conn` or `name` directly to
+#'   `storeRead()` is an error rather than a silent no-op, since the result
+#'   would otherwise be a valid `tbl_dbi` on a connection the caller did not
+#'   choose.
 #' @export
 setMethod("storeRead", signature("queryableStore"), function(store,
     fields = NULL, 
@@ -827,6 +832,7 @@ sd_view_ref <- function(sdf) {
     checkmate::assert_list(duckdb_params)
 
     extra_args <- list(...)
+    .check_duckdb_dots(extra_args)
     extent_arg <- extra_args$extent
     tile_idx_arg <- extra_args$tile_idx
 
@@ -997,6 +1003,35 @@ sd_view_ref <- function(sdf) {
     attr(tbl, "view_name") <- base_view_name
     tbl
 }
+
+# `conn` and `name` are keys of `duckdb_params`, not arguments of `storeRead`.
+# Passed directly they land in `...`, which no duckdb path reads -- the caller
+# then gets a working tbl_dbi on an ephemeral connection that is not theirs,
+# with nothing to indicate the setting was dropped. Silence is the wrong answer
+# there: the result looks right and the connection they wanted to control is
+# not the one in use.
+#
+# Only these two names are rejected, and only on the duckdb paths. A catch-all
+# on unrecognised `...` would misfire -- `omit_internals` is a formal on the
+# tabular stores but lands in `...` for an expression store, and the geom
+# stores pass `extent` / `tile_idx` through legitimately. Nothing downstream
+# accepts `conn` or `name` (the pestore `...` reaches `arrow::open_dataset`,
+# whose formals are sources / schema / partitioning / hive_style /
+# unify_schemas / format / factory_options), so there is no caller to break.
+#
+# Sedona has no equivalent: `.pstore_to_sedona` takes no `duckdb_params` and
+# registers into a process-global session rather than a connection, so there is
+# nothing to mis-pass.
+.check_duckdb_dots <- function(dots) {
+    bad <- intersect(c("conn", "name"), names(dots))
+    if (length(bad) == 0L) return(invisible(NULL))
+    stop("[storeRead][duckdb] ", paste(sprintf("`%s`", bad), collapse = " and "),
+        " must be passed inside `duckdb_params`, not directly to `storeRead()`",
+        ":\n  storeRead(x, output = \"duckdb\", duckdb_params = list(",
+        paste(sprintf("%s = ", bad), collapse = "..., "), "...))",
+        call. = FALSE)
+}
+
 
 # `@uid` names the on-disk `source_id=` directory. A store minted fresh from a
 # path gets a NEW uid, which points this scan at a directory that is not there
