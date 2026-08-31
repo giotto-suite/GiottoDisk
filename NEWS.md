@@ -6,6 +6,26 @@
   expression matrix when the panel is absent.
 
 ## changes
+- `storeRead(x, output = "duckdb")` on a `parquetExprStore` /
+  `unionParquetExprStore` now rebuilds the scan from DuckDB's own
+  `read_parquet` rather than registering an Arrow scanner. DuckDB owns the
+  scan, so axis ranges prune parquet row groups in the engine and reads honour
+  `giottodisk.duckdb_memory_limit`, which the Arrow bridge never saw. The
+  subset predicates and the `@ops` chain are applied by the same functions the
+  `"query"` path uses — they are dplyr, which lowers to Acero and DuckDB
+  alike — so the two outputs return the same values by construction.
+  - `storeRead(pe, output = "duckdb")` with no `duckdb_params$conn` now works;
+    it previously errored. An ephemeral connection is created and kept alive by
+    the returned `tbl_dbi`, matching the tabular stores.
+  - `callback` is now applied on this path. A callback written against Arrow
+    rather than plain dplyr will error here instead of being ignored.
+  - New option `giottodisk.duckdb_in_subquery_threshold` (default 1000):
+    membership predicates larger than this are registered and joined rather
+    than inlined by dbplyr as a literal `IN` list.
+- `.op_transform_log` computes `log(value + 1)` rather than `log1p(value)`.
+  DuckDB has no `log1p` and dbplyr does not translate it, so one expression now
+  serves Acero, DuckDB and the data.table executor alike. Values are unchanged
+  to within one ulp.
 - `Giotto (>= 4.2.4)` in `Imports:`, for the `AteraReader` class `R/convenience-atera.R` subclasses. Below that the failure is an S4 inheritance error at load rather than a version message.
 - Grouped expression statistics — `analyzeData(x, featStatsParam, groups =)` and
   everything riding it, including scran marker detection — now window the scan

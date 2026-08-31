@@ -352,6 +352,30 @@ Tiled stores write the top-level extent to each tile file (intentional — files
   shape as duckdb path: per-tile UNION ALL, `@ops` translated, `ST_*` for
   spatial. Built by `.pstore_to_sedona`. Shares the @ops translation
   builder `.pstore_sql_inner` with the duckdb path.
+
+### `"duckdb"` on expression stores
+`parquetExprStore` / `unionParquetExprStore` compile via `.pestore_to_duckdb`,
+not `.pstore_to_duckdb`, and the two work differently on purpose.
+
+The tabular path emits SQL text because its ops have no form both engines
+accept, which costs it a second implementation of the op registry — that is why
+its SQL side drops `join` / `tail` / `sample` with a warning and flattens op
+order. An expression store's subset predicates and op chain are already dplyr,
+and dplyr lowers to Acero and dbplyr alike, so `.pestore_to_duckdb` only swaps
+the carrier: it builds a `tbl_dbi` over `read_parquet` and then runs the *same*
+`.pe_apply_axis_pred()` / `.pe_apply_ops()` as the arrow path. `"query"` and
+`"duckdb"` therefore return the same values by construction.
+
+Consequences worth knowing:
+- Writing a new op means one dplyr branch in `.pe_apply_op`, serving both
+  carriers. Reach for a carrier test only where an engine cannot accept the
+  other's data (`.pe_payload_carrier` is the sole case).
+- `log1p` is unusable — DuckDB has no such function and dbplyr does not
+  translate it. `.op_transform_log` uses `log(value + 1)`.
+- Axis membership sets above
+  `getOption("giottodisk.duckdb_in_subquery_threshold")` (1000) are registered
+  and semi/anti-joined rather than inlined as a literal `IN` list.
+- `.arrow_to_duckdb` is no longer reachable from the expression stores.
 - `"terra"`: SpatVector (`parquetGeomBase` only)
 - `"sf"`: sf object (`parquetGeomBase` only)
 

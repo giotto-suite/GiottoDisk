@@ -906,6 +906,107 @@ sd_view_ref <- function(sdf) {
 }
 
 
+# .pestore_to_duckdb ####
+#
+# The expression-store twin of `.pstore_to_duckdb`, and deliberately a much
+# smaller function.
+#
+# `.pstore_to_duckdb` has to compile `@ops` into SQL text because the tabular
+# ops have no form both engines accept -- `spat_relate` needs ST_*, `id_filter`
+# needs EXISTS, `crop`/`window` are AABB literals, and `subset()` captures
+# arbitrary R expressions that `.r_expr_to_sql` has to walk. The cost of that
+# is a second implementation of the op registry, which is why the SQL side
+# drops `join` / `tail` / `sample` with a warning and flattens op ordering.
+#
+# A parquetExprStore has no such problem: its subset predicates and its op
+# chain are already dplyr, and dplyr lowers to Acero and to dbplyr alike. So
+# this function only swaps the CARRIER -- build a tbl_dbi over DuckDB's own
+# `read_parquet` instead of an arrow Dataset, then run the SAME
+# `.pe_apply_axis_pred()` / `.pe_apply_ops()` the arrow path runs. That is what
+# makes `output = "query"` and `output = "duckdb"` return the same values by
+# construction rather than by test.
+#
+# Connection lifecycle mirrors `.pstore_to_duckdb`: a user-supplied conn is
+# theirs and is used as-is, otherwise an ephemeral one is created and kept
+# alive by the returned tbl_dbi's `$src$con`.
+.pestore_to_duckdb <- function(store, fields = NULL, callback = NULL,
+    duckdb_params = list()) {
+    GiottoUtils::package_check("duckdb")
+    GiottoUtils::package_check("dbplyr")
+    GiottoUtils::package_check("DBI")
+    checkmate::assert_list(duckdb_params)
+
+    # Ours goes through `.duckdb_connect()` so the memory-limit option
+    # applies; a user's connection keeps whatever settings they gave it.
+    conn <- duckdb_params$conn %||% .duckdb_connect()
+
+    specs <- .pstore_tile_specs(store)
+    .pestore_guard_specs(store, specs)
+
+    # hive_partitioning=false + a literal `source_id`: the payload itself is
+    # only (row_id, col_id, value), so source_id has to be injected, and
+    # letting duckdb infer it from the directory name would also let it pick
+    # the type. As a literal it is VARCHAR, matching what arrow's hive
+    # partitioning hands back and what the op payloads join against.
+    base_view_name <- tolower(paste0("gd_pe_", .make_uid()))
+    arms <- vapply(specs, function(spec) {
+        path_escaped <- gsub("'", "''", spec$dir_path, fixed = TRUE)
+        sprintf("SELECT *, %s FROM read_parquet('%s*.parquet', hive_partitioning=false)",
+            .pstore_tile_literal_cols(spec), path_escaped)
+    }, FUN.VALUE = character(1L))
+    DBI::dbExecute(conn, sprintf('CREATE OR REPLACE TEMP VIEW "%s" AS %s',
+        base_view_name, paste(arms, collapse = " UNION ALL ")))
+
+    x <- dplyr::tbl(conn, base_view_name)
+
+    # --- the arrow pipeline, verbatim ---
+    # A union carries its substores' subset state in one composite
+    # source_id-aware expression; DuckDB pushes that disjunction through the
+    # UNION ALL and constant-folds each arm's source_id away, leaving a bare
+    # id range on each scan. No per-arm construction needed.
+    if (inherits(store, "unionParquetExprStore")) {
+        filt <- .union_substore_filter_expr(store@stores)
+        if (!is.null(filt)) x <- dplyr::filter(x, !!filt)
+    } else {
+        x <- .pe_apply_axis_pred(x, .pe_axis_pred(store@cell_idx), "row_id")
+        x <- .pe_apply_axis_pred(x, .pe_axis_pred(store@gene_idx), "col_id")
+    }
+    x <- .pe_apply_ops(x, store@ops)
+    if (!is.null(fields)) x <- dplyr::select(x, dplyr::all_of(fields))
+    if (!is.null(callback)) x <- callback(x)
+
+    # Register the compiled query as a view so `dbplyr::remote_name()` on the
+    # result is a handle a caller can hit with plain SQL, as it is for
+    # `.pstore_to_duckdb`.
+    final_view_name <- tolower(paste0("gd_pe_final_", .make_uid()))
+    DBI::dbExecute(conn, sprintf('CREATE OR REPLACE TEMP VIEW "%s" AS %s',
+        final_view_name, as.character(dbplyr::remote_query(x))))
+    tbl <- dplyr::tbl(conn, final_view_name)
+    attr(tbl, "view_name") <- base_view_name
+    tbl
+}
+
+# `@uid` names the on-disk `source_id=` directory. A store minted fresh from a
+# path gets a NEW uid, which points this scan at a directory that is not there
+# -- the arrow path answers that with an empty result, so the failure is worth
+# naming here rather than leaving as duckdb's "No files found".
+.pestore_guard_specs <- function(store, specs) {
+    if (length(specs) == 0L) {
+        stop("[storeRead][pestore->duckdb] no source partitions resolved for ",
+            toString(class(store)), call. = FALSE)
+    }
+    missing <- !vapply(specs, function(s) dir.exists(s$dir_path), logical(1L))
+    if (any(missing)) {
+        stop("[storeRead][pestore->duckdb] no parquet partition at:\n  ",
+            paste(vapply(specs[missing], `[[`, character(1L), "dir_path"),
+                collapse = "\n  "),
+            "\n  `@uid` must match the on-disk `source_id=` directory.",
+            call. = FALSE)
+    }
+    invisible(NULL)
+}
+
+
 # Resolve the per-tile directories that should back a SQL backend's base
 # view. Used by both `.pstore_to_sedona` and `.pstore_to_duckdb`; the
 # returned spec list is engine-neutral (just directory paths + partition
@@ -933,8 +1034,15 @@ sd_view_ref <- function(sdf) {
 #
 # `unionParquetStore` substores are walked in order — one spec per substore
 # tile directory.
+#
+# `parquetExprStore` shares the no-tile branch: it writes the same
+# `source_id=<uid>/` partition and has no tile layer, so the spec it produces
+# is the flat tabular one. Its union must be named explicitly here — unlike
+# every other union in the package it does not extend `fileStore`, so falling
+# through to `list(store)` would reach for a `@path` slot the class lacks.
 .pstore_tile_specs <- function(store, tile_idx_arg = NULL) {
-    substores <- if (inherits(store, "unionParquetStore")) {
+    substores <- if (inherits(store, c("unionParquetStore",
+                                       "unionParquetExprStore"))) {
         store@stores
     } else {
         list(store)

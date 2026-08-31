@@ -32,6 +32,11 @@
     init_option("giottodisk.adopt_external", FALSE)
     # -- duckdb
     init_option("giottodisk.duckdb_memory_limit", "8GB")
+    # Above this many ids, an axis membership predicate is registered and
+    # joined rather than inlined by dbplyr as a literal IN list. Distinct from
+    # the sedona threshold below: same number, different engine, and a
+    # different rewrite (semi/anti join vs a VALUES subquery).
+    init_option("giottodisk.duckdb_in_subquery_threshold", 1000L)
     # -- plot
     init_option("giottodisk.plot_sample_max", 1e5)
     # -- sedona SQL translation

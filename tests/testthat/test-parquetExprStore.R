@@ -110,6 +110,144 @@ test_that("storeRead returns an Arrow Dataset (lazy, not materialized)", {
 })
 
 
+# ---- storeRead on the duckdb carrier -------------------------------------
+# Same store, same modifications, different engine executing the scan. See
+# helper-pestore-parity.R for why these sit beside the Acero tests.
+
+test_that("storeRead(output = 'duckdb') returns a lazy tbl_dbi", {
+    skip_if_no_duckdb()
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_mat())
+    expect_s3_class(storeRead(pe, output = "duckdb"), "tbl_dbi")
+})
+
+test_that("storeRead(output = 'duckdb') creates a connection when given none", {
+    # The Arrow bridge this replaces hard-errored without duckdb_params$conn.
+    skip_if_no_duckdb()
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_mat())
+    expect_no_error(dplyr::collect(storeRead(pe, output = "duckdb")))
+})
+
+test_that("storeRead(output = 'duckdb') uses a supplied connection as given", {
+    skip_if_no_duckdb()
+    conn <- DBI::dbConnect(duckdb::duckdb())
+    on.exit(DBI::dbDisconnect(conn, shutdown = TRUE), add = TRUE)
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_mat())
+    tbl <- storeRead(pe, output = "duckdb", duckdb_params = list(conn = conn))
+    expect_identical(dbplyr::remote_con(tbl), conn)
+})
+
+test_that("storeRead(output = 'duckdb') errors when @uid is not the on-disk partition", {
+    # Minting a store from a path gives it a fresh uid, which points the scan
+    # at a source_id= directory that is not there. Must not scan empty.
+    skip_if_no_duckdb()
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_mat())
+    pe@uid <- "definitely_not_on_disk"
+    expect_error(storeRead(pe, output = "duckdb"), "must match the on-disk")
+})
+
+test_that("storeRead(output = 'duckdb') honours fields", {
+    skip_if_no_duckdb()
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_mat())
+    df <- dplyr::collect(storeRead(pe, output = "duckdb",
+        fields = c("row_id", "value")))
+    expect_setequal(names(df), c("row_id", "value"))
+    expect_gt(nrow(df), 0L)
+})
+
+test_that("duckdb carrier: unmodified read matches Acero", {
+    skip_if_no_duckdb()
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_mat(n_genes = 12L, n_cells = 20L, seed = 21))
+    .expect_dd_parity(pe)
+})
+
+test_that("duckdb carrier: values match the source matrix, not just Acero", {
+    # Parity alone cannot catch a bug both carriers share, since they run the
+    # same dplyr. Anchor one case against the matrix the store was written from.
+    skip_if_no_duckdb()
+    mat <- .tiny_mat(n_genes = 6L, n_cells = 8L, density = 0.6, seed = 7)
+    pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+
+    d <- data.table::as.data.table(
+        dplyr::collect(storeRead(pe, output = "duckdb")))
+    expect_equal(nrow(d), length(mat@x))
+
+    # row_id is the cell axis (matrix column), col_id the gene axis (row).
+    trip <- Matrix::summary(mat)
+    data.table::setorderv(d, c("row_id", "col_id"))
+    trip <- trip[order(trip$j, trip$i), ]
+    expect_equal(d$row_id, as.integer(trip$j))
+    expect_equal(d$col_id, as.integer(trip$i))
+    expect_equal(d$value, trip$x)
+})
+
+
+# ---- @ops chain on the duckdb carrier ------------------------------------
+# One dplyr executor serves both engines, so these assert the chain lowers
+# rather than that duckdb has its own translation.
+
+test_that("duckdb carrier: a log op matches Acero", {
+    skip_if_no_duckdb()
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_mat(n_genes = 12L, n_cells = 20L, seed = 22))
+    pe@ops <- list(list(type = "log", base = 2))
+    .expect_dd_parity(pe)
+})
+
+test_that("duckdb carrier: multiply matches Acero on every axis", {
+    skip_if_no_duckdb()
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_mat(n_genes = 12L, n_cells = 20L, seed = 23))
+
+    pe_all <- pe
+    pe_all@ops <- list(list(type = "multiply", axis = "all", factors = 2.5))
+    .expect_dd_parity(pe_all)
+
+    set.seed(11)
+    pe_cell <- pe
+    pe_cell@ops <- list(list(type = "multiply", axis = "cell",
+        factors = stats::setNames(list(runif(as.integer(pe@n_cells))), pe@uid)))
+    .expect_dd_parity(pe_cell)
+
+    pe_feat <- pe
+    pe_feat@ops <- list(list(type = "multiply", axis = "feat",
+        factors = stats::setNames(list(runif(as.integer(pe@n_genes))), pe@uid)))
+    .expect_dd_parity(pe_feat)
+})
+
+test_that("duckdb carrier: op order is preserved, not flattened", {
+    # log-then-multiply and multiply-then-log are different values. Each must
+    # match its own Acero twin -- a carrier that reordered or collapsed the
+    # chain would still agree with itself but not with Acero.
+    skip_if_no_duckdb()
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_mat(n_genes = 12L, n_cells = 20L, seed = 24))
+    lg <- list(type = "log", base = 2)
+    ml <- list(type = "multiply", axis = "all", factors = 3)
+
+    fwd <- pe; fwd@ops <- list(lg, ml)
+    rev <- pe; rev@ops <- list(ml, lg)
+
+    a <- .expect_dd_parity(fwd)
+    b <- .expect_dd_parity(rev)
+    expect_false(isTRUE(all.equal(a$value, b$value)))
+})
+
+test_that("duckdb carrier: a subset and an op chain combine as on Acero", {
+    skip_if_no_duckdb()
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_mat(n_genes = 12L, n_cells = 20L, seed = 25))
+    sub <- pe[c(2L, 6L, 10L), 4:16]
+    sub@ops <- list(list(type = "log", base = 2))
+    .expect_dd_parity(sub)
+})
+
+
 # ---- Streaming mtxInput + storeWrite -------------------------------------
 
 test_that("mtxInput + storeWrite on a synthetic 10x triple is lossless", {
@@ -439,6 +577,29 @@ test_that("union [-subset: cell selection that zeroes a substore drops it", {
     expect_equal(length(sub@stores), 1L)
     expect_equal(sub@stores[[1L]]@uid, s$pe1@uid)
     expect_equal(sub@n_cells, 2L)
+})
+
+test_that("duckdb carrier: union read matches Acero, subset and not", {
+    # The union's per-substore subset state is one composite source_id-aware
+    # expression, used unchanged on both carriers.
+    skip_if_no_duckdb()
+    s <- .cbind_pair()
+    .expect_dd_parity(s$u)
+    .expect_dd_parity(s$u[, c("c1", "c3", "c4")])
+})
+
+test_that("duckdb carrier: a union-level multiply op matches Acero", {
+    # Payload is keyed by substore uid, so this exercises the composite
+    # (source_id, row_id) join across both arms of the UNION ALL.
+    skip_if_no_duckdb()
+    s <- .cbind_pair()
+    set.seed(21)
+    s$u@ops <- list(list(type = "multiply", axis = "cell",
+        factors = stats::setNames(
+            list(runif(as.integer(s$pe1@n_cells)),
+                 runif(as.integer(s$pe2@n_cells))),
+            c(s$pe1@uid, s$pe2@uid))))
+    .expect_dd_parity(s$u)
 })
 
 
