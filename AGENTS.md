@@ -339,6 +339,21 @@ store@ops <- c(store@ops, list(list(type = "filter", expr = my_call)))
 Tiled stores write the top-level extent to each tile file (intentional — files are internal).
 
 ## Output Formats
+
+**`storeRead` holds no engine-side state between calls.** Its job is to derive
+a scan from the store's own state — `@ops`, the subset slots, `fields` — and
+hand back a lazy handle. The engine is a executor, not an orchestrator: any
+view or table `storeRead` creates belongs to that one call, and nothing in the
+signature lets a caller name, address, or carry one across calls. `conn` is the
+sole exception, and only because the caller already owns it.
+
+This is why there is no parameter for the intermediate scan view, and why one
+should not be added. A consumer that wants a prepared table it modifies
+iteratively — a coordinator caching a narrowed scan, say — owns that itself
+against a connection it controls, as a contained optimization inside that
+consumer. Pushing it into `storeRead` would make every reader a participant in
+somebody else's session lifetime.
+
 - `"query"`: Arrow lazy dataset (default)
 - `"tibble"`: collected data.table, arranged by source_id/tile_index/row_index
 - `"duckdb"`: lazy `tbl_dbi` over a duckdb `TEMP VIEW` of the parquet dataset.

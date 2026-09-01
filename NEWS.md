@@ -19,6 +19,9 @@
     the returned `tbl_dbi`, matching the tabular stores.
   - `callback` is now applied on this path. A callback written against Arrow
     rather than plain dplyr will error here instead of being ignored.
+- `duckdb_params$name` is now honoured by the tabular and geometry stores. It
+  was documented but never read by `.pstore_to_duckdb`, which always generated
+  its own view name.
 - `storeRead(output = "duckdb")` errors when `conn` or `name` is passed
   directly rather than inside `duckdb_params`. Both previously landed in `...`,
   which no duckdb path reads, so the setting was dropped and the caller got a

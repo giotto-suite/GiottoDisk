@@ -173,9 +173,22 @@ that compile a native scan (\code{parquetStore}, \code{parquetGeomBase} and
 \code{parquetExprStore} families) — without one an ephemeral in-memory
 connection is created and kept alive by the returned \code{tbl_dbi}. A
 supplied connection is used as given, with no settings applied to it.
-\item \code{name} - \code{character} (optional) name for the object the returned
+\item \code{name} - \code{character} (optional) label for the view the returned
 \code{tbl_dbi} points at. A random ID is generated if absent.
 }
+
+\code{name} is a label, not a cache key. Every call compiles a fresh scan and
+installs it with \verb{CREATE OR REPLACE}, so passing a name a second time does
+not attach to the existing view — it \emph{replaces} its definition, and a
+\code{tbl_dbi} already handed out under that name then silently reads the new
+store. Reuse a name only when discarding what the previous call returned.
+
+The intermediate view holding the raw \code{read_parquet} scan is named
+internally and cannot be set. \code{storeRead()} derives a scan from the store's
+own state and keeps nothing on the database side between calls, so there is
+nothing to carry across them and no handle to carry it with. A consumer
+that wants a prepared table it modifies iteratively owns that itself,
+against a connection it controls.
 
 Stores that still bridge an Arrow scan forward the whole list to
 \code{\link[duckdb:duckdb_register_arrow]{duckdb::duckdb_register_arrow()}} and require \code{conn}. The native compile

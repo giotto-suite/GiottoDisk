@@ -64,8 +64,21 @@ setMethod("storeRead", signature("fileStore"), function(store, ...) {
 #'     `parquetExprStore` families) — without one an ephemeral in-memory
 #'     connection is created and kept alive by the returned `tbl_dbi`. A
 #'     supplied connection is used as given, with no settings applied to it.
-#'   * `name` - `character` (optional) name for the object the returned
+#'   * `name` - `character` (optional) label for the view the returned
 #'     `tbl_dbi` points at. A random ID is generated if absent.
+#'
+#'   `name` is a label, not a cache key. Every call compiles a fresh scan and
+#'   installs it with `CREATE OR REPLACE`, so passing a name a second time does
+#'   not attach to the existing view — it *replaces* its definition, and a
+#'   `tbl_dbi` already handed out under that name then silently reads the new
+#'   store. Reuse a name only when discarding what the previous call returned.
+#'
+#'   The intermediate view holding the raw `read_parquet` scan is named
+#'   internally and cannot be set. `storeRead()` derives a scan from the store's
+#'   own state and keeps nothing on the database side between calls, so there is
+#'   nothing to carry across them and no handle to carry it with. A consumer
+#'   that wants a prepared table it modifies iteratively owns that itself,
+#'   against a connection it controls.
 #'
 #'   Stores that still bridge an Arrow scan forward the whole list to
 #'   [duckdb::duckdb_register_arrow()] and require `conn`. The native compile
@@ -909,7 +922,8 @@ sd_view_ref <- function(sdf) {
     # Register final view + return a lazy tbl. Final-view registration lets
     # the user reference it via plain `tbl(conn, name)` and gives dbplyr a
     # stable handle.
-    final_view_name <- tolower(paste0("gd_dd_final_", .make_uid()))
+    final_view_name <- duckdb_params$name %||%
+        tolower(paste0("gd_dd_final_", .make_uid()))
     DBI::dbExecute(conn,
         sprintf('CREATE OR REPLACE TEMP VIEW "%s" AS %s',
             final_view_name, inner_sql))
@@ -1008,16 +1022,16 @@ sd_view_ref <- function(sdf) {
 # Passed directly they land in `...`, which no duckdb path reads -- the caller
 # then gets a working tbl_dbi on an ephemeral connection that is not theirs,
 # with nothing to indicate the setting was dropped. Silence is the wrong answer
-# there: the result looks right and the connection they wanted to control is
-# not the one in use.
+# there: the result looks right and the thing they wanted to control is not in
+# use.
 #
 # Only these two names are rejected, and only on the duckdb paths. A catch-all
 # on unrecognised `...` would misfire -- `omit_internals` is a formal on the
 # tabular stores but lands in `...` for an expression store, and the geom
 # stores pass `extent` / `tile_idx` through legitimately. Nothing downstream
-# accepts `conn` or `name` (the pestore `...` reaches `arrow::open_dataset`,
-# whose formals are sources / schema / partitioning / hive_style /
-# unify_schemas / format / factory_options), so there is no caller to break.
+# accepts either (the pestore `...` reaches `arrow::open_dataset`, whose
+# formals are sources / schema / partitioning / hive_style / unify_schemas /
+# format / factory_options), so there is no caller to break.
 #
 # Sedona has no equivalent: `.pstore_to_sedona` takes no `duckdb_params` and
 # registers into a process-global session rather than a connection, so there is
@@ -1025,10 +1039,11 @@ sd_view_ref <- function(sdf) {
 .check_duckdb_dots <- function(dots) {
     bad <- intersect(c("conn", "name"), names(dots))
     if (length(bad) == 0L) return(invisible(NULL))
-    stop("[storeRead][duckdb] ", paste(sprintf("`%s`", bad), collapse = " and "),
-        " must be passed inside `duckdb_params`, not directly to `storeRead()`",
-        ":\n  storeRead(x, output = \"duckdb\", duckdb_params = list(",
-        paste(sprintf("%s = ", bad), collapse = "..., "), "...))",
+    stop("[storeRead][duckdb] ", paste(sprintf("`%s`", bad), collapse = ", "),
+        " must be passed inside `duckdb_params`, not directly to ",
+        "`storeRead()`:\n  storeRead(x, output = \"duckdb\", ",
+        "duckdb_params = list(",
+        paste(sprintf("%s = ...", bad), collapse = ", "), "))",
         call. = FALSE)
 }
 

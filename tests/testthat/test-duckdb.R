@@ -32,6 +32,18 @@ test_that("duckdb: conn / name passed directly are rejected", {
         "must be passed inside `duckdb_params`")
 })
 
+test_that("duckdb: storeRead honours duckdb_params$name", {
+    skip_if_not_installed("duckdb")
+    conn <- DBI::dbConnect(duckdb::duckdb())
+    on.exit(DBI::dbDisconnect(conn, shutdown = TRUE), add = TRUE)
+    ps <- storeWrite(parquetStore(path = tempfile(fileext = ".parquet")),
+        data.frame(a = 1:5, b = letters[1:5]))
+    tbl <- storeRead(ps, output = "duckdb",
+        duckdb_params = list(conn = conn, name = "ps_view"))
+    expect_equal(dbplyr::remote_name(tbl), "ps_view")
+    expect_equal(nrow(dplyr::collect(tbl)), 5L)
+})
+
 test_that("duckdb: storeRead returns tbl_dbi", {
     skip_if_not_installed("duckdb")
     pgs <- parquetGeomStore() |> storeWrite(make_pts_dd())

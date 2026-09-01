@@ -162,6 +162,30 @@ test_that("storeRead(output = 'duckdb') honours duckdb_params$name", {
     expect_gt(nrow(dplyr::collect(tbl)), 0L)
 })
 
+test_that("storeRead(output = 'duckdb') replaces a reused name, never reuses it", {
+    # `name` labels the view; it is not a cache key. Every call compiles a
+    # fresh scan and installs it with CREATE OR REPLACE, so a second call under
+    # the same name repoints the tbl_dbi the first call handed out.
+    skip_if_no_duckdb()
+    conn <- DBI::dbConnect(duckdb::duckdb())
+    on.exit(DBI::dbDisconnect(conn, shutdown = TRUE), add = TRUE)
+    a <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_mat(n_cells = 8L, seed = 1))
+    b <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_mat(n_cells = 20L, seed = 2))
+
+    t1 <- storeRead(a, output = "duckdb",
+        duckdb_params = list(conn = conn, name = "shared"))
+    n_before <- nrow(dplyr::collect(t1))
+
+    t2 <- storeRead(b, output = "duckdb",
+        duckdb_params = list(conn = conn, name = "shared"))
+
+    expect_false(n_before == nrow(dplyr::collect(t2)))
+    # the first handle now reads the second store
+    expect_equal(nrow(dplyr::collect(t1)), nrow(dplyr::collect(t2)))
+})
+
 test_that("storeRead(output = 'duckdb') rejects conn / name passed directly", {
     # They land in `...`, which no duckdb path reads. Silently ignoring them
     # hands back a working tbl_dbi on a connection the caller did not choose.
