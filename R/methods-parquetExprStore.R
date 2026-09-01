@@ -5,13 +5,23 @@ NULL
 # Two-phase op execution:
 #   @ops       chain prefix: folded into the composed query via @read_fun
 #              wrap + .pe_apply_ops before materialization.
-#   @post_ops  chain suffix: applied AFTER the arrow query has been
+#   @post_ops  chain suffix: applied AFTER the lazy query has been
 #              collected, mutating `value` in place. Only applied for
 #              output modes that materialize (tibble / data.table /
 #              dgcmatrix). `query` and `duckdb` outputs return the
 #              lazy-only view — callers using those outputs are
 #              responsible for applying @post_ops themselves if they
 #              want fully-baked values.
+#
+# Two lazy carriers, one set of modifications:
+#   query      an Acero query over an arrow Dataset.
+#   duckdb     a tbl_dbi over duckdb's own `read_parquet`, compiled by
+#              .pestore_to_duckdb. DuckDB owns the scan; arrow is not in
+#              the path at all.
+# Both apply the SAME subset predicates (.pe_apply_axis_pred) and the SAME
+# op chain (.pe_apply_ops), because both are dplyr and dplyr lowers to
+# Acero and dbplyr alike. Switching between the two outputs changes who
+# executes the scan, not what the scan returns.
 #
 # Index remapping is a SEPARATE bake step from @post_ops, and only the
 # dgcmatrix output currently performs it:
@@ -97,6 +107,57 @@ NULL
     out
 }
 
+# Apply an axis plan to a lazy query, on either carrier. One site for both, so
+# a subset can never be applied to one output and skipped on the other.
+#
+# The shapes come from `.pe_axis_pred_exprs()` in every case; this only decides
+# HOW a membership set reaches the engine. Acero takes it as a hash set, which
+# is what adr/0008 measured and there is nothing to fix. dbplyr inlines it into
+# the query TEXT, so on a tbl_dbi a large set becomes a large SQL string:
+# measured over a 500k-row scan, 1k ids cost the same as a registered
+# semi-join, 20k cost 8x, and 100k cost 38x on top of 778 KB of SQL. Above the
+# threshold the ids are registered instead and the test becomes a semi/anti
+# join, which dbplyr renders as EXISTS / NOT EXISTS -- the same shape the
+# tabular path's `id_filter` already uses, and NULL-safe where NOT IN is not.
+#
+# The range half is kept as literals either way: shape 2 needs it for
+# correctness (adr/0008), and it is also the only half DuckDB can turn into a
+# row-group prune.
+
+#' @keywords internal
+#' @noRd
+.pe_apply_axis_pred <- function(x, plan, col) {
+    if (is.null(plan)) return(x)
+    ids <- if (plan$use_anti) plan$dropped else if (!plan$gapless) plan$kept
+           else integer(0L)
+    thresh <- getOption("giottodisk.duckdb_in_subquery_threshold", 1000L)
+    if (!inherits(x, "tbl_dbi") || length(ids) <= thresh) {
+        for (p in .pe_axis_pred_exprs(plan, col)) x <- dplyr::filter(x, !!p)
+        return(x)
+    }
+    if (plan$use_range) {
+        sym <- as.name(col)
+        x <- dplyr::filter(x,
+            !!bquote(.(sym) >= .(plan$lo) & .(sym) <= .(plan$hi)))
+    }
+    ids_tbl <- .pe_register_ids(dbplyr::remote_con(x), ids, col)
+    if (plan$use_anti) {
+        dplyr::anti_join(x, ids_tbl, by = col)
+    } else {
+        dplyr::semi_join(x, ids_tbl, by = col)
+    }
+}
+
+#' @keywords internal
+#' @noRd
+.pe_register_ids <- function(conn, ids, col) {
+    name <- tolower(paste0("gd_peid_", .make_uid()))
+    tab <- do.call(arrow::arrow_table,
+        stats::setNames(list(as.integer(ids)), col))
+    duckdb::duckdb_register_arrow(conn, name, tab)
+    dplyr::tbl(conn, name)
+}
+
 
 # * pestore ####
 
@@ -146,26 +207,38 @@ setMethod("storeRead", signature("parquetExprStore"), function(store,
     max_rows = NULL, max_cols = NULL, ...) {
     if (is.character(output)) output <- match.arg(output)
 
+    # duckdb rebuilds the scan from `read_parquet` rather than reading through
+    # an arrow Dataset, so it returns before the @read_fun wrap below — that
+    # wrap composes an ARROW query and this path never builds one. The subset
+    # predicates and the op chain are applied inside, by the same functions.
+    # `fields` / `callback` / `duckdb_params` have no formals here; they reach
+    # `queryableStore`'s method through `...`, so read them off it.
+    if (identical(output, "duckdb")) {
+        dots <- list(...)
+        .check_duckdb_dots(dots)
+        return(.pestore_to_duckdb(store,
+            fields        = dots$fields,
+            callback      = dots$callback,
+            duckdb_params = dots$duckdb_params %||% list()))
+    }
+
     # Phase 1: wrap @read_fun with subset filters + arrow-side @ops
     has_subset <- length(store@cell_idx) > 0L || length(store@gene_idx) > 0L
     has_ops    <- length(store@ops) > 0L
     if (has_subset || has_ops) {
         orig_rf <- store@read_fun
-        ci  <- store@cell_idx
-        gi  <- store@gene_idx
         ops <- store@ops
-        # Axis predicates are built by `.pe_axis_pred()` / emitted by
-        # `.pe_axis_pred_exprs()`, shared with the union read path so both
-        # get the same row-group pruning. See those functions for the
-        # strategy and the measurements behind it.
-        preds <- c(
-            .pe_axis_pred_exprs(.pe_axis_pred(ci), "row_id"),
-            .pe_axis_pred_exprs(.pe_axis_pred(gi), "col_id")
-        )
+        # Plans are built by `.pe_axis_pred()` and applied by
+        # `.pe_apply_axis_pred()`, shared with the union read path and with the
+        # duckdb rebuild so all three get the same predicates. See those
+        # functions for the strategy and the measurements behind it.
+        ci_plan <- .pe_axis_pred(store@cell_idx)
+        gi_plan <- .pe_axis_pred(store@gene_idx)
 
         store@read_fun <- function(x, ...) {
             ds <- orig_rf(x, ...)
-            for (p in preds) ds <- dplyr::filter(ds, !!p)
+            ds <- .pe_apply_axis_pred(ds, ci_plan, "row_id")
+            ds <- .pe_apply_axis_pred(ds, gi_plan, "col_id")
             if (length(ops) > 0L) ds <- .pe_apply_ops(ds, ops)
             ds
         }
@@ -178,8 +251,8 @@ setMethod("storeRead", signature("parquetExprStore"), function(store,
             max_rows = max_rows, max_cols = max_cols))
     }
 
-    # query / duckdb: return lazy without applying @post_ops (documented)
-    if (output %in% c("query", "duckdb")) {
+    # query: return lazy without applying @post_ops (documented)
+    if (identical(output, "query")) {
         return(callNextMethod(store = store, output = output, ...))
     }
 
@@ -297,6 +370,14 @@ setMethod("storeRead", signature("unionParquetExprStore"), function(store,
     output <- match.arg(output, choices = c("query", "tibble", "duckdb",
         "dgcmatrix"))
 
+    # duckdb rebuilds the scan natively and returns before the arrow union
+    # below. It applies the same composite substore filter and the same @ops.
+    if (identical(output, "duckdb")) {
+        .check_duckdb_dots(list(...))
+        return(.pestore_to_duckdb(store, fields = fields,
+            callback = callback, duckdb_params = duckdb_params))
+    }
+
     # Open each substore as a Dataset (no read_fun wrapping), then union
     # them via `arrow::open_dataset(list(...))`. Per-substore
     # `@cell_idx`/`@gene_idx` filters from `[`-subset are applied as a
@@ -321,9 +402,8 @@ setMethod("storeRead", signature("unionParquetExprStore"), function(store,
     if (!is.null(fields)) atab <- dplyr::select(atab, dplyr::all_of(fields))
     if (!is.null(callback)) atab <- callback(atab)
     switch(output,
-        # query / duckdb: return lazy without applying @post_ops
+        # query: return lazy without applying @post_ops
         "query"  = atab,
-        "duckdb" = .arrow_to_duckdb(atab, duckdb_params = duckdb_params),
         # tibble: collect + apply @post_ops R-side; return tibble
         "tibble" = {
             df <- data.table::as.data.table(dplyr::collect(atab))

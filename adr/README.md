@@ -85,6 +85,7 @@ least one.
 | [0009](0009-threshold-selects-population.md) | Detection thresholds gate counts, not magnitudes | Accepted | 2026-08-07 |
 | [0010](0010-gef-ingest-is-one-pass.md) | GEF ingest is a single pass: duplicates defer, coordinates ride out | Accepted | 2026-08-11 |
 | [0011](0011-cell-windowing-over-spill.md) | A decomposable statistic is computed by decomposition, not by a whole-store join | Accepted | 2026-08-20 |
+| [0012](0012-one-predicate-classifier-many-carriers.md) | Expression-store scan modifications are written once, in dplyr, for every carrier | Accepted | 2026-08-24 |
 
 ## Backfill candidates
 

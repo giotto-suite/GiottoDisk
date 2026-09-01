@@ -76,7 +76,7 @@ NULL
 #     matter. It is not an optimisation detail; ship it with the op.
 #
 #   log               (phase: lazy or post)
-#     log1p / log(base). Carries no axis-keyed state.
+#     log(value + 1) / log(base). Carries no axis-keyed state.
 #     Params:
 #       base     numeric. log base (default 2).
 #
@@ -86,16 +86,27 @@ NULL
 # present at all -- the chain supplies the sequencing.
 #
 # Extension protocol:
-#   - Add a branch to .pe_apply_op (arrow) and/or .pe_apply_post_op_df
+#   - Add a branch to .pe_apply_op (lazy) and/or .pe_apply_post_op_df
 #     (triplets), depending on which engines can express it.
+#   - .pe_apply_op serves BOTH lazy carriers -- Acero and a DuckDB tbl_dbi --
+#     so write the branch in plain dplyr and it lowers to both. Reach for a
+#     carrier test only where an engine cannot accept the other's data, as
+#     .pe_payload_carrier does; a branch per engine is how the two outputs
+#     drift apart.
 #   - Key any payload by ON-DISK id, not by view position. That is what makes
 #     it invariant under `[` -- see the subset-slice note at the bottom.
 #   - Have the producing verb append the record; never edit an existing one.
 
 
-# ---- @ops arrow-side executor ---------------------------------------------
+# ---- @ops lazy-side executor ----------------------------------------------
+#
+# Carrier-agnostic: the same fold runs over an Acero query and over a DuckDB
+# `tbl_dbi`, because every record here has a dplyr form and dplyr targets both.
+# That is what keeps `output = "query"` and `output = "duckdb"` returning the
+# same values -- the equivalence is structural, not something the tests police.
+# Only `.op_multiply`'s payload has to know which engine it landed on.
 
-# Apply a single prefix op record to the lazy arrow query.
+# Apply a single prefix op record to the lazy query.
 # Returns the augmented query.
 .pe_apply_op <- function(atab, op) {
     switch(op$type,
@@ -114,13 +125,22 @@ NULL
     atab
 }
 
+# `log(value + 1)` rather than `log1p(value)`: DuckDB has no log1p and dbplyr
+# has no translation for it, so log1p would reach the engine verbatim and fail
+# at collect. log() is native to Acero, data.table and dbplyr (-> LN) alike,
+# which keeps this one expression across all three carriers rather than a
+# branch per engine. Cost on Acero is nil -- measured slightly faster
+# single-threaded and indistinguishable at the default thread count, where the
+# transform is memory-bandwidth bound. The accuracy difference is confined to
+# value << 1 and is ~1e-16 absolute at value = 1e-9, orders below anything a
+# library-normalized count reaches.
 .op_transform_log <- function(x, op) {
     value <- NULL # NSE
     base <- op$base %||% 2
     if (data.table::is.data.table(x)) {
-        return(x[, value := log1p(value) / log(base)])
+        return(x[, value := log(value + 1) / log(base)])
     }
-    dplyr::mutate(x, value = log1p(value) / log(!!base))
+    dplyr::mutate(x, value = log(value + 1) / log(!!base))
 }
 
 # ---- multiply / add ---------------------------------------------------------
@@ -162,18 +182,45 @@ NULL
         return(dplyr::mutate(atab, value = value * !!k))
     }
     key <- if (identical(axis, "feat")) "col_id" else "row_id"
-    tbl <- .pe_axis_payload_table(op$factors, key)
-    tbl_a <- arrow::as_arrow_table(data.frame(
-        source_id = as.character(tbl$source_id),
-        key_id    = as.integer(tbl$key_id),
-        w         = as.numeric(tbl$w),
-        stringsAsFactors = FALSE
-    ))
+    tbl_a <- .pe_payload_carrier(atab, op$factors, key)
     by <- c("source_id" = "source_id"); by[key] <- "key_id"
     atab |>
         dplyr::left_join(tbl_a, by = by) |>
         dplyr::mutate(value = value * w) |>
         dplyr::select(-w)
+}
+
+# Put the payload on the same engine as the query it joins into. Acero cannot
+# read a tbl_dbi and DuckDB cannot read an arrow Table, so this is the one
+# place in the chain where the carrier matters -- the join / multiply / drop
+# above stays a single expression for both.
+#
+# The carrier is read off `x` rather than passed in. That matches
+# `.op_transform_log`'s existing shape and keeps `.pe_apply_ops(x, ops)`
+# callable unchanged from every site that already calls it.
+#
+# duckdb_register_arrow, not dbplyr::copy_inline: copy_inline writes the
+# payload into the query TEXT as a literal VALUES list (one row per cell or
+# per feature) and casts `w` to NUMERIC, which would move `value` off DOUBLE.
+# Registration is zero-copy and leaves the types alone -- `key_id` stays int32
+# against the int32 row_id/col_id from parquet, so the join needs no cast.
+#
+# No COALESCE on `w`: an unmatched key yields NA here, from arrow's
+# `value * NA` and from DuckDB's NULL alike, matching the out-of-range index
+# in .pe_apply_post_op_multiply_df. Defaulting the factor to 1 would instead
+# return that entry's RAW value dressed as a normalized one.
+.pe_payload_carrier <- function(x, factors, key) {
+    tbl <- .pe_axis_payload_table(factors, key)
+    tab <- arrow::as_arrow_table(data.frame(
+        source_id = as.character(tbl$source_id),
+        key_id    = as.integer(tbl$key_id),
+        w         = as.numeric(tbl$w),
+        stringsAsFactors = FALSE
+    ))
+    if (!inherits(x, "tbl_dbi")) return(tab)
+    name <- tolower(paste0("gd_pew_", .make_uid()))
+    duckdb::duckdb_register_arrow(dbplyr::remote_con(x), name, tab)
+    dplyr::tbl(dbplyr::remote_con(x), name)
 }
 
 # `add` is recorded but not yet executable. It cannot be lowered to Acero

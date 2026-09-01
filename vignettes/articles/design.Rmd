@@ -102,6 +102,36 @@ Supported op types:
 recorded as an op. Applying arrange inside Arrow would break `sample` and
 `COUNT(*)` operations.
 
+### Two ways a store reaches a second engine
+
+Both store families rebuild the scan from store state for every output, so the
+outputs stay translatable. They differ in *how* the rebuild re-expresses the op
+chain, and the difference is the op vocabulary rather than the store's age.
+
+A **tabular or geometry store** compiles to SQL text. `.pstore_sql_inner()`
+walks `@ops` a second time and `.r_expr_to_sql()` walks the R expressions
+`subset()` captured, because those ops have no form both engines accept —
+`spat_relate` needs `ST_*`, `id_filter` needs `EXISTS`, `@crop`/`@window` are
+AABB literals, and `subset()` takes arbitrary R. The cost is a second
+implementation of the registry, which is why the SQL side drops `join`, `tail`
+and `sample` with a warning and flattens a sequential chain into one `WHERE`
+plus a trailing `LIMIT`.
+
+An **expression store** does not compile anything. Its subset predicates
+(`.pe_axis_pred_exprs()`) and its op chain (`.pe_apply_ops()`) are already
+dplyr, and dplyr lowers to Acero and to dbplyr alike, so `.pestore_to_duckdb()`
+only swaps the carrier: it builds a `tbl_dbi` over DuckDB's `read_parquet` and
+then runs the same two functions the Arrow path runs. `output = "query"` and
+`output = "duckdb"` return the same values by construction rather than by test,
+and adding an op means one dplyr branch serving both engines.
+
+The two carrier-specific escapes are narrow and named: `.pe_payload_carrier()`
+(an Arrow `Table` cannot be joined into a `tbl_dbi`) and the membership-set
+branch in `.pe_apply_axis_pred()` (dbplyr inlines `%in%` into the query text, so
+large sets are registered and semi-joined instead). See ADR 0012 for why the
+tabular approach was not copied, and what it costs to keep every op
+dplyr-expressible.
+
 ### Spatial Operations are Not Ops
 
 `@crop` and `@window` on `parquetGeomBase` are not recorded in `@ops`. They are

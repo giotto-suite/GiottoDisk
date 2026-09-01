@@ -171,14 +171,39 @@ applied.
 
 Mostly useful for outputs that require materialization.}
 
-\item{duckdb_params}{named \code{list}. Params to pass
-to \code{\link[duckdb:duckdb_register_arrow]{duckdb::duckdb_register_arrow()}} if \code{output = "duckdb"}.
-Key params:
+\item{duckdb_params}{named \code{list}. Settings for \code{output = "duckdb"}:
 \itemize{
-\item \code{conn} - DBI connection to a duckdb instance.
-\item \code{name} - \code{character} (optional) If not provided, a random ID
-for the registered table will be generated
-}}
+\item \code{conn} - DBI connection to a duckdb instance. Optional for the stores
+that compile a native scan (\code{parquetStore}, \code{parquetGeomBase} and
+\code{parquetExprStore} families) — without one an ephemeral in-memory
+connection is created and kept alive by the returned \code{tbl_dbi}. A
+supplied connection is used as given, with no settings applied to it.
+\item \code{name} - \code{character} (optional) label for the view the returned
+\code{tbl_dbi} points at. A random ID is generated if absent.
+}
+
+\code{name} is a label, not a cache key. Every call compiles a fresh scan and
+installs it with \verb{CREATE OR REPLACE}, so passing a name a second time does
+not attach to the existing view — it \emph{replaces} its definition, and a
+\code{tbl_dbi} already handed out under that name then silently reads the new
+store. Reuse a name only when discarding what the previous call returned.
+
+The intermediate view holding the raw \code{read_parquet} scan is named
+internally and cannot be set. \code{storeRead()} derives a scan from the store's
+own state and keeps nothing on the database side between calls, so there is
+nothing to carry across them and no handle to carry it with. A consumer
+that wants a prepared table it modifies iteratively owns that itself,
+against a connection it controls.
+
+Stores that still bridge an Arrow scan forward the whole list to
+\code{\link[duckdb:duckdb_register_arrow]{duckdb::duckdb_register_arrow()}} and require \code{conn}. The native compile
+paths do not call that function, so they read only the two keys above and
+ignore anything else.
+
+Both keys must go inside this list. Passing \code{conn} or \code{name} directly to
+\code{storeRead()} is an error rather than a silent no-op, since the result
+would otherwise be a valid \code{tbl_dbi} on a connection the caller did not
+choose.}
 
 \item{omit_internals}{\code{logical} (default \code{TRUE}). Whether to drop internal
 special columns (\code{row_index}, \code{source_id}) from materialized output
