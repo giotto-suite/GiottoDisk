@@ -127,7 +127,7 @@ test_that("gene subset on union leaves the op chain unchanged (cell-axis op)", {
 })
 
 
-test_that("union with norm + log chain + storeRead applies log1p / log(base)", {
+test_that("union with norm + log chain records two ops in chain order", {
     skip_if_not_installed("Giotto")
     pe1 <- .tiny_substore(prefix = "a", seed = 61, n_cells = 4L)
     pe2 <- .tiny_substore(prefix = "b", seed = 62, n_cells = 4L)
