@@ -155,7 +155,12 @@ errors. Defaults via \code{getOption("giottodisk.dgc_max_rows", 100L)} /
 "narrow slice" usage (100 × Inf or Inf × 100) is allowed; the
 intent is \code{[}-subset along one axis before materializing. Pass
 \code{Inf} to disable the cap on an axis (\code{Inf}/\code{Inf} disables the
-guard entirely).}
+guard entirely).
+
+These are \strong{not} a chunk size. They guard a single materialization
+against accidentally pulling the whole store into memory; they do not
+size or enable the streaming windows that bounded passes use. For those
+see \code{\link[=storeChunkInfo]{storeChunkInfo()}}.}
 
 \item{fields}{\code{character} (optional) specific fields/columns to read}
 

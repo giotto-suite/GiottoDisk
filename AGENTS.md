@@ -16,6 +16,7 @@ walkthroughs live in `vignettes/articles/`:
 | `vignettes/articles/gsource.Rmd` | `gDirSource` walkthrough (the directory-backed `gsource` — the only backend currently shipped): source verbs (`sourceWrite`/`sourceContains`/`sourceAdopt`/`sourcePrune`), snapshot lifecycle, deployment patterns. |
 | `vignettes/articles/roadmap.Rmd` | Public-facing direction. Headline items: `parquetMutableStore`, partition hardlink utility, `gSdataSource`. |
 | `vignettes/articles/parquetEdgeStore.Rmd` | Edge-store (graph) specifics. |
+| `vignettes/expression_windows.Rmd` | **Installed vignette** (`vignette("expression_windows")`) — the two options, which passes window and when, what forces a window, and why it has to be the cell axis. The reference for windowing; `?storeChunkInfo` carries the options, adr/0011 the decision and the spill comparison. |
 | `adr/` | Architecture Decision Records: why a choice was made, what was rejected, what it costs. Dated and immutable — read when you are about to change a decision, not to learn current behaviour. |
 | `bench/` | Re-runnable regression benchmark (see *Benchmarks* below). Not part of the package — Rbuildignored, results gitignored. |
 | `NEWS.md` | User-visible changes per version. Add an entry when you change behaviour, an argument, or an export. |
@@ -177,6 +178,65 @@ costs ~16GB. Use `subset()` for value-based filtering, `rowSample()` for downsam
 ### nrow() returns numeric (double)
 Handles counts up to 2^53. Arrow COUNT(*) returns int64 → `as.numeric()` converts cleanly.
 Always queries via COUNT(*) — no caching.
+
+### Bounded passes over expression values window the CELL axis
+Every streaming pass over a `parquetExprBase` — the statistic accumulators, the
+PCA passes, the `storeWrite` bake — takes its windows from `.pe_windows()` /
+`.pe_chunk_ranges()` (`R/utils-pestore-ops.R`). Do not hand-roll the walk.
+
+The axis is not a free choice. Stores are written cell-major
+(`setorder(row_id, col_id)`), so a contiguous cell range is the gapless case in
+`.pe_axis_pred()` and lowers to a `row_id` range predicate that prunes parquet
+row groups. Windowing the **feature** axis prunes nothing — every batch rescans
+the store in full, and the cost is linear in batch count rather than in features
+per batch. If a new statistic seems to want feature batching, it wants a cell
+window instead.
+
+Windows are exact rather than approximate only because the accumulators are
+additive over cells. A statistic that is not — anything needing a global order
+along the gene axis, e.g. a rank or a median — cannot be windowed this way and
+does not have a streaming path today.
+
+**Windowing is not opt-in, and `giottodisk.chunk_size` does not switch it on.**
+There is no chunked mode and no unchunked mode. The window loop always runs; a
+budget that covers the view simply yields one window, which is one plan over the
+whole store. The option *pins* the window — an escape hatch for a constrained
+machine and for tests that need to force several — and pinning it large restores
+the single-plan shape but also removes the memory bound. Do not document or
+present it as a performance dial: it changes a bound, not a mode.
+
+The consequence to know: window count is derived from free RAM at call time, so
+it is not part of any output contract. Reassociating an additive fold is exact
+for integer accumulators (`nnz`) but not for float ones — measured 2-3 ULP on
+grouped statistics across window counts (`.pe_fold_partial`). So a windowed
+float statistic is **tolerance-reproducible, not bitwise-reproducible**, even on
+one machine. Never build a bitwise hash or snapshot test on one.
+
+Windowing and folding are **not** the same set, and conflating them is the easy
+mistake. Several passes window — both PCA flavours, the `storeWrite()` bake, and
+both accumulator paths. Only the two accumulator paths *fold*, and only folding
+reassociates, so only folding is exposed to the ULP note above. PCA and the bake
+write each window into a slice nothing else touches, so they have no partials to
+combine and stay bitwise reproducible.
+
+Of the two that fold, one is `by_cell` (grouped statistics) and the other is any
+statistic whose chain landed on `@post_ops`. In the current pipeline only the
+first arises, because normalization lowers to `@ops` — which is what keeps
+ungrouped statistics, including the variance feature selection ranks on, on the
+single-plan branch. Traced with the window pinned small: 0 windows for
+normalization and for ungrouped statistics on a lowerable chain; windows for
+grouped statistics, for ungrouped-with-`@post_ops`, for both PCA paths and for
+the bake. Grouped statistics are also downstream of clustering, so nothing
+propagates into kNN / Leiden / UMAP.
+
+That line moves if an op ever lands on `@post_ops` (the stubbed `add`, or a
+z-score/scale op). A post-op chain is a different computation anyway, so its
+*values* are expected to differ — the thing to notice is structural: the
+ungrouped accumulator would become windowed, which makes HVG variance
+window-count dependent, and HVG selection is a discrete top-N cut **upstream**
+of PCA. That is the one route by which a last-bit difference could become a
+visibly different clustering. If you add such an op, check HVG selection
+stability across window counts before assuming it does not matter.
 
 ### Lazy ops via @ops slot
 Operations recorded lazily as a list of steps. User-facing op types:

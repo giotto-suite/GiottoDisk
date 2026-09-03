@@ -171,6 +171,11 @@ NULL
 #'   intent is `[`-subset along one axis before materializing. Pass
 #'   `Inf` to disable the cap on an axis (`Inf`/`Inf` disables the
 #'   guard entirely).
+#'
+#'   These are **not** a chunk size. They guard a single materialization
+#'   against accidentally pulling the whole store into memory; they do not
+#'   size or enable the streaming windows that bounded passes use. For those
+#'   see [storeChunkInfo()].
 #' @section Index coordinates by output mode:
 #' `parquetExprStore` / `unionParquetExprStore` outputs differ on *two*
 #' independent axes, and switching `output` changes both.
@@ -631,33 +636,37 @@ setMethod(
         dir.create(partition_dir, recursive = TRUE, showWarnings = FALSE)
     }
 
+    # Windows from the shared seam (`.pe_windows`). `inject_ops = FALSE`
+    # because `sub_infos` above already transplanted both chains; the
+    # descriptor is used for the walk, the offset and the substore ordinal,
+    # and the injected substore is read off `sub_infos[[d$index]]`.
+    #
+    # The global sort is implicit and depends on the walk order: `.pe_windows`
+    # yields substores in axis order and cell ranges ascending within each, so
+    # shards are visited in cell order and each is sorted at write time. A
+    # window order that did not respect the cell axis would silently break the
+    # output store's cell-major layout.
     part_idx <- 0L
-    for (info in sub_infos) {
-        n_sub  <- info$n_sub
-        offset <- info$offset
-        cs <- 1L
-        while (cs <= n_sub) {
-            ce <- min(cs + chunk_size - 1L, n_sub)
-            M  <- .pe_read_chunk_sub(info, cs, ce, post_ops, P_out)
-            if (!is.null(M) && length(M@x) > 0L) {
-                # M is P_out × chunk_n (genes × cells, normalized), so the
-                # CSC structure gives gene per nonzero via @i and cell per
-                # nonzero by expanding the column pointers.
-                col_pos    <- M@i + 1L                # gene pos, 1-based
-                cell_local <- rep.int(seq_len(ncol(M)), diff(M@p))
-                row_global <- offset + cs + cell_local - 1L
-                dt <- data.table::data.table(
-                    row_id = as.integer(row_global),
-                    col_id = as.integer(col_pos),
-                    value  = M@x
-                )
-                data.table::setorder(dt, row_id, col_id)
-                .write_parquet_file(dt,
-                    file.path(partition_dir,
-                        sprintf("part-%d.parquet", part_idx)))
-                part_idx <- part_idx + 1L
-            }
-            cs <- ce + 1L
+    for (d in .pe_windows(data, chunk_size, inject_ops = FALSE)) {
+        info <- sub_infos[[d$index]]
+        M    <- .pe_read_chunk_sub(info, d$cs, d$ce, post_ops, P_out)
+        if (!is.null(M) && length(M@x) > 0L) {
+            # M is P_out × chunk_n (genes × cells, normalized), so the
+            # CSC structure gives gene per nonzero via @i and cell per
+            # nonzero by expanding the column pointers.
+            col_pos    <- M@i + 1L                # gene pos, 1-based
+            cell_local <- rep.int(seq_len(ncol(M)), diff(M@p))
+            row_global <- d$offset + d$cs + cell_local - 1L
+            dt <- data.table::data.table(
+                row_id = as.integer(row_global),
+                col_id = as.integer(col_pos),
+                value  = M@x
+            )
+            data.table::setorder(dt, row_id, col_id)
+            .write_parquet_file(dt,
+                file.path(partition_dir,
+                    sprintf("part-%d.parquet", part_idx)))
+            part_idx <- part_idx + 1L
         }
     }
     invisible(NULL)

@@ -75,7 +75,10 @@ NULL
 #' @param ... additional arguments (none used).
 #' @returns A `SimpleList` of `DataFrame`s, one per group, as
 #'   \code{\link[scran]{findMarkers}} returns.
-#' @seealso [Giotto::markersParam()], [Giotto::findScranMarkers()]
+#' @seealso [Giotto::markersParam()], [Giotto::findScranMarkers()].
+#'   [storeChunkInfo()] for the memory bound on the statistic pass — this is a
+#'   grouped pass, so it always windows;
+#'   `vignette("expression_windows", package = "GiottoDisk")` covers why.
 #' @export
 setMethod("analyzeData",
     signature(x = "parquetExprBase", param = "scranMarkersParam"),

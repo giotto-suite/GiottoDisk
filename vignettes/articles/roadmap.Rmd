@@ -95,6 +95,65 @@ Until then: keep the parity test green, ensure scran is installed wherever the
 suite runs, and treat any divergence from `scran::findMarkers()` as a bug in
 the transcription rather than a reason to adjust the expectation.
 
+### A DuckDB stat accumulator, selected by option
+
+The scan translates to either carrier already (adr/0012), and the cell-window
+seam hands a *store* to its consumer rather than a query, so which engine reads
+each window is the consumer's to choose. A `.pe_accum_duckdb_windowed()` would
+be a third consumer over the existing seam — sharing the window sizing, the
+descriptors and the additive fold — not a third carrier.
+
+Measured on 5,000 x 50,000 at 3% density, 12 groups, 20 windows, three
+consecutive runs, every arm bit-identical to the Acero result:
+
+| shape | vs Acero |
+|---|---|
+| Acero, shipped accumulator | 1.00x |
+| `storeRead(output="duckdb")` per window (`name` + `base_name`) | ~0.96x |
+| one hoisted `storeRead`, per-window dplyr predicate | ~0.97x |
+| render once via `remote_query()`, `dbBind` per window | **~5.5x** |
+
+Only the last is a real difference — the middle two are indistinguishable from
+each other and from parity, so hoisting alone buys nothing measurable.
+
+How that was measured, since the ratios are the whole claim: every arm called
+the real accumulator path rather than a hand-written equivalent, all arms ran in
+one process against one store, and each asserted its result elementwise against
+the Acero arm before any timing was reported. Ratios are quoted rather than
+absolute times because the absolutes drifted 20–50% between sessions on the same
+machine while the ordering stayed put — so re-measure before quoting a
+multiplier, and prefer a store near your real shape, since per-window overhead
+weighs more heavily at 7.5M nonzeros than it will at atlas scale.
+
+The last is the shape worth building: one pass-scoped connection, the grouping
+table registered once, **one** hoisted `storeRead(output = "duckdb")`, its query
+rendered once, and only the window bounds bound per pass. The SQL is *rendered
+from* the dplyr chain rather than authored beside it, so a new op is picked up
+through `remote_query()` with no consumer change — which is what keeps this
+clear of the second-op-registry failure adr/0012 rules out. The only hand-written
+SQL is the aggregate wrapper, which is the consumer's own computation.
+
+Two correctness notes for whoever builds it. The per-window predicate must go
+through `.pe_axis_pred()` / `.pe_apply_axis_pred()` rather than a hand-written
+range: on a store already carrying `@cell_idx`, window positions map to on-disk
+ids that need not be contiguous. And the connection must be pass-scoped, not
+per-window — the join's build side lives on it, so a per-window connection
+cannot share the grouping table at all (measured 2.37 s vs 0.87 s).
+
+Selection goes behind `giottodisk.stat_accum_engine`, accepting `"arrow"` or
+`"duckdb"`, **with no default**. Unset resolves to `"arrow"` and emits a
+one-shot `rlang::inform` suggesting DuckDB — to install it when absent, to set
+the option when present. That is deliberately unlike
+`giottodisk.spatial_query_engine`, which defaults to `"auto"` and picks the best
+engine installed: a spatial predicate returns the same rows whichever engine
+evaluates it, whereas these statistics are float sums whose results are
+reproducible to tolerance and not bitwise. An engine that switched itself would
+silently move which summation path a result came from. Opting in keeps that
+visible.
+
+Sequencing: after the DuckDB scan rework lands, and after the unified
+accumulators; then as an additive branch off the latter.
+
 ### An `add` op for centred display values
 
 `multiply` is implemented; its counterpart `add` is registered as a refused

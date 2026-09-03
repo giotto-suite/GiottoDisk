@@ -34,6 +34,7 @@
   DuckDB has no `log1p` and dbplyr does not translate it, so one expression now
   serves Acero, DuckDB and the data.table executor alike. Values are unchanged
   to within one ulp.
+- New vignette, *Cell windows* (`vignette("expression_windows")`): the two options that steer the window, which passes window and when, what forces one, and why it has to be the cell axis. The package's first installed vignette, so `DESCRIPTION` gains `VignetteBuilder: knitr`. Decision recorded in adr/0011; `storeChunkInfo()` carries the options.
 - `Giotto (>= 4.2.4)` in `Imports:`, for the `AteraReader` class `R/convenience-atera.R` subclasses. Below that the failure is an S4 inheritance error at load rather than a version message.
 - Grouped expression statistics — `analyzeData(x, featStatsParam, groups =)` and
   everything riding it, including scran marker detection — now window the scan
@@ -49,6 +50,31 @@
   work around the old memory cost should stop: gene ids are not the sort key, so
   every batch rescanned the store in full and the cost was linear in batch
   count, not in genes per batch.
+- Internal refactor, no user-visible behaviour change: cell-window
+  streaming now has one seam — `.pe_windows()` (substores x their cell
+  ranges), `.pe_chunk_ranges()` (a sub-range of one substore, for the parallel
+  PCA band workers) and `.pe_window_store()`. The walk had been hand-rolled in
+  nine places — both statistic accumulators, the `storeWrite` bake, four PCA
+  passes and the band split — and the copies had drifted. All now route through
+  it, and the seam is recorded in `AGENTS.md` and the `giottodisk-method` seam
+  table so the next windowed verb attaches instead of copying. Verified against
+  the previous implementation at every site: bitwise for PCA (`u`, `d`, `v`,
+  `sdev`, `eigenvalues` and per-column magnitudes — a correlation check cannot
+  see a scale change) and for the `storeWrite` bake, and to within 1 ULP for the
+  float statistic accumulators, where eager folding reassociates the summation
+  (see below). Integer accumulators are exact.
+- One behaviour change comes with it: the R-side accumulator
+  (`.pe_accum_chunked_dt()`, the path taken when `@post_ops` cannot be lowered)
+  now folds each window's partial as it arrives instead of collecting one per
+  window and reducing at the end. Held state drops from `O(groups x windows)` to
+  `O(groups)`, so tightening the window no longer costs memory. The Acero path
+  already did this.
+
+  The one visible consequence: folding on arrival reassociates the summation, so
+  a float accumulator can differ from the old reduce-at-the-end result by ~1 ULP
+  (measured 1.0-1.2 ULP, max relative 2.7e-16). Counts are unaffected. Results
+  are equal to tolerance, not bitwise, and comparisons across different window
+  counts should be written that way.
 - `analyzeData(x, featStatsParam, groups =)` resolves a grouping by `cell_ID`
   when it is named or factored by one. A per-cell vector is a payload, and
   adr/0003 keys those by on-disk id: keyed by view position it reads the wrong

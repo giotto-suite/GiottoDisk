@@ -1,0 +1,268 @@
+---
+title: "Cell windows: how expression passes stay bounded"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Cell windows: how expression passes stay bounded}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = FALSE
+)
+```
+
+A `parquetExprStore` is a parquet-backed triplet matrix representation. Each
+read over the file contents constitutes a *pass*. In large enough datasets,
+passes are performed in multiple chunks handled implicitly by the analytical
+engine performing it. However, some operations are either not natively supported
+by the engine or benefit from a handrolled method.
+
+The main solution is **cell windowing**. It happens when an intermediate would
+otherwise scale with the data rather than with the answer — in practice, when a
+grouping puts a join in front of an otherwise small aggregate. Windowing bounds
+that join's input; it does not change the result, because the accumulators are
+additive over cells.
+
+This article starts with the tunable options and when windowing is in use, then
+goes into mechanism: what forces a window, and why it has to be the cell axis.
+
+Figures throughout come from one store unless stated otherwise: 5,000 features ×
+50,000 cells at 3% density (7.5M stored values), 12 groups. The decision behind
+all of this is recorded in `adr/0011-cell-windowing-over-spill.md`.
+
+## The two options
+
+```r
+# Shown at their defaults. Both change the bound, not the code path.
+options(
+  giottodisk.chunk_ram_frac = 0.25,  # share of free RAM the window budget
+                                     # calculation is allowed to work with
+  giottodisk.chunk_size     = NULL   # NULL: accept the calculated budget.
+                                     # An integer pins the window, in cells.
+)
+```
+
+`giottodisk.chunk_ram_frac` is the one to reach for first: it scales every pass
+without needing to know any store's shape. `giottodisk.chunk_size` is an escape
+hatch — for a machine whose free memory cannot be read, a shape the model sizes
+badly, or a test that needs to force several windows.
+
+`storeChunkInfo()` reports what a given store will do on the current machine, for
+both read shapes, and carries both options.
+
+**One window is the no-windowing case.** When the budget covers the whole view,
+the window comes back as the full cell count: the loop runs once and the pass is
+a single plan over the store, exactly what it would be if none of this existed.
+That is the normal outcome for a store that fits, and it is the fastest one —
+per-window overhead is roughly 45–65 ms, so the same work reads 0.27 s at one
+window, 1.60 s at twenty, 2.29 s at fifty.
+
+**"Fits" means the working set is under the budget** — features × density ×
+bytes per stored value × cells, against 25% of free RAM by default. Pinning
+`giottodisk.chunk_size` at or above the cell count therefore *is* "do not window
+this pass": the value is clamped to the cell count, so one window results
+whatever the budget would have said.
+
+**Pinning overrides, it does not adjust.** A pinned value skips the budget
+calculation outright — free RAM is never read and the store's density is never
+computed. That is what makes it the escape hatch when free memory cannot be
+probed, or when you want to skip the density scan on a store that has no cached
+marginals. It is also the hazard: a value that fits your machine will not adapt
+to a smaller one, and the pass fails there instead of taking more windows.
+
+Left alone, the derived value is already the largest window the budget allows,
+which is the fastest one that still stays bounded. There is nothing to tune for
+speed.
+
+## When windowing is in use
+
+Automatically, and only where it buys something. In practice:
+
+| doing this | windows |
+|---|---|
+| `analyzeData(featStatsParam, groups = )`, and anything on it — scran markers | **always** |
+| `reduceData()` PCA, or a statistic whose chain has `@post_ops` | **always** — these read in pieces by nature |
+| `analyzeData(featStatsParam)` ungrouped, on a lowerable chain | never — one streamed plan, whatever the size |
+| `processData(normParam(...))` and other op-recording verbs | never — nothing is scanned |
+
+Writing a store chunks too — `storeWrite()` bakes a window at a time — but that
+is not a property of the analysis you are running, so it is left out here and
+covered below with the other materializing passes.
+
+The *number* of windows is what varies with size, and it is the same arithmetic
+in every case, recomputed on each read:
+
+```
+bytes per cell = features × density × bytes per stored value
+budget         = free RAM × giottodisk.chunk_ram_frac      (default 0.25)
+window         = min(cells, max(10000, budget / bytes per cell))
+```
+
+When the view fits the budget, `window` comes back as the full cell count and
+the loop runs once — so a pass that "always windows" on a store that fits is one
+plan over the store, exactly as it would have been without any of this.
+
+A worked case. 19,000 features at 6% density is roughly 55 kB per cell. Half a
+million cells is then about 27 GB of payload, against a ~1 GB budget on an 8 GB
+machine: around 27 windows. The same features over 40,000 cells fit in one
+window and behave exactly as they did before windowing existed.
+
+Two details worth knowing:
+
+- The `10000` is a **floor, not a guarantee**. On very wide data a 10,000-cell
+  window can still exceed the budget, and no smaller window will be chosen.
+- Sizing needs the store's density. A store built straight from a path by
+  `parquetExprStore()` — where `scan_stats = FALSE` is the default — has no
+  cached marginals and must count its nonzeros first, which costs one extra
+  pass. Stores from `storeWrite()` and the convenience importers carry
+  marginals already, and they survive `snapshotSave()` / `snapshotLoad()`.
+
+## Two reasons a pass windows
+
+The passes above window for two different reasons, and the difference matters:
+in one case the window only chooses a chunk size, in the other it is how the
+statistic is computed at all. Traced with the window pinned small enough to
+force several:
+
+| pass | windows | folds | why it windows |
+|---|---|---|---|
+| `processData(normParam("library"))` | no | – | records an op; nothing is scanned |
+| `analyzeData(featStatsParam)`, ungrouped, lowerable chain | no | – | one streamed plan, bounded by the engine |
+| `analyzeData(featStatsParam, groups = )` | yes | yes | **to bound the grouping join** |
+| `analyzeData(featStatsParam)` with `@post_ops` | yes | yes | the chain must run on materialized rows |
+| `reduceData(pcaParam("random"))` | yes | no | reads a sparse chunk per window |
+| `reduceData(gramEigenPcaParam())` | yes | no | same, plus one band per worker |
+| `storeWrite()` bake | yes | no | builds and writes a chunk at a time |
+
+**Materializing passes** — PCA, the `storeWrite()` bake, and the `@post_ops`
+accumulator — window because they build something per chunk by nature: a sparse
+matrix, or a collected triplet frame. They were always going to read in pieces,
+and the window only decides how big a piece. Nothing here rescues them; it sizes
+them.
+
+**The grouped statistic is different in kind.** It is not a materializing pass
+that needed sizing — it is an additive statistic that was being computed by a
+plan which materializes, and the window is what lets it be computed by addition
+instead. That is also why it is the only one whose previous form did not merely
+run slowly; it failed. The rest of this article is about that case.
+
+Folding is a separate axis. Only the two accumulator paths fold, because only
+they produce partials that combine by addition. PCA and the bake write each
+window into a slice nothing else touches, so there is nothing to combine and no
+reassociation to worry about.
+
+## What forces a window: the grouping join
+
+A grouped statistic is taken per (feature, group) rather than per feature. To
+get there, a per-cell group assignment has to be joined onto the values before
+the aggregate runs.
+
+The aggregate itself stays small — features × groups, so tens of thousands of
+rows for a whole transcriptome against twenty clusters. The **join in front of
+it** does not: it emits one row per stored value. That intermediate scales with
+the data rather than with the answer, and Arrow's engine has no spill-to-disk
+path, so past a certain size the pass does not slow down. It fails.
+
+Windowing removes that intermediate rather than finding somewhere to put it.
+Each window's join feeds its own aggregate and is released before the next
+window begins, so the large frame is never assembled at all.
+
+| execution | engine peak | elapsed |
+|---|---|---|
+| whole store, one plan | 187 MB | 0.20 s |
+| 20 cell windows | 44 MB | 1.60 s |
+
+Same results to the last bit for counts, and to within a few ULP for
+floating-point sums (see *Reproducibility*). The memory figure is Arrow's own
+allocator high-water mark, measured one variant per process — process RSS is
+dominated by loaded namespaces at this scale and tells you nothing useful.
+
+## Why the cell axis, and not features
+
+A window is a contiguous range of **cells**, and that is not a free choice.
+
+Stores are written cell-major — sorted by `(row_id, col_id)`, where `row_id` is
+the cell. A contiguous cell range therefore narrows to a simple range predicate
+that lets the parquet reader skip whole row groups. Each window reads only its
+own slice, so N windows still cost one pass over the data.
+
+Narrowing by feature cannot do that. Features are not the sort key, so every row
+group holds every feature and a feature-side predicate prunes nothing. The batch
+reads the whole store and throws away most of it.
+
+This matters because feature batching is the workaround people reach for first —
+ask for 250 genes, loop over blocks, stay inside memory. It buys the same
+bound at a far worse price, and the cost is **linear in the number of batches**,
+not in the genes per batch:
+
+| feature batch | passes | elapsed |
+|---|---|---|
+| 250 genes | 20 | 1.77 s |
+| 500 genes | 10 | 0.57 s |
+| 1000 genes | 5 | 0.31 s |
+
+Four times fewer batches, four times faster, regardless of how many genes each
+one covers — the signature of every batch rescanning the store. Extrapolated to
+556M stored values, 76 feature batches is on the order of twenty minutes where
+one windowed pass is tens of seconds.
+
+Ask for every feature at once and let the window do the bounding.
+
+## Reproducibility
+
+The window count comes from free RAM **at call time**, so it is a property of
+the machine and the moment, not of the store, and it can differ between runs.
+
+Combining window parts is exact for counts. For floating-point sums it
+reassociates the addition, so a float statistic can differ by a few units in the
+last place between runs with different window counts — measured 2–3 ULP, maximum
+relative difference around 3e-16. Results are reproducible to **tolerance, not
+bitwise**: compare them with a tolerance rather than hashing them or
+snapshotting exact digits.
+
+This is fifteen significant figures in and invisible to analysis, with one
+thing worth keeping in view: a **discrete** choice taken on a float statistic —
+a top-N feature selection, a threshold comparison — can in principle land
+differently if two candidates are separated by less than that. Ties that close
+are not meaningful distinctions, but they can move a downstream result keyed to
+the selection.
+
+In the current pipeline that risk does not arise, because the only windowed
+statistics are the grouped ones, and those sit *downstream* of clustering rather
+than upstream of it. Normalization lowers to `@ops`, which keeps the ungrouped
+statistics — including the variance that feature selection ranks on — on the
+single-plan path. If an op ever lands on `@post_ops`, that changes: the
+ungrouped accumulator becomes windowed, and a discrete feature cut then sits
+downstream of a reassociated float sum. Check selection stability across window
+counts before assuming it does not matter.
+
+## PCA windows too, differently
+
+The PCA passes read cell windows for the same reason — a chunk at a time keeps
+peak memory at one window's worth — but they do not use the additive fold
+described above. Each window writes into a disjoint slice of a preallocated
+result, or accumulates into a running matrix product. There is no partial to
+combine, so the reassociation question does not arise, and PCA output is
+bitwise reproducible across window counts.
+
+The parallel band workers add one more level: the cell axis is split into one
+band per worker, then into windows within each band. Bands are disjoint row
+ranges, so each worker writes its own slice and the partials need no
+reconciliation.
+
+PCA also gets a smaller budget than a statistic does on the same store, which is
+why it usually takes more windows. The sketch it preallocates is reserved out of
+the budget before the window is sized, at `cells × (k + p) × 8` bytes. Both terms
+are fixed in the sizing call rather than taken from the request — `k = 50`
+components and `p = 10` oversampling — so the reservation is 480 bytes per cell
+whatever `ncp` you ask for. A statistic reserves nothing, since it retains only
+the aggregate.
+
+## See also
+
+- `?storeChunkInfo` — the numbers for a given store on this machine, and the
+  two options that steer the window.

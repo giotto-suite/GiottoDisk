@@ -42,15 +42,18 @@ Suggests:
     filelock (>= 1.0.2),
     HDF5Array,
     hdf5r,
+    knitr,
     nanoarrow,
     qs,
     rhdf5,
+    rmarkdown,
     S4Vectors,
     scran,
     sedonadb,
     testthat,
     wk,
     TileDBArray
+VignetteBuilder: knitr
 Remotes:
     drieslab/tilework,
     giotto-suite/GiottoUtils@dev,

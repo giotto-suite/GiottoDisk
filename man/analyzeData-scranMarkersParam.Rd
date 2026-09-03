@@ -47,5 +47,8 @@ be considered rather than discovered. Narrowing with \code{[} is not an
 alternative here — a rank test needs every gene and every cell.
 }
 \seealso{
-\code{\link[Giotto:markersParam]{Giotto::markersParam()}}, \code{\link[Giotto:findScranMarkers]{Giotto::findScranMarkers()}}
+\code{\link[Giotto:markersParam]{Giotto::markersParam()}}, \code{\link[Giotto:findScranMarkers]{Giotto::findScranMarkers()}}.
+\code{\link[=storeChunkInfo]{storeChunkInfo()}} for the memory bound on the statistic pass — this is a
+grouped pass, so it always windows;
+\code{vignette("expression_windows", package = "GiottoDisk")} covers why.
 }
