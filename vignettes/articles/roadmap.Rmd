@@ -95,34 +95,12 @@ Until then: keep the parity test green, ensure scran is installed wherever the
 suite runs, and treat any divergence from `scran::findMarkers()` as a bug in
 the transcription rather than a reason to adjust the expectation.
 
-### A DuckDB stat accumulator — considered and rejected
-
-Once the native DuckDB scan landed (adr/0012), a DuckDB stat accumulator looked
-like the next step, and a prototype measured **5.5x** against Acero.
-
-It does not hold up. Timing the shipped accumulator across window counts fits
-`0.026 s of work + 37 ms x n_windows` at R² 1.000 — so the prototype's 20-window
-configuration, on a store the budget reads in **one**, was 96% fixed per-window
-overhead. The 5.5x is the share of that overhead a prepared statement removes,
-not a difference in how fast either engine processes data; the two parity arms
-already said the engines are equally fast on the work itself.
-
-Because the overhead is fixed per window and windows are budget-sized, the share
-does not fall as jobs grow — it sits near 9%, for a ceiling around 1.10x and a
-total saving near 20 seconds on a 10M-cell atlas. The full argument, the numbers
-and the conditions that would reopen it are in
-`adr/0013-no-second-stat-accumulator-engine.md`.
-
-What this redirects to is **window count**: `n_windows x 37 ms` is the dominant
-term on either engine, and two over-reservations currently inflate it — see
-*Per-carrier byte accounting for window sizing* below.
-
 ### Per-carrier byte accounting for window sizing
 
 Window sizing asks one question — how many bytes does this pass hold per cell? —
 and answers it with constants calibrated for the most expensive path. Every
 cheaper path is charged the same, so its windows are smaller than the budget
-allows, and each extra window costs a fixed ~37 ms (adr/0013).
+allows, and each extra window costs a fixed ~37 ms (measured in adr/0013).
 
 Three reservations are wrong for the Acero statistic accumulator:
 
