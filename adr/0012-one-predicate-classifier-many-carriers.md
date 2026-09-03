@@ -27,7 +27,7 @@ DuckDB drained the result — DuckDB's memory limit never saw Arrow's allocation
 and no row-group pruning was DuckDB's to do.
 
 The obvious way to wire it up was to copy the parquetStore approach and write a
-`.pe_*_sql()` emitter. `vignettes/chunking.Rmd` and ADR 0011, both on
+`.pe_*_sql()` emitter. `vignettes/expression_windows.Rmd` and ADR 0011, both on
 `refactor/pe-window-seam`, assume exactly that, and record the cost as the
 reason the path did not exist: it "would require rendering the axis predicates
 as SQL."
@@ -91,10 +91,11 @@ expressions. `.pstore_sql_inner` is the right shape for that store. The
 distinction is whether the op vocabulary is closed and dplyr-expressible, not
 which store is newer.
 
-`vignettes/chunking.Rmd` and ADR 0011 describe the expression path as
-Arrow-backed and name SQL rendering as the blocker. Both are on
-`refactor/pe-window-seam`, so neither could be corrected here; whoever merges
-that branch owes the correction.
+`vignettes/expression_windows.Rmd` and ADR 0011 described the expression path as
+Arrow-backed and named SQL rendering as the blocker. Both were on
+`refactor/pe-window-seam` and could not be corrected here; both were corrected
+when that branch merged, and now describe the carrier as a choice available
+above the scan.
 
 ## Alternatives considered
 
