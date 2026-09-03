@@ -95,64 +95,47 @@ Until then: keep the parity test green, ensure scran is installed wherever the
 suite runs, and treat any divergence from `scran::findMarkers()` as a bug in
 the transcription rather than a reason to adjust the expectation.
 
-### A DuckDB stat accumulator, selected by option
+### Per-carrier byte accounting for window sizing
 
-The scan translates to either carrier already (adr/0012), and the cell-window
-seam hands a *store* to its consumer rather than a query, so which engine reads
-each window is the consumer's to choose. A `.pe_accum_duckdb_windowed()` would
-be a third consumer over the existing seam — sharing the window sizing, the
-descriptors and the additive fold — not a third carrier.
+Window sizing asks one question — how many bytes does this pass hold per cell? —
+and answers it with constants calibrated for the most expensive path. Every
+cheaper path is charged the same, so its windows are smaller than the budget
+allows, and each extra window costs a fixed ~37 ms (measured in adr/0013).
 
-Measured on 5,000 x 50,000 at 3% density, 12 groups, 20 windows, three
-consecutive runs, every arm bit-identical to the Acero result:
+Three reservations are wrong for the Acero statistic accumulator:
 
-| shape | vs Acero |
-|---|---|
-| Acero, shipped accumulator | 1.00x |
-| `storeRead(output="duckdb")` per window (`name` + `base_name`) | ~0.96x |
-| one hoisted `storeRead`, per-window dplyr predicate | ~0.97x |
-| render once via `remote_query()`, `dbBind` per window | **~5.5x** |
+| term | charged for | actually holds | scales with |
+|---|---|---|---|
+| `bytes_per_nz = 48` | a materialized triplet frame | streams; retains only the aggregate | constant multiplier |
+| `p = 10` sketch, 80 B/cell | oversampling columns | no sketch at all | **`n_cells`** |
+| `k = 50` sketch, 480 B/cell (`.exprbase_chunk_size()`, the bake) | a preallocated `k + p` result | builds and flushes a chunk | **`n_cells`** |
 
-Only the last is a real difference — the middle two are indistinguishable from
-each other and from parity, so hoisting alone buys nothing measurable.
+`p` is hardcoded in `.chunk_budget()`, so passing `k = 0L` does not escape it.
 
-How that was measured, since the ratios are the whole claim: every arm called
-the real accumulator path rather than a hand-written equivalent, all arms ran in
-one process against one store, and each asserted its result elementwise against
-the Acero arm before any timing was reported. Ratios are quoted rather than
-absolute times because the absolutes drifted 20–50% between sessions on the same
-machine while the ordering stayed put — so re-measure before quoting a
-multiplier, and prefer a store near your real shape, since per-window overhead
-weighs more heavily at 7.5M nonzeros than it will at atlas scale.
+The two sketch terms matter most, because they scale with `n_cells` against a
+budget that does not. At 8 GB free the accumulator's 80 B/cell reservation is
+0.04 GB at 500k cells and 4.0 GB at 50M — larger than the entire 25% budget, so
+sizing falls through to the 5% emergency floor and the window lands on its
+10,000-cell minimum. Past roughly 20M cells on that machine the budget is set by
+the floor rather than by the model, which is a correctness point about the bound
+before it is a performance one.
 
-The last is the shape worth building: one pass-scoped connection, the grouping
-table registered once, **one** hoisted `storeRead(output = "duckdb")`, its query
-rendered once, and only the window bounds bound per pass. The SQL is *rendered
-from* the dplyr chain rather than authored beside it, so a new op is picked up
-through `remote_query()` with no consumer change — which is what keeps this
-clear of the second-op-registry failure adr/0012 rules out. The only hand-written
-SQL is the aggregate wrapper, which is the consumer's own computation.
+What the fix looks like: let the sizing ask the path what it holds, rather than
+assume the worst across all of them. Each consumer of `.pe_window_cells()`
+already knows its own carrier and what survives a window — the accumulator holds
+an aggregate, PCA holds a sketch, the bake holds one chunk — so the estimate
+belongs with the consumer instead of in a shared constant.
 
-Two correctness notes for whoever builds it. The per-window predicate must go
-through `.pe_axis_pred()` / `.pe_apply_axis_pred()` rather than a hand-written
-range: on a store already carrying `@cell_idx`, window positions map to on-disk
-ids that need not be contiguous. And the connection must be pass-scoped, not
-per-window — the join's build side lives on it, so a per-window connection
-cannot share the grouping table at all (measured 2.37 s vs 0.87 s).
+Effect is regime-dependent, and worth stating so nobody expects a win on a
+laptop-sized store: roughly 1% at 500k cells, ~13% at 5M, and ~33% at 50M cells
+on an 8 GB machine. Unlike the per-window setup cost, which stays a fixed
+fraction of runtime whatever the job size, this one compounds — fewer passes is
+directly related to job length.
 
-Selection goes behind `giottodisk.stat_accum_engine`, accepting `"arrow"` or
-`"duckdb"`, **with no default**. Unset resolves to `"arrow"` and emits a
-one-shot `rlang::inform` suggesting DuckDB — to install it when absent, to set
-the option when present. That is deliberately unlike
-`giottodisk.spatial_query_engine`, which defaults to `"auto"` and picks the best
-engine installed: a spatial predicate returns the same rows whichever engine
-evaluates it, whereas these statistics are float sums whose results are
-reproducible to tolerance and not bitwise. An engine that switched itself would
-silently move which summation path a result came from. Opting in keeps that
-visible.
-
-Sequencing: after the DuckDB scan rework lands, and after the unified
-accumulators; then as an additive branch off the latter.
+These are behaviour changes: they move window boundaries, so float accumulators
+shift by a few ULP where the window count changes and no byte-identical gate can
+cover them. Own PR, with a measurement behind each new number — the measurement
+is the work, not the edit.
 
 ### An `add` op for centred display values
 

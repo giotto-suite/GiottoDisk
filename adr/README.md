@@ -86,6 +86,7 @@ least one.
 | [0010](0010-gef-ingest-is-one-pass.md) | GEF ingest is a single pass: duplicates defer, coordinates ride out | Accepted | 2026-08-11 |
 | [0011](0011-cell-windowing-over-spill.md) | Cell windowing over spill for a large grouped join | Accepted | 2026-08-20 |
 | [0012](0012-one-predicate-classifier-many-carriers.md) | Expression-store scan modifications are written once, in dplyr, for every carrier | Accepted | 2026-08-24 |
+| [0013](0013-no-second-stat-accumulator-engine.md) | No second stat accumulator engine: the win is per-window overhead, and it is small | Accepted | 2026-09-03 |
 
 ## Backfill candidates
 
