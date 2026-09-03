@@ -179,10 +179,10 @@ NULL
 #' tolerance rather than hashing them or snapshotting exact digits.
 #'
 #' @section Further reading:
-#' Why bounded passes window the cell axis rather than hand the work to a
-#' spilling query engine, when windowing kicks in, and which passes window at
-#' all: `vignette("chunking", package = "GiottoDisk")`. The decision is recorded
-#' in `adr/0011-cell-windowing-over-spill.md`.
+#' Which passes window and when, what forces a window, and why it has to be the
+#' cell axis: `vignette("expression_windows", package = "GiottoDisk")`. The
+#' decision, and the comparison against a spilling engine, are recorded in
+#' `adr/0011-cell-windowing-over-spill.md`.
 #'
 #' @param x a `parquetExprStore` or `unionParquetExprStore`.
 #' @param ram_frac numeric. Fractions to tabulate. Defaults to a spread around

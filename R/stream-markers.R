@@ -78,7 +78,7 @@ NULL
 #' @seealso [Giotto::markersParam()], [Giotto::findScranMarkers()].
 #'   [storeChunkInfo()] for the memory bound on the statistic pass — this is a
 #'   grouped pass, so it always windows;
-#'   `vignette("chunking", package = "GiottoDisk")` covers why.
+#'   `vignette("expression_windows", package = "GiottoDisk")` covers why.
 #' @export
 setMethod("analyzeData",
     signature(x = "parquetExprBase", param = "scranMarkersParam"),

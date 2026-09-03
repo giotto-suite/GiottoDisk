@@ -282,10 +282,10 @@ whole-store version fails rather than degrading. Both windowed shapes are
 therefore bounded only because the window is sized correctly, and their safety
 is an argument about that arithmetic rather than a guarantee from the engine.
 
-Why windowing rather than handing the join to a spilling engine, what it costs,
-and the reproducibility consequence of reassociating a float sum: see
-[Cell windows](chunking.html) for the long form and
-`adr/0011-cell-windowing-over-spill.md` for the decision.
+Which passes window, what forces one, and the reproducibility consequence of
+reassociating a float sum: see [Cell windows](expression_windows.html). Why
+windowing rather than handing the join to a spilling engine:
+`adr/0011-cell-windowing-over-spill.md`.
 
 Both guarantees are properties of the framework, not of the data, and both are
 trivially bypassed:
