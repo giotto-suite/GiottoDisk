@@ -1,4 +1,4 @@
-# 0011. A decomposable statistic is computed by decomposition, not by a join over the whole store
+# 0011. Cell windowing over spill for a large grouped join
 
 - **Status:** Accepted
 - **Date:** 2026-08-20
@@ -7,52 +7,61 @@
 
 ## Context
 
-The grouped expression statistics (`sum`, `sumsq`, `nnz`, `sum_det`) are exactly
-additive over cells: the value for a set of cells is the sum of the values for
-any partition of it. `.pe_pool_moments()` already relied on this to build
-one-vs-rest groups without a second scan.
+A grouped expression statistic needs a join: the per-cell group assignment has to
+meet the values before the aggregate can key on it. The aggregate itself is small
+(`O(features × groups)`), but the join emits one row per stored value, so on a
+large store its output is large — `O(nonzeros)`.
 
-The plan they were being computed with does not use that. Joining a per-cell
-group assignment onto the values and then aggregating produces `O(nonzeros)`
-intermediate rows in order to return `O(features × groups)` — the intermediate
-exists because of the plan, not because of the problem. Nothing needs to see all
-those rows at once, and nothing downstream reads them.
+Large joins exceed memory easily, and this one does. Measured on a 5,000 × 50,000
+store at 3% density with 12 groups: 187 MB engine peak. At atlas scale (≈556M
+stored values) the same plan wanted roughly 21 GB against 8 GB of RAM. Acero has
+no spill path, so it failed outright rather than slowing down.
 
-Acero's lack of a spill path is what made that visible rather than merely
-wasteful: the whole-store form does not degrade, it fails. Measured on a
-5,000 × 50,000 store at 3% density with 12 groups, 187 MB engine peak; at atlas
-scale (≈556M stored values) it wanted roughly 21 GB against 8 GB of RAM. The
-failure is the symptom. The mismatch between an additive statistic and a
-materializing plan is the cause.
+That leaves two ways to get a large join under a memory ceiling:
 
-Callers had started batching the **feature** axis to get under the ceiling. That
-is a worse plan again: stores are written cell-major, so a feature-side predicate
-prunes no row groups and every batch rescans in full — cost linear in batch count
-rather than in features per batch (20/10/5 batches at 1.77/0.57/0.31 s on the
-store above; one real run took 15 minutes for 76 batches).
+1. **Brute force it** — run the join whole and let the engine spill the excess to
+   disk. DuckDB has the machinery for this.
+2. **Do less work** — split the input, join and aggregate each part, combine the
+   parts. Available only when the statistic can be combined from parts.
+
+Here it can. `sum`, `sumsq`, `nnz` and `sum_det` are exactly additive over cells,
+and `.pe_pool_moments()` already relied on that to build one-vs-rest groups
+without a second scan.
+
+Callers had meanwhile started batching the **feature** axis to get under the
+ceiling — option 2, along the wrong axis. Stores are written cell-major, so a
+feature-side predicate prunes no row groups and every batch rescans in full: cost
+linear in batch count rather than in features per batch (20/10/5 batches at
+1.77/0.57/0.31 s on the store above; one real run took 15 minutes for 76
+batches).
 
 ## Decision
 
-Compute these statistics by decomposition: partition the **cell** axis, aggregate
-each part, add the parts. The window is derived per read from the store's shape
-against a fraction of free RAM (`.recommend_chunk_size()`); a budget that covers
-the view yields one part, which is the single plan that existed before. Windowing
-is not a mode and no option switches it on.
+Take option 2 on the **cell** axis: partition the cells, aggregate each part, add
+the parts. The window is derived per read from the store's shape against a
+fraction of free RAM (`.recommend_chunk_size()`); a budget that covers the view
+yields one part, which is the single plan that existed before. Windowing is not a
+mode and no option switches it on.
 
-This is chosen as the *correct shape* for the computation, not as a way around an
-engine limitation. Partitioning does strictly less work than materializing: no
-`O(nonzeros)` frame is built, nothing is written out and read back, and a
-contiguous cell range prunes row groups a whole-store scan cannot. A spilling
-engine would make the materializing plan survivable; it would not make it right,
-which is why the arrival of one is not a reason to revisit this.
+Chosen over spilling because it does less work. Spilling writes the
+`O(nonzeros)` join output to disk and reads it back, to produce a result that
+never needed it to exist all at once; windowing never builds it. A contiguous
+cell range also prunes row groups, which a whole-store scan cannot. Where both
+fit the comparison is fewer operations against more, and under a tight ceiling
+the spilling engine was not observed to stay bounded at all (see *Alternatives*)
+— so the availability of one does not by itself reopen this.
+
+This decides *whether to window*, not *which engine reads a window*. Those are
+separate, and the second is settled elsewhere: adr/0012 makes DuckDB a native
+carrier for the expression scan, and a DuckDB stat accumulator is expected to
+follow. Both window. Nothing here argues against either.
 
 Partials are folded as they arrive rather than collected and reduced at the end,
 so retained state is `O(groups)` rather than `O(groups × windows)`.
 
 Scope: windowing itself predates this decision — PCA and the `storeWrite()` bake
 already read a chunk at a time, because they materialize one by nature. What is
-decided here is that the grouped statistic is *computed differently*, not merely
-read in smaller pieces.
+decided here is the grouped statistic's join, which had no bound at all.
 
 ## Consequences
 
@@ -69,11 +78,12 @@ read in smaller pieces.
   covers the view yields a single window. Decomposition wins on work done, not on
   constant factors, and the argument is for the largest window the budget allows —
   not for a fixed window count.
-- The claim that this beats spilling is **reasoned, not measured**: no benchmark
-  against a spilling engine was run. What is measured is that it never builds the
-  intermediate at all (187 MB → 44 MB engine peak at 20 windows) and that a cell
-  range prunes row groups. Someone reversing this decision should measure that
-  comparison rather than inherit the assumption.
+- The comparison against a spilling engine **was** measured, but narrowly: one
+  store shape, one DuckDB version, and a failure whose mechanism is unexplained
+  (see *Alternatives*). What is measured more robustly is that windowing never
+  builds the intermediate at all (187 MB → 44 MB engine peak at 20 windows) and
+  that a cell range prunes row groups. Someone reversing this decision should
+  re-measure rather than inherit either number.
 - Reassociating a float sum is not bitwise invariant. Counts stay exact; float
   accumulators move by 2–3 ULP across window counts. Results are reproducible to
   tolerance, not bitwise, and tests must be written that way.
@@ -87,23 +97,28 @@ read in smaller pieces.
 
 ## Alternatives considered
 
-- **Let Acero run the whole-store plan** — what existed. Rejected because it is
-  the wrong plan for an additive statistic, not because Acero lacks spill; the
-  missing spill only decided whether the waste showed up as a crash or as
-  latency.
-- **DuckDB with spill enabled** — the same wrong plan, made survivable. Spilling
-  materializes the `O(nonzeros)` intermediate, writes it out and reads it back, to
-  produce a result that never required it to exist; it also forgoes the row-group
-  pruning a contiguous cell range gets. Spill is the right tool for an aggregate
-  that genuinely cannot be decomposed — a rank, a median — and these are not
-  those. Three further practical limits: `@post_ops` has no SQL form, a spilling engine still needs the same memory
-  limit the window is derived from, and `parquetExprStore` extends
-  `queryableStore` rather than `parquetStore`, so `output = "duckdb"` is
-  Arrow-backed today — the native scanner is not wired to this class and wiring
-  it needs the axis predicates rendered as SQL.
-- **Batch the feature axis** — what callers were doing. Also a decomposition, but
-  along the axis that cannot prune: every batch rescans in full, so cost is linear
-  in batch count. Strictly worse than a cell window for the same bound.
+- **Let Acero run the whole join** — what existed. The join output does not fit
+  and Acero cannot spill, so the pass fails rather than degrading. Rejected by
+  the failure.
+- **Spill it, with DuckDB** — the brute-force option, and it did not behave as
+  expected. Measured on this shape the whole join fit at a 320 MB limit and raised
+  `Out of Memory Error: could not allocate block` at 256 MB; windowed, the same
+  plan ran at 128 MB. Not a claim that DuckDB cannot spill — `temp_directory` is
+  set on these connections — but at the caps tried the whole join either fit or
+  died, so the window, not the engine, is what bounded the pass. Rejected on work
+  done besides, which is why a window wins even where both fit: spilling writes
+  the `O(nonzeros)` join output and reads it back where windowing never builds it,
+  and a whole-store scan forgoes the row-group pruning a contiguous cell range
+  gets. Keep spill in view for an aggregate that genuinely *cannot* be split — a
+  rank, a median — and note two limits on the SQL route: `@post_ops` has no SQL
+  form, and a spilling engine still needs the same memory limit the window is
+  derived from. **This rejects *spilling*, not DuckDB.** A native DuckDB scan
+  landed separately (adr/0012), a DuckDB stat accumulator is expected after it,
+  and both window exactly as Acero does. Read this bullet as being about the
+  execution strategy, not about the engine.
+- **Batch the feature axis** — what callers were doing. The same split-and-combine
+  idea on the axis that cannot prune: every batch rescans in full, so cost is
+  linear in batch count. Strictly worse than a cell window for the same bound.
 - **Window, but reduce partials at the end** — simpler, and one fewer fold per
   window. Retains `O(groups × windows)`, so tightening the window to save memory
   would cost memory. Rejected as backwards.
@@ -114,8 +129,8 @@ read in smaller pieces.
 
 ## References
 
-- `vignettes/chunking.Rmd` (`vignette("chunking")`) — the long-form argument,
-  with the measurements and the worked sizing.
+- `vignettes/expression_windows.Rmd` (`vignette("expression_windows")`) — the
+  long-form argument, with the measurements and the worked sizing.
 - `R/utils-pestore-ops.R` — `.pe_windows()`, `.pe_chunk_ranges()`,
   `.pe_window_store()`: the seam every windowed pass attaches to.
 - `R/methods-analyzeData.R` — `.pe_accum_raw()` and the two windowed
