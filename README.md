@@ -266,13 +266,14 @@ options. These can be set to change the default backend for each data type:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `giotto.gdsrc_matrix_format` | `"h5"` | Store type for matrices. Alternatives: `"tiledb"`, `"bpcells"` |
+| `giotto.gdsrc_sparsematrix_format` | `"h5"` | Store type for sparse matrices. Alternatives: `"tiledb"`, `"bpcells"`, `"parquetExpr"` |
+| `giotto.gdsrc_densematrix_format` | `"h5"` | Store type for dense matrices |
 | `giotto.gdsrc_spatvector_format` | `"parquetGeom"` | Store type for spatial vectors |
 | `giotto.gdsrc_dataframe_format` | `"parquet"` | Store type for tabular data |
 
 ```r
-# Use BPCells for matrix storage instead of HDF5
-options(giotto.gdsrc_matrix_format = "bpcells")
+# Use BPCells for sparse matrix storage instead of HDF5
+options(giotto.gdsrc_sparsematrix_format = "bpcells")
 
 # All subsequent sourceWrite() calls for matrices will use BPCells
 sourceWrite(src, my_matrix)
@@ -285,6 +286,7 @@ sourceWrite(src, my_matrix)
 | `giottodisk.use_locking` | `TRUE` | Use {filelock} for concurrent manifest access |
 | `giottodisk.uid_include_pid` | `TRUE` | Include process ID in artifact UIDs |
 | `giottodisk.uid_include_node` | `FALSE` | Include node name in artifact UIDs |
+| `giotto.prevent_sleep` | `TRUE` | Kill switch for `GiottoUtils::keep_awake()` / `gwith_awake()`. Set `FALSE` on shared machines or CI to make those calls no-ops. Nothing holds a sleep assertion unless you call one of them |
 
 ## Performance Tips
 
@@ -292,6 +294,10 @@ sourceWrite(src, my_matrix)
 2. **Leverage tiles**: For >1M features, use `parquetGeomTileStore`
 3. **Lazy evaluation**: Keep data as arrow queries until final `collect()`
 4. **Use callbacks**: Apply custom filtering within `storeRead()` to stay lazy
+5. **Keep the machine awake**: a system sleep during a long run inflates its
+   wall-clock time while leaving CPU, memory and I/O counters looking normal.
+   Wrap long pipelines in `GiottoUtils::gwith_awake()`, or run scripts under
+   `caffeinate -dimsu` on macOS
 
 ## Documentation
 
