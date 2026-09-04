@@ -103,6 +103,75 @@ test_that("storeRead on a subset filters via Arrow (lazy, no rewrite)", {
 })
 
 
+test_that("duckdb carrier: gapless cell subset matches Acero (shape 1)", {
+    skip_if_no_duckdb()
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_mat(seed = 11))[, 5:14]
+    expect_true(.pe_axis_pred(pe@cell_idx)$gapless)
+    .expect_dd_parity(pe)
+})
+
+test_that("duckdb carrier: gapped cell subset matches Acero (shape 2, anti)", {
+    skip_if_no_duckdb()
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_mat(seed = 12))[, c(1:8, 10:30)]
+    expect_true(.pe_axis_pred(pe@cell_idx)$use_anti)
+    .expect_dd_parity(pe)
+})
+
+test_that("duckdb carrier: scattered gene subset matches Acero (shape 3, kept)", {
+    skip_if_no_duckdb()
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_mat(seed = 13))[c(1L, 4L, 9L, 12L), ]
+    # adr/0008: kept-set only, no range -- a col_id range prunes nothing.
+    expect_false(.pe_axis_pred(pe@gene_idx)$use_range)
+    .expect_dd_parity(pe)
+})
+
+test_that("duckdb carrier: both axes subset matches Acero", {
+    skip_if_no_duckdb()
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_mat(seed = 14))[c(2L, 5L, 11L), 3:15]
+    .expect_dd_parity(pe)
+})
+
+test_that("duckdb carrier: a large membership set is registered, not inlined", {
+    # Above the threshold the `%in%` half becomes a semi join rather than a
+    # literal IN list, which is a rewrite of HOW the set reaches the engine --
+    # the result must be unchanged.
+    skip_if_no_duckdb()
+    withr::local_options(giottodisk.duckdb_in_subquery_threshold = 2L)
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_mat(n_genes = 40L, seed = 15))[c(1L, 5L, 9L, 14L, 22L, 31L), ]
+    tbl <- storeRead(pe, output = "duckdb")
+    # The compiled query is registered as a view, so remote_query() on the
+    # returned tbl is just `SELECT * FROM <view>` -- read the definition.
+    defn <- DBI::dbGetQuery(dbplyr::remote_con(tbl), sprintf(
+        "SELECT sql FROM duckdb_views() WHERE view_name = '%s'",
+        dbplyr::remote_name(tbl)))$sql
+    expect_match(defn, "EXISTS")
+    expect_false(grepl("IN \\(1, 5, 9", defn))
+    .expect_dd_parity(pe)
+})
+
+test_that("duckdb carrier: an axis range reaches the parquet scan itself", {
+    # The point of rebuilding rather than bridging the Arrow scanner: the range
+    # must land on READ_PARQUET, where it prunes row groups, not above it as a
+    # filter over an already-materialized scan. Also guards the int32 literal
+    # typing -- a double bound would force a cast and cost the prune.
+    skip_if_no_duckdb()
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        .tiny_mat(n_genes = 20L, n_cells = 400L, seed = 16))
+    tbl <- storeRead(pe[, 100:140], output = "duckdb")
+    plan <- DBI::dbGetQuery(dbplyr::remote_con(tbl),
+        paste("EXPLAIN SELECT * FROM", dbplyr::remote_name(tbl)))[[2L]]
+    plan <- paste(plan, collapse = " ")
+    expect_match(plan, "READ_PARQUET")
+    expect_match(plan, "row_id>=100")
+    expect_match(plan, "row_id<=140")
+})
+
+
 test_that("`[` errors on invalid character IDs", {
     mat <- .tiny_mat()
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)

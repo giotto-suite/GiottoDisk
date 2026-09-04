@@ -288,6 +288,17 @@ setMethod("reduceData",
              scalef_vecs = list())
     })
 
+    # Cell windows from the shared seam, built once and reused by every pass:
+    # `.forward` / `.backward` are called `3 + 2 * n_power_iter` times, and the
+    # walk does not change between calls.
+    #
+    # `inject_ops = FALSE` because `sub_infos` above already transplanted both
+    # chains AND narrowed the gene axis (`sub[hvg_idx, ]`). The descriptor's own
+    # `$sub` is therefore the wrong store to read -- take the walk, the offset
+    # and `$index` from the descriptor, and the store from `sub_infos`. Cell
+    # counts agree because narrowing genes does not change `n_cells`.
+    windows <- .pe_windows(pe, chunk_size, inject_ops = FALSE)
+
     # ---- Per-HVG-gene means and sds ---------------------------------------
     # Centering enters the forward product as a rank-1 term --
     # Y = AᵀM - 1·(μᵀM) -- so the correction can be applied to Y AFTER a pass
@@ -356,33 +367,26 @@ setMethod("reduceData",
         correction <- if (apply_now) as.numeric(means %*% M_use) else numeric(m)
         g_sum <- numeric(P_hvg)
         Y <- matrix(0.0, nrow = n_cells, ncol = m)
-        for (info in sub_infos) {
-            offset <- info$offset
-            n_sub  <- info$n_sub
-            cs <- 1L
-            while (cs <= n_sub) {
-                ce <- min(cs + chunk_size - 1L, n_sub)
-                A  <- .read_chunk_sub(info, cs, ce)
-                chunk_n <- ce - cs + 1L
-                rows <- (offset + cs):(offset + ce)
-                if (!is.null(A)) {
-                    # A is genes x cells, so Aᵀ·M is the cells x m block and
-                    # rowSums(A) is this chunk's contribution to the per-gene
-                    # totals -- free, given the chunk is already in hand.
-                    Yc <- as.matrix(Matrix::crossprod(A, M_use))
-                    if (apply_now) {
-                        Yc <- Yc - matrix(correction, nrow = chunk_n,
-                                          ncol = m, byrow = TRUE)
-                    }
-                    Y[rows, ] <- Yc
-                    if (init_means) {
-                        g_sum <- g_sum + as.numeric(Matrix::rowSums(A))
-                    }
-                } else if (apply_now) {
-                    Y[rows, ] <- -matrix(correction, nrow = chunk_n,
-                                          ncol = m, byrow = TRUE)
+        for (d in windows) {
+            A <- .read_chunk_sub(sub_infos[[d$index]], d$cs, d$ce)
+            chunk_n <- d$ce - d$cs + 1L
+            rows <- (d$offset + d$cs):(d$offset + d$ce)
+            if (!is.null(A)) {
+                # A is genes x cells, so Aᵀ·M is the cells x m block and
+                # rowSums(A) is this chunk's contribution to the per-gene
+                # totals -- free, given the chunk is already in hand.
+                Yc <- as.matrix(Matrix::crossprod(A, M_use))
+                if (apply_now) {
+                    Yc <- Yc - matrix(correction, nrow = chunk_n,
+                                      ncol = m, byrow = TRUE)
                 }
-                cs <- ce + 1L
+                Y[rows, ] <- Yc
+                if (init_means) {
+                    g_sum <- g_sum + as.numeric(Matrix::rowSums(A))
+                }
+            } else if (apply_now) {
+                Y[rows, ] <- -matrix(correction, nrow = chunk_n,
+                                      ncol = m, byrow = TRUE)
             }
         }
         if (init_means) {
@@ -398,22 +402,15 @@ setMethod("reduceData",
         Z <- matrix(0.0, nrow = P_hvg, ncol = m)
         G <- matrix(0.0, nrow = m,     ncol = m)
         cs_Y <- numeric(m)
-        for (info in sub_infos) {
-            offset <- info$offset
-            n_sub  <- info$n_sub
-            cs <- 1L
-            while (cs <= n_sub) {
-                ce <- min(cs + chunk_size - 1L, n_sub)
-                A  <- .read_chunk_sub(info, cs, ce)
-                rows <- (offset + cs):(offset + ce)
-                Yc <- Y_mat[rows, , drop = FALSE]
-                G  <- G + crossprod(Yc)
-                cs_Y <- cs_Y + colSums(Yc)
-                if (!is.null(A)) {
-                    # A is genes x cells, so A·Yc is the genes x m block.
-                    Z <- Z + as.matrix(A %*% Yc)
-                }
-                cs <- ce + 1L
+        for (d in windows) {
+            A <- .read_chunk_sub(sub_infos[[d$index]], d$cs, d$ce)
+            rows <- (d$offset + d$cs):(d$offset + d$ce)
+            Yc <- Y_mat[rows, , drop = FALSE]
+            G  <- G + crossprod(Yc)
+            cs_Y <- cs_Y + colSums(Yc)
+            if (!is.null(A)) {
+                # A is genes x cells, so A·Yc is the genes x m block.
+                Z <- Z + as.matrix(A %*% Yc)
             }
         }
         if (center) Z <- Z - tcrossprod(means, cs_Y)  # implicit centering
@@ -561,10 +558,7 @@ setMethod("reduceData",
     # lifted because chunk extent is set by `chunk_size` here, not by the
     # accidental-materialization guard.
     .read_chunk_sub <- function(info, sub_cs, sub_ce) {
-        M <- storeRead(info$sub[, sub_cs:sub_ce], output = "dgcmatrix",
-                       max_rows = Inf, max_cols = Inf)
-        if (length(M@x) == 0L) return(NULL)
-        M
+        .pe_read_chunk_sub(info, sub_cs, sub_ce, post_ops, P_hvg)
     }
 
     # Pass 1 (of two): G_raw = Σ chunkᵀchunk plus the per-gene column sums,
@@ -592,26 +586,27 @@ setMethod("reduceData",
     G_raw <- matrix(0.0, nrow = P_hvg, ncol = P_hvg)
     info1 <- sub_infos[[1L]]
     n_sub1 <- info1$n_sub
+    # Bands are the same range split as chunks, one size up: one band per
+    # worker, then chunks within it. Same primitive, so the boundaries stay
+    # identical to the hand-rolled split they replace -- which matters, because
+    # each worker writes a disjoint row range derived from its band bounds.
     band_size <- max(1L, as.integer(ceiling(n_sub1 / n_workers)))
-    band_starts <- seq.int(1L, n_sub1, by = band_size)
-    bands <- lapply(band_starts, function(bs)
-        c(bs, min(bs + band_size - 1L, n_sub1)))
+    bands <- .pe_chunk_ranges(1L, n_sub1, band_size)
 
     gram_band <- function(rng) {
         G_local <- matrix(0.0, nrow = P_hvg, ncol = P_hvg)
         s_local <- numeric(P_hvg)
-        cs <- rng[1L]
-        ce_stop <- rng[2L]
-        while (cs <= ce_stop) {
-            ce <- min(cs + chunk_size - 1L, ce_stop)
-            M  <- .read_chunk_sub(info1, cs, ce)
+        # A band is a sub-range of ONE substore, so this takes the range
+        # primitive directly rather than `.pe_windows()` -- there is no
+        # substore walk to do here, the band already picked one.
+        for (w in .pe_chunk_ranges(rng[1L], rng[2L], chunk_size)) {
+            M <- .read_chunk_sub(info1, w[[1L]], w[[2L]])
             if (!is.null(M)) {
                 # M is genes × cells, so MMᵀ is the gram over genes and
                 # rowSums gives the per-gene totals.
                 G_local <- G_local + as.matrix(Matrix::tcrossprod(M))
                 s_local <- s_local + as.numeric(Matrix::rowSums(M))
             }
-            cs <- ce + 1L
         }
         list(G = G_local, s = s_local)
     }
@@ -699,13 +694,13 @@ setMethod("reduceData",
     coords_band <- function(rng) {
         band_n <- rng[2L] - rng[1L] + 1L
         band_coords <- matrix(0.0, nrow = band_n, ncol = ncp_used)
-        cs <- rng[1L]
-        ce_stop <- rng[2L]
-        while (cs <= ce_stop) {
-            ce <- min(cs + chunk_size - 1L, ce_stop)
-            M  <- .read_chunk_sub(info1, cs, ce)
-            chunk_n <- ce - cs + 1L
-            in_band <- (cs - rng[1L] + 1L):(cs - rng[1L] + chunk_n)
+        # Range primitive, not `.pe_windows()`: the band has already picked its
+        # substore and its sub-range. `in_band` stays relative to the band's
+        # own start, which is what makes the partials disjoint.
+        for (w in .pe_chunk_ranges(rng[1L], rng[2L], chunk_size)) {
+            M <- .read_chunk_sub(info1, w[[1L]], w[[2L]])
+            chunk_n <- w[[2L]] - w[[1L]] + 1L
+            in_band <- (w[[1L]] - rng[1L] + 1L):(w[[1L]] - rng[1L] + chunk_n)
             if (!is.null(M)) {
                 # M is genes × cells: crossprod(M, V) == t(M) %*% V, no t()
                 Cc <- as.matrix(Matrix::crossprod(M, V_use))
@@ -718,7 +713,6 @@ setMethod("reduceData",
                 band_coords[in_band, ] <- -matrix(correction,
                     nrow = chunk_n, ncol = ncp_used, byrow = TRUE)
             }
-            cs <- ce + 1L
         }
         list(rows = (info1$offset + rng[1L]):(info1$offset + rng[2L]),
              band = band_coords)

@@ -37,6 +37,11 @@ setMethod("analyzeData",
 #' The grouped form is reusable beyond QC: per-cluster mean and
 #' percent-detected is the input to a dot plot, and the group means are a
 #' pseudobulk matrix.
+#'
+#' Passing `groups` also changes how the pass runs: the grouping is windowed
+#' over cells, where the ungrouped form streams as a single plan — see
+#' [storeChunkInfo()] for the bound, and
+#' `vignette("expression_windows", package = "GiottoDisk")` for why the two differ.
 #' @param x a `parquetExprBase` store.
 #' @param param a [Giotto::featStatsParam-class].
 #' @param groups optional vector of group assignments, one per cell of the
@@ -300,12 +305,13 @@ setMethod("analyzeData",
 # One grouped accumulator pass over the triplet stream, shared by every
 # per-axis statistic verb.
 #
-# Bounded, but for two different reasons. With `@post_ops` empty, Acero streams
-# the aggregate to its own budget -- bounded by construction, whatever the
-# store's size. With post-ops it must materialize rows, so it is bounded only
-# because `.recommend_chunk_size()` sized the window against free RAM. Assume
-# the post-ops shape when reasoning about a new caller: it is the weaker
-# guarantee, and the one an incorrect window breaks.
+# Bounded, but for three different reasons. Ungrouped with `@post_ops` empty,
+# Acero streams the aggregate to its own budget -- bounded by construction,
+# whatever the store's size. Grouped, the join in front of the aggregate is
+# not, so the input is windowed instead and the bound comes from
+# `.recommend_chunk_size()`. With post-ops it must materialize rows, same
+# window, weaker still. Assume the windowed shape when reasoning about a new
+# caller: it is the weaker guarantee, and the one an incorrect window breaks.
 #
 # Neither guarantee survives leaving the framework. `storeRead(output =
 # "query")` is lazy on purpose; `collect()` or `as.data.frame()` on it pulls
@@ -377,9 +383,24 @@ setMethod("analyzeData",
 #
 # `by_cell` adds a cell-side grouping variable to the key: a data.table of
 # `row_id` (ON-DISK, per ADR 0003), `k` (integer group code), and `source_id`
-# on a union. It is joined into the plan before the aggregate, so it narrows
-# the scan as well as grouping it -- cells absent from the table never reach
-# the hash aggregate, which is how NA-group cells are excluded.
+# on a union. It is joined in before the aggregate, so it narrows as well as
+# groups -- cells absent from the table never reach the aggregate, which is how
+# NA-group cells are excluded.
+#
+# Supplying it windows the INPUT -- see `.pe_accum_acero_windowed()`. Acero's
+# bound on the ungrouped aggregate comes from the group key being small and the
+# scan never being retained; the join is the one thing that breaks that,
+# because the rows it emits are O(nonzeros) rather than O(groups). Windowing is
+# not a lesser workaround for it: the accumulators are additive over cell
+# windows, so a window is exact, its peak is chosen rather than discovered, and
+# a contiguous `row_id` range prunes row groups where a gene-side narrowing
+# cannot (the store is sorted cell-major). An engine that spilled instead would
+# survive the join without ever avoiding it.
+#
+# A caller batching the FEATURE axis to dodge the same memory is paying for it
+# the expensive way: gene ids are not the sort key, so every batch rescans the
+# store in full and the cost is linear in batch count, not in genes per batch.
+# Ask for all the features at once and let the window do the bounding.
 #
 # `k` is an integer code, never a label string. Aggregating or joining strings
 # in Acero at scale leaves dangling `utf8_view` buffers; the caller maps codes
@@ -440,20 +461,16 @@ setMethod("analyzeData",
     join_by  <- if (is_union) c("source_id", "key_id") else "key_id"
 
     if (length(pe@post_ops) == 0L) {
-        # Acero path: one plan over the whole store (union included), streamed
-        # by the hash aggregate. Only the grouped result crosses into R.
-        q <- storeRead(pe, output = "query")
-        if (has_by) {
-            q <- dplyr::inner_join(
-                q, arrow::as_arrow_table(as.data.frame(by_cell)),
-                by = setdiff(names(by_cell), "k")
-            )
+        # Acero path: the aggregate runs as an arrow plan either way. `by_cell`
+        # decides only whether it runs once over the whole store or once per
+        # cell window -- what the join needs bounding, it does not need
+        # materializing, so keep the execution in Acero and window the input.
+        agg <- if (has_by) {
+            .pe_accum_acero_windowed(pe,
+                grp = grp, aggr_exprs = aggr_exprs, by_cell = by_cell)
+        } else {
+            .pe_agg_collect(pe, grp = grp, aggr_exprs = aggr_exprs)
         }
-        agg <- q |>
-            dplyr::group_by(!!!rlang::syms(grp)) |>
-            dplyr::summarise(!!!aggr_exprs) |>
-            dplyr::collect() |>
-            data.table::as.data.table()
     } else {
         # R path: the chain has to run on materialized rows, so this one is
         # chunked rather than collected whole.
@@ -496,6 +513,114 @@ setMethod("analyzeData",
 }
 
 
+# Cell-windowed Acero accumulation, for a GROUPED pass whose chain still
+# lowers. One arrow plan per cell window instead of one over the whole store.
+#
+# Why the grouped pass needs windowing when the ungrouped one does not: the
+# aggregate itself is O(groups) either way, but `by_cell` puts a join in front
+# of it whose output is O(nonzeros). Acero has no spill, so at atlas scale that
+# is the whole failure. Windowing bounds the join's input instead, which the
+# accumulators permit for free -- they are additive over cell windows, so the
+# caller's fold sums the partials and the answer is exact rather than
+# approximate. Nothing here materializes; each window's aggregate is the only
+# thing that crosses into R.
+#
+# Measured on 5k genes x 50k cells x 12 clusters, 20 windows: 1.0s here vs 2.1s
+# routing the same windows through `.pe_accum_chunked_dt()`, which is correct
+# but pays a collect + data.table group-by per window. Window the input, keep
+# the execution in Acero.
+#
+# Windows are not free -- the same store is 0.09s in one window and 1.0s in
+# twenty, so roughly 45ms of plan setup and fold per window on top of the scan
+# it would have done anyway. That is an argument for taking the LARGEST window
+# the budget allows, which is what `.pe_accum_chunk_size()` already returns; it
+# is not an argument for a fixed window count. Do not tighten the window
+# speculatively.
+#
+# A budget that covers the view yields one window, which is one plan over the
+# whole store -- the pre-existing behaviour, so small and mid-size stores are
+# not charged for the bound. Unions iterate substores for the same reason as
+# the R path: `row_id` restarts per substore, so a global cell range is not a
+# contiguous range and would not prune.
+#
+# Partials are folded as they arrive rather than collected and folded at the
+# end. Keeping one per window would make the retained state O(groups x
+# windows) -- n_genes x n_clusters rows each, so tightening the window to save
+# memory would cost memory, which is backwards. Eager folding is the same
+# arithmetic the caller's fold does, so the result is unchanged and what is
+# held is O(groups) whatever the window count.
+.pe_accum_acero_windowed <- function(pe, grp, aggr_exprs, by_cell) {
+    by_cols <- setdiff(names(by_cell), "k")
+    # Built once, not per window: it is the join's build side, one row per
+    # grouped cell, and it is the same table for every window.
+    bc_tab  <- arrow::as_arrow_table(as.data.frame(by_cell))
+
+    acc <- NULL
+    for (d in .pe_windows(pe, .pe_accum_chunk_size(pe))) {
+        acc <- .pe_fold_partial(acc,
+            .pe_agg_collect(.pe_window_store(d),
+                grp = grp, aggr_exprs = aggr_exprs,
+                join_tab = bc_tab, join_cols = by_cols),
+            grp = grp, cols = names(aggr_exprs))
+    }
+    acc
+}
+
+
+# ---- shared by both windowed accumulators ----------------------------------
+
+# One grouped aggregate as an arrow plan, collected. The whole-store branch of
+# `.pe_accum_raw()` and each window of `.pe_accum_acero_windowed()` are the
+# same plan differing only by the join, so they are the same function.
+#
+# `join_tab` is the join's BUILD side -- small by construction (one row per
+# grouped cell), streamed against by the scan. Inner, so a cell absent from it
+# drops, which is how NA-group cells are excluded without a predicate.
+.pe_agg_collect <- function(pe, grp, aggr_exprs,
+    join_tab = NULL, join_cols = NULL) {
+
+    q <- storeRead(pe, output = "query")
+    if (!is.null(join_tab)) {
+        q <- dplyr::inner_join(q, join_tab, by = join_cols)
+    }
+    q |>
+        dplyr::group_by(!!!rlang::syms(grp)) |>
+        dplyr::summarise(!!!aggr_exprs) |>
+        dplyr::collect() |>
+        data.table::as.data.table()
+}
+
+# Fold one window's partial into the running total.
+#
+# Eager, not a list of partials collected and reduced at the end: a partial is
+# one row per group, so retaining one per window would make the held state
+# O(groups x windows) -- tightening the window to save memory would cost
+# memory. Sound because the accumulators are additive and each window covers a
+# disjoint set of cells; this is the same arithmetic the caller's
+# fold-by-position does, applied earlier.
+#
+# Coerced to double on the way in: arrow hands back int64 for integer sums, and
+# a running total should not depend on bit64 dispatch. Counts stay exact well
+# past 2^53.
+#
+# NOT bitwise invariant, and cannot be. Folding on arrival reassociates the
+# summation relative to reducing all the partials at once, so a float
+# accumulator (`sum`, `sumsq`) can land 1 ULP away -- measured at 1.0-1.2 ULP,
+# max relative 2.7e-16, on a union with a multi-window post-op chain, where the
+# second fold level adds more reassociation. Integer accumulators (`nnz`) are
+# exact. Do not write a test that demands bitwise equality across window counts;
+# `expect_equal`'s default tolerance is the right strictness here.
+.pe_fold_partial <- function(acc, part, grp, cols) {
+    if (is.null(part) || nrow(part) == 0L) return(acc)
+    for (nm in cols) {
+        data.table::set(part, j = nm, value = as.numeric(part[[nm]]))
+    }
+    if (is.null(acc)) return(part)
+    data.table::rbindlist(list(acc, part))[
+        , lapply(.SD, sum), by = grp, .SDcols = cols]
+}
+
+
 # Chunked R-side accumulation, for chains that cannot be lowered.
 #
 # The Acero branch streams by construction; this one has to materialize rows
@@ -505,47 +630,34 @@ setMethod("analyzeData",
 # accumulators are additive, and the caller's fold-by-position sums whatever
 # duplicate (source_id, key) rows the windowing produced.
 #
-# Windows are cell ranges, not row counts, for two reasons -- a contiguous
-# `row_id` range is the gapless case in `.pe_axis_pred()` so it prunes row
-# groups, and `[` slices `@post_ops` down to the window's cells so the chain
-# applies with exactly the state that window needs.
+# Windows come from `.pe_windows()`, the shared seam -- see its header for why
+# they are cell ranges rather than row counts or a cell set. The one thing
+# specific to this path: `[` also slices `@post_ops` down to the window's cells,
+# so the chain applies with exactly the state that window needs.
 #
-# Unions iterate substores here, unlike the Acero branch. A global cell range
-# is not a contiguous `row_id` range across a union (row_id restarts per
-# substore), so the window has to be taken per substore.
+# Note this path always narrows with `[`, where the Acero path can skip it on a
+# single full-substore window. `.pe_window_store()` handles that, and the
+# post-op slice is what makes taking it here correct rather than merely cheaper.
 .pe_accum_chunked_dt <- function(pe, grp, aggr_exprs, by_cell = NULL) {
-    chunk_size <- .pe_accum_chunk_size(pe)
-    dt_call    <- as.call(c(quote(list), aggr_exprs))
-    is_union   <- inherits(pe, "unionParquetExprStore")
-    by_cols    <- if (!is.null(by_cell)) setdiff(names(by_cell), "k")
+    dt_call <- as.call(c(quote(list), aggr_exprs))
+    by_cols <- if (!is.null(by_cell)) setdiff(names(by_cell), "k")
 
-    parts <- list()
-    for (sub_entry in .exprbase_substores(pe)) {
-        sub <- sub_entry$store
-        if (is_union) {
-            sub <- .exprbase_inject_parent_ops(sub, pe@ops, pe@post_ops)
+    acc <- NULL
+    for (d in .pe_windows(pe, .pe_accum_chunk_size(pe))) {
+        w  <- .pe_window_store(d)
+        df <- data.table::as.data.table(
+            dplyr::collect(storeRead(w, output = "query")))
+        if (nrow(df) > 0L) {
+            df <- .pe_apply_post_ops_df(df, w@post_ops)
+            # Inner, matching the Acero branch's join: a cell absent from
+            # `by_cell` is out of the grouping and drops here too.
+            if (!is.null(by_cell)) df <- merge(df, by_cell, by = by_cols)
         }
-        n_sub <- as.integer(sub@n_cells)
-        cs <- 1L
-        while (cs <= n_sub) {
-            ce <- min(cs + chunk_size - 1L, n_sub)
-            w  <- sub[, cs:ce]
-            df <- data.table::as.data.table(
-                dplyr::collect(storeRead(w, output = "query")))
-            if (nrow(df) > 0L) {
-                df <- .pe_apply_post_ops_df(df, w@post_ops)
-                # Inner, matching the Acero branch's join: a cell absent from
-                # `by_cell` is out of the grouping and drops here too.
-                if (!is.null(by_cell)) df <- merge(df, by_cell, by = by_cols)
-            }
-            if (nrow(df) > 0L) {
-                parts[[length(parts) + 1L]] <- df[, eval(dt_call), by = grp]
-            }
-            cs <- ce + 1L
-        }
+        if (nrow(df) == 0L) next
+        acc <- .pe_fold_partial(acc, df[, eval(dt_call), by = grp],
+            grp = grp, cols = names(aggr_exprs))
     }
-    if (length(parts) == 0L) return(NULL)
-    data.table::rbindlist(parts)
+    acc
 }
 
 # Build the `(source_id, key_id) -> pos` map for one axis. `key_id` is the

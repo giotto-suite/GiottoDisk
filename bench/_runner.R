@@ -158,6 +158,23 @@ E$sub <- E$pn[seq_len(min(80L, nrow(E$pn))), seq_len(min(80L, ncol(E$pn)))]
 # being a fourth incompatible configuration.
 E$NCP <- 30L; E$HVG_N <- 2000L
 
+# Grouping for the windowed accumulator. Every other featStats case is
+# ungrouped, and ungrouped never windows -- so without this the harness cannot
+# see `.pe_accum_acero_windowed()` at all, which is the path a grouping puts an
+# O(nonzeros) join in front of (adr/0011).
+#
+# Named by cell id, not positional: unnamed groups match by order and warn,
+# and cell metadata is not guaranteed to share the store's order.
+#
+# 12 groups is a plausible cluster count and it sets the aggregate's width
+# (features x groups). Derived outside any timed case.
+E$N_GRP <- 12L
+E$groups <- stats::setNames(
+    factor(rep(paste0("clus", seq_len(E$N_GRP)), length.out = ncol(E$pn))),
+    colnames(E$pn))
+E$FSG <- function(p) suppressWarnings(GiottoClass::analyzeData(
+    p, Giotto::analyzeParam("feat_stats"), groups = E$groups))
+
 # HVGs come from HVF output, not `rownames(pe)[1:n]`. Feature selection picks
 # the DENSEST rows on purpose (adr/0008), so an arbitrary prefix reads a
 # sparser band than any real workflow would and makes PCA look faster than it

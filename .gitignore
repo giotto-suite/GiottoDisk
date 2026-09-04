@@ -16,6 +16,14 @@ README.html
 vignettes/articles/*.html
 vignettes/articles/*_files/
 vignettes/articles/*_cache/
+vignettes/*.html
+vignettes/*.R
+vignettes/*_files/
+vignettes/*_cache/
+# built vignette outputs (R CMD build / buildVignettes)
+inst/doc
+/doc/
+/Meta/
 # agent-private scratch (shipped doc lives in AGENTS.md)
 CLAUDE.md
 bench/results/

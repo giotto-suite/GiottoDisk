@@ -32,6 +32,8 @@ setClass("gramEigenPcaParam", contains = "pcaParam")
 #'   method delegates to Halko. Default `0.01`.
 #' @param ... reserved.
 #' @return A `gramEigenPcaParam` object.
+#' @seealso [storeChunkInfo()] for how the passes are windowed and which
+#'   options bound their memory.
 #' @examples
 #' # p <- gramEigenPcaParam(ncp = 30, feats_to_use = hvg_ids)
 #' # res <- reduceData(pes, p)

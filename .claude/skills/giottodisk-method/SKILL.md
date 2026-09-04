@@ -124,6 +124,7 @@ For each capability, the one place to attach, and the duplicate it prevents.
 | shared read post-processing | `.pbase_storeread_processing(atab, store, …)` — the single op-fold + projection + output switch | re-implement the op loop; `parquetStore` and `unionParquetStore` share this on purpose |
 | **any statistic over expression values** | `.pe_accum_raw()` (`R/methods-analyzeData.R`) — pick from the `sum` / `sumsq` / `nnz` / `sum_det` accumulators, `axis` for the margin, `by_cell` for a grouped key | write a bespoke `storeRead` + `summarise`, or materialize to compute a mean. If your statistic is a sum, a count, or anything derivable from them, it is already an accumulator |
 | per-tile streaming | `tilework::tileApply` (see `R/methods-aggregate.R`) | loop over tile directories yourself |
+| **cell-windowed streaming over an expression store** | `.pe_windows()` for substores x their cell ranges, `.pe_chunk_ranges()` when you already hold a substore and a sub-range (parallel band workers), `.pe_window_store()` to turn a descriptor into a readable store (`R/utils-pestore-ops.R`) | hand-roll a `while (cs <= n_sub)` walk. That loop existed in nine places before these helpers and the copies had already drifted — one folded its partials eagerly, one retained one per window. Neither helper owns reduction, so bring your own |
 | a new materialized output format | a new arm in the `storeRead` `output` switch + a `.pstore_to_*` / `.p*_to_*` builder | return a different class from an existing arm |
 | writing to disk | `storeWrite` methods; GeoParquet metadata via `.arrow_meta_add_geoparquet()` | hand-roll `arrow::write_dataset` — you lose special cols, hive layout, and `geo` metadata |
 | registering an artifact in a project dir | `sourceWrite` (allocate uid → write → register); adoption via `sourceAdopt` | write into the vault path directly and skip the manifest |
@@ -147,10 +148,15 @@ This is the distinction most easily missed, because both use slots named
 **Expression chain** (`parquetExprBase`)
 - Op types: `multiply`, `log`, `add` (stub — recorded and refused).
   Authoritative list: the header of `R/utils-pestore-ops.R`.
-- Carriers: lazy Arrow query (`.pe_apply_op` → `.op_*`) and the **collected
-  triplet `data.table`** (`.pe_apply_post_op_df` → `.pe_apply_post_op_*_df`).
-  **There is no SQL compile on this chain** — do not go looking for a
-  `.pe_*_sql_inner`, and do not add one to serve a single op.
+- Carriers: two **lazy** ones — an Arrow query and a DuckDB `tbl_dbi`, both
+  served by the same `.pe_apply_op` → `.op_*` — and the **collected triplet
+  `data.table`** (`.pe_apply_post_op_df` → `.pe_apply_post_op_*_df`).
+  **There is still no SQL compile on this chain** — do not go looking for a
+  `.pe_*_sql_inner`, and do not add one. The duckdb carrier is reached by
+  swapping what sits *under* the dplyr executors (`.pestore_to_duckdb` builds a
+  `tbl_dbi` over `read_parquet`, then calls the same fold), not by emitting SQL
+  text the way `.pstore_sql_inner` does. That is why the two lazy carriers
+  share one executor instead of drifting apart. See ADR 0012.
 - Folds: `.pe_apply_ops` (lazy), `.pe_apply_post_ops_df` (post).
 - Chain editors: `.pe_push_op`, `.pe_demote_ops`, `.pe_chain_none` — the only
   sanctioned way to move where a step runs.
@@ -234,13 +240,28 @@ Follow ADR 0004's checklist; it is the authority. Condensed:
 
 1. Pick a primitive name; add it to the registry header in
    `R/utils-pestore-ops.R` with its params and phase.
-2. Decide which **carriers** can express it. There are exactly two on this
-   chain — lazy Arrow query and collected triplet `data.table`; there is no
-   SQL carrier, so unlike Checklist A there is no third arm to add. Write one
-   executor per `(type, carrier)` that cannot be shared: a pure elementwise
-   expression on `value` can share one (`.op_transform_log` does, since
-   `dplyr::mutate` is generic over both); anything carrying per-axis state
-   cannot, because Arrow cannot index an R vector from inside a plan.
+2. Decide which **carriers** can express it. Three on this chain — Arrow
+   query, DuckDB `tbl_dbi`, collected triplet `data.table` — but unlike
+   Checklist A there is no SQL arm to write: the two lazy carriers are both
+   dplyr, so **one branch in `.pe_apply_op` written in plain dplyr serves
+   both**. Write a separate executor only where a carrier cannot be shared:
+   an elementwise expression on `value` shares one (`.op_transform_log`), and
+   anything carrying per-axis state needs the collected-frame executor,
+   because Arrow cannot index an R vector from inside a plan.
+
+   Two traps this creates, both already paid for once:
+   - **Write dplyr that lowers to every carrier, not just the one you
+     tested.** `log1p()` is native to Arrow and to data.table, but DuckDB has
+     no such function and dbplyr does not translate it, so it reached the
+     engine verbatim and failed at `collect()`. `.op_transform_log` uses
+     `log(value + 1)` for that reason. A branch that works on Arrow is not
+     thereby correct.
+   - **A payload has to live on the engine it joins into.** Arrow cannot read
+     a `tbl_dbi` and DuckDB cannot read an Arrow `Table`;
+     `.pe_payload_carrier()` is the one sanctioned place that branches on
+     carrier. Reach for it only for payload residence — a branch per engine
+     anywhere else is how `"query"` and `"duckdb"` start returning different
+     values.
 3. Key payloads **by on-disk id, per source** (ADR 0003) — a named list of
    per-substore vectors, not one stacked vector. This is what makes payloads
    invariant under `[`. Note that `cell_idx`/`gene_idx` are **not** guaranteed
@@ -338,8 +359,19 @@ near miss recorded in an ADR.
   editor. (ADR 0004, invariant 5.)
 - **Collect-then-transform.** `storeRead(output = "tibble")` inside a method
   that returns a store. Every downstream caller loses laziness.
-- **Implementing the Arrow arm only.** The duckdb/sedona compile warns and
-  skips unknown ops — results silently differ by output format.
+- **Implementing the Arrow arm only.** On the tabular chain the duckdb/sedona
+  compile warns and skips unknown ops — results silently differ by output
+  format. On the expression chain the shape differs: one dplyr branch serves
+  both lazy carriers, so the risk is not a missing arm but a branch written in
+  dplyr that only *lowers* to Arrow (`log1p` being the case that bit). Test
+  every `output` you claim either way.
+- **Giving `storeRead` engine-side state.** A parameter that names, addresses,
+  or reuses a database view or temp table across calls. `storeRead` derives a
+  scan from store state and returns a handle; it is not a session manager, and
+  the engine is not the orchestrator. `conn` is the sole exception because the
+  caller already owns it. A consumer needing a prepared table it modifies
+  iteratively owns that itself, as a contained optimization. See AGENTS.md,
+  "Output Formats".
 - **A union copy of a single-store method.** If the logic is the same, it
   belongs on `parquetBase`/`parquetExprBase`.
 - **`setGeneric` on a generic that already exists upstream.** Masks it.

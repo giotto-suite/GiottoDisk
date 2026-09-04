@@ -16,6 +16,7 @@ walkthroughs live in `vignettes/articles/`:
 | `vignettes/articles/gsource.Rmd` | `gDirSource` walkthrough (the directory-backed `gsource` — the only backend currently shipped): source verbs (`sourceWrite`/`sourceContains`/`sourceAdopt`/`sourcePrune`), snapshot lifecycle, deployment patterns. |
 | `vignettes/articles/roadmap.Rmd` | Public-facing direction. Headline items: `parquetMutableStore`, partition hardlink utility, `gSdataSource`. |
 | `vignettes/articles/parquetEdgeStore.Rmd` | Edge-store (graph) specifics. |
+| `vignettes/expression_windows.Rmd` | **Installed vignette** (`vignette("expression_windows")`) — the two options, which passes window and when, what forces a window, and why it has to be the cell axis. The reference for windowing; `?storeChunkInfo` carries the options, adr/0011 the decision and the spill comparison. |
 | `adr/` | Architecture Decision Records: why a choice was made, what was rejected, what it costs. Dated and immutable — read when you are about to change a decision, not to learn current behaviour. |
 | `bench/` | Re-runnable regression benchmark (see *Benchmarks* below). Not part of the package — Rbuildignored, results gitignored. |
 | `NEWS.md` | User-visible changes per version. Add an entry when you change behaviour, an argument, or an export. |
@@ -39,7 +40,7 @@ GiottoDisk builds against **development branches** of the suite. `Remotes:` in
 | Package | Branch | Required because | Drop the pin when |
 |---|---|---|---|
 | `GiottoClass` | `gsource` | `analyzeData`, `reduceData`, `filterData` generics (all in `NAMESPACE` imports) and `labelProportionsParam` (`R/stream-labelProportions.R`) are gsource-only. | those four are exported on `dev`. |
-| `Giotto` | `gsource` | The whole param layer dispatched on: `pcaParam` / `autoPcaParam` / `randomPcaParam` / `irlbaPcaParam` / `exactPcaParam`, `varParam`, `covLoessParam`, `covGroupsParam`, `cellStatsParam`, `featStatsParam`, `scranMarkersParam`, `logNormParam`, `filterParam`. Also the `backend =` argument on `importStereoSeq()` / `createGiottoStereoSeqObjectBin()` / `createGiottoStereoSeqObjectCell()`, which `tests/testthat/test-stereoseq-gef.R` calls — its `skip_if_not_installed("Giotto")` skips on an absent Giotto but *errors* on one predating that argument. | `suite_dev` exports them. |
+| `Giotto` | `gsource` | The whole param layer dispatched on: `pcaParam` / `autoPcaParam` / `randomPcaParam` / `irlbaPcaParam` / `exactPcaParam`, `varParam`, `covLoessParam`, `covGroupsParam`, `cellStatsParam`, `featStatsParam`, `scranMarkersParam`, `logNormParam`, `filterParam`. Also the `backend =` argument on `importStereoSeq()` / `createGiottoStereoSeqObjectBin()` / `createGiottoStereoSeqObjectCell()`, which `tests/testthat/test-stereoseq-gef.R` calls — its `skip_if_not_installed("Giotto")` skips on an absent Giotto but *errors* on one predating that argument. Floored at `>= 4.2.4` in `Imports:` for the `AteraReader` class that `R/convenience-atera.R` subclasses; below that, loading fails with an S4 inheritance error rather than a version message. | `suite_dev` exports them. |
 | `GiottoUtils` | `dev` | Suite convention; `dev` carries everything used. | `main` catches up. |
 | `tilework` | default | Hard `Imports:` dependency, `drieslab/tilework`, not on CRAN. | it ships to CRAN. |
 
@@ -119,6 +120,10 @@ R/
   convenience-cosmx.R    # CosMx import convenience
   convenience-stereoseq.R # Stereo-seq import convenience
   convenience-xenium.R   # Xenium import convenience
+  convenience-atera.R    # Atera import convenience (subclasses the
+                         #   Xenium disk reader; layouts are identical
+                         #   today, so it overrides nothing but the
+                         #   platform label)
   utils.R                # .dplyr_nrow, .dump_tempfile, .move_path, etc.
   utils-arrow.R          # .arrow_sample_max_rows, .dplyr_ext, .dplyr_crop, etc.
   utils-spatial.R        # affine half-plane helpers, AABB, etc.
@@ -177,6 +182,65 @@ costs ~16GB. Use `subset()` for value-based filtering, `rowSample()` for downsam
 ### nrow() returns numeric (double)
 Handles counts up to 2^53. Arrow COUNT(*) returns int64 → `as.numeric()` converts cleanly.
 Always queries via COUNT(*) — no caching.
+
+### Bounded passes over expression values window the CELL axis
+Every streaming pass over a `parquetExprBase` — the statistic accumulators, the
+PCA passes, the `storeWrite` bake — takes its windows from `.pe_windows()` /
+`.pe_chunk_ranges()` (`R/utils-pestore-ops.R`). Do not hand-roll the walk.
+
+The axis is not a free choice. Stores are written cell-major
+(`setorder(row_id, col_id)`), so a contiguous cell range is the gapless case in
+`.pe_axis_pred()` and lowers to a `row_id` range predicate that prunes parquet
+row groups. Windowing the **feature** axis prunes nothing — every batch rescans
+the store in full, and the cost is linear in batch count rather than in features
+per batch. If a new statistic seems to want feature batching, it wants a cell
+window instead.
+
+Windows are exact rather than approximate only because the accumulators are
+additive over cells. A statistic that is not — anything needing a global order
+along the gene axis, e.g. a rank or a median — cannot be windowed this way and
+does not have a streaming path today.
+
+**Windowing is not opt-in, and `giottodisk.chunk_size` does not switch it on.**
+There is no chunked mode and no unchunked mode. The window loop always runs; a
+budget that covers the view simply yields one window, which is one plan over the
+whole store. The option *pins* the window — an escape hatch for a constrained
+machine and for tests that need to force several — and pinning it large restores
+the single-plan shape but also removes the memory bound. Do not document or
+present it as a performance dial: it changes a bound, not a mode.
+
+The consequence to know: window count is derived from free RAM at call time, so
+it is not part of any output contract. Reassociating an additive fold is exact
+for integer accumulators (`nnz`) but not for float ones — measured 2-3 ULP on
+grouped statistics across window counts (`.pe_fold_partial`). So a windowed
+float statistic is **tolerance-reproducible, not bitwise-reproducible**, even on
+one machine. Never build a bitwise hash or snapshot test on one.
+
+Windowing and folding are **not** the same set, and conflating them is the easy
+mistake. Several passes window — both PCA flavours, the `storeWrite()` bake, and
+both accumulator paths. Only the two accumulator paths *fold*, and only folding
+reassociates, so only folding is exposed to the ULP note above. PCA and the bake
+write each window into a slice nothing else touches, so they have no partials to
+combine and stay bitwise reproducible.
+
+Of the two that fold, one is `by_cell` (grouped statistics) and the other is any
+statistic whose chain landed on `@post_ops`. In the current pipeline only the
+first arises, because normalization lowers to `@ops` — which is what keeps
+ungrouped statistics, including the variance feature selection ranks on, on the
+single-plan branch. Traced with the window pinned small: 0 windows for
+normalization and for ungrouped statistics on a lowerable chain; windows for
+grouped statistics, for ungrouped-with-`@post_ops`, for both PCA paths and for
+the bake. Grouped statistics are also downstream of clustering, so nothing
+propagates into kNN / Leiden / UMAP.
+
+That line moves if an op ever lands on `@post_ops` (the stubbed `add`, or a
+z-score/scale op). A post-op chain is a different computation anyway, so its
+*values* are expected to differ — the thing to notice is structural: the
+ungrouped accumulator would become windowed, which makes HVG variance
+window-count dependent, and HVG selection is a discrete top-N cut **upstream**
+of PCA. That is the one route by which a last-bit difference could become a
+visibly different clustering. If you add such an op, check HVG selection
+stability across window counts before assuming it does not matter.
 
 ### Lazy ops via @ops slot
 Operations recorded lazily as a list of steps. User-facing op types:
@@ -339,6 +403,21 @@ store@ops <- c(store@ops, list(list(type = "filter", expr = my_call)))
 Tiled stores write the top-level extent to each tile file (intentional — files are internal).
 
 ## Output Formats
+
+**`storeRead` holds no engine-side state between calls.** Its job is to derive
+a scan from the store's own state — `@ops`, the subset slots, `fields` — and
+hand back a lazy handle. The engine is a executor, not an orchestrator: any
+view or table `storeRead` creates belongs to that one call, and nothing in the
+signature lets a caller name, address, or carry one across calls. `conn` is the
+sole exception, and only because the caller already owns it.
+
+This is why there is no parameter for the intermediate scan view, and why one
+should not be added. A consumer that wants a prepared table it modifies
+iteratively — a coordinator caching a narrowed scan, say — owns that itself
+against a connection it controls, as a contained optimization inside that
+consumer. Pushing it into `storeRead` would make every reader a participant in
+somebody else's session lifetime.
+
 - `"query"`: Arrow lazy dataset (default)
 - `"tibble"`: collected data.table, arranged by source_id/tile_index/row_index
 - `"duckdb"`: lazy `tbl_dbi` over a duckdb `TEMP VIEW` of the parquet dataset.
@@ -352,6 +431,30 @@ Tiled stores write the top-level extent to each tile file (intentional — files
   shape as duckdb path: per-tile UNION ALL, `@ops` translated, `ST_*` for
   spatial. Built by `.pstore_to_sedona`. Shares the @ops translation
   builder `.pstore_sql_inner` with the duckdb path.
+
+### `"duckdb"` on expression stores
+`parquetExprStore` / `unionParquetExprStore` compile via `.pestore_to_duckdb`,
+not `.pstore_to_duckdb`, and the two work differently on purpose.
+
+The tabular path emits SQL text because its ops have no form both engines
+accept, which costs it a second implementation of the op registry — that is why
+its SQL side drops `join` / `tail` / `sample` with a warning and flattens op
+order. An expression store's subset predicates and op chain are already dplyr,
+and dplyr lowers to Acero and dbplyr alike, so `.pestore_to_duckdb` only swaps
+the carrier: it builds a `tbl_dbi` over `read_parquet` and then runs the *same*
+`.pe_apply_axis_pred()` / `.pe_apply_ops()` as the arrow path. `"query"` and
+`"duckdb"` therefore return the same values by construction.
+
+Consequences worth knowing:
+- Writing a new op means one dplyr branch in `.pe_apply_op`, serving both
+  carriers. Reach for a carrier test only where an engine cannot accept the
+  other's data (`.pe_payload_carrier` is the sole case).
+- `log1p` is unusable — DuckDB has no such function and dbplyr does not
+  translate it. `.op_transform_log` uses `log(value + 1)`.
+- Axis membership sets above
+  `getOption("giottodisk.duckdb_in_subquery_threshold")` (1000) are registered
+  and semi/anti-joined rather than inlined as a literal `IN` list.
+- `.arrow_to_duckdb` is no longer reachable from the expression stores.
 - `"terra"`: SpatVector (`parquetGeomBase` only)
 - `"sf"`: sf object (`parquetGeomBase` only)
 

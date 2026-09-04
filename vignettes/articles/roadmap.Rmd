@@ -95,6 +95,48 @@ Until then: keep the parity test green, ensure scran is installed wherever the
 suite runs, and treat any divergence from `scran::findMarkers()` as a bug in
 the transcription rather than a reason to adjust the expectation.
 
+### Per-carrier byte accounting for window sizing
+
+Window sizing asks one question — how many bytes does this pass hold per cell? —
+and answers it with constants calibrated for the most expensive path. Every
+cheaper path is charged the same, so its windows are smaller than the budget
+allows, and each extra window costs a fixed ~37 ms (measured in adr/0013).
+
+Three reservations are wrong for the Acero statistic accumulator:
+
+| term | charged for | actually holds | scales with |
+|---|---|---|---|
+| `bytes_per_nz = 48` | a materialized triplet frame | streams; retains only the aggregate | constant multiplier |
+| `p = 10` sketch, 80 B/cell | oversampling columns | no sketch at all | **`n_cells`** |
+| `k = 50` sketch, 480 B/cell (`.exprbase_chunk_size()`, the bake) | a preallocated `k + p` result | builds and flushes a chunk | **`n_cells`** |
+
+`p` is hardcoded in `.chunk_budget()`, so passing `k = 0L` does not escape it.
+
+The two sketch terms matter most, because they scale with `n_cells` against a
+budget that does not. At 8 GB free the accumulator's 80 B/cell reservation is
+0.04 GB at 500k cells and 4.0 GB at 50M — larger than the entire 25% budget, so
+sizing falls through to the 5% emergency floor and the window lands on its
+10,000-cell minimum. Past roughly 20M cells on that machine the budget is set by
+the floor rather than by the model, which is a correctness point about the bound
+before it is a performance one.
+
+What the fix looks like: let the sizing ask the path what it holds, rather than
+assume the worst across all of them. Each consumer of `.pe_window_cells()`
+already knows its own carrier and what survives a window — the accumulator holds
+an aggregate, PCA holds a sketch, the bake holds one chunk — so the estimate
+belongs with the consumer instead of in a shared constant.
+
+Effect is regime-dependent, and worth stating so nobody expects a win on a
+laptop-sized store: roughly 1% at 500k cells, ~13% at 5M, and ~33% at 50M cells
+on an 8 GB machine. Unlike the per-window setup cost, which stays a fixed
+fraction of runtime whatever the job size, this one compounds — fewer passes is
+directly related to job length.
+
+These are behaviour changes: they move window boundaries, so float accumulators
+shift by a few ULP where the window count changes and no byte-identical gate can
+cover them. Own PR, with a measurement behind each new number — the measurement
+is the work, not the edit.
+
 ### An `add` op for centred display values
 
 `multiply` is implemented; its counterpart `add` is registered as a refused
