@@ -120,6 +120,16 @@ R/
                          #   Xenium disk reader; layouts are identical
                          #   today, so it overrides nothing but the
                          #   platform label)
+  zarr-source.R          # zarr v2 source layer: in-place .zarr.zip reads
+                         #   (seek-based, STORED entries only) + dir trees;
+                         #   .zarr_blosc_decompress() is the SINGLE call
+                         #   site of Rarr:::.decompress_chunk
+  zarr-array.R           # .zarr_array (range reads) + .zarr_chunk_reader
+  zarr-xenium-workers.R  # zarr -> 10x-schema parquet workers
+                         #   (cells / boundaries / transcripts)
+  zarr-detect.R          # detectZarrLayout(): versioned layout detection
+  zarr-convert.R         # xeniumZarrToParquet() + .zarr_ensure_parquet()
+                         #   fingerprint-keyed conversion cache
   utils.R                # .dplyr_nrow, .dump_tempfile, .move_path, etc.
   utils-arrow.R          # .arrow_sample_max_rows, .dplyr_ext, .dplyr_crop, etc.
   utils-spatial.R        # affine half-plane helpers, AABB, etc.
@@ -606,6 +616,44 @@ construction. `all_feat_ids`/`all_cell_ids` params preserve zero-overlap entries
   streams record batches to a `parquetExprStore` — **no MTX intermediate, no dgCMatrix
   materialization**.
 
+## Zarr input (Xenium / Atera)
+
+The disk readers accept zarr-only output directories (Atera ships zarr
+only). Detection lives upstream in Giotto's `.xenium_detect_paths`
+(filetype `"zarr"`, plus automatic fallback when nothing else matches);
+GiottoDisk owns the reading. Invariants:
+
+- **Converter output is unfiltered and unflipped 10x-schema parquet.**
+  qv filtering and the y flip stay lazy in the readers' `read_fun`s, so
+  the conversion cache is parameter-independent and comparable
+  column-for-column against 10x-shipped parquet.
+- **Boundary conversion writes a SINGLE parquet file in cell order.**
+  The polygon ingest locks vertex order via its `row_index` intermediate;
+  a multi-file dataset does not guarantee scan order.
+- **`transcript_id` packs `(2^16 + fov_index)` in the high 32 bits and
+  the within-FOV decode counter in the low 32 bits** (verified against
+  shipped parquet). Feature names and instrument FOV names come from the
+  transcripts root `.zattrs` (`gene_names`, `fov_names`) with
+  gene_panel.json / synthetic `FOV%03d` as fallbacks.
+- **Expression never materializes an intermediate**: `tenxZarrInput`
+  (an `exprInput`) streams cell-ordered `(row_id, col_id, value)` batches
+  into the universal `storeWrite(parquetExprStore, exprInput)` consumer.
+  The zarr matrix is CSC by FEATURE, so the iterator reorders: two-pass
+  cell-major placement when buffers fit the chunk-sizing budget, bounded
+  per-cell-block rescans otherwise (rescans over spill, cf. adr/0011;
+  forced when nnz > int32).
+- **Conversion cache**: `<artifact dump>/zarr_cache/<fingerprint>/` where
+  the fingerprint digests (path, size, mtime, layout version, converter
+  version — `.zarr_fingerprint`). One archive = one fingerprint; the
+  cells archive converts cellmeta + both boundary sets in one pass.
+- **`Rarr:::.decompress_chunk` is an internal API**, wrapped exactly once
+  (`.zarr_blosc_decompress`), existence-checked at `.zarr_open()` time.
+  Rarr and zip live in Suggests.
+- `.zarr.zip` entries must be STORED (zip method 0) — the seek-based
+  reader refuses deflated entries; unzip the archive instead. All layout
+  assumptions sit behind `detectZarrLayout()` (`xenium-zarr-v1`); zarr v3
+  and unknown structures fail loudly there.
+
 ## Metadata
 
 Cell/feature metadata is currently stored as in-memory `data.table`. This is sufficient
@@ -657,5 +705,6 @@ does synthetic only and says so. Reasoning and the full flag list are in
 - Internal helpers: `.` prefix, snake_case
 - `parquetStore` internals: `.pstore_*` / `parquetBase` internals: `.pbase_*`
 - Arrow utilities: `.arrow_*`, `.dplyr_*` / gsource internals: `.gdsrc_*`
+- Zarr layer internals: `.zarr_*` (fixture writers in tests: `.zf_*`)
 - Public store verbs: `storeCreate`, `storeRead`, `storeWrite`, `storeExists`, `storePaths`
 - Public source verbs: `sourceWrite`, `sourceContains`, `sourceAdopt`, `sourcePrune`
