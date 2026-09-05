@@ -35,6 +35,7 @@ Imports:
     terra,
     tilework
 Suggests:
+    bit64,
     BPCells,
     DBI,
     dbplyr,
@@ -45,6 +46,7 @@ Suggests:
     knitr,
     nanoarrow,
     qs,
+    Rarr,
     rhdf5,
     rmarkdown,
     S4Vectors,
@@ -52,6 +54,7 @@ Suggests:
     sedonadb,
     testthat,
     wk,
+    zip,
     TileDBArray
 VignetteBuilder: knitr
 Remotes:
@@ -110,6 +113,11 @@ Collate:
     'tilework.R'
     'utils-arrow.R'
     'utils-parquetExprStore.R'
+    'zarr-array.R'
+    'zarr-convert.R'
+    'zarr-detect.R'
+    'zarr-source.R'
+    'zarr-xenium-workers.R'
     'zzz.R'
 Roxygen: list(markdown = TRUE)
 Config/roxygen2/version: 8.0.0
