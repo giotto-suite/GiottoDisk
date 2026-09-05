@@ -673,7 +673,7 @@ setMethod(
 }
 
 
-# storeRead — tenxZarrInput ####
+# storeRead -- tenxZarrInput ####
 
 # The zarr cell_feature_matrix is CSC by FEATURE (indptr over features,
 # `indices` = cell ids), but the iterator contract is ascending-cell
@@ -684,7 +684,7 @@ setMethod(
 #           `indices` + `data` in lockstep, placing each triplet at its
 #           cell's cursor in preallocated int buffers. Features are
 #           walked in ascending order, so within-cell col_id is ascending
-#           by construction — no sort. Peak RAM ~ 12 B x nnz.
+#           by construction -- no sort. Peak RAM ~ 12 B x nnz.
 # cellblock bounded windows over the cell axis: each window rescans the
 #           `indices`/`data` chunks, masks entries to the window, and
 #           sorts the bounded result. RAM is bounded by the window
@@ -773,7 +773,7 @@ setMethod("storeRead", signature("tenxZarrInput"), function(store, ...) {
             close_fn()
             stop("[storeRead] internal: batch starts at cell ",
                 dt$row_id[1L], " but cells through ", last_row_emitted,
-                " were already emitted — ascending-cell invariant broken",
+                " were already emitted -- ascending-cell invariant broken",
                 call. = FALSE)
         }
         if (nrow(dt)) last_row_emitted <<- dt$row_id[nrow(dt)]

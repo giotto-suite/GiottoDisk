@@ -6,7 +6,7 @@
 # `zip::zip_list()` and serves per-entry reads with a seek + 30-byte
 # local-header parse + raw read on a single long-lived connection. This
 # relies on Xenium archives storing entries UNCOMPRESSED in the zip (each
-# chunk is already blosc-compressed) — `.zarr_open()` refuses archives
+# chunk is already blosc-compressed) -- `.zarr_open()` refuses archives
 # that violate this.
 #
 # Blosc/zlib chunk decompression goes through `.zarr_blosc_decompress()`,
@@ -133,7 +133,7 @@
         # One read from +8 covers method (word 1) and the name/extra
         # lengths (words 10, 11). `compressed_size` bytes go straight to
         # the blosc decoder, which is only valid for STORED (method 0)
-        # entries — Xenium/Atera archives always store; refuse anything
+        # entries -- Xenium/Atera archives always store; refuse anything
         # else rather than decode garbage.
         seek(con, where = local_off + 8, origin = "start", rw = "read")
         hdr <- readBin(con, what = "integer", size = 2L, n = 11L,

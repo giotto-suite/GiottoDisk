@@ -7,13 +7,13 @@
 # reader parameters and directly comparable to 10x-shipped files.
 #
 # Boundary output is written sequentially in cell order as a SINGLE
-# parquet file — the polygon ingest locks vertex order via a row_index
+# parquet file -- the polygon ingest locks vertex order via a row_index
 # intermediate, and a multi-file dataset does not guarantee scan order.
 #
 # Known divergences from 10x-shipped parquet (not derivable from zarr):
 # transcripts `cell_id` ("UNASSIGNED"; reassigned downstream by polygon
 # overlap), `overlaps_nucleus` (0), `nucleus_distance` (NA), and
-# `fov_name` (synthetic "FOV%03d" — the alphanumeric codes 10x ships come
+# `fov_name` (synthetic "FOV%03d" -- the alphanumeric codes 10x ships come
 # from per-instrument config absent from the zarr).
 
 # shared helpers ####
@@ -262,7 +262,7 @@
     }
 
     # 10x packs transcript_id as (2^16 + fov_index) in the high 32 bits
-    # and the within-FOV decode counter in the low 32 bits — verified
+    # and the within-FOV decode counter in the low 32 bits -- verified
     # against shipped transcripts.parquet (id column 1 = counter,
     # column 2 = fov index)
     fov_idx <- as.integer(id_[, 2L])
@@ -358,14 +358,14 @@
 # out_path file; `workers > 1` writes a directory of part-*.parquet
 # shards (read transparently by arrow::open_dataset). Scheduling follows
 # .storewrite_h5_parallel: fork on unix, lapply_flex elsewhere, plain
-# lapply when serial — one worker function for all three.
+# lapply when serial -- one worker function for all three.
 .zarr_transcripts_to_parquet <- function(src, out_path, gene_lookup,
     qv_threshold = NULL, workers = 1L, zarr_path = NULL,
     flush_rows = 2000000L, compression = "zstd", verbose = NULL) {
     t0 <- Sys.time()
     tiles <- .zarr_list(src, "grids/0", dirs_only = TRUE)
     if (!length(tiles)) {
-        stop("[zarr] no transcript tiles under grids/0 — corrupt or ",
+        stop("[zarr] no transcript tiles under grids/0 -- corrupt or ",
             "unsupported archive layout", call. = FALSE)
     }
     workers <- max(1L, as.integer(workers))

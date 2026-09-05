@@ -18,7 +18,7 @@
 
 # Cheap content fingerprint of a zarr source (archive file or unzipped
 # tree): path + size + mtime + layout/converter versions. Not a content
-# hash — matches the "size + mtime + partial identity" cache contract.
+# hash -- matches the "size + mtime + partial identity" cache contract.
 .zarr_fingerprint <- function(zarr_path) {
     if (dir.exists(zarr_path)) {
         files <- list.files(zarr_path, recursive = TRUE, full.names = TRUE)
@@ -56,7 +56,7 @@
         }
     }
     stop("[zarr] no gene_panel.json in ", xenium_dir, " and no ",
-        "cell_feature_matrix zarr to fall back to — cannot resolve ",
+        "cell_feature_matrix zarr to fall back to -- cannot resolve ",
         "transcript feature names", call. = FALSE)
 }
 
@@ -165,7 +165,7 @@
 #' transparently.
 #'
 #' The disk readers ([importXeniumDisk()], [importAteraDisk()]) call the
-#' converter automatically for zarr input — this entry point is for
+#' converter automatically for zarr input -- this entry point is for
 #' producing parquet outside of a Giotto pipeline.
 #' @param xenium_dir Xenium/Atera output directory containing the
 #'   `.zarr.zip` archives (unzipped `.zarr` directories also work)

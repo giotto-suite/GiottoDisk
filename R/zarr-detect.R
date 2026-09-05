@@ -4,7 +4,7 @@
 # polygon_sets/{0,1}, CSC-by-feature cell_features, a-p encoded cell ids)
 # are keyed on the descriptor this file returns. When 10x ships the final
 # Atera format (or zarr v3 / sharded stores, which Rarr cannot read),
-# detection is where the change lands — parsers consume the descriptor.
+# detection is where the change lands -- parsers consume the descriptor.
 
 # The layout the current parsers implement (Xenium Onboard Analysis
 # v1-v4 zarr; Atera preview data ships the same layout).
@@ -43,7 +43,7 @@
     if (.zarr_exists(src, "zarr.json")) {
         stop("[detectZarrLayout] ", path, " is a zarr v3 store; only ",
             "zarr v2 (", .zarr_layout_version, ") is supported. ",
-            "Rarr cannot read zarr v3 — please report the format so ",
+            "Rarr cannot read zarr v3 -- please report the format so ",
             "support can be added.", call. = FALSE)
     }
     markers <- .zarr_product_markers[[name]]
@@ -52,7 +52,7 @@
         stop("[detectZarrLayout] ", path, " does not match the expected ",
             .zarr_layout_version, " layout: missing ",
             paste(markers[!present], collapse = ", "),
-            ". The export may use a newer 10x layout — please report it.",
+            ". The export may use a newer 10x layout -- please report it.",
             call. = FALSE)
     }
     invisible(NULL)

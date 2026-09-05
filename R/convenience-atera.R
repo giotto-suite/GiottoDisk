@@ -32,7 +32,7 @@ setClass("AteraDiskReader",
 #' Disk-backed counterpart to [Giotto::importAtera()]. Produces an
 #' `AteraDiskReader` which writes transcripts and boundaries to a
 #' `gDirSource`-managed project vault, exactly as the Xenium disk reader
-#' does — including zarr-only output directories (the only format Atera
+#' does -- including zarr-only output directories (the only format Atera
 #' will ship); see [importXeniumDisk()] for how zarr input is handled.
 #' @param atera_dir Atera output directory
 #' @param backend a `gsource` (typically `gDirSource`) project backend.

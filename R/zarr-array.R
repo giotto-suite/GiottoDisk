@@ -2,7 +2,7 @@
 #
 # `.zarr_array()` reads a whole 1D/2D array or a contiguous row range of
 # one. The range read decodes ONLY the chunks overlapping the requested
-# rows — this is what keeps repeated block reads over a large array (the
+# rows -- this is what keeps repeated block reads over a large array (the
 # boundary vertices at 700k+ cells) linear instead of quadratic.
 #
 # `.zarr_chunk_reader()` is a streaming iterator over a 1D (or 2D Nx1)

@@ -1,5 +1,5 @@
 # Builds a synthetic Xenium-layout zarr fixture at test time (no binary
-# fixtures in the repo — same convention as the GEF tests). Ground truth
+# fixtures in the repo -- same convention as the GEF tests). Ground truth
 # is the tables the fixture was built from, never a second run of the
 # same read path.
 #
@@ -9,7 +9,8 @@
 # cell_features), gene_panel.json. Edge cases baked in: uint32 values
 # > 2^31, uint64 indptr, multi-chunk 1D arrays, trailing-dim-chunked 2D
 # vertices, a zero-vertex polygon, an all-invalid transcript tile, an
-# aggregate_gene feature, duplicate feature symbols.
+# aggregate_gene feature. (Duplicate feature symbols are exercised by an
+# ad-hoc archive in test-zarr-cfm-input.R.)
 #
 # Most arrays are hand-encoded with `"compressor": null` (raw chunks) so
 # every dtype path is exercised precisely; cell_summary is written

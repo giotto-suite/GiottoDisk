@@ -580,7 +580,7 @@ csvWideInput <- function(
 #' @slot mode character. "auto" (default), "full", or "cellblock".
 #' @slot cells_per_block integer. Cells per window in cellblock mode
 #'   (0 = derive from the RAM budget at read time).
-#' @slot nnz numeric. Stored values across kept features (double — may
+#' @slot nnz numeric. Stored values across kept features (double -- may
 #'   exceed int32 at Atera scale).
 #' @family store types
 NULL
@@ -663,7 +663,7 @@ tenxZarrInput <- function(
     cat_info <- .load_cfm_feature_catalog(src)
     cid <- .zarr_array(src, "cell_features/cell_id")
     cell_ids <- .encode_xenium_id(cid[, 1L], cid[, 2L])
-    # indptr may be uint32 today, uint64 at Atera scale — always doubles
+    # indptr may be uint32 today, uint64 at Atera scale -- always doubles
     indptr <- as.double(.zarr_array(src, "cell_features/indptr"))
     n_feat_orig <- length(indptr) - 1L
 

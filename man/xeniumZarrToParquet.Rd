@@ -58,7 +58,7 @@ shards, which \code{\link[arrow:open_dataset]{arrow::open_dataset()}} (and the G
 transparently.
 
 The disk readers (\code{\link[=importXeniumDisk]{importXeniumDisk()}}, \code{\link[=importAteraDisk]{importAteraDisk()}}) call the
-converter automatically for zarr input — this entry point is for
+converter automatically for zarr input -- this entry point is for
 producing parquet outside of a Giotto pipeline.
 }
 \examples{

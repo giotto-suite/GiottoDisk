@@ -49,7 +49,7 @@ test_that("boundaries worker is exact, cell-ordered, single-file", {
     bn <- as.data.frame(arrow::read_parquet(on_))
     truth_c <- as.data.frame(fx$truth$cell_boundaries)
     truth_n <- as.data.frame(fx$truth$nucleus_boundaries)
-    # exact, in order — includes the zero-vertex nucleus polygon (absent
+    # exact, in order -- includes the zero-vertex nucleus polygon (absent
     # from the output but not shifting later polygons)
     expect_identical(bc$cell_id, truth_c$cell_id)
     expect_equal(bc$vertex_x, truth_c$vertex_x)

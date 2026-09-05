@@ -28,7 +28,7 @@ with \code{feat_ids}.}
 \item{\code{cells_per_block}}{integer. Cells per window in cellblock mode
 (0 = derive from the RAM budget at read time).}
 
-\item{\code{nnz}}{numeric. Stored values across kept features (double — may
+\item{\code{nnz}}{numeric. Stored values across kept features (double -- may
 exceed int32 at Atera scale).}
 }}
 

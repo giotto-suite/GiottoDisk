@@ -35,7 +35,7 @@ test_that("constructor is metadata-only and exact", {
 })
 
 test_that("duplicate symbols get the 10x --N disambiguation", {
-    # ad-hoc archive with a repeated feature_keys entry (metadata only —
+    # ad-hoc archive with a repeated feature_keys entry (metadata only --
     # the constructor never touches indices/data)
     td <- withr::local_tempdir()
     .zf_write_json(td, "cell_features/.zattrs", list(

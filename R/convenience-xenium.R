@@ -535,7 +535,7 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
         stop("[xenium_transcript_disk] no path provided", call. = FALSE)
     }
     # zarr source: convert to 10x-schema parquet first (fingerprint-cached;
-    # unfiltered/unflipped — qv filter and y flip stay lazy in read_fun
+    # unfiltered/unflipped -- qv filter and y flip stay lazy in read_fun
     # below). Conversion may return a directory of parquet shards, which
     # arrow::open_dataset() consumes like the single file.
     if (.is_zarr_path(path)) {
@@ -859,7 +859,7 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
         inp <- mtxInput(path, feature_id_col = feature_id_col)
         feat_classes_vec <- .tenx_feat_classes_mtx(path)
     } else if (fmt == "zarr") {
-        # streams zarr triplets straight into the parquetExpr write —
+        # streams zarr triplets straight into the parquetExpr write --
         # no intermediate parquet, no mtx/h5 unpack
         inp <- tenxZarrInput(path, feature_id_col = feature_id_col)
         feat_classes_vec <- .tenx_feat_classes_zarr(inp)
@@ -959,7 +959,7 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
 
 # Feature class extractor: 10x zarr. The classes were already read from
 # cell_features/.zattrs (and translated to the 10x display strings) at
-# tenxZarrInput construction — aligned 1:1 with inp@feat_ids — so this
+# tenxZarrInput construction -- aligned 1:1 with inp@feat_ids -- so this
 # just returns them without reopening the archive. Mirrors
 # .tenx_feat_classes_mtx/_h5 in role.
 .tenx_feat_classes_zarr <- function(inp) {

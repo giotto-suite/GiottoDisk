@@ -21,7 +21,7 @@ applies when transcript-level data is present.}
 Disk-backed counterpart to \code{\link[Giotto:importAtera]{Giotto::importAtera()}}. Produces an
 \code{AteraDiskReader} which writes transcripts and boundaries to a
 \code{gDirSource}-managed project vault, exactly as the Xenium disk reader
-does — including zarr-only output directories (the only format Atera
+does -- including zarr-only output directories (the only format Atera
 will ship); see \code{\link[=importXeniumDisk]{importXeniumDisk()}} for how zarr input is handled.
 }
 \seealso{
