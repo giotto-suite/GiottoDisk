@@ -671,3 +671,238 @@ setMethod(
         file.path(partition_dir, sprintf("part-%d.parquet", b - 1L)))
     invisible(NULL)
 }
+
+
+# storeRead -- tenxZarrInput ####
+
+# The zarr cell_feature_matrix is CSC by FEATURE (indptr over features,
+# `indices` = cell ids), but the iterator contract is ascending-cell
+# batches. Two strategies, picked at read time:
+#
+# full      two-pass cell-major placement ("B2"): pass 1 streams `indices`
+#           chunks into a per-cell nnz histogram; pass 2 streams
+#           `indices` + `data` in lockstep, placing each triplet at its
+#           cell's cursor in preallocated int buffers. Features are
+#           walked in ascending order, so within-cell col_id is ascending
+#           by construction -- no sort. Peak RAM ~ 12 B x nnz.
+# cellblock bounded windows over the cell axis: each window rescans the
+#           `indices`/`data` chunks, masks entries to the window, and
+#           sorts the bounded result. RAM is bounded by the window
+#           regardless of nnz (rescans over spill, cf. adr/0011); forced
+#           when nnz exceeds int32 (full-mode buffers are impossible).
+#
+# Both modes emit strictly ascending cell ranges; an out-of-order batch
+# is a bug and stops rather than corrupting the sorted-parquet invariant.
+
+#' @rdname storeRead
+#' @export
+setMethod("storeRead", signature("tenxZarrInput"), function(store, ...) {
+    src <- .zarr_open(store@path)
+    indptr <- store@params$indptr # double, 0-based offsets, length n_feat+1
+    keep <- store@params$keep
+    col_remap <- store@params$col_remap
+    n_cells <- as.integer(store@n_cells)
+    n_feat <- length(keep)
+    nnz <- store@nnz
+    batch_rows <- 5000000L
+
+    ind_r <- .zarr_chunk_reader(src, "cell_features/indices",
+        u4_as_integer = TRUE)
+    dat_r <- .zarr_chunk_reader(src, "cell_features/data",
+        u4_as_integer = TRUE)
+    if (ind_r$total != dat_r$total || ind_r$n_chunks != dat_r$n_chunks) {
+        .zarr_close(src)
+        stop("[storeRead] cell_features indices/data disagree in shape ",
+            "or chunking", call. = FALSE)
+    }
+
+    # call body(j, s, e) for every feature j whose nnz range overlaps the
+    # chunk at 0-based offset chunk_off; s:e are 1-based local indices
+    for_features_in_chunk <- function(chunk_off, chunk_len, body) {
+        chunk_end <- chunk_off + chunk_len
+        first_j <- max(1L, findInterval(chunk_off, indptr))
+        last_j <- min(n_feat, findInterval(chunk_end - 1, indptr))
+        if (last_j < first_j) return(invisible(NULL))
+        for (j in first_j:last_j) {
+            s <- max(0, indptr[j] - chunk_off) + 1
+            e <- min(chunk_len, indptr[j + 1L] - chunk_off)
+            if (e < s) next
+            body(j, as.integer(s), as.integer(e))
+        }
+        invisible(NULL)
+    }
+
+    # resolve mode
+    mode <- store@mode
+    block <- as.integer(store@cells_per_block)
+    if (block <= 0L) {
+        density <- if (n_cells > 0L && store@n_genes > 0L) {
+            nnz / (as.double(n_cells) * as.double(store@n_genes))
+        } else {
+            1
+        }
+        block <- .recommend_chunk_size(
+            n_cells = n_cells, n_genes = store@n_genes,
+            density = density, k = 0L, bytes_per_nz = 16
+        )
+    }
+    if (mode == "auto") {
+        mode <- if (nnz > .Machine$integer.max || block < n_cells) {
+            "cellblock"
+        } else {
+            "full"
+        }
+    }
+    if (mode == "full" && nnz > .Machine$integer.max) {
+        .zarr_close(src)
+        stop("[storeRead] nnz (", format(nnz, big.mark = ","),
+            ") exceeds int32; use mode = \"cellblock\"", call. = FALSE)
+    }
+
+    closed <- FALSE
+    close_fn <- function() {
+        if (!closed) {
+            .zarr_close(src)
+            closed <<- TRUE
+        }
+        invisible(NULL)
+    }
+    last_row_emitted <- 0L
+    check_ascending <- function(dt) {
+        if (nrow(dt) && dt$row_id[1L] <= last_row_emitted) {
+            close_fn()
+            stop("[storeRead] internal: batch starts at cell ",
+                dt$row_id[1L], " but cells through ", last_row_emitted,
+                " were already emitted -- ascending-cell invariant broken",
+                call. = FALSE)
+        }
+        if (nrow(dt)) last_row_emitted <<- dt$row_id[nrow(dt)]
+        dt
+    }
+
+    if (mode == "full") {
+        built <- FALSE
+        row_ids <- col_ids <- values <- NULL
+        off <- NULL
+        lo_cell <- 1L
+
+        build <- function() {
+            # pass 1: per-cell nnz over kept features
+            per_cell_nnz <- integer(n_cells)
+            for (k in seq_len(ind_r$n_chunks)) {
+                ic <- ind_r$read_chunk(k - 1L)
+                chunk_off <- (k - 1) * ind_r$chunk_size
+                for_features_in_chunk(chunk_off, length(ic),
+                    function(j, s, e) {
+                        if (!keep[j]) return(invisible(NULL))
+                        cells_1b <- ic[s:e] + 1L
+                        per_cell_nnz[cells_1b] <<-
+                            per_cell_nnz[cells_1b] + 1L
+                    })
+            }
+            off <<- c(0L, cumsum(per_cell_nnz))
+            total <- off[n_cells + 1L]
+            row_ids <<- integer(total)
+            col_ids <<- integer(total)
+            values <<- integer(total)
+            cursor <- integer(n_cells)
+            # pass 2: lockstep placement
+            for (k in seq_len(ind_r$n_chunks)) {
+                ic <- ind_r$read_chunk(k - 1L)
+                dc <- dat_r$read_chunk(k - 1L)
+                chunk_off <- (k - 1) * ind_r$chunk_size
+                for_features_in_chunk(chunk_off, length(ic),
+                    function(j, s, e) {
+                        if (!keep[j]) return(invisible(NULL))
+                        cells_1b <- ic[s:e] + 1L
+                        slots <- off[cells_1b] + cursor[cells_1b] + 1L
+                        row_ids[slots] <<- cells_1b
+                        col_ids[slots] <<- col_remap[j]
+                        values[slots] <<- dc[s:e]
+                        cursor[cells_1b] <<- cursor[cells_1b] + 1L
+                    })
+            }
+            if (!identical(cursor, per_cell_nnz)) {
+                close_fn()
+                stop("[storeRead] internal: cell-major placement drifted ",
+                    "(cursor != per-cell nnz)", call. = FALSE)
+            }
+            built <<- TRUE
+            invisible(NULL)
+        }
+
+        next_batch <- function() {
+            if (closed) return(NULL)
+            if (!built) build()
+            repeat {
+                if (lo_cell > n_cells) {
+                    close_fn()
+                    return(NULL)
+                }
+                # widest hi with off[hi + 1] - off[lo] <= batch_rows,
+                # but at least one cell
+                hi_cell <- findInterval(off[lo_cell] + batch_rows, off) - 1L
+                hi_cell <- max(lo_cell, min(hi_cell, n_cells))
+                s <- off[lo_cell] + 1L
+                e <- off[hi_cell + 1L]
+                lo_cell <<- hi_cell + 1L
+                if (e >= s) {
+                    return(check_ascending(data.table::data.table(
+                        row_id = row_ids[s:e],
+                        col_id = col_ids[s:e],
+                        value = as.double(values[s:e])
+                    )))
+                }
+            }
+        }
+    } else { # cellblock
+        lo_cell <- 1L
+        next_batch <- function() {
+            if (closed) return(NULL)
+            repeat {
+                if (lo_cell > n_cells) {
+                    close_fn()
+                    return(NULL)
+                }
+                hi_cell <- min(lo_cell + block - 1L, n_cells)
+                parts <- list()
+                for (k in seq_len(ind_r$n_chunks)) {
+                    ic <- ind_r$read_chunk(k - 1L)
+                    chunk_len <- length(ic)
+                    # dense col id per entry (0 = dropped feature)
+                    cols <- integer(chunk_len)
+                    chunk_off <- (k - 1) * ind_r$chunk_size
+                    for_features_in_chunk(chunk_off, chunk_len,
+                        function(j, s, e) {
+                            cols[s:e] <<- col_remap[j]
+                        })
+                    cells_1b <- ic + 1L
+                    m <- cols > 0L & cells_1b >= lo_cell &
+                        cells_1b <= hi_cell
+                    if (!any(m)) next
+                    dc <- dat_r$read_chunk(k - 1L)
+                    parts[[length(parts) + 1L]] <- data.table::data.table(
+                        row_id = cells_1b[m],
+                        col_id = cols[m],
+                        value = as.double(dc[m])
+                    )
+                }
+                lo_cell <<- hi_cell + 1L
+                if (length(parts)) {
+                    out <- data.table::rbindlist(parts)
+                    data.table::setorder(out, row_id, col_id)
+                    return(check_ascending(out))
+                }
+            }
+        }
+    }
+
+    list(
+        next_batch = next_batch,
+        close = close_fn,
+        cell_ids = function() store@cell_ids,
+        feat_ids = function() store@feat_ids,
+        n_cells = function() store@n_cells,
+        n_genes = function() store@n_genes
+    )
+})

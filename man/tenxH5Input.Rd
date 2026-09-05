@@ -36,6 +36,7 @@ Other store constructors:
 \code{\link[=parquetExprStore]{parquetExprStore()}},
 \code{\link[=parquetStore]{parquetStore()}},
 \code{\link[=storeCreate]{storeCreate()}},
+\code{\link[=tenxZarrInput]{tenxZarrInput()}},
 \code{\link[=unionParquetExprStore]{unionParquetExprStore()}}
 }
 \concept{store constructors}

@@ -1,5 +1,27 @@
 # GiottoDisk 0.0.0.2
 
+## new
+- Zarr input for the Xenium/Atera disk readers. `importXeniumDisk()` /
+  `importAteraDisk()` now work on zarr-only output directories (the only
+  format Atera will ship): transcripts, boundaries and cell metadata are
+  converted from the `.zarr.zip` archives to 10x-schema parquet in a
+  fingerprint-keyed cache (convert once, reuse on later imports), and
+  expression streams straight from the zarr into the vault
+  `parquetExprStore` with no intermediate file. Requires `Rarr` and `zip`
+  (Suggests). Unzipped `.zarr` directory trees are also accepted.
+- `tenxZarrInput()`: `exprInput` over `cell_feature_matrix.zarr.zip`.
+  Cell-ordered batch iterator over the feature-major CSC arrays; switches
+  to bounded per-cell-block rescans when the triplet buffers exceed the
+  RAM budget (or nnz exceeds int32, e.g. Atera whole-transcriptome runs).
+- `xeniumZarrToParquet()`: standalone zarr -> parquet converter producing
+  the 10x-shipped schemas (verified column-exact against 10x parquet,
+  including `transcript_id` packing and instrument FOV names), plus the
+  expression triplet layout. Transcripts convert in parallel over tile
+  groups (`giottodisk.par_workers` / future plan).
+- `detectZarrLayout()`: versioned layout detection for zarr output
+  directories; unsupported layouts (zarr v3, unknown structure) fail with
+  an actionable message.
+
 ## bug fixes
 - `createGiottoXeniumObject(backend =)` no longer errors on Xenium-format
   directories that ship no panel json. Feature metadata is generated from the

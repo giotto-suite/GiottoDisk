@@ -723,3 +723,49 @@ each write an independent atomic file creation rather than a shared-file update.
 computation time. Access via `storeUID(overlap)` which returns
 `list(poly = ..., feat = ...)`. These slots are intended for future integration
 with the `depends` BFS walk in `sourcePrune()`.
+
+## Zarr Ingestion (Xenium / Atera)
+
+Xenium exports every analysis product twice — convenient parquet/csv, and
+the `.zarr.zip` archives Xenium Explorer consumes. Atera will ship zarr
+only, so the disk readers accept zarr-only directories. The mechanism has
+three layers (invariants in AGENTS.md "Zarr input"):
+
+**Source layer** (`R/zarr-source.R`, `R/zarr-array.R`). A `zarr_source`
+wraps either a `.zarr.zip` archive read in place — one long-lived
+connection, the zip central directory cached once, per-entry seek +
+local-header parse + raw read, valid because Xenium archives store
+entries uncompressed — or an unzipped directory tree. Chunk bytes go
+through `.zarr_blosc_decompress()`, the single wrapper around Rarr's
+internal decoder, and are reinterpreted per dtype (`uint32` above 2^31
+via a signed-read + 2^32 shift; `uint64` as exact-to-2^53 doubles).
+`.zarr_array(range =)` decodes only the chunks overlapping a requested
+row range — what keeps blockwise boundary reads linear —
+and `.zarr_chunk_reader()` streams 1D arrays one chunk at a time.
+
+**Conversion layer** (`R/zarr-xenium-workers.R`, `R/zarr-convert.R`).
+Workers turn the cells archive into 10x-schema `cells.parquet` plus both
+boundary parquets in one pass, and the transcripts archive into the
+shipped transcripts schema (feature and FOV names from the root
+`.zattrs`), in parallel over tile groups. Output is unfiltered and
+unflipped: the readers' existing lazy `read_fun`s apply the qv filter and
+y flip, so converted parquet is byte-comparable to what 10x ships and the
+cache is parameter-independent. `.zarr_ensure_parquet()` keys converted
+output on a fingerprint of (source path, size, mtime, layout version,
+converter version) under the artifact dump — first import converts,
+every later import reuses. The standalone entry point is
+`xeniumZarrToParquet()`.
+
+**Expression** never touches intermediate files. `tenxZarrInput` is an
+`exprInput` whose `storeRead()` iterator re-orders the feature-major CSC
+arrays into ascending-cell `(row_id, col_id, value)` batches — a two-pass
+cell-major placement when the triplet buffers fit the chunk-sizing
+budget, bounded per-cell-block rescans when they do not (the same
+rescans-over-spill call as adr/0011; forced once nnz exceeds int32).
+The unchanged universal `storeWrite(parquetExprStore, exprInput)`
+consumer streams the batches into the vault store.
+
+All layout assumptions live behind `detectZarrLayout()`, which names the
+detected layout (`xenium-zarr-v1`) and fails actionably on zarr v3 or
+unknown structures — when 10x freezes the final Atera format, detection
+plus at most one parser variant is the intended blast radius.
