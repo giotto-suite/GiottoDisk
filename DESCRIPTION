@@ -104,6 +104,7 @@ Collate:
     'methods-store_nostate.R'
     'methods-transforms.R'
     'pca-param.R'
+    'stream-enrich.R'
     'stream-filter.R'
     'stream-labelProportions.R'
     'stream-markers.R'
