@@ -100,6 +100,7 @@ NULL
 .pe_apply_op <- function(atab, op) {
     switch(op$type,
         "log"      = .op_transform_log(atab, op),
+        "expm1"    = .op_transform_expm1(atab, op),
         "multiply" = .op_multiply(atab, op),
         "add"      = .op_add_refuse(op),
         stop("[.pe_apply_op] unknown arrow-side op type: ", op$type,
@@ -121,6 +122,25 @@ NULL
         return(x[, value := log1p(value) / log(base)])
     }
     dplyr::mutate(x, value = log1p(value) / log(!!base))
+}
+
+# The inverse of `log`: value -> base^value - 1.
+#
+# Sparsity-preserving, which is the only reason it can live here at all: an
+# absent entry is 0 and base^0 - 1 is 0, so implicit zeros stay implicit and
+# the op lowers to Acero like `multiply` rather than being refused like `add`.
+#
+# Written as `base^value - 1` rather than `expm1(value * log(base))` because
+# the in-memory backends compute the former and the two are not bit-identical
+# in general. Arrow's `^` agrees with R's elementwise, which is what makes the
+# streamed and in-memory PAGE means comparable rather than merely close.
+.op_transform_expm1 <- function(x, op) {
+    value <- NULL # NSE
+    base <- op$base %||% 2
+    if (data.table::is.data.table(x)) {
+        return(x[, value := base^value - 1])
+    }
+    dplyr::mutate(x, value = (!!base)^value - 1)
 }
 
 # ---- multiply / add ---------------------------------------------------------
@@ -197,6 +217,7 @@ NULL
 .pe_apply_post_op_df <- function(df, op) {
     switch(op$type,
         "log"      = .op_transform_log(df, op),
+        "expm1"    = .op_transform_expm1(df, op),
         "multiply" = .pe_apply_post_op_multiply_df(df, op),
         "add"      = .op_add_refuse(op),
         stop("[.pe_apply_post_op_df] unknown post op type: ", op$type,

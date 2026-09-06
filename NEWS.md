@@ -1,5 +1,35 @@
 # GiottoDisk 0.0.0.2
 
+## new
+- `analyzeData(parquetExprBase, pageEnrichParam)` runs PAGE enrichment on a
+  disk-backed store without densifying it, so `Giotto::runPAGEEnrich()` works
+  on a backed project. It used to fail outright.
+
+  PAGE streams because its statistic is a function of moments rather than of
+  the matrix. In memory it builds a dense `geneFold = expr - mean_gene_expr`
+  and then only ever asks it for a per-cell mean, a per-cell sd, and a per-cell
+  mean over each cell type's marker rows -- all three recoverable from per-cell
+  sums of the stored sparse values plus the per-gene reference vector, so the
+  dense matrix never has to exist. Three full passes plus one per cell type,
+  each of the latter reading that type's marker rows only.
+
+  Scores match the in-memory method to ~1e-12 relative. The per-cell sd is the
+  only term not bit-identical: recovering it from raw moments sums in a
+  different order than `stats::sd`.
+
+  `p_value = TRUE` is refused with an explanation -- its permutation branch is
+  `n_times` x cell-types extra marker-set means, thousands of passes rather
+  than one heavier one. `rankEnrichParam` and `hyperEnrichParam` are refused
+  too: rank ranks each gene across every cell, so no cell chunk can be scored
+  in isolation, and the hypergeometric per-cell quantile shares nothing with
+  the accumulators PAGE uses.
+- A `expm1` op, the inverse of the existing `log` transform: `value ->
+  base^value - 1`. Sparsity-preserving, so it lowers to Acero. Written as
+  `base^value - 1` rather than `expm1(value * log(base))` because the
+  in-memory backends compute the former and the two are not bit-identical in
+  general; arrow's `^` agrees with R's elementwise, which is what makes the
+  streamed PAGE reference level exact rather than merely close.
+
 ## bug fixes
 - `createGiottoXeniumObject(backend =)` no longer errors on Xenium-format
   directories that ship no panel json. Feature metadata is generated from the
