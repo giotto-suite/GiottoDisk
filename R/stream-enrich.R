@@ -48,7 +48,15 @@ NULL
 # it, so the parity tests assert a relative tolerance and say what it is.
 
 
+# The topic owns the `@name` on its own block. A `@name` on a setMethod block
+# suppresses roxygen's \alias{analyzeData,...-method}, and R CMD check then
+# reports that method as undocumented -- which is why the two refusal methods
+# below, which use only `@rdname`, were fine and this one was not.
+
 #' @name analyzeData-pageEnrichParam
+#' @title Streaming PAGE enrichment
+NULL
+
 #' @rdname analyzeData-pageEnrichParam
 #' @title Streaming PAGE enrichment
 #' @description

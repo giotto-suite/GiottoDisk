@@ -2,6 +2,7 @@
 % Please edit documentation in R/stream-enrich.R
 \name{analyzeData-pageEnrichParam}
 \alias{analyzeData-pageEnrichParam}
+\alias{analyzeData,parquetExprBase,pageEnrichParam-method}
 \alias{analyzeData,parquetExprBase,rankEnrichParam-method}
 \alias{analyzeData,parquetExprBase,hyperEnrichParam-method}
 \title{Streaming PAGE enrichment}
