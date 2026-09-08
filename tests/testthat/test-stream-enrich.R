@@ -183,3 +183,63 @@ test_that("the unsupported enrichment paths say why", {
         "not supported on a disk-backed"
     )
 })
+
+
+# --- the chain's phase split -------------------------------------------------
+#
+# ADR 0002: once `@post_ops` is non-empty, subsequent pushes go there regardless
+# of the record's natural phase. `.pe_push_op()` enforces that by erroring on a
+# lazy push, so a consumer that pushes `"lazy"` unconditionally fails on any
+# store carrying a post op -- which is what `.stream_page()` used to do. No
+# other test builds such a store, which is why it survived.
+
+test_that("streaming PAGE works whichever phase the chain is already in", {
+    skip_if_not_installed("Giotto")
+    f <- .enrich_pe_fixture(G = 300L, N = 200L)
+    sm <- .enrich_sign_matrix(rownames(f$m), sizes = c(60L, 40L, 80L))
+    pe <- GiottoClass::getExpression(f$backed, values = "raw",
+                                     output = "exprObj")[]
+    p <- Giotto::enrichParam("PAGE", verbose = FALSE)
+
+    # The same record, placed either side of the split. The chain computes the
+    # same thing either way, so the scores must agree.
+    #
+    # Agree to ~1e-17, not bit-for-bit: on the lazy side Arrow's log2 kernel
+    # evaluates it, on the post side R's log1p does. Same function, different
+    # implementations, last-ulp disagreement. Asserting identity here would be
+    # asserting that two C++ and R math libraries round the same way.
+    pe_lazy <- .pe_push_op(pe, list(type = "log", base = 2), phase = "lazy")
+    pe_post <- .pe_push_op(pe, list(type = "log", base = 2), phase = "post")
+    expect_length(pe_lazy@post_ops, 0L)
+    expect_length(pe_post@post_ops, 1L)
+
+    a <- GiottoClass::analyzeData(pe_lazy, p, sign_matrix = sm)
+    b <- GiottoClass::analyzeData(pe_post, p, sign_matrix = sm)
+
+    expect_identical(a$cell_ID, b$cell_ID)
+    expect_identical(names(a), names(b))
+    for (cl in setdiff(names(a), "cell_ID")) {
+        expect_equal(a[[cl]], b[[cl]], tolerance = 1e-12, info = cl)
+        expect_lt(max(abs(a[[cl]] - b[[cl]])), 1e-14)
+    }
+})
+
+test_that(".enrich_push_op appends at the end of the chain", {
+    skip_if_not_installed("Giotto")
+    f <- .enrich_pe_fixture(G = 40L, N = 60L)
+    pe <- GiottoClass::getExpression(f$backed, values = "raw",
+                                     output = "exprObj")[]
+    op <- list(type = "expm1", base = 2)
+
+    # empty chain -> lazy, so it can still lower to Acero
+    lazy <- .enrich_push_op(pe, op)
+    expect_length(lazy@ops, 1L)
+    expect_length(lazy@post_ops, 0L)
+
+    # a post op already queued -> the new record has to run after it
+    pe2 <- .pe_push_op(pe, list(type = "log", base = 2), phase = "post")
+    post <- .enrich_push_op(pe2, op)
+    expect_length(post@ops, 0L)
+    expect_identical(vapply(post@post_ops, function(o) o$type, ""),
+                     c("log", "expm1"))
+})

@@ -31,6 +31,13 @@
   streamed PAGE reference level exact rather than merely close.
 
 ## bug fixes
+- Streaming PAGE works on a store that already carries a `@post_ops` record.
+  It pushed its `expm1` and `multiply` records with `phase = "lazy"`
+  unconditionally, and per adr/0002 a lazy push is refused once `@post_ops` is
+  non-empty, so any such store failed with *cannot queue a lazy op after a post
+  op*. The records are now appended at the end of the chain, wherever that end
+  is; both have executors for the R-side carrier, so either placement computes
+  the same thing.
 - `createGiottoXeniumObject(backend =)` no longer errors on Xenium-format
   directories that ship no panel json. Feature metadata is generated from the
   expression matrix when the panel is absent.
