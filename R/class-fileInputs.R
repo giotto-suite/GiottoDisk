@@ -556,3 +556,155 @@ csvWideInput <- function(
         batch_rows     = as.integer(batch_rows)
     )
 }
+
+# tenxZarrInput ####
+
+#' @name tenxZarrInput-class
+#' @title 10x Xenium/Atera Zarr Expression Input
+#' @description
+#' Wraps the `cell_feature_matrix.zarr.zip` archive (or unzipped `.zarr`
+#' tree) shipped by 10x Xenium and Atera. Construction is metadata-only:
+#' the feature catalog (`cell_features/.zattrs`), the encoded cell
+#' barcodes, and the CSC-by-FEATURE `indptr` are read eagerly; the
+#' `indices` / `data` arrays are streamed by [storeRead()].
+#'
+#' Because the on-disk matrix is feature-major and the iterator contract
+#' is cell-ordered, [storeRead()] reorders on the fly: a two-pass
+#' cell-major placement when the triplet buffers fit the RAM budget
+#' (`mode = "full"`), or bounded per-cell-block rescans when they do not
+#' (`mode = "cellblock"`; forced when nnz exceeds int32).
+#'
+#' @slot feat_types character. Feature classes as 10x display strings
+#'   ("Gene Expression", "Negative Control Probe", ...), aligned 1:1
+#'   with `feat_ids`.
+#' @slot mode character. "auto" (default), "full", or "cellblock".
+#' @slot cells_per_block integer. Cells per window in cellblock mode
+#'   (0 = derive from the RAM budget at read time).
+#' @slot nnz numeric. Stored values across kept features (double -- may
+#'   exceed int32 at Atera scale).
+#' @family store types
+NULL
+
+setClass("tenxZarrInput",
+    contains = "exprInput",
+    slots = list(
+        feat_types      = "character",
+        mode            = "character",
+        cells_per_block = "integer",
+        nnz             = "numeric"
+    ),
+    prototype = list(
+        feat_types      = character(0L),
+        mode            = "auto",
+        cells_per_block = 0L,
+        nnz             = 0
+    )
+)
+
+# zarr feature_types are snake_case; translate to the 10x display strings
+# the Xenium/Atera readers key their feat_type split on.
+.zarr_feat_class_display <- function(x) {
+    known <- c(
+        gene = "Gene Expression",
+        protein = "Protein Expression",
+        negative_control_probe = "Negative Control Probe",
+        negative_control_codeword = "Negative Control Codeword",
+        unassigned_codeword = "Unassigned Codeword",
+        deprecated_codeword = "Deprecated Codeword",
+        genomic_control = "Genomic Control",
+        aggregate_gene = "Aggregate Gene"
+    )
+    out <- unname(known[x])
+    miss <- is.na(out)
+    if (any(miss)) {
+        # unseen class: Title Case the snake_case name
+        out[miss] <- vapply(strsplit(x[miss], "_", fixed = TRUE),
+            function(w) {
+                paste(toupper(substring(w, 1L, 1L)),
+                    substring(w, 2L), sep = "", collapse = " ")
+            }, character(1L))
+    }
+    out
+}
+
+#' @name tenxZarrInput
+#' @title Create a 10x Xenium/Atera zarr expression input
+#' @description
+#' Eagerly reads the feature catalog, cell barcodes and `indptr` from a
+#' `cell_feature_matrix.zarr.zip` archive so `cell_ids` / `feat_ids` /
+#' `n_cells` / `n_genes` are known up-front; `indices` / `data` are
+#' streamed by [storeRead()].
+#' @param zarr_path character. Path to `cell_feature_matrix.zarr.zip` or
+#'   an unzipped `cell_feature_matrix.zarr` directory.
+#' @param feature_id_col integer. `1L` = Ensembl ID (zarr `feature_ids`),
+#'   `2L` = gene symbol (zarr `feature_keys`; default). Mirrors
+#'   [mtxInput()]'s features.tsv column semantics.
+#' @param mode character. "auto" (default; pick from the RAM budget),
+#'   "full" (two-pass cell-major placement over full triplet buffers), or
+#'   "cellblock" (bounded per-cell-block rescans).
+#' @param cells_per_block integer. Cells per window in cellblock mode.
+#'   `NULL` (default) derives it from the RAM budget at read time.
+#' @param drop_aggregate logical. Drop `aggregate_gene` summary features
+#'   (the "Total transcripts" row) from the matrix (default `TRUE`).
+#' @return A `tenxZarrInput` object.
+#' @family store constructors
+#' @export
+tenxZarrInput <- function(
+    zarr_path,
+    feature_id_col  = 2L,
+    mode            = c("auto", "full", "cellblock"),
+    cells_per_block = NULL,
+    drop_aggregate  = TRUE
+) {
+    mode <- match.arg(mode)
+    src <- .zarr_open(zarr_path)
+    on.exit(.zarr_close(src), add = TRUE)
+
+    cat_info <- .load_cfm_feature_catalog(src)
+    cid <- .zarr_array(src, "cell_features/cell_id")
+    cell_ids <- .encode_xenium_id(cid[, 1L], cid[, 2L])
+    # indptr may be uint32 today, uint64 at Atera scale -- always doubles
+    indptr <- as.double(.zarr_array(src, "cell_features/indptr"))
+    n_feat_orig <- length(indptr) - 1L
+
+    feat_ids_all <- switch(as.integer(feature_id_col),
+        cat_info$feature_ids,
+        cat_info$feature_keys,
+        stop("[tenxZarrInput] feature_id_col must be 1 (Ensembl) or 2 ",
+            "(symbols)", call. = FALSE)
+    )
+    if (!length(feat_ids_all)) feat_ids_all <- cat_info$feature_ids
+    if (length(feat_ids_all) != n_feat_orig ||
+        length(cat_info$feature_types) != n_feat_orig) {
+        stop("[tenxZarrInput] feature catalog length (",
+            length(feat_ids_all), ") disagrees with indptr (",
+            n_feat_orig, " features)", call. = FALSE)
+    }
+
+    keep <- rep(TRUE, n_feat_orig)
+    if (isTRUE(drop_aggregate)) {
+        keep <- cat_info$feature_types != "aggregate_gene"
+    }
+    col_remap <- integer(n_feat_orig) # 0 marks dropped features
+    col_remap[keep] <- seq_len(sum(keep))
+    # nnz over KEPT features only (what the iterator will emit)
+    nnz <- sum((indptr[-1L] - indptr[-length(indptr)])[keep])
+
+    new("tenxZarrInput",
+        path            = normalizePath(zarr_path),
+        params          = list(
+            indptr = indptr,
+            keep = keep,
+            col_remap = col_remap
+        ),
+        cell_ids        = cell_ids,
+        feat_ids        = .disambiguate_feat_ids(feat_ids_all[keep]),
+        feat_types      = .zarr_feat_class_display(
+            cat_info$feature_types[keep]),
+        n_cells         = length(cell_ids),
+        n_genes         = sum(keep),
+        nnz             = nnz,
+        mode            = mode,
+        cells_per_block = as.integer(cells_per_block %||% 0L)
+    )
+}

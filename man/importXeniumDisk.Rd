@@ -23,6 +23,14 @@ Disk-backed counterpart to \code{\link[Giotto:importXenium]{Giotto::importXenium
 write to a \code{gDirSource}-managed project vault as \code{parquetGeomTile}
 stores. Other modalities (expression, featmeta, cellmeta, images)
 remain in-memory via the inherited \code{XeniumReader} closures.
+
+Zarr-only output directories are supported (requires \code{Rarr} and
+\code{zip}): transcripts, boundaries and cell metadata are converted from
+the \code{.zarr.zip} archives to 10x-schema parquet in a conversion cache
+under \code{\link[=getArtifactDumpDir]{getArtifactDumpDir()}} (first import converts, later imports
+reuse), and expression streams from the zarr directly into the vault
+\code{\link[=parquetExprStore]{parquetExprStore()}}. See \code{\link[=xeniumZarrToParquet]{xeniumZarrToParquet()}} for the standalone
+converter and \code{\link[=detectZarrLayout]{detectZarrLayout()}} for layout diagnostics.
 }
 \seealso{
 \code{\link[Giotto:importXenium]{Giotto::importXenium()}} for the in-memory variant

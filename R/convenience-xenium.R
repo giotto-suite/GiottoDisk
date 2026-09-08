@@ -150,6 +150,30 @@ setMethod(
         }
         obj@calls$load_expression <- ex_fun
 
+        # cellmeta / spatlocs (zarr swap). The inherited closures read
+        # csv/parquet only; when path detection resolved cell metadata to
+        # the cells zarr archive, convert first (fingerprint-cached; the
+        # converted cells.parquet matches the 10x cellmeta schema) and
+        # delegate unchanged.
+        if (length(obj@paths$cell_meta_path) &&
+            .is_zarr_path(obj@paths$cell_meta_path[[1L]])) {
+            parent_cellmeta <- obj@calls$load_cellmeta
+            parent_spatlocs <- obj@calls$load_spatlocs
+            zarr_meta_path <- obj@paths$cell_meta_path[[1L]]
+            obj@calls$load_cellmeta <- function(path = zarr_meta_path, ...) {
+                if (.is_zarr_path(path)) {
+                    path <- .zarr_ensure_parquet(path, what = "cells")
+                }
+                parent_cellmeta(path = path, ...)
+            }
+            obj@calls$load_spatlocs <- function(path = zarr_meta_path, ...) {
+                if (.is_zarr_path(path)) {
+                    path <- .zarr_ensure_parquet(path, what = "cells")
+                }
+                parent_spatlocs(path = path, ...)
+            }
+        }
+
         # create_gobject (disk variant). Mirrors parent's gobject_fun
         # signature so `createGiottoXeniumObject(backend = gsrc, ...)` can
         # plumb identical args through. Image / aligned-image attach
@@ -444,6 +468,14 @@ setMethod(
 #' write to a `gDirSource`-managed project vault as `parquetGeomTile`
 #' stores. Other modalities (expression, featmeta, cellmeta, images)
 #' remain in-memory via the inherited `XeniumReader` closures.
+#'
+#' Zarr-only output directories are supported (requires `Rarr` and
+#' `zip`): transcripts, boundaries and cell metadata are converted from
+#' the `.zarr.zip` archives to 10x-schema parquet in a conversion cache
+#' under [getArtifactDumpDir()] (first import converts, later imports
+#' reuse), and expression streams from the zarr directly into the vault
+#' [parquetExprStore()]. See [xeniumZarrToParquet()] for the standalone
+#' converter and [detectZarrLayout()] for layout diagnostics.
 #' @param xenium_dir Xenium output directory
 #' @param backend a `gsource` (typically `gDirSource`) project backend.
 #'   Naming matches [GiottoClass::createGiottoObject()]'s `backend` param.
@@ -502,7 +534,18 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
     if (missing(path)) {
         stop("[xenium_transcript_disk] no path provided", call. = FALSE)
     }
-    checkmate::assert_file_exists(path)
+    # zarr source: convert to 10x-schema parquet first (fingerprint-cached;
+    # unfiltered/unflipped -- qv filter and y flip stay lazy in read_fun
+    # below). Conversion may return a directory of parquet shards, which
+    # arrow::open_dataset() consumes like the single file.
+    if (.is_zarr_path(path)) {
+        path <- .zarr_ensure_parquet(path,
+            what = "transcripts", workers = cores, verbose = verbose)
+    }
+    checkmate::assert(
+        checkmate::check_file_exists(path),
+        checkmate::check_directory_exists(path)
+    )
     checkmate::assert_class(gsource, "gsource")
     output <- match.arg(output, choices = c("giottoPoints", "store"))
     GiottoUtils::package_check("arrow")
@@ -596,6 +639,18 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
 ) {
     if (missing(path)) {
         stop("[xenium_poly_disk] no path provided", call. = FALSE)
+    }
+    # zarr source: both boundary sets live in cells.zarr; `name` picks the
+    # polygon set. Conversion output is a SINGLE cell-ordered parquet file
+    # (the row_index lock below needs deterministic source order).
+    if (.is_zarr_path(path)) {
+        path <- .zarr_ensure_parquet(path,
+            what = if (identical(name, "nucleus")) {
+                "nucleus_boundaries"
+            } else {
+                "cell_boundaries"
+            },
+            verbose = verbose)
     }
     checkmate::assert_file_exists(path)
     checkmate::assert_class(gsource, "gsource")
@@ -755,8 +810,11 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
              call. = FALSE)
     )
 
-    # Detect format
-    if (dir.exists(path)) {
+    # Detect format (zarr first: an unzipped `.zarr` tree is a directory
+    # and would otherwise be misread as an mtx dir)
+    if (.is_zarr_path(path)) {
+        fmt <- "zarr"
+    } else if (dir.exists(path)) {
         fmt <- "mtx"
     } else if (grepl("\\.tar\\.gz$", path, ignore.case = TRUE)) {
         fmt <- "tar.gz"
@@ -800,6 +858,11 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
     if (fmt == "mtx") {
         inp <- mtxInput(path, feature_id_col = feature_id_col)
         feat_classes_vec <- .tenx_feat_classes_mtx(path)
+    } else if (fmt == "zarr") {
+        # streams zarr triplets straight into the parquetExpr write --
+        # no intermediate parquet, no mtx/h5 unpack
+        inp <- tenxZarrInput(path, feature_id_col = feature_id_col)
+        feat_classes_vec <- .tenx_feat_classes_zarr(inp)
     } else {
         inp <- tenxH5Input(path, feature_id_col = feature_id_col)
         feat_classes_vec <- .tenx_feat_classes_h5(path)
@@ -891,6 +954,16 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
     )
     if (ncol(featuresDT) >= 3L) as.character(featuresDT$V3)
     else rep("Gene Expression", nrow(featuresDT))
+}
+
+
+# Feature class extractor: 10x zarr. The classes were already read from
+# cell_features/.zattrs (and translated to the 10x display strings) at
+# tenxZarrInput construction -- aligned 1:1 with inp@feat_ids -- so this
+# just returns them without reopening the archive. Mirrors
+# .tenx_feat_classes_mtx/_h5 in role.
+.tenx_feat_classes_zarr <- function(inp) {
+    inp@feat_types
 }
 
 

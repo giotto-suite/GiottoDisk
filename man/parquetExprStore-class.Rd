@@ -150,6 +150,7 @@ Other store types:
 \code{\link{parquetEdgeStore-class}},
 \code{\link{parquetStore-class}},
 \code{\link{tenxH5Input-class}},
+\code{\link{tenxZarrInput-class}},
 \code{\link{unionParquetExprStore-class}}
 }
 \concept{store types}

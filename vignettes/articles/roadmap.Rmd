@@ -349,6 +349,31 @@ current local `gDirSource`:
 - **SpatialData interop** — read-only adapter over a published SpatialData
   Zarr store, exposing sdata elements through the gsource interface.
 
+## Zarr conversion follow-ups
+
+The Xenium/Atera zarr pathway (see AGENTS.md "Zarr input") converts
+transcripts in parallel and everything else serially, scheduled with the
+package's fork/`lapply_flex` convention. Deferred deliberately:
+
+- **A mirai scheduling backend.** mirai does not exist anywhere in the
+  suite yet, and the measured comparison for the shard-writing shape
+  (methods-fileInputs.R, `.storewrite_h5_parallel`) had fork ahead ~2x on
+  wall clock. Revisit as a suite-wide decision — the wins would be
+  Windows parallelism and warm daemons across tile groups.
+- **Parallel boundary decode.** Workers decode cell blocks, a single
+  writer keeps the cell-ordered single-file invariant. Low value since
+  the range-read fix; boundaries are no longer a hot spot.
+- **Parallel cellblock pass for `tenxZarrInput`.** The per-window rescans
+  are independent; the iterator feeds a serial consumer today.
+- **Archive-level overlap.** cells / transcripts / cell_feature_matrix
+  are independent archives and could convert concurrently under a shared
+  worker budget.
+- **Manifest-level dedupe (cache layer 2).** The conversion cache skips
+  re-conversion; re-import still re-tiles into the vault. Passing a
+  `zarr_fingerprint` through `sourceWrite(meta =)` and rehydrating the
+  registered store by uid would skip that too — needs a sanctioned
+  per-uid store rehydration outside `snapshotLoad`.
+
 ## Other items
 
 - Exact polygon masking as a post-materialization op (currently AABB-only).

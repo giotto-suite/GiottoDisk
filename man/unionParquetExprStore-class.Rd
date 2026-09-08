@@ -66,6 +66,7 @@ Other store types:
 \code{\link{parquetEdgeStore-class}},
 \code{\link{parquetExprStore-class}},
 \code{\link{parquetStore-class}},
-\code{\link{tenxH5Input-class}}
+\code{\link{tenxH5Input-class}},
+\code{\link{tenxZarrInput-class}}
 }
 \concept{store types}

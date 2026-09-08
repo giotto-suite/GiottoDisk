@@ -8,6 +8,7 @@
 \alias{storeRead,cellbinGefInput-method}
 \alias{storeRead,binGefInput-method}
 \alias{storeRead,csvWideInput-method}
+\alias{storeRead,tenxZarrInput-method}
 \alias{storeRead,parquetExprStore-method}
 \alias{storeRead,unionParquetExprStore-method}
 \alias{storeRead}
@@ -34,6 +35,8 @@
 \S4method{storeRead}{binGefInput}(store, ...)
 
 \S4method{storeRead}{csvWideInput}(store, ...)
+
+\S4method{storeRead}{tenxZarrInput}(store, ...)
 
 \S4method{storeRead}{parquetExprStore}(
   store,
