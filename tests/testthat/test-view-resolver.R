@@ -26,6 +26,63 @@ skip_if_no_mini <- function() {
 })
 
 
+# Recipe builders ---------------------------------------------------------
+#
+# As of GiottoClass 0.7.0 (Q8), view and space recipes are plain lists:
+# no container class, no constructor, and no `|>`-chainable container
+# methods. Recording happens on a gobject, under a name -- but a resolver
+# test needs a recipe with no gobject in scope, so these assemble the
+# container directly.
+#
+# The STEPS still come from GiottoClass's own constructors, deliberately:
+# only the two-field container is built locally, so a step-shape change
+# upstream breaks these tests instead of silently drifting past them.
+
+.mk_view <- function(..., space = NA_character_) {
+    list(steps = list(...), space = as.character(space), misc = list())
+}
+
+.mk_space <- function(..., sample = ":default:") {
+    list(samples = stats::setNames(list(list(...)), sample), misc = list())
+}
+
+# filter step from an unevaluated predicate
+.vfilter <- function(pred, ...) {
+    GiottoClass:::.view_step_filter(substitute(pred), scope_args = list(...))
+}
+
+# filter step from an already-built language object
+.vfilter_lang <- function(pred, ...) {
+    GiottoClass:::.view_step_filter(pred, scope_args = list(...))
+}
+
+# crop step. `region` goes through the same WKT normalisation the
+# recorder applies, and `geom` is the declared cell representation
+# (A7) -- "centroid" reduces to a cell_ID set, "poly" is evaluated on
+# the cell polygon and is what a backed geom store can push down.
+.vcrop <- function(region, relation = "intersects", geom = "centroid") {
+    GiottoClass:::.view_step_crop(
+        GiottoClass:::.normalize_crop_region(region),
+        relation = relation, geom = geom)
+}
+
+.stransform <- function(op, ...) {
+    GiottoClass:::.space_step_transform(op, list(...))
+}
+
+# Cell_IDs inside `box`, namespaced `<sample>::<local>` the way the joint
+# cell vocabulary of a giottoMulti is.
+.ns_ids <- function(sl_list, box) {
+    unique(unlist(lapply(names(sl_list), function(nm) {
+        sd <- sl_list[[nm]]@coordinates
+        ids <- sd$cell_ID[sd$sdimx >= box[1] & sd$sdimx <= box[2] &
+                          sd$sdimy >= box[3] & sd$sdimy <= box[4]]
+        if (length(ids) == 0L) return(character())
+        paste(nm, ids, sep = "::")
+    })))
+}
+
+
 # .find_store_with_cols ---------------------------------------------------
 
 test_that(".find_store_with_cols: locates cellMeta col as in-mem data.table", {
@@ -168,7 +225,7 @@ test_that("resolveSubobject(cellMetaObj, parquetCoordinator): same-store filter 
     skip_if_no_mini()
     g <- .mini_g()
     cm <- GiottoClass::getCellMetadata(g, output = "cellMetaObj", copy_obj = TRUE)
-    v  <- GiottoClass::giottoView() |> subset(leiden_clus == 1)
+    v  <- .mk_view(.vfilter(leiden_clus == 1))
     out <- resolveSubobject(cm, gobject = g,
         view = v, space = NULL,
         coordinator = parquetCoordinator())
@@ -182,7 +239,7 @@ test_that("resolveSubobject(spatLocsObj, parquetCoordinator): cross-store filter
     sl <- GiottoClass::getSpatialLocations(g, output = "spatLocsObj",
         copy_obj = TRUE)
     cmeta <- GiottoClass::getCellMetadata(g, output = "data.table")
-    v  <- GiottoClass::giottoView() |> subset(leiden_clus == 1)
+    v  <- .mk_view(.vfilter(leiden_clus == 1))
     out <- resolveSubobject(sl, gobject = g,
         view = v, space = NULL,
         coordinator = parquetCoordinator())
@@ -229,7 +286,7 @@ test_that("resolveSubobject(giottoPolygon, parquetCoordinator): empty view retur
 
 test_that("resolveSubobject(giottoPolygon, parquetCoordinator): same-store filter queues filter op", {
     gp <- .mk_backed_polygon()
-    v  <- GiottoClass::giottoView() |> subset(region == "tumor")
+    v  <- .mk_view(.vfilter(region == "tumor"))
     out <- resolveSubobject(gp, gobject = NULL,
         view = v, space = NULL,
         coordinator = parquetCoordinator())
@@ -255,7 +312,7 @@ test_that("resolveSubobject(giottoPolygon, parquetCoordinator): cross-store DT-o
     ps <- parquetStore() |> storeWrite(poly_dt)
     gp <- new("giottoPolygon", spatVector = ps, name = "cell")
 
-    v  <- GiottoClass::giottoView() |> subset(leiden_clus == 1)
+    v  <- .mk_view(.vfilter(leiden_clus == 1))
     out <- resolveSubobject(gp, gobject = g,
         view = v, space = NULL,
         coordinator = parquetCoordinator())
@@ -278,7 +335,7 @@ test_that("resolveSubobject(giottoPolygon, parquetCoordinator): cross-store DT-o
 
 test_that("resolveSubobject(giottoPoints, parquetCoordinator): same-store filter on points queues filter op", {
     gp <- .mk_backed_points(20L)
-    v  <- GiottoClass::giottoView() |> subset(feature_name == "GENE1")
+    v  <- .mk_view(.vfilter(feature_name == "GENE1"))
     out <- resolveSubobject(gp, gobject = NULL,
         view = v, space = NULL,
         coordinator = parquetCoordinator())
@@ -324,7 +381,7 @@ test_that("resolveSubobject(giottoPoints, parquetCoordinator): same-store filter
 test_that("resolveSubobject(giottoPoints, parquetCoordinator): viewCrop queues spat_relate; results narrowed by AABB", {
     gp <- .mk_backed_geom_points(10L)
     # Crop to points (3,3)..(6,6) — should keep c3, c4, c5, c6
-    v  <- GiottoClass::giottoView() |> crop(c(2.5, 6.5, 2.5, 6.5))
+    v  <- .mk_view(.vcrop(c(2.5, 6.5, 2.5, 6.5)))
     out <- resolveSubobject(gp, gobject = NULL,
         view = v, space = NULL,
         coordinator = parquetCoordinator())
@@ -336,9 +393,14 @@ test_that("resolveSubobject(giottoPoints, parquetCoordinator): viewCrop queues s
     expect_setequal(res$cell_ID, c("c3", "c4", "c5", "c6"))
 })
 
-test_that("resolveSubobject(giottoPolygon, parquetCoordinator): viewCrop queues spat_relate; results narrowed by AABB", {
+test_that("resolveSubobject(giottoPolygon, parquetCoordinator): geom = 'poly' crop queues spat_relate on the store's own geom", {
     gp <- .mk_backed_geom_polygon(10L)
-    v  <- GiottoClass::giottoView() |> crop(c(2.5, 6.5, 2.5, 6.5))
+    # A7: a cell-keyed geom store can push a `geom = "poly"` crop down
+    # onto its geom column. This is the case the removed force-cache
+    # patch made unreachable -- it routed every crop through the
+    # centroid answer, so a backed polygon silently answered a
+    # different question than the recipe asked.
+    v  <- .mk_view(.vcrop(c(2.5, 6.5, 2.5, 6.5), geom = "poly"))
     out <- resolveSubobject(gp, gobject = NULL,
         view = v, space = NULL,
         coordinator = parquetCoordinator())
@@ -350,13 +412,30 @@ test_that("resolveSubobject(giottoPolygon, parquetCoordinator): viewCrop queues 
     expect_setequal(res$poly_ID, c("c3", "c4", "c5", "c6"))
 })
 
-test_that("resolveSubobject(giottoPolygon, parquetCoordinator): viewFilter + viewCrop compose", {
+test_that("resolveSubobject(giottoPolygon, parquetCoordinator): a centroid crop is NOT pushed onto the geom column", {
+    gp <- .mk_backed_geom_polygon(10L)
+    # `geom = "centroid"` asks about the cell's spatial_locs row, which
+    # the store's geom column cannot answer. With no gobject there is no
+    # centroid source, so it warns rather than answering the polygon
+    # question in its place.
+    v  <- .mk_view(.vcrop(c(2.5, 6.5, 2.5, 6.5)))
+    expect_warning(
+        out <- resolveSubobject(gp, gobject = NULL,
+            view = v, space = NULL,
+            coordinator = parquetCoordinator()),
+        "no spatial locations available"
+    )
+    types <- vapply(out@spatVector@ops, `[[`, character(1L), "type")
+    expect_false("spat_relate" %in% types)
+})
+
+test_that("resolveSubobject(giottoPolygon, parquetCoordinator): filter + geom crop compose", {
     gp <- .mk_backed_geom_polygon(10L)
     # Crop to (2.5, 6.5, 2.5, 6.5) keeps c3-c6; further filter to "tumor"
     # (every other index: c1, c3, c5, c7, c9) -> intersection: c3, c5
-    v  <- GiottoClass::giottoView() |>
-        crop(c(2.5, 6.5, 2.5, 6.5)) |>
-        subset(region == "tumor")
+    v  <- .mk_view(
+        .vcrop(c(2.5, 6.5, 2.5, 6.5), geom = "poly"),
+        .vfilter(region == "tumor"))
     out <- resolveSubobject(gp, gobject = NULL,
         view = v, space = NULL,
         coordinator = parquetCoordinator())
@@ -366,15 +445,37 @@ test_that("resolveSubobject(giottoPolygon, parquetCoordinator): viewFilter + vie
     expect_true(all(res$region == "tumor"))
 })
 
-test_that("push_view_to_pstore: viewCrop on non-geom store warns and skips", {
+test_that("push_view_to_pstore: a crop on a non-geom store reduces to an id_filter", {
+    skip_if_no_mini()
+    g  <- .mini_g()
+    sl <- GiottoClass::getSpatialLocations(g, output = "data.table")
+    xr <- range(sl$sdimx); yr <- range(sl$sdimy)
+    box <- c(mean(xr) - 200, mean(xr) + 200, mean(yr) - 200, mean(yr) + 200)
+
+    target <- data.table::data.table(cell_ID = sl$cell_ID, v = 1L)
+    ps <- parquetStore() |> storeWrite(target)
+    v  <- .mk_view(.vcrop(box))
+    out <- .push_view_to_pstore(ps, v, gobject = g,
+        coordinator = parquetCoordinator())
+    types <- vapply(out@ops, `[[`, character(1L), "type")
+    expect_true("id_filter" %in% types)
+
+    res <- storeRead(out, output = "tibble")
+    expected <- sl$cell_ID[sl$sdimx >= box[1] & sl$sdimx <= box[2] &
+                           sl$sdimy >= box[3] & sl$sdimy <= box[4]]
+    expect_setequal(res$cell_ID, expected)
+})
+
+test_that("push_view_to_pstore: a crop with nothing to evaluate it against warns", {
     dt <- data.table::data.table(
         cell_ID = paste0("c", 1:5), value = seq_len(5L)
     )
     ps <- parquetStore() |> storeWrite(dt)  # plain, no geom
-    v  <- GiottoClass::giottoView() |> crop(c(0, 100, 0, 100))
+    v  <- .mk_view(.vcrop(c(0, 100, 0, 100)))
     expect_warning(
-        out <- .push_view_to_pstore(ps, v, gobject = NULL),
-        "viewCrop step skipped"
+        out <- .push_view_to_pstore(ps, v, gobject = NULL,
+            coordinator = parquetCoordinator()),
+        "no spatial locations available"
     )
     # Store unchanged
     expect_equal(length(out@ops), 0L)
@@ -382,9 +483,12 @@ test_that("push_view_to_pstore: viewCrop on non-geom store warns and skips", {
 
 test_that("push_view_to_pstore: non-intersects relation queues spat_relate op", {
     gp <- .mk_backed_geom_points(5L)
-    v  <- GiottoClass::giottoView() |>
-        crop(c(0, 100, 0, 100), relation = "within")
-    out <- .push_view_to_pstore(gp@spatVector, v, gobject = NULL)
+    v  <- .mk_view(.vcrop(c(0, 100, 0, 100), relation = "within"))
+    # `cell_keyed = FALSE`: one row is one transcript, so a crop means
+    # "clip these points" and is evaluated on the points' own geometry
+    # regardless of the step's `geom` (which describes a CELL).
+    out <- .push_view_to_pstore(gp@spatVector, v, gobject = NULL,
+        coordinator = parquetCoordinator(), cell_keyed = FALSE)
     types <- vapply(out@ops, `[[`, character(1L), "type")
     expect_true("spat_relate" %in% types)
     relate_op <- out@ops[[which(types == "spat_relate")[1L]]]
@@ -397,8 +501,9 @@ test_that("push_view_to_pstore: SpatVector region queues spat_relate carrying WK
         "POLYGON((2.5 2.5, 6.5 2.5, 6.5 6.5, 2.5 6.5, 2.5 2.5))",
         crs = ""
     )
-    v <- GiottoClass::giottoView() |> crop(region)
-    out <- .push_view_to_pstore(gp@spatVector, v, gobject = NULL)
+    v <- .mk_view(.vcrop(region))
+    out <- .push_view_to_pstore(gp@spatVector, v, gobject = NULL,
+        coordinator = parquetCoordinator(), cell_keyed = FALSE)
     types <- vapply(out@ops, `[[`, character(1L), "type")
     expect_true("spat_relate" %in% types)
     relate_op <- out@ops[[which(types == "spat_relate")[1L]]]
@@ -411,9 +516,9 @@ test_that("push_view_to_pstore: SpatVector region queues spat_relate carrying WK
 test_that("resolveSubobject(giottoPolygon, parquetCoordinator): space transforms compose into @post_ops", {
     gp <- .mk_backed_geom_polygon(5L)
     # Translate +5 +5; then spin 30
-    sp <- GiottoClass::giottoSpace() |>
-        spatShift(dx = 5, dy = 5) |>
-        spin(30)
+    sp <- .mk_space(
+        .stransform("spatShift", dx = 5, dy = 5),
+        .stransform("spin", 30))
     out <- resolveSubobject(gp, gobject = NULL,
         view = NULL, space = sp,
         coordinator = parquetCoordinator())
@@ -426,8 +531,9 @@ test_that("resolveSubobject(giottoPolygon, parquetCoordinator): space transforms
 
 test_that("resolveSubobject(giottoPolygon, parquetCoordinator): space + view compose; both queue", {
     gp <- .mk_backed_geom_polygon(10L)
-    sp <- GiottoClass::giottoSpace() |> spatShift(dx = 100, dy = 100)
-    v  <- GiottoClass::giottoView() |> crop(c(102.5, 106.5, 102.5, 106.5))
+    sp <- .mk_space(.stransform("spatShift", dx = 100, dy = 100))
+    v  <- .mk_view(
+        .vcrop(c(102.5, 106.5, 102.5, 106.5), geom = "poly"))
     out <- resolveSubobject(gp, gobject = NULL,
         view = v, space = sp,
         coordinator = parquetCoordinator())
@@ -446,7 +552,7 @@ test_that("resolveSubobject(giottoPolygon, parquetCoordinator): space + view com
 
 test_that("resolveSubobject(giottoPoints, parquetCoordinator): space transforms apply to backed @spatVector", {
     gp <- .mk_backed_geom_points(5L)
-    sp <- GiottoClass::giottoSpace() |> spatShift(dx = 10, dy = 10)
+    sp <- .mk_space(.stransform("spatShift", dx = 10, dy = 10))
     out <- resolveSubobject(gp, gobject = NULL,
         view = NULL, space = sp,
         coordinator = parquetCoordinator())
@@ -459,7 +565,7 @@ test_that("resolveSubobject(spatLocsObj, parquetCoordinator): space transforms a
     g  <- .mini_g()
     sl <- GiottoClass::getSpatialLocations(g, output = "spatLocsObj",
         copy_obj = TRUE)
-    sp <- GiottoClass::giottoSpace() |> spatShift(dx = 100, dy = 100)
+    sp <- .mk_space(.stransform("spatShift", dx = 100, dy = 100))
     out <- resolveSubobject(sl, gobject = g,
         view = NULL, space = sp,
         coordinator = parquetCoordinator())
@@ -481,12 +587,15 @@ test_that(".surviving_cell_ids_arrow: stores one entry per view, intersection ac
     skip_if_no_mini()
     g  <- .mini_g()
     cache <- new.env(parent = emptyenv())
-    v  <- GiottoClass::giottoView() |>
-        subset(leiden_clus == 1) |>
-        subset(in_tissue == 1)
-    surv <- .surviving_cell_ids_arrow(v, g, cache)
+    v  <- .mk_view(.vfilter(leiden_clus == 1), .vfilter(in_tissue == 1))
+    surv <- .surviving_cell_ids_arrow(v, g, cache, parquetCoordinator())
     expect_s3_class(surv, "Table")
-    expect_setequal(ls(cache), "surviving_cell_ids")
+    # Three target-independent quantities plus their intersection: the
+    # split is what lets a backed geom store take the filter arm eagerly
+    # while pushing its own poly-arm crops down (A7).
+    expect_setequal(ls(cache),
+        c("filter_ids", "crop_ids:centroid", "crop_ids:poly",
+          "surviving_cell_ids"))
 
     cmeta <- GiottoClass::getCellMetadata(g, output = "data.table")
     expected <- cmeta$cell_ID[cmeta$leiden_clus == 1 & cmeta$in_tissue == 1]
@@ -497,9 +606,9 @@ test_that(".surviving_cell_ids_arrow: cache hit returns the same object without 
     skip_if_no_mini()
     g  <- .mini_g()
     cache <- new.env(parent = emptyenv())
-    v  <- GiottoClass::giottoView() |> subset(leiden_clus == 1)
-    surv1 <- .surviving_cell_ids_arrow(v, g, cache)
-    surv2 <- .surviving_cell_ids_arrow(v, g, cache)
+    v  <- .mk_view(.vfilter(leiden_clus == 1))
+    surv1 <- .surviving_cell_ids_arrow(v, g, cache, parquetCoordinator())
+    surv2 <- .surviving_cell_ids_arrow(v, g, cache, parquetCoordinator())
     expect_identical(surv1, surv2)
 })
 
@@ -517,10 +626,13 @@ test_that("cache path: multiple targets sharing one view share one id_filter tab
     ps2 <- parquetStore() |> storeWrite(target_dt2)
 
     cache <- new.env(parent = emptyenv())
-    v <- GiottoClass::giottoView() |> subset(leiden_clus == 1)
-    out1 <- .push_view_to_pstore(ps1, v, gobject = g, .cache = cache)
-    out2 <- .push_view_to_pstore(ps2, v, gobject = g, .cache = cache)
-    expect_length(ls(cache), 1L)
+    v <- .mk_view(.vfilter(leiden_clus == 1))
+    out1 <- .push_view_to_pstore(ps1, v, gobject = g,
+        coordinator = parquetCoordinator(), .cache = cache)
+    out2 <- .push_view_to_pstore(ps2, v, gobject = g,
+        coordinator = parquetCoordinator(), .cache = cache)
+    # Filters only, so only the filter slot is populated.
+    expect_setequal(ls(cache), "filter_ids")
 
     t1 <- vapply(out1@ops, `[[`, character(1L), "type")
     t2 <- vapply(out2@ops, `[[`, character(1L), "type")
@@ -543,9 +655,9 @@ test_that("cache path: viewCrop folds into surviving_cell_ids via spatial_locs",
     box <- c(mean(xrange) - 200, mean(xrange) + 200,
         mean(yrange) - 200, mean(yrange) + 200)
 
-    v  <- GiottoClass::giottoView() |> crop(box)
+    v  <- .mk_view(.vcrop(box))
     cache <- new.env(parent = emptyenv())
-    surv <- .surviving_cell_ids_arrow(v, g, cache)
+    surv <- .surviving_cell_ids_arrow(v, g, cache, parquetCoordinator())
     expect_s3_class(surv, "Table")
     surv_ids <- dplyr::collect(surv)$cell_ID
 
@@ -563,11 +675,9 @@ test_that("cache path: viewFilter + viewCrop intersection in surviving_cell_ids"
     box <- c(mean(xrange) - 500, mean(xrange) + 500,
         mean(yrange) - 500, mean(yrange) + 500)
 
-    v <- GiottoClass::giottoView() |>
-        subset(leiden_clus == 1) |>
-        crop(box)
+    v <- .mk_view(.vfilter(leiden_clus == 1), .vcrop(box))
     cache <- new.env(parent = emptyenv())
-    surv <- .surviving_cell_ids_arrow(v, g, cache)
+    surv <- .surviving_cell_ids_arrow(v, g, cache, parquetCoordinator())
     surv_ids <- dplyr::collect(surv)$cell_ID
 
     in_box <- sl$cell_ID[sl$sdimx >= box[1] & sl$sdimx <= box[2] &
@@ -582,12 +692,11 @@ test_that("cache path: multi-filter view produces ONE id_filter op per target", 
     cmeta <- GiottoClass::getCellMetadata(g, output = "data.table")
     target_dt <- data.table::data.table(cell_ID = cmeta$cell_ID, v = 1L)
     ps <- parquetStore() |> storeWrite(target_dt)
-    v <- GiottoClass::giottoView() |>
-        subset(leiden_clus == 1) |>
-        subset(in_tissue == 1)
+    v <- .mk_view(.vfilter(leiden_clus == 1), .vfilter(in_tissue == 1))
 
     cache <- new.env(parent = emptyenv())
-    out <- .push_view_to_pstore(ps, v, gobject = g, .cache = cache)
+    out <- .push_view_to_pstore(ps, v, gobject = g,
+        coordinator = parquetCoordinator(), .cache = cache)
     types <- vapply(out@ops, `[[`, character(1L), "type")
     # exactly one id_filter representing the full intersection
     expect_equal(sum(types == "id_filter"), 1L)
@@ -616,7 +725,7 @@ test_that("resolveSubobject(spatLocsObj) + cellMeta predicate: cache fills via p
     g  <- .mini_g()
     sl <- GiottoClass::getSpatialLocations(g, output = "spatLocsObj",
         copy_obj = TRUE)
-    v  <- GiottoClass::giottoView() |> subset(leiden_clus == 1)
+    v  <- .mk_view(.vfilter(leiden_clus == 1))
     cache <- new.env(parent = emptyenv())
     out <- resolveSubobject(sl, gobject = g, view = v, space = NULL,
         coordinator = parquetCoordinator(), .cache = cache)
@@ -624,7 +733,7 @@ test_that("resolveSubobject(spatLocsObj) + cellMeta predicate: cache fills via p
     cmeta <- GiottoClass::getCellMetadata(g, output = "data.table")
     expected <- cmeta$cell_ID[cmeta$leiden_clus == 1]
     expect_setequal(out@coordinates$cell_ID, expected)
-    expect_length(ls(cache), 1L)
+    expect_true("surviving_cell_ids" %in% ls(cache))
 })
 
 
@@ -644,7 +753,7 @@ test_that("resolveSubobject(exprObj, parquetCoordinator): backed exprMat narrows
     eo <- GiottoClass::createExprObj(expression_data = pe, name = "raw",
         spat_unit = "cell", feat_type = "rna")
 
-    v <- GiottoClass::giottoView() |> subset(leiden_clus == 1)
+    v <- .mk_view(.vfilter(leiden_clus == 1))
     out <- resolveSubobject(eo, gobject = g, view = v, space = NULL,
         coordinator = parquetCoordinator())
 
@@ -665,7 +774,7 @@ test_that("resolveSubobject(exprObj, parquetCoordinator): empty narrow yields ze
     )
     eo <- GiottoClass::createExprObj(expression_data = pe, name = "raw",
         spat_unit = "cell", feat_type = "rna")
-    v <- GiottoClass::giottoView() |> subset(leiden_clus == 1)
+    v <- .mk_view(.vfilter(leiden_clus == 1))
     out <- resolveSubobject(eo, gobject = g, view = v, space = NULL,
         coordinator = parquetCoordinator())
     expect_s4_class(out@exprMat, "parquetExprStore")
@@ -678,7 +787,7 @@ test_that("resolveSubobject(exprObj, parquetCoordinator): in-mem exprMat falls t
     eo <- GiottoClass::getExpression(g, output = "exprObj")
     # The mini's expression is in-mem (matrix / dgCMatrix) — should
     # callNextMethod into dataTableCoordinator's narrow path.
-    v <- GiottoClass::giottoView() |> subset(leiden_clus == 1)
+    v <- .mk_view(.vfilter(leiden_clus == 1))
     out <- resolveSubobject(eo, gobject = g, view = v, space = NULL,
         coordinator = parquetCoordinator())
     expect_s4_class(out, "exprObj")
@@ -755,9 +864,9 @@ test_that("view filter on expression value: surviving cell_IDs match the manual 
     myc_vals <- as.numeric(fx$gene_mat["MYC", ])
     expected_ids <- colnames(fx$gene_mat)[myc_vals > 0]
 
-    v <- GiottoClass::giottoView() |> subset(MYC > 0)
+    v <- .mk_view(.vfilter(MYC > 0))
     cache <- new.env(parent = emptyenv())
-    surv <- .surviving_cell_ids_arrow(v, fx$g, cache)
+    surv <- .surviving_cell_ids_arrow(v, fx$g, cache, parquetCoordinator())
     surv_ids <- dplyr::collect(surv)$cell_ID
     expect_setequal(surv_ids, expected_ids)
 })
@@ -787,9 +896,9 @@ test_that("view filter on gene expression: in-mem dgCMatrix path matches manual 
     expected <- names(vals)[vals > 0]
 
     pred <- bquote(.(as.name(gene)) > 0)
-    v <- GiottoClass::giottoView() |> subset(!!pred)
+    v <- .mk_view(.vfilter_lang(pred))
     cache <- new.env(parent = emptyenv())
-    surv <- .surviving_cell_ids_arrow(v, g, cache)
+    surv <- .surviving_cell_ids_arrow(v, g, cache, parquetCoordinator())
     surv_ids <- dplyr::collect(surv)$cell_ID
     expect_setequal(surv_ids, expected)
 })
@@ -802,11 +911,9 @@ test_that("view filter on gene expression intersects with cellMeta predicate", {
     expressing <- colnames(fx$gene_mat)[myc_vals > 0]
     clus1 <- cmeta$cell_ID[cmeta$leiden_clus == 1]
 
-    v <- GiottoClass::giottoView() |>
-        subset(leiden_clus == 1) |>
-        subset(MYC > 0)
+    v <- .mk_view(.vfilter(leiden_clus == 1), .vfilter(MYC > 0))
     cache <- new.env(parent = emptyenv())
-    surv <- .surviving_cell_ids_arrow(v, fx$g, cache)
+    surv <- .surviving_cell_ids_arrow(v, fx$g, cache, parquetCoordinator())
     surv_ids <- dplyr::collect(surv)$cell_ID
     expect_setequal(surv_ids, intersect(expressing, clus1))
 })
@@ -818,7 +925,7 @@ test_that("resolveSubobject(dimObj, parquetCoordinator): in-mem coordinates fall
     dr <- GiottoClass::getDimReduction(g, reduction = "cells",
         reduction_method = "pca", name = "pca", output = "dimObj")
     if (is.null(dr)) skip("no PCA in mini fixture")
-    v <- GiottoClass::giottoView() |> subset(leiden_clus == 1)
+    v <- .mk_view(.vfilter(leiden_clus == 1))
     out <- resolveSubobject(dr, gobject = g, view = v, space = NULL,
         coordinator = parquetCoordinator())
     expect_s4_class(out, "dimObj")
@@ -857,9 +964,9 @@ test_that("multi: .find_store_with_cols hits joint cellMeta with list_ID column"
 test_that("multi: viewFilter via cache surviving_cell_ids matches joint cellMeta filter", {
     skip_if_no_mini()
     mg <- .mk_multi()
-    v <- GiottoClass::giottoView() |> subset(leiden_clus == 1)
+    v <- .mk_view(.vfilter(leiden_clus == 1))
     cache <- new.env(parent = emptyenv())
-    surv <- .surviving_cell_ids_arrow(v, mg, cache)
+    surv <- .surviving_cell_ids_arrow(v, mg, cache, parquetCoordinator())
     surv_ids <- dplyr::collect(surv)$cell_ID
 
     cm <- GiottoClass::getCellMetadata(mg, output = "data.table")
@@ -874,15 +981,12 @@ test_that("multi: viewCrop unions cell_IDs across per-sample spatLocs", {
     sd1 <- sl_list[[1L]]@coordinates
     box <- c(min(sd1$sdimx) + 1000, min(sd1$sdimx) + 3000,
         min(sd1$sdimy) + 1000, min(sd1$sdimy) + 3000)
-    v <- GiottoClass::giottoView() |> crop(box)
-    surv <- .surviving_cell_ids_arrow(v, mg, new.env(parent = emptyenv()))
+    v <- .mk_view(.vcrop(box))
+    surv <- .surviving_cell_ids_arrow(v, mg, new.env(parent = emptyenv()),
+        parquetCoordinator())
     surv_ids <- dplyr::collect(surv)$cell_ID
 
-    expected <- unique(unlist(lapply(sl_list, function(sl) {
-        sd <- sl@coordinates
-        sd$cell_ID[sd$sdimx >= box[1] & sd$sdimx <= box[2] &
-                   sd$sdimy >= box[3] & sd$sdimy <= box[4]]
-    })))
+    expected <- .ns_ids(sl_list, box)
     expect_setequal(surv_ids, expected)
 })
 
@@ -893,17 +997,12 @@ test_that("multi: viewFilter + viewCrop intersect via the cache surviving set", 
     sd1 <- sl_list[[1L]]@coordinates
     box <- c(min(sd1$sdimx), min(sd1$sdimx) + 4000,
         min(sd1$sdimy), min(sd1$sdimy) + 4000)
-    v <- GiottoClass::giottoView() |>
-        subset(leiden_clus == 1) |>
-        crop(box)
-    surv <- .surviving_cell_ids_arrow(v, mg, new.env(parent = emptyenv()))
+    v <- .mk_view(.vfilter(leiden_clus == 1), .vcrop(box))
+    surv <- .surviving_cell_ids_arrow(v, mg, new.env(parent = emptyenv()),
+        parquetCoordinator())
     surv_ids <- dplyr::collect(surv)$cell_ID
 
-    in_box <- unique(unlist(lapply(sl_list, function(sl) {
-        sd <- sl@coordinates
-        sd$cell_ID[sd$sdimx >= box[1] & sd$sdimx <= box[2] &
-                   sd$sdimy >= box[3] & sd$sdimy <= box[4]]
-    })))
+    in_box <- .ns_ids(sl_list, box)
     cm <- GiottoClass::getCellMetadata(mg, output = "data.table")
     clus1 <- unique(cm$cell_ID[cm$leiden_clus == 1])
     expect_setequal(surv_ids, intersect(in_box, clus1))
@@ -912,10 +1011,10 @@ test_that("multi: viewFilter + viewCrop intersect via the cache surviving set", 
 
 test_that(".apply_space_to_subobj: multi-step recipe composes via accumulating matrix", {
     gp <- .mk_backed_geom_polygon(3L)
-    sp <- GiottoClass::giottoSpace() |>
-        spatShift(dx = 1, dy = 0) |>
-        spatShift(dx = 0, dy = 1) |>
-        spatShift(dx = 2, dy = 2)
+    sp <- .mk_space(
+        .stransform("spatShift", dx = 1, dy = 0),
+        .stransform("spatShift", dx = 0, dy = 1),
+        .stransform("spatShift", dx = 2, dy = 2))
     out <- .apply_space_to_subobj(gp, gobject = NULL, space = sp)
     aff <- .pgeom_pending_transform(out@spatVector)
     expect_s4_class(aff, "affine2d")

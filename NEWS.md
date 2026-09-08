@@ -1,6 +1,24 @@
 # GiottoDisk 0.0.0.2
 
 ## new
+- `parquetCoordinator`: view + space recipe resolution for gobjects whose
+  subobjects are `parquetStore`-backed. Recipe steps are pushed onto each
+  store's lazy-op queue via the existing `subset()` / `crop()` /
+  `spatRelate()` dispatch, so no I/O happens at coordinator time and the
+  engine (arrow / duckdb / sedona) is still chosen at `storeRead()`.
+  Inherits `dataTableCoordinator`, so in-memory subobjects inside an
+  otherwise-backed gobject fall through to the in-memory path. Selected
+  automatically for any gobject whose `@source` inherits `gsource`.
+  Cross-storage narrowing is covered: a predicate whose columns live on a
+  different subobject than the target resolves through a lazy `[`-join
+  when the owner is backed, and an eager `id_filter` when it is in memory.
+  Requires GiottoClass >= 0.7.0.
+- `snapshotSave(gDirSource, giottoMulti)` and a `snapshotDelete` cascade
+  to per-child snapshots.
+- `spatRelate()` methods for `parquetGeomBase`, and
+  `as.data.table(parquetGeomBase, geom = c("", "wkb", "XY"))` — the `"XY"`
+  vertex expansion goes through `wk::wk_coords`, with no terra
+  `SpatVector` intermediate.
 - Zarr input for the Xenium/Atera disk readers. `importXeniumDisk()` /
   `importAteraDisk()` now work on zarr-only output directories (the only
   format Atera will ship): transcripts, boundaries and cell metadata are
@@ -28,6 +46,16 @@
   expression matrix when the panel is absent.
 
 ## changes
+- A view's crop step is routed by its declared `geom`, not by whether a
+  resolution cache was passed. `geom = "poly"` on a backed cell-polygon
+  store is now pushed down as a lazy `spat_relate` op on the store's own
+  geom column — previously unreachable, because the polygon resolver
+  forced a cache and so always answered the centroid question instead.
+  `geom = "centroid"` reduces to a cell_ID set, which is the only thing a
+  store with no geometry can consume. A transcript points store is
+  identified as such (`cell_keyed = FALSE`) rather than by forcing the
+  cache to `NULL`. The cache is now purely memoization plus an eager/lazy
+  choice for filter steps; it decides no semantics.
 - `storeRead(x, output = "duckdb")` on a `parquetExprStore` /
   `unionParquetExprStore` now rebuilds the scan from DuckDB's own
   `read_parquet` rather than registering an Arrow scanner. DuckDB owns the
