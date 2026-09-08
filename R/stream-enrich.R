@@ -82,6 +82,27 @@ setMethod("analyzeData",
 )
 
 
+# Append a record at the end of the chain, wherever that end currently is.
+#
+# ADR 0002: "once `@post_ops` is non-empty, subsequent pushes go to `@post_ops`
+# regardless of the op's natural phase". `.pe_push_op()` enforces that by
+# erroring on a lazy push rather than rerouting, so the choice is the caller's
+# to make -- and pushing `"lazy"` unconditionally means every store carrying a
+# post op fails before the accumulator is ever reached.
+#
+# This is placement for ORDER, not for capability. The record has to run after
+# whatever is already queued, and when `@post_ops` is non-empty that means post.
+# Reading the slot to decide what an op *can* do would be invariant 3 of ADR
+# 0004; reading it to decide where the end of the chain is, is not. Both records
+# pushed below have executors for the R-side carrier -- `.op_transform_expm1()`
+# has a `data.table` branch and `multiply` has
+# `.pe_apply_post_op_multiply_df()` -- so either placement executes correctly.
+.enrich_push_op <- function(pe, op) {
+    .pe_push_op(pe, op,
+        phase = if (length(pe@post_ops) > 0L) "post" else "lazy")
+}
+
+
 # Build a `multiply` payload for a per-feature vector given in VIEW order.
 #
 # The op registry keys factors by on-disk id per substore uid (see the
@@ -143,7 +164,7 @@ setMethod("analyzeData",
     # ---- pass 1: the per-gene reference level ------------------------------
     if (isTRUE(param$reverse_log_scale)) {
         base <- param$logbase
-        src <- .pe_push_op(pe, list(type = "expm1", base = base))
+        src <- .enrich_push_op(pe, list(type = "expm1", base = base))
         m <- log(.stream_expr_accum(src, axis = "feat", stats = "sum")$sum /
                      n_cells + 1)
     } else {
@@ -157,7 +178,7 @@ setMethod("analyzeData",
     acc <- .stream_expr_accum(pe, axis = "cell", stats = c("sum", "sumsq"))
 
     # ---- pass 3: per-cell sum weighted by the reference level --------------
-    weighted <- .pe_push_op(pe, list(
+    weighted <- .enrich_push_op(pe, list(
         type = "multiply", axis = "feat",
         factors = .pe_feat_factor_payload(pe, m)
     ))
