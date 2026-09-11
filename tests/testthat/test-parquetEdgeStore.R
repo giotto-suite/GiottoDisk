@@ -370,3 +370,35 @@ test_that("sourceWrite(gDirSource, giotto) warns on cross-source", {
         "already backed by a different source"
     )
 })
+
+
+# ---- as.igraph -------------------------------------------------------------
+
+test_that("as.igraph(parquetEdgeStore) matches storeRead(output = 'igraph')", {
+    dt <- .tiny_undirected_dt()
+    s <- storeWrite(storeCreate(type = "parquetEdgeStore"), dt,
+        type = "sNN", directed = FALSE)
+
+    g <- igraph::as.igraph(s)
+    expect_s3_class(g, "igraph")
+    # identical() compares igraph internals that carry no meaning here
+    expect_true(igraph::identical_graphs(g, storeRead(s, output = "igraph")))
+    expect_equal(igraph::vcount(g), 5L)
+    expect_equal(igraph::ecount(g), 7L)
+    expect_setequal(names(igraph::V(g)), c("a", "b", "c", "d", "e"))
+})
+
+test_that("as.igraph(parquetEdgeStore) forwards ... to storeRead", {
+    # a second edge column, so `minimal` has something to drop and the
+    # forwarding is observable rather than assumed
+    dt <- .tiny_undirected_dt()
+    dt[, distance := seq_len(.N)]
+    s <- storeWrite(storeCreate(type = "parquetEdgeStore"), dt,
+        type = "sNN", directed = FALSE)
+
+    expect_setequal(igraph::edge_attr_names(igraph::as.igraph(s)), "weight")
+    expect_setequal(
+        igraph::edge_attr_names(igraph::as.igraph(s, minimal = FALSE)),
+        c("weight", "distance")
+    )
+})
