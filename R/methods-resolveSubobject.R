@@ -262,75 +262,140 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
 #
 #' @keywords internal
 #' @noRd
-.projected_spatlocs_dt <- function(gobject, space, spat_unit = NULL) {
+.projected_points <- function(gobject, space, spat_unit = NULL) {
     cell_ID <- NULL # NSE
     sl <- tryCatch(GiottoClass::getSpatialLocations(gobject,
         output = "spatLocsObj", spat_unit = spat_unit),
         error = function(e) NULL)
     if (is.null(sl)) return(NULL)
 
-    .coords <- function(x) {
+    # A backed `@coordinates` has to be read before the geometry can be
+    # built; everything after that is the same points `SpatVector` the
+    # in-memory path uses, so the predicate itself is shared code.
+    .materialize <- function(x) {
         co <- x@coordinates
         if (inherits(co, "dataStore")) {
-            co <- data.table::setDT(storeRead(co, output = "tibble"))
+            x@coordinates <- data.table::setDT(
+                storeRead(co, output = "tibble"))
         }
-        data.table::as.data.table(co)
+        x
     }
 
     if (inherits(sl, "spatLocsObj")) {
-        return(.coords(.apply_space_to_subobj(sl, gobject, space)))
+        return(GiottoClass::as.points(.materialize(
+            .apply_space_to_subobj(sl, gobject, space))))
     }
     if (!is.list(sl)) {
-        stop("[.projected_spatlocs_dt] unexpected spatial locations type: ",
+        stop("[.projected_points] unexpected spatial locations type: ",
             toString(class(sl)), call. = FALSE)
     }
     parts <- lapply(names(sl), function(nm) {
         child <- sl[[nm]]
         if (!inherits(child, "spatLocsObj")) return(NULL)
-        child <- .apply_space_to_subobj(child, gobject,
-            GiottoClass:::.scope_space_to_sample(space, nm))
-        dt <- .coords(child)
+        # `[` owns the sample-resolution rule, sentinel included
+        child <- .materialize(.apply_space_to_subobj(child, gobject,
+            space[, nm]))
+        dt <- data.table::copy(child[])
         dt[, cell_ID := paste(nm, cell_ID, sep = "::")]
-        dt
+        child[] <- dt
+        child
     })
     parts <- Filter(Negate(is.null), parts)
     if (length(parts) == 0L) return(NULL)
-    data.table::rbindlist(parts, use.names = TRUE, fill = TRUE)
+    # fold as spatLocsObjs -- a data.table rbind -- and convert once, so
+    # there is one terra allocation rather than one per child
+    GiottoClass::as.points(Reduce(rbind2, parts))
+}
+
+# Fetch the polygon source in the predicate frame, for a `geom = "poly"`
+# crop. Returns a `giottoPolygon`, so `spatRelate()` dispatches on it and
+# a backed `@spatVector` brings its own engines.
+#
+# giottoMulti: polygons live per child, so each child's are fetched,
+# space-scoped, and their poly_IDs prefixed to match the joint cell
+# vocabulary the resulting ID set is intersected against.
+#' @keywords internal
+#' @noRd
+.projected_polys <- function(gobject, space, spat_unit = NULL) {
+    one <- function(g, samp) {
+        gp <- tryCatch(GiottoClass::getPolygonInfo(g, name = spat_unit,
+            return_giottoPolygon = TRUE, verbose = FALSE),
+            error = function(e) NULL)
+        if (!inherits(gp, "giottoPolygon")) return(NULL)
+        .apply_space_to_subobj(gp, g,
+            if (is.null(space) || is.na(samp)) space else space[, samp])
+    }
+
+    if (!inherits(gobject, "giottoMulti")) return(one(gobject, NA_character_))
+
+    parts <- lapply(names(gobject@objects), function(nm) {
+        gp <- one(gobject@objects[[nm]], nm)
+        if (is.null(gp)) return(NULL)
+        sv <- gp@spatVector
+        sv$poly_ID <- paste(nm, terra::values(sv)$poly_ID, sep = "::")
+        gp@spatVector <- sv
+        gp@unique_ID_cache <- terra::values(sv)$poly_ID
+        gp
+    })
+    parts <- Filter(Negate(is.null), parts)
+    if (length(parts) == 0L) return(NULL)
+    if (length(parts) == 1L) return(parts[[1L]])
+    do.call(rbind, parts)
+}
+
+# One crop step -> the cell_IDs that survive it.
+#
+# Both arms are one public expression: narrow a carrier with
+# `spatRelate()`, then read its IDs. `geom` picks WHICH carrier -- the
+# cells' centroids or their polygons -- and nothing else. The polygon
+# carrier may be backed, in which case `spatRelate()` dispatches to the
+# store's own sedona / duckdb / terra engines.
+#' @keywords internal
+#' @noRd
+.crop_step_ids <- function(gobject, step, pts, space, spat_unit = NULL) {
+    region <- terra::vect(step$region)
+    switch(step$geom,
+        centroid = {
+            if (is.null(pts)) return(NULL)
+            GiottoClass::spatRelate(pts, region,
+                relation = step$relation)$cell_ID
+        },
+        poly = {
+            polys <- .projected_polys(gobject, space, spat_unit = spat_unit)
+            if (is.null(polys)) {
+                stop(sprintf(paste0(
+                    "[crop] geom = \"poly\" was requested (relation '%s'), ",
+                    "but this object has no polygon source to evaluate it ",
+                    "on.\nEither add polygons (`setPolygonInfo()`) or use ",
+                    "geom = \"centroid\"."), step$relation), call. = FALSE)
+            }
+            GiottoClass::spatIDs(GiottoClass::spatRelate(polys, region,
+                relation = step$relation))
+        },
+        stop("[crop] unknown geom '", step$geom, "'", call. = FALSE)
+    )
 }
 
 
-# Surviving-cell_ID arrow Tables, memoized per resolution scope.
+# ONE surviving-cell_ID arrow Table, memoized per resolution scope.
 #
-# THREE cached quantities, not one, and every one of them is
-# TARGET-INDEPENDENT -- which is the property that makes a single
+# It is TARGET-INDEPENDENT, which is the property that makes a single
 # `.cache` safe to share across every subobject in one `materialize()`:
-#
-#   "filter_ids"         cell_IDs surviving all filter steps
-#   "crop_ids:centroid"  cell_IDs surviving the crop steps that declared
-#                        `geom = "centroid"`
-#   "crop_ids:poly"      cell_IDs surviving the crop steps that declared
-#                        `geom = "poly"`
-#
-# The split exists because different targets consume different subsets. A
-# backed `giottoPolygon` store evaluates its own poly-arm crops lazily on
-# its `geom` column -- that is the whole pushdown win -- while still
-# needing the filter and centroid arms as an eager id set. Folding
-# everything into one number would force the polygon store to materialize
-# a predicate it could have pushed down.
+# the answer is a set of cell_IDs, and every cell-keyed slot narrows by
+# the same set.
 #
 # Filter steps: each predicate's owner is located via
 # `.find_store_with_cols`, narrowed, and the surviving id column
 # intersected with the running set. This is the arrow / cross-storage
 # path, which is why it is not delegated to GiottoClass.
 #
-# Crop steps: delegated to `GiottoClass:::.cells_in_crop_step()`, which
-# owns crop semantics for both `geom` arms. Only the centroid table is
-# fetched locally, because a backed `@coordinates` needs `storeRead`.
+# Crop steps: `.crop_step_ids()`, one public `spatRelate()` per arm.
+# Only the centroid carrier is built locally, because a backed
+# `@coordinates` needs `storeRead` before geometry exists.
 #
-# Each returns NULL when the view has no contributing steps of that kind,
-# meaning "unconstrained" rather than "empty". Errors if a filter
-# resolves against a non-`cell_ID` key -- multi-key intersection is out
-# of scope, matching the in-mem coordinator's assumption.
+# NULL means "unconstrained", not "empty". Errors if a filter resolves
+# against a non-`cell_ID` key -- multi-key intersection is out of scope,
+# matching the in-mem coordinator's assumption.
 #
 # Trade-off unchanged from the original: the filter path materializes the
 # owner side. For atlas-scale workflows where the owner is a parquetBase
@@ -367,85 +432,92 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
     arrow::arrow_table(data.frame(cell_ID = ids, stringsAsFactors = FALSE))
 }
 
+# The predicate frame: the frame a recorded crop region was drawn in,
+# read off the view. Independent of any OUTPUT space the caller asked
+# for -- that one is applied by `.apply_space_to_subobj` on the subobject
+# itself. Conflating the two is what made a `space =`-bound view return
+# rotated coordinates from a plain getter.
 #' @keywords internal
 #' @noRd
-.view_filter_ids_arrow <- function(view, gobject, .cache,
-    spat_unit = NULL, feat_type = NULL) {
-    .memo(.cache, "filter_ids", function() {
-        steps <- GiottoClass:::.view_steps_of(view, "filter")
-        if (length(steps) == 0L) return(NULL)
-        surviving <- NULL
-        for (step in steps) {
-            # Q7 records the predicate deparsed, so it comes back as a
-            # string and has to be re-parsed before `all.vars()` /
-            # `eval()` downstream.
-            narrowed <- .compute_narrowed_ids(str2lang(step$predicate),
-                gobject, spat_unit = spat_unit, feat_type = feat_type)
-            if (!identical(narrowed$key, "cell_ID")) {
-                stop("[.view_filter_ids_arrow] only cell_ID-keyed filter ",
-                    "steps are supported in cache mode (got '",
-                    narrowed$key, "')", call. = FALSE)
+.view_predicate_space <- function(view, gobject) {
+    if (is.na(view@space)) return(NULL)
+    GiottoClass::giottoSpace(gobject, view@space)
+}
+
+# Build the centroid carrier at most once per resolution, and only if
+# some step actually asks for it -- so an all-poly recipe on a
+# polygon-only object does not warn about missing spatial locations.
+#' @keywords internal
+#' @noRd
+.points_once <- function(gobject, space, spat_unit) {
+    built <- FALSE
+    pts <- NULL
+    function() {
+        if (!built) {
+            pts <<- .projected_points(gobject, space, spat_unit = spat_unit)
+            built <<- TRUE
+            if (is.null(pts)) {
+                warning("[view] crop step skipped: no spatial locations ",
+                    "available", call. = FALSE)
             }
-            surviving <- .intersect_ids_arrow(surviving, narrowed$ids_tab)
         }
-        surviving
-    })
+        pts
+    }
 }
 
-#' @keywords internal
-#' @noRd
-.view_crop_ids_arrow <- function(view, gobject, .cache, coordinator,
-    geom = c("centroid", "poly"), spat_unit = NULL) {
-    geom <- match.arg(geom)
-    .memo(.cache, paste0("crop_ids:", geom), function() {
-        steps <- Filter(function(s) identical(s$geom, geom),
-            GiottoClass:::.view_steps_of(view, "crop"))
-        if (length(steps) == 0L) return(NULL)
-
-        # Predicate frame is read from `view$space` -- the frame the crop
-        # region was drawn in. Independent of any output space the caller
-        # requested; that one is applied by `.apply_space_to_subobj` on
-        # the actual subobject.
-        pred_space <- if (!is.na(view$space)) {
-            GiottoClass:::.resolve_space(gobject, view$space)
-        } else NULL
-
-        sl_dt <- if (identical(geom, "centroid")) {
-            .projected_spatlocs_dt(gobject, pred_space,
-                spat_unit = spat_unit)
-        } else NULL
-        if (identical(geom, "centroid") && is.null(sl_dt)) {
-            warning("[.view_crop_ids_arrow] crop steps skipped: no ",
-                "spatial locations available", call. = FALSE)
-            return(NULL)
-        }
-
-        surviving <- NULL
-        for (step in steps) {
-            ids <- GiottoClass:::.cells_in_crop_step(gobject, step, sl_dt,
-                pred_space, coordinator, spat_unit = spat_unit)
-            surviving <- .intersect_ids_arrow(surviving, .ids_arrow(ids))
-        }
-        surviving
-    })
-}
-
-# The full eager answer: filters plus BOTH crop arms. What a target with
-# no geometry of its own (cellMeta, spatLocs, spatEnr, expression) needs,
-# and it collapses to a single queued `id_filter`.
+# The whole cell-axis answer for a view: walk the recorded steps IN ORDER
+# and intersect what each one leaves standing.
+#
+# Ordered, not gathered by kind. Order is information -- a read-time
+# collapse needs it, and gathering by type discards it. It is also what
+# removes the last reason anything wanted to select steps by type.
+#
+# ONE cache slot. The earlier three (`filter_ids`, `crop_ids:centroid`,
+# `crop_ids:poly`) existed so a backed polygon store could take the
+# filter arm eagerly while pushing its own crops down lazily. Every
+# cell-keyed target consumes one cell_ID set now, so one slot suffices.
+#
+# v1 models the CELL axis only. Feature and subcellular-point axes are
+# deferred -- see adr/0015.
 #' @keywords internal
 #' @noRd
 .surviving_cell_ids_arrow <- function(view, gobject, .cache, coordinator,
     spat_unit = NULL, feat_type = NULL) {
     .memo(.cache, "surviving_cell_ids", function() {
-        ids <- .view_filter_ids_arrow(view, gobject, .cache,
-            spat_unit = spat_unit, feat_type = feat_type)
-        for (g in c("centroid", "poly")) {
-            ids <- .intersect_ids_arrow(ids,
-                .view_crop_ids_arrow(view, gobject, .cache, coordinator,
-                    geom = g, spat_unit = spat_unit))
+        pred_space <- .view_predicate_space(view, gobject)
+        get_pts <- .points_once(gobject, pred_space, spat_unit)
+        surviving <- NULL
+        for (step in view@steps) {
+            ids <- switch(step$type,
+                filter = {
+                    # Q7 records the predicate deparsed, so it comes back
+                    # as a string and is re-parsed before `all.vars()` /
+                    # `eval()` downstream.
+                    narrowed <- .compute_narrowed_ids(
+                        str2lang(step$predicate), gobject,
+                        spat_unit = spat_unit, feat_type = feat_type)
+                    if (!identical(narrowed$key, "cell_ID")) {
+                        stop("[.surviving_cell_ids_arrow] only cell_ID-",
+                            "keyed filter steps are supported in cache ",
+                            "mode (got '", narrowed$key, "')",
+                            call. = FALSE)
+                    }
+                    narrowed$ids_tab
+                },
+                crop = {
+                    got <- .crop_step_ids(gobject, step,
+                        if (identical(step$geom, "centroid")) get_pts()
+                        else NULL,
+                        pred_space, spat_unit = spat_unit)
+                    if (is.null(got)) NULL else .ids_arrow(got)
+                },
+                # `samples` narrows children, not cells; resolved before
+                # any per-child work reaches here.
+                NULL
+            )
+            surviving <- .intersect_ids_arrow(surviving, ids)
         }
-        ids
+        surviving
     })
 }
 
@@ -534,9 +606,7 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
 #' @noRd
 .space_composite_affine <- function(space, gobject) {
     if (is.null(space)) return(NULL)
-    key <- GiottoClass:::.space_sample_key_for(gobject, space)
-    if (is.null(key)) return(NULL)
-    steps <- space$samples[[key]]
+    steps <- space[[1L, NA_character_]]
     if (length(steps) == 0L) return(NULL)
     # Probe carrier is a spatLocsObj, not a bare SpatVector: GiottoClass
     # implements all seven transform generics on spatLocsObj but not on
@@ -574,8 +644,13 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
 .project_region_between_spaces <- function(y, gobject,
     from_space = NULL, to_space = NULL) {
     if (is.null(from_space) && is.null(to_space)) return(y)
+    # Parsed only to apply the matrix -- this is the query region, one
+    # small polygon, never store data. With no space to reconcile, the
+    # early return above leaves it as recorded WKT, which is
+    # `spatRelate`'s canonical y-form.
     if (!inherits(y, "SpatVector")) {
-        if (is.numeric(y))         y <- terra::as.polygons(terra::ext(y))
+        if (is.character(y))           y <- terra::vect(y)
+        if (is.numeric(y))             y <- terra::as.polygons(terra::ext(y))
         if (inherits(y, "SpatExtent")) y <- terra::as.polygons(y)
     }
     m_from <- .space_composite_affine(from_space, gobject)
@@ -597,38 +672,31 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
 
 # Push a view's steps onto a parquetStore-inheriting store as lazy ops.
 #
-# ROUTING (A7). Two independent decisions, and neither is made by
-# `.cache`:
+# ROUTING (adr/0015). A CROP step resolves to a surviving cell_ID set and
+# is queued as one `id_filter` — both `geom` arms, on every cell-keyed
+# target including a backed cell-polygon store. That is the "one usage
+# layer per predicate" invariant: every cell-keyed slot narrows by the
+# same set.
 #
-#   * a CROP step is routed by its declared `geom`. `geom = "poly"` on a
-#     store that carries the cell polygon is evaluated lazily by the
-#     store itself, via `spatRelate()` on its `geom` column -- no
-#     materialization, engine chosen later at `storeRead()`. Everything
-#     else reduces to an eager cell_ID set (`.view_crop_ids_arrow`) and
-#     is queued as an `id_filter`.
+# `cell_keyed = FALSE` is the single exception, and only the transcript
+# points store passes it: one row there is one transcript, so a cell_ID
+# set does not address rows. Its crops stay `spat_relate` ops on the
+# store's own geometry — parity with the in-memory path, which clips
+# points the same way. That is a missing subcellular-point axis, not a
+# property of points.
 #
-#   * a FILTER step is routed by `.cache`, which is purely an
-#     eager/lazy performance choice: with a cache all filters fold into
-#     one memoized `id_filter`; without one each narrows the store on
-#     its own, which keeps `.narrow_store_by_predicate`'s lazy
-#     cross-store `[`-join available for atlas-scale owners.
-#
-# `cell_keyed` says whether one store row IS one cell -- true for
-# cellMeta / spatLocs / a cell-polygon store, false for a transcript
-# points store. It is the reason points behave differently, and it is
-# NOT a proxy for storage kind. Before A7 this distinction was smuggled
-# through `.cache` by two per-class patches at the call sites (force a
-# cache for polygons, force `NULL` for points), which made the cache
-# decide semantics: a backed `giottoPolygon` could not honour
-# `geom = "poly"` at all, because the forced cache always answered the
-# centroid question instead. Both patches are gone.
+# A FILTER step is routed by `.cache`, which is purely an eager/lazy
+# performance choice: with a cache all filters fold into one memoized
+# `id_filter`; without one each narrows the store on its own, keeping
+# `.narrow_store_by_predicate`'s lazy cross-store `[`-join available for
+# atlas-scale owners. `.cache` decides no semantics.
 #
 #' @keywords internal
 #' @noRd
 .push_view_to_pstore <- function(store, view, gobject, coordinator,
     target_key = NULL, space = NULL, spat_unit = NULL, feat_type = NULL,
     cell_keyed = TRUE, .cache = NULL) {
-    if (is.null(view) || length(view$steps) == 0L) return(store)
+    if (is.null(view) || length(view) == 0L) return(store)
 
     join_by <- if (is.null(target_key) ||
         identical(target_key, "cell_ID")) {
@@ -643,74 +711,53 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
         store
     }
 
+    # With a cache, the whole cell axis is resolved once per view and
+    # queued as one `id_filter`.
+    if (cell_keyed && !is.null(.cache)) {
+        return(.queue_ids(store, .surviving_cell_ids_arrow(view, gobject,
+            .cache, coordinator, spat_unit = spat_unit,
+            feat_type = feat_type)))
+    }
+
     # The `space` arg is the OUTPUT frame: when non-NULL the caller has
     # already composed it into the store's @post_ops via
-    # .apply_space_to_subobj. The PREDICATE frame is read from
-    # `view$space` and used here to project any crop regions into the
-    # same frame as the geom column that will be tested -- i.e. into the
-    # OUTPUT frame, since that is what the geom column ends up in once
-    # @post_ops apply.
-    predicate_space <- if (!is.na(view$space)) {
-        GiottoClass:::.resolve_space(gobject, view$space)
-    } else NULL
+    # `.apply_space_to_subobj`. The predicate frame is the view's, and is
+    # used to project a crop region into the same frame as the geom
+    # column it will be tested against -- i.e. into the OUTPUT frame,
+    # since that is where the geom column ends up once @post_ops apply.
+    predicate_space <- .view_predicate_space(view, gobject)
+    get_pts <- .points_once(gobject, predicate_space, spat_unit)
 
-    # ---- crop steps ---------------------------------------------------
-    # A store can evaluate a crop on its own geometry when it HAS one and
-    # that geometry is what the step is asking about: the cell polygon
-    # for a cell-keyed store under `geom = "poly"`, or the points'
-    # own geometry for a non-cell-keyed store (where a crop means
-    # "clip these points", the same thing the in-memory path does).
-    crop_steps <- GiottoClass:::.view_steps_of(view, "crop")
-    can_push <- inherits(store, "parquetGeomBase")
-    lazy_crops <- Filter(
-        function(s) can_push && (!cell_keyed || identical(s$geom, "poly")),
-        crop_steps)
-
-    for (step in lazy_crops) {
-        # `.materialize_crop_region` turns the recorded WKT back into a
-        # SpatVector; spatRelate then takes it directly.
-        y <- GiottoClass:::.materialize_crop_region(step$region)
-        # Project region from predicate frame -> output frame so the
-        # spat_relate eval (which runs against geom in the output frame,
-        # via @post_ops) sees both sides in the same frame.
-        y <- .project_region_between_spaces(y, gobject,
-            from_space = predicate_space, to_space = space)
-        store <- spatRelate(store, y, relation = step$relation)
-    }
-
-    # Crops the store could not push down become an eager cell_ID set.
-    # Only meaningful for a cell-keyed target: on a points store a
-    # cell_ID set does not address rows.
-    if (length(crop_steps) > 0L) {
-        if (cell_keyed) {
-            eager_arms <- setdiff(c("centroid", "poly"),
-                vapply(lazy_crops, `[[`, character(1L), "geom"))
-            for (g in eager_arms) {
-                store <- .queue_ids(store,
-                    .view_crop_ids_arrow(view, gobject, .cache, coordinator,
-                        geom = g, spat_unit = spat_unit))
-            }
-        } else if (!can_push) {
-            warning("[push_view_to_pstore] crop step skipped: ",
-                "target store is not parquetGeomBase (no geom ",
-                "column to evaluate the predicate on)", call. = FALSE)
-        }
-    }
-
-    # ---- filter steps -------------------------------------------------
-    if (!is.null(.cache)) {
-        return(.queue_ids(store,
-            .view_filter_ids_arrow(view, gobject, .cache,
-                spat_unit = spat_unit, feat_type = feat_type)))
-    }
-    for (step in GiottoClass:::.view_steps_of(view, "filter")) {
-        store <- .narrow_store_by_predicate(
-            target_store = store,
-            predicate = str2lang(step$predicate),
-            gobject = gobject,
-            target_key = target_key,
-            spat_unit = spat_unit,
-            feat_type = feat_type
+    for (step in view@steps) {
+        store <- switch(step$type,
+            filter = .narrow_store_by_predicate(
+                target_store = store,
+                predicate = str2lang(step$predicate),
+                gobject = gobject,
+                target_key = target_key,
+                spat_unit = spat_unit,
+                feat_type = feat_type
+            ),
+            crop = if (cell_keyed) {
+                ids <- .crop_step_ids(gobject, step,
+                    if (identical(step$geom, "centroid")) get_pts() else NULL,
+                    predicate_space, spat_unit = spat_unit)
+                if (is.null(ids)) store else .queue_ids(store,
+                    .ids_arrow(ids))
+            } else if (!inherits(store, "parquetGeomBase")) {
+                warning("[push_view_to_pstore] crop step skipped: ",
+                    "target store is not parquetGeomBase (no geom ",
+                    "column to evaluate the predicate on)", call. = FALSE)
+                store
+            } else {
+                # Points: clip on the store's own geometry. The recorded
+                # region is already WKT, spatRelate's canonical y-form,
+                # so it is parsed only if a space has to be reconciled.
+                y <- .project_region_between_spaces(step$region, gobject,
+                    from_space = predicate_space, to_space = space)
+                spatRelate(store, y, relation = step$relation)
+            },
+            store
         )
     }
     store
@@ -817,16 +864,11 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
 #' @noRd
 .apply_space_to_subobj <- function(subobj, gobject, space) {
     if (is.null(space)) return(subobj)
-    keys <- names(space$samples)
-    if (length(keys) == 0L) return(subobj)
-    key <- if (":default:" %in% keys) {
-        ":default:"
-    } else if (length(keys) == 1L) {
-        keys[[1L]]
-    } else {
-        return(subobj)
-    }
-    steps <- space$samples[[key]]
+    # `[[` owns sample resolution, sentinel included. NA means "no sample
+    # identity", which is what a single `giotto` -- or an already-scoped
+    # handle from `space[, <child>]` -- presents.
+    steps <- space[[1L, NA_character_]]
+    if (length(steps) == 0L) return(subobj)
     backed_geom <- .hasSlot(subobj, "spatVector") &&
         inherits(subobj@spatVector, "parquetBase")
     for (step in steps) {
@@ -851,18 +893,17 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
 # target via the arrow bridge (filters) or the crop-step id helper.
 #
 # A data.table target has no geometry of its own, so crops ALWAYS reduce
-# to a cell_ID set here -- both `geom` arms, routed by
-# `.view_crop_ids_arrow`. There is no lazy alternative to weigh, which
-# is why this function has no `cell_keyed` argument: a non-cell-keyed DT
-# target (featMeta, keyed by feat_ID) cannot be addressed by a cell_ID
-# set at all, and says so.
+# to a cell_ID set here -- both `geom` arms, through `.crop_step_ids()`.
+# There is no lazy alternative to weigh, which is why this function has
+# no `cell_keyed` argument: a non-cell-keyed DT target (featMeta, keyed
+# by feat_ID) cannot be addressed by a cell_ID set at all, and says so.
 #
 #' @keywords internal
 #' @noRd
 .push_view_to_dt <- function(dt, view, gobject, coordinator,
     key = "cell_ID", spat_unit = NULL, feat_type = NULL, .cache = NULL) {
     cell_ID <- NULL # NSE
-    if (is.null(view) || length(view$steps) == 0L) return(dt)
+    if (is.null(view) || length(view) == 0L) return(dt)
     if (is.null(dt) || nrow(dt) == 0L) return(dt)
 
     # Cache path: one semi_join against the view-wide intersection.
@@ -881,28 +922,37 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
         return(data.table::setDT(out))
     }
 
-    # No-cache path: per-step narrowing. Filter steps go through the
-    # arrow-bridge predicate helper. Crop steps go through the same
-    # `.view_crop_ids_arrow` the cache path uses, so the two agree by
-    # construction rather than by two parallel implementations.
-    crop_steps <- GiottoClass:::.view_steps_of(view, "crop")
-    if (length(crop_steps) > 0L && !identical(key, "cell_ID")) {
-        warning("[push_view_to_dt] crop steps skipped on non-cell-",
-            "keyed target (key = '", key, "')", call. = FALSE)
-        crop_steps <- list()
-    }
-    if (length(crop_steps) > 0L) {
-        for (g in c("centroid", "poly")) {
-            ids <- .view_crop_ids_arrow(view, gobject, .cache, coordinator,
-                geom = g, spat_unit = spat_unit)
-            if (is.null(ids)) next
-            keep <- dplyr::collect(ids)$cell_ID
-            dt <- dt[cell_ID %in% keep]
+    # No-cache path: walk the steps in order. Filter steps go through the
+    # arrow-bridge predicate helper; crop steps go through the same
+    # `.crop_step_ids` the cache path uses, so the two agree by
+    # construction rather than as two parallel implementations.
+    cell_keyed <- identical(key, "cell_ID")
+    pred_space <- .view_predicate_space(view, gobject)
+    get_pts <- .points_once(gobject, pred_space, spat_unit)
+    warned <- FALSE
+
+    for (step in view@steps) {
+        if (identical(step$type, "filter")) {
+            dt <- .narrow_dt_via_arrow(dt, str2lang(step$predicate),
+                gobject, key = key, spat_unit = spat_unit,
+                feat_type = feat_type)
+            next
         }
-    }
-    for (step in GiottoClass:::.view_steps_of(view, "filter")) {
-        dt <- .narrow_dt_via_arrow(dt, str2lang(step$predicate), gobject,
-            key = key, spat_unit = spat_unit, feat_type = feat_type)
+        if (!identical(step$type, "crop")) next
+        if (!cell_keyed) {
+            if (!warned) {
+                warning("[push_view_to_dt] crop steps skipped on non-",
+                    "cell-keyed target (key = '", key, "')",
+                    call. = FALSE)
+                warned <- TRUE
+            }
+            next
+        }
+        ids <- .crop_step_ids(gobject, step,
+            if (identical(step$geom, "centroid")) get_pts() else NULL,
+            pred_space, spat_unit = spat_unit)
+        if (is.null(ids)) next
+        dt <- dt[cell_ID %in% ids]
     }
     dt
 }
@@ -927,7 +977,7 @@ setMethod("resolveSubobject",
     signature(subobj = "cellMetaObj",
               coordinator = "parquetCoordinator"),
     function(subobj, gobject, view, space, coordinator, ...) {
-        if (is.null(view) || length(view$steps) == 0L) return(subobj)
+        if (is.null(view) || length(view) == 0L) return(subobj)
         .cache <- list(...)$.cache
         spat_unit <- GiottoClass::spatUnit(subobj)
         feat_type <- GiottoClass::featType(subobj)
@@ -952,7 +1002,7 @@ setMethod("resolveSubobject",
     signature(subobj = "featMetaObj",
               coordinator = "parquetCoordinator"),
     function(subobj, gobject, view, space, coordinator, ...) {
-        if (is.null(view) || length(view$steps) == 0L) return(subobj)
+        if (is.null(view) || length(view) == 0L) return(subobj)
         .cache <- list(...)$.cache
         spat_unit <- GiottoClass::spatUnit(subobj)
         feat_type <- GiottoClass::featType(subobj)
@@ -983,7 +1033,7 @@ setMethod("resolveSubobject",
         if (!is.null(space)) {
             subobj <- .apply_space_to_subobj(subobj, gobject, space)
         }
-        if (is.null(view) || length(view$steps) == 0L) return(subobj)
+        if (is.null(view) || length(view) == 0L) return(subobj)
         .cache <- list(...)$.cache
         spat_unit <- GiottoClass::spatUnit(subobj)
         if (inherits(subobj@coordinates, "dataStore")) {
@@ -1007,7 +1057,7 @@ setMethod("resolveSubobject",
     signature(subobj = "spatEnrObj",
               coordinator = "parquetCoordinator"),
     function(subobj, gobject, view, space, coordinator, ...) {
-        if (is.null(view) || length(view$steps) == 0L) return(subobj)
+        if (is.null(view) || length(view) == 0L) return(subobj)
         if (is.null(subobj@enrichDT)) return(subobj)
         .cache <- list(...)$.cache
         spat_unit <- GiottoClass::spatUnit(subobj)
@@ -1057,7 +1107,7 @@ setMethod("resolveSubobject",
         if (!is.null(space)) {
             subobj <- .apply_space_to_subobj(subobj, gobject, space)
         }
-        if (is.null(view) || length(view$steps) == 0L) return(subobj)
+        if (is.null(view) || length(view) == 0L) return(subobj)
         # A cell polygon store IS cell-keyed (poly_ID == cell_ID by
         # convention), so it consumes the same eager cell_ID set as
         # cellMeta / spatLocs / expression for the filter and centroid
@@ -1091,7 +1141,7 @@ setMethod("resolveSubobject",
         if (!is.null(space)) {
             subobj <- .apply_space_to_subobj(subobj, gobject, space)
         }
-        if (is.null(view) || length(view$steps) == 0L) return(subobj)
+        if (is.null(view) || length(view) == 0L) return(subobj)
         # A crop reaches parity with in-mem via parquetGeomBase's
         # spat_relate op on the points' own geometry.
         #
@@ -1142,7 +1192,7 @@ setMethod("resolveSubobject",
     signature(subobj = "exprObj",
               coordinator = "parquetCoordinator"),
     function(subobj, gobject, view, space, coordinator, ...) {
-        if (is.null(view) || length(view$steps) == 0L) return(subobj)
+        if (is.null(view) || length(view) == 0L) return(subobj)
         if (!inherits(subobj@exprMat, "parquetExprStore")) {
             # In-mem matrix / dgCMatrix / etc. — delegate to
             # dataTableCoordinator's exprObj method.

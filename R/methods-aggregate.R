@@ -433,11 +433,11 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
     initialize(result_store)
 }
 
-.collect_ids <- function(store, col) {
-    storeRead(store, output = "query") |>
-        dplyr::select(!!as.name(col)) |>
-        dplyr::distinct() |>
-        dplyr::pull(col, as_vector = TRUE) |>
+.collect_ids <- function(store, col, uniques = TRUE) {
+    q <- storeRead(store, output = "query") |>
+        dplyr::select(!!as.name(col))
+    if (uniques) q <- dplyr::distinct(q)
+    dplyr::pull(q, col, as_vector = TRUE) |>
         as.character()
 }
 

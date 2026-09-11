@@ -87,6 +87,7 @@ least one.
 | [0011](0011-cell-windowing-over-spill.md) | Cell windowing over spill for a large grouped join | Accepted | 2026-08-20 |
 | [0012](0012-one-predicate-classifier-many-carriers.md) | Expression-store scan modifications are written once, in dplyr, for every carrier | Accepted | 2026-08-24 |
 | [0013](0013-no-second-stat-accumulator-engine.md) | No second stat accumulator engine: the win is per-window overhead, and it is small | Accepted | 2026-09-03 |
+| [0015](0015-view-steps-resolve-to-an-id-set.md) | A view step resolves to an ID set; the coordinator models the cell axis | Accepted | 2026-09-09 |
 
 ## Backfill candidates
 

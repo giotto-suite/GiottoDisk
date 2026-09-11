@@ -1,14 +1,16 @@
 #' @include class-parquetStore.R
 NULL
 
-# spatRelate on parquetGeomBase: lazy filter via spatial predicate ####
+# spatRelate on parquetGeomBase: spatial predicate as a checkpoint op ####
 #
 # Queues a "spat_relate" op carrying the query geometry (inline WKT, or a
-# reference to another parquetGeomStore) and the predicate name. Evaluated
-# at storeRead time by the SQL compile in `.pstore_to_sedona`. The arrow
-# backend has no native spatial predicates; storeRead errors loudly on that
-# path and directs callers to `output = "sedona"`. A tile-streaming arrow
-# implementation is possible but not implemented.
+# reference to another parquetGeomStore) and the predicate name.
+#
+# Evaluation is a CHECKPOINT, not a lowering: `.pbase_storeread_processing`
+# (R/methods-storeRead.R) runs `.spat_relate_narrow()` on the engine chosen
+# by `engine` and semi-joins the surviving ids, so the op works under every
+# `output =` and the evaluator is independent of the carrier. See adr/0015
+# and design.Rmd §"Spatial Predicates".
 #
 # Phase 4a scope: filter form only (semi-join semantic -- narrow x by whether
 # any feature of y satisfies the predicate). Store/store + form="join" is

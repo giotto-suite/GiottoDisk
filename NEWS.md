@@ -5,7 +5,7 @@
   subobjects are `parquetStore`-backed. Recipe steps are pushed onto each
   store's lazy-op queue via the existing `subset()` / `crop()` /
   `spatRelate()` dispatch, so no I/O happens at coordinator time and the
-  engine (arrow / duckdb / sedona) is still chosen at `storeRead()`.
+  engine (arrow / duckdb / sedona) is chosen per call.
   Inherits `dataTableCoordinator`, so in-memory subobjects inside an
   otherwise-backed gobject fall through to the in-memory path. Selected
   automatically for any gobject whose `@source` inherits `gsource`.
@@ -15,6 +15,9 @@
   Requires GiottoClass >= 0.7.0.
 - `snapshotSave(gDirSource, giottoMulti)` and a `snapshotDelete` cascade
   to per-child snapshots.
+- `spatIDs()` / `featIDs()` methods for `parquetGeomBase`, so a backed
+  geometry answers the ID question through one dispatch rather than a
+  column-forcing idiom at each call site.
 - `spatRelate()` methods for `parquetGeomBase`, and
   `as.data.table(parquetGeomBase, geom = c("", "wkb", "XY"))` — the `"XY"`
   vertex expansion goes through `wk::wk_coords`, with no terra
@@ -46,16 +49,11 @@
   expression matrix when the panel is absent.
 
 ## changes
-- A view's crop step is routed by its declared `geom`, not by whether a
-  resolution cache was passed. `geom = "poly"` on a backed cell-polygon
-  store is now pushed down as a lazy `spat_relate` op on the store's own
-  geom column — previously unreachable, because the polygon resolver
-  forced a cache and so always answered the centroid question instead.
-  `geom = "centroid"` reduces to a cell_ID set, which is the only thing a
-  store with no geometry can consume. A transcript points store is
-  identified as such (`cell_keyed = FALSE`) rather than by forcing the
-  cache to `NULL`. The cache is now purely memoization plus an eager/lazy
-  choice for filter steps; it decides no semantics.
+- A view step now narrows every cell-keyed subobject by the same
+  `cell_ID` set, backed polygon stores included, so a recipe gives the
+  same answer whichever slot you read it through. A crop's `geom` picks
+  what represents a cell and `engine` picks what evaluates it. Backed
+  polygons previously ignored `geom = "poly"`. See `adr/0015`.
 - `storeRead(x, output = "duckdb")` on a `parquetExprStore` /
   `unionParquetExprStore` now rebuilds the scan from DuckDB's own
   `read_parquet` rather than registering an Arrow scanner. DuckDB owns the

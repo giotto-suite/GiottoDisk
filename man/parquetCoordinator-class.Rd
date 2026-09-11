@@ -41,11 +41,23 @@ parquetCoordinator()
 }
 \description{
 View + space recipe coordinator for gobjects whose
-subobjects use \code{parquetStore}-inheriting backings. Pushes recipe steps
-onto each store's lazy-op slots via the existing \code{subset()}, \code{crop()},
-and pending \code{affine()} dispatch on \code{parquetBase}. No I/O is performed at
-coordinator time; materialisation happens when the user (or a downstream
-getter) calls \code{\link[=storeRead]{storeRead()}} with their preferred \verb{output =} engine.
+subobjects use \code{parquetStore}-inheriting backings.
+
+A recipe step resolves to a surviving \code{cell_ID} set, queued on the
+target store as a single \code{id_filter}. Every cell-keyed target — cell
+metadata, spatial locations, expression, and a cell-polygon store —
+narrows by that same set, so a recipe cannot mean different things
+depending on which slot it is read through.
+
+Which engine evaluates a spatial predicate is set by \code{engine} on
+\code{\link[GiottoClass:spatRelate]{spatRelate()}} (or the \code{giottodisk.spatial_query_engine} option), and
+is independent of which carrier delivers the rows — it is not a
+function of \code{storeRead(output =)}.
+
+This version resolves the \strong{cell} axis. Feature subsets and
+subcellular-point subsets are separate axes and are not modelled yet;
+a crop reaching a transcript points store is applied as a geometric
+clip, matching the in-memory path.
 
 Inherits from \link[GiottoClass:dataTableCoordinator-class]{GiottoClass::dataTableCoordinator} so that in-memory
 subobjects within an otherwise-backed gobject fall through to the

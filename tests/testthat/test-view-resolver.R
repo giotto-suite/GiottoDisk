@@ -28,46 +28,43 @@ skip_if_no_mini <- function() {
 
 # Recipe builders ---------------------------------------------------------
 #
-# As of GiottoClass 0.7.0 (Q8), view and space recipes are plain lists:
-# no container class, no constructor, and no `|>`-chainable container
-# methods. Recording happens on a gobject, under a name -- but a resolver
-# test needs a recipe with no gobject in scope, so these assemble the
-# container directly.
-#
-# The STEPS still come from GiottoClass's own constructors, deliberately:
-# only the two-field container is built locally, so a step-shape change
-# upstream breaks these tests instead of silently drifting past them.
+# A resolver test needs a recipe with no gobject in scope, and recording
+# normally happens on a gobject under a name. These assemble one
+# directly -- but every STEP is built by the same public builder verb the
+# recorder routes through, so a step-shape change upstream breaks these
+# tests instead of silently drifting past them.
 
 .mk_view <- function(..., space = NA_character_) {
-    list(steps = list(...), space = as.character(space), misc = list())
+    methods::new("giottoView", steps = list(...),
+        space = as.character(space))
 }
 
 .mk_space <- function(..., sample = ":default:") {
-    list(samples = stats::setNames(list(list(...)), sample), misc = list())
+    methods::new("giottoSpace",
+        spaces = list(s = stats::setNames(list(list(...)), sample)))
 }
 
 # filter step from an unevaluated predicate
 .vfilter <- function(pred, ...) {
-    GiottoClass:::.view_step_filter(substitute(pred), scope_args = list(...))
+    subset(.mk_view(), subset = substitute(pred), quote = FALSE, ...)[[1L]]
 }
 
 # filter step from an already-built language object
 .vfilter_lang <- function(pred, ...) {
-    GiottoClass:::.view_step_filter(pred, scope_args = list(...))
+    subset(.mk_view(), subset = pred, quote = FALSE, ...)[[1L]]
 }
 
 # crop step. `region` goes through the same WKT normalisation the
-# recorder applies, and `geom` is the declared cell representation
-# (A7) -- "centroid" reduces to a cell_ID set, "poly" is evaluated on
-# the cell polygon and is what a backed geom store can push down.
+# recorder applies, and `geom` is the declared cell representation --
+# "centroid" reduces to a cell_ID set, "poly" is evaluated on the cell
+# polygon.
 .vcrop <- function(region, relation = "intersects", geom = "centroid") {
-    GiottoClass:::.view_step_crop(
-        GiottoClass:::.normalize_crop_region(region),
-        relation = relation, geom = geom)
+    crop(.mk_view(), region, relation = relation, geom = geom)[[1L]]
 }
 
 .stransform <- function(op, ...) {
-    GiottoClass:::.space_step_transform(op, list(...))
+    sp <- methods::new("giottoSpace", spaces = list(s = list()))
+    do.call(op, c(list(x = sp), list(...)))[["s", NA_character_]][[1L]]
 }
 
 # Cell_IDs inside `box`, namespaced `<sample>::<local>` the way the joint
@@ -393,31 +390,80 @@ test_that("resolveSubobject(giottoPoints, parquetCoordinator): viewCrop queues s
     expect_setequal(res$cell_ID, c("c3", "c4", "c5", "c6"))
 })
 
-test_that("resolveSubobject(giottoPolygon, parquetCoordinator): geom = 'poly' crop queues spat_relate on the store's own geom", {
-    gp <- .mk_backed_geom_polygon(10L)
-    # A7: a cell-keyed geom store can push a `geom = "poly"` crop down
-    # onto its geom column. This is the case the removed force-cache
-    # patch made unreachable -- it routed every crop through the
-    # centroid answer, so a backed polygon silently answered a
-    # different question than the recipe asked.
+# A gobject whose polygon source IS the backed store, which is what a
+# `geom = "poly"` crop evaluates against. Also the fixture the pre-rework
+# suite never had: a backed polygon source paired with a tabular target.
+.mk_backed_poly_gobject <- function(n = 10L) {
+    gp <- .mk_backed_geom_polygon(n)
+    g <- GiottoClass::giotto()
+    g <- GiottoClass::setPolygonInfo(g, gp, name = "cell",
+        centroids_to_spatlocs = TRUE, verbose = FALSE, initialize = FALSE)
+    g
+}
+
+test_that("resolveSubobject(giottoPolygon, parquetCoordinator): geom = 'poly' crop narrows by cell_ID like every cell-keyed target", {
+    # adr/0015: a crop resolves to a surviving cell_ID set, and the
+    # polygon store consumes it as one `id_filter` -- the same way cell
+    # metadata and expression do. It does NOT get its own pushdown arm:
+    # that was a second evaluation path for one predicate, and a recipe
+    # must not mean different things depending on which slot reads it.
+    g  <- .mk_backed_poly_gobject(10L)
+    gp <- GiottoClass::getPolygonInfo(g, return_giottoPolygon = TRUE)
     v  <- .mk_view(.vcrop(c(2.5, 6.5, 2.5, 6.5), geom = "poly"))
-    out <- resolveSubobject(gp, gobject = NULL,
+    out <- resolveSubobject(gp, gobject = g,
         view = v, space = NULL,
         coordinator = parquetCoordinator())
     expect_true(inherits(out@spatVector, "parquetGeomBase"))
     types <- vapply(out@spatVector@ops, `[[`, character(1L), "type")
-    expect_true("spat_relate" %in% types)
+    expect_true("id_filter" %in% types)
+    expect_false("spat_relate" %in% types)
     res <- storeRead(out@spatVector, output = "tibble",
         fields = c("poly_ID", "region"))
     expect_setequal(res$poly_ID, c("c3", "c4", "c5", "c6"))
 })
 
-test_that("resolveSubobject(giottoPolygon, parquetCoordinator): a centroid crop is NOT pushed onto the geom column", {
+test_that("a poly crop gives a tabular target the same ID set as the polygon store", {
+    # The regression the pre-rework suite could not catch: no fixture
+    # paired a backed polygon source with a tabular target, so the
+    # `terra::relate(<store>, ...)` dispatch failure never fired.
+    g <- .mk_backed_poly_gobject(10L)
+    target <- data.table::data.table(
+        cell_ID = paste0("c", seq_len(10L)), value = seq_len(10L))
+    ps <- parquetStore() |> storeWrite(target)
+    v  <- .mk_view(.vcrop(c(2.5, 6.5, 2.5, 6.5), geom = "poly"))
+
+    out <- .push_view_to_pstore(ps, v, gobject = g,
+        coordinator = parquetCoordinator())
+    res <- storeRead(out, output = "tibble")
+    expect_setequal(res$cell_ID, c("c3", "c4", "c5", "c6"))
+})
+
+test_that("the poly arm gives the same ID set on every engine", {
+    # `geom` picks the geometry; `engine` picks the evaluator. They are
+    # independent, so pinning the engine must not move the answer.
+    g <- .mk_backed_poly_gobject(10L)
+    v <- .mk_view(.vcrop(c(2.5, 6.5, 2.5, 6.5), geom = "poly"))
+    engines <- c("terra",
+        if (requireNamespace("duckdb", quietly = TRUE)) "duckdb",
+        if (requireNamespace("sedonadb", quietly = TRUE)) "sedona")
+
+    answers <- lapply(engines, function(e) {
+        GiottoUtils::gwith_options(
+            list(giottodisk.spatial_query_engine = e),
+            sort(dplyr::collect(.surviving_cell_ids_arrow(v, g,
+                new.env(parent = emptyenv()),
+                parquetCoordinator()))$cell_ID)
+        )
+    })
+    expect_setequal(answers[[1L]], c("c3", "c4", "c5", "c6"))
+    for (a in answers[-1L]) expect_identical(a, answers[[1L]])
+})
+
+test_that("resolveSubobject(giottoPolygon, parquetCoordinator): a centroid crop with no centroid source warns", {
     gp <- .mk_backed_geom_polygon(10L)
-    # `geom = "centroid"` asks about the cell's spatial_locs row, which
-    # the store's geom column cannot answer. With no gobject there is no
-    # centroid source, so it warns rather than answering the polygon
-    # question in its place.
+    # `geom = "centroid"` asks about the cell's spatial_locs row. With no
+    # gobject there is no centroid source, so it warns rather than
+    # answering the polygon question in its place.
     v  <- .mk_view(.vcrop(c(2.5, 6.5, 2.5, 6.5)))
     expect_warning(
         out <- resolveSubobject(gp, gobject = NULL,
@@ -430,13 +476,14 @@ test_that("resolveSubobject(giottoPolygon, parquetCoordinator): a centroid crop 
 })
 
 test_that("resolveSubobject(giottoPolygon, parquetCoordinator): filter + geom crop compose", {
-    gp <- .mk_backed_geom_polygon(10L)
+    g  <- .mk_backed_poly_gobject(10L)
+    gp <- GiottoClass::getPolygonInfo(g, return_giottoPolygon = TRUE)
     # Crop to (2.5, 6.5, 2.5, 6.5) keeps c3-c6; further filter to "tumor"
     # (every other index: c1, c3, c5, c7, c9) -> intersection: c3, c5
     v  <- .mk_view(
         .vcrop(c(2.5, 6.5, 2.5, 6.5), geom = "poly"),
         .vfilter(region == "tumor"))
-    out <- resolveSubobject(gp, gobject = NULL,
+    out <- resolveSubobject(gp, gobject = g,
         view = v, space = NULL,
         coordinator = parquetCoordinator())
     res <- storeRead(out@spatVector, output = "tibble",
@@ -530,24 +577,24 @@ test_that("resolveSubobject(giottoPolygon, parquetCoordinator): space transforms
 })
 
 test_that("resolveSubobject(giottoPolygon, parquetCoordinator): space + view compose; both queue", {
-    gp <- .mk_backed_geom_polygon(10L)
+    g  <- .mk_backed_poly_gobject(10L)
+    gp <- GiottoClass::getPolygonInfo(g, return_giottoPolygon = TRUE)
     sp <- .mk_space(.stransform("spatShift", dx = 100, dy = 100))
-    v  <- .mk_view(
-        .vcrop(c(102.5, 106.5, 102.5, 106.5), geom = "poly"))
-    out <- resolveSubobject(gp, gobject = NULL,
+    # The crop region is drawn in the view's OWN frame, which here is the
+    # native one -- `space` is the output frame, applied to the returned
+    # geometry, and the two are deliberately not the same thing.
+    v  <- .mk_view(.vcrop(c(2.5, 6.5, 2.5, 6.5), geom = "poly"))
+    out <- resolveSubobject(gp, gobject = g,
         view = v, space = sp,
         coordinator = parquetCoordinator())
     # @post_ops carries the affine
     expect_s4_class(.pgeom_pending_transform(out@spatVector), "affine2d")
-    # spat_relate op queued from the crop
+    # the crop queues an id_filter, like every cell-keyed target
     types <- vapply(out@spatVector@ops, `[[`, character(1L), "type")
-    expect_true("spat_relate" %in% types)
-    # Verifying storeRead-time materialization across transform + crop
-    # is out of scope here — the terra engine's spat_relate path
-    # compares intrinsic geom against post-transform query WKT, which
-    # is a separate frame-handling gap. SQL engines (sedona/duckdb)
-    # apply ST_Affine before the predicate; tests for that live with
-    # those engines.
+    expect_true("id_filter" %in% types)
+    res <- storeRead(out@spatVector, output = "tibble",
+        fields = c("poly_ID", "region"))
+    expect_setequal(res$poly_ID, c("c3", "c4", "c5", "c6"))
 })
 
 test_that("resolveSubobject(giottoPoints, parquetCoordinator): space transforms apply to backed @spatVector", {
@@ -590,12 +637,9 @@ test_that(".surviving_cell_ids_arrow: stores one entry per view, intersection ac
     v  <- .mk_view(.vfilter(leiden_clus == 1), .vfilter(in_tissue == 1))
     surv <- .surviving_cell_ids_arrow(v, g, cache, parquetCoordinator())
     expect_s3_class(surv, "Table")
-    # Three target-independent quantities plus their intersection: the
-    # split is what lets a backed geom store take the filter arm eagerly
-    # while pushing its own poly-arm crops down (A7).
-    expect_setequal(ls(cache),
-        c("filter_ids", "crop_ids:centroid", "crop_ids:poly",
-          "surviving_cell_ids"))
+    # ONE target-independent quantity (adr/0015): every cell-keyed slot
+    # narrows by the same set, so there is nothing to split.
+    expect_setequal(ls(cache), "surviving_cell_ids")
 
     cmeta <- GiottoClass::getCellMetadata(g, output = "data.table")
     expected <- cmeta$cell_ID[cmeta$leiden_clus == 1 & cmeta$in_tissue == 1]
@@ -631,8 +675,7 @@ test_that("cache path: multiple targets sharing one view share one id_filter tab
         coordinator = parquetCoordinator(), .cache = cache)
     out2 <- .push_view_to_pstore(ps2, v, gobject = g,
         coordinator = parquetCoordinator(), .cache = cache)
-    # Filters only, so only the filter slot is populated.
-    expect_setequal(ls(cache), "filter_ids")
+    expect_setequal(ls(cache), "surviving_cell_ids")
 
     t1 <- vapply(out1@ops, `[[`, character(1L), "type")
     t2 <- vapply(out2@ops, `[[`, character(1L), "type")
