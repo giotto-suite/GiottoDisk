@@ -890,3 +890,28 @@ setMethod("show", signature(object = "parquetEdgeStore"), function(object) {
         cat(sprintf("  ops:     %d pending\n", length(object@ops)))
     }
 })
+
+# as.igraph ####
+
+# Registered on igraph's S3 generic rather than exposed as a new GiottoDisk
+# verb, so GiottoClass can read a backed network by dispatch instead of
+# calling `GiottoDisk::storeRead()` on a package it only Suggests.
+# `as.igraph()` on a `spatialNetworkObj` / `nnNetObj` returns @network when it
+# already holds a graph and otherwise hands the slot contents straight here.
+#
+# `minimal` keeps the storeRead() default and stays reachable through `...`.
+
+#' @title Coerce a parquetEdgeStore to igraph
+#' @name as.igraph.parquetEdgeStore
+#' @description Read a backed network into an in-memory `igraph`. Equivalent
+#' to `storeRead(x, output = "igraph")`, registered so that `as.igraph()` on a
+#' network subobject with a backed `@network` resolves without the caller
+#' naming this package.
+#' @param x `parquetEdgeStore`
+#' @param \dots passed to [storeRead()], e.g. `minimal`
+#' @returns igraph
+#' @seealso [storeRead()]
+#' @exportS3Method igraph::as.igraph
+as.igraph.parquetEdgeStore <- function(x, ...) {
+    storeRead(x, output = "igraph", ...)
+}
