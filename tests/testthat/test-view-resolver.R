@@ -34,9 +34,8 @@ skip_if_no_mini <- function() {
 # recorder routes through, so a step-shape change upstream breaks these
 # tests instead of silently drifting past them.
 
-.mk_view <- function(..., space = NA_character_) {
-    methods::new("giottoView", steps = list(...),
-        space = as.character(space))
+.mk_view <- function(...) {
+    methods::new("giottoView", steps = list(...))
 }
 
 .mk_space <- function(..., sample = ":default:") {
@@ -58,8 +57,10 @@ skip_if_no_mini <- function() {
 # recorder applies, and `geom` is the declared cell representation --
 # "centroid" reduces to a cell_ID set, "poly" is evaluated on the cell
 # polygon.
-.vcrop <- function(region, relation = "intersects", geom = "centroid") {
-    crop(.mk_view(), region, relation = relation, geom = geom)[[1L]]
+.vcrop <- function(region, relation = "intersects", geom = "centroid",
+                   space = NULL) {
+    crop(.mk_view(), region, relation = relation, geom = geom,
+        space = space)[[1L]]
 }
 
 .stransform <- function(op, ...) {

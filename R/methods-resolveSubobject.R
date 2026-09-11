@@ -352,16 +352,17 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
 # store's own sedona / duckdb / terra engines.
 #' @keywords internal
 #' @noRd
-.crop_step_ids <- function(gobject, step, pts, space, spat_unit = NULL) {
+.crop_step_ids <- function(gobject, step, carriers) {
     region <- terra::vect(step$region)
     switch(step$geom,
         centroid = {
+            pts <- carriers$points(step$space)
             if (is.null(pts)) return(NULL)
             GiottoClass::spatRelate(pts, region,
                 relation = step$relation)$cell_ID
         },
         poly = {
-            polys <- .projected_polys(gobject, space, spat_unit = spat_unit)
+            polys <- carriers$polys(step$space)
             if (is.null(polys)) {
                 stop(sprintf(paste0(
                     "[crop] geom = \"poly\" was requested (relation '%s'), ",
@@ -432,37 +433,55 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
     arrow::arrow_table(data.frame(cell_ID = ids, stringsAsFactors = FALSE))
 }
 
-# The predicate frame: the frame a recorded crop region was drawn in,
-# read off the view. Independent of any OUTPUT space the caller asked
-# for -- that one is applied by `.apply_space_to_subobj` on the subobject
-# itself. Conflating the two is what made a `space =`-bound view return
-# rotated coordinates from a plain getter.
+# Carriers for the crop arms, plus the frame each one is projected into.
+#
+# The predicate frame is named BY THE STEP -- the frame that step's region
+# coordinates were read in. It is independent of any OUTPUT space the
+# caller asked for; that one is applied by `.apply_space_to_subobj` on the
+# subobject itself. Conflating the two is what made a `space =`-bound view
+# return rotated coordinates from a plain getter.
+#
+# Built lazily and memoised PER FRAME: two crop steps in one view may name
+# different spaces, and steps sharing a frame -- the common case -- share
+# one build. A `NULL` build is a real answer ("no spatial locations"), so
+# it is cached too and the warning fires once per frame, not once per step.
 #' @keywords internal
 #' @noRd
-.view_predicate_space <- function(view, gobject) {
-    if (is.na(view@space)) return(NULL)
-    GiottoClass::giottoSpace(gobject, view@space)
-}
-
-# Build the centroid carrier at most once per resolution, and only if
-# some step actually asks for it -- so an all-poly recipe on a
-# polygon-only object does not warn about missing spatial locations.
-#' @keywords internal
-#' @noRd
-.points_once <- function(gobject, space, spat_unit) {
-    built <- FALSE
-    pts <- NULL
-    function() {
-        if (!built) {
-            pts <<- .projected_points(gobject, space, spat_unit = spat_unit)
-            built <<- TRUE
-            if (is.null(pts)) {
+.crop_carriers <- function(gobject, spat_unit = NULL) {
+    memo <- new.env(parent = emptyenv())
+    memoised <- function(kind, space_name, build) {
+        key <- paste0(kind, ":", if (is.na(space_name)) "" else space_name)
+        if (!exists(key, envir = memo, inherits = FALSE)) {
+            assign(key, build(.step_space(gobject, space_name)),
+                envir = memo)
+        }
+        base::get(key, envir = memo)
+    }
+    list(
+        space = function(space_name) .step_space(gobject, space_name),
+        points = function(space_name) {
+            out <- memoised("pts", space_name, function(sp) {
+                .projected_points(gobject, sp, spat_unit = spat_unit)
+            })
+            if (is.null(out)) {
                 warning("[view] crop step skipped: no spatial locations ",
                     "available", call. = FALSE)
             }
+            out
+        },
+        polys = function(space_name) {
+            memoised("poly", space_name, function(sp) {
+                .projected_polys(gobject, sp, spat_unit = spat_unit)
+            })
         }
-        pts
-    }
+    )
+}
+
+#' @keywords internal
+#' @noRd
+.step_space <- function(gobject, space_name) {
+    if (is.null(space_name) || is.na(space_name)) return(NULL)
+    GiottoClass::giottoSpace(gobject, space_name)
 }
 
 # The whole cell-axis answer for a view: walk the recorded steps IN ORDER
@@ -484,8 +503,7 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
 .surviving_cell_ids_arrow <- function(view, gobject, .cache, coordinator,
     spat_unit = NULL, feat_type = NULL) {
     .memo(.cache, "surviving_cell_ids", function() {
-        pred_space <- .view_predicate_space(view, gobject)
-        get_pts <- .points_once(gobject, pred_space, spat_unit)
+        carriers <- .crop_carriers(gobject, spat_unit = spat_unit)
         surviving <- NULL
         for (step in view@steps) {
             ids <- switch(step$type,
@@ -505,10 +523,7 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
                     narrowed$ids_tab
                 },
                 crop = {
-                    got <- .crop_step_ids(gobject, step,
-                        if (identical(step$geom, "centroid")) get_pts()
-                        else NULL,
-                        pred_space, spat_unit = spat_unit)
+                    got <- .crop_step_ids(gobject, step, carriers)
                     if (is.null(got)) NULL else .ids_arrow(got)
                 },
                 # `samples` narrows children, not cells; resolved before
@@ -721,12 +736,12 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
 
     # The `space` arg is the OUTPUT frame: when non-NULL the caller has
     # already composed it into the store's @post_ops via
-    # `.apply_space_to_subobj`. The predicate frame is the view's, and is
-    # used to project a crop region into the same frame as the geom
-    # column it will be tested against -- i.e. into the OUTPUT frame,
-    # since that is where the geom column ends up once @post_ops apply.
-    predicate_space <- .view_predicate_space(view, gobject)
-    get_pts <- .points_once(gobject, predicate_space, spat_unit)
+    # `.apply_space_to_subobj`. Each crop step names its own predicate
+    # frame, which is used to project that step's region into the same
+    # frame as the geom column it will be tested against -- i.e. into the
+    # OUTPUT frame, since that is where the geom column ends up once
+    # @post_ops apply.
+    carriers <- .crop_carriers(gobject, spat_unit = spat_unit)
 
     for (step in view@steps) {
         store <- switch(step$type,
@@ -739,9 +754,7 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
                 feat_type = feat_type
             ),
             crop = if (cell_keyed) {
-                ids <- .crop_step_ids(gobject, step,
-                    if (identical(step$geom, "centroid")) get_pts() else NULL,
-                    predicate_space, spat_unit = spat_unit)
+                ids <- .crop_step_ids(gobject, step, carriers)
                 if (is.null(ids)) store else .queue_ids(store,
                     .ids_arrow(ids))
             } else if (!inherits(store, "parquetGeomBase")) {
@@ -754,7 +767,8 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
                 # region is already WKT, spatRelate's canonical y-form,
                 # so it is parsed only if a space has to be reconciled.
                 y <- .project_region_between_spaces(step$region, gobject,
-                    from_space = predicate_space, to_space = space)
+                    from_space = carriers$space(step$space),
+                    to_space = space)
                 spatRelate(store, y, relation = step$relation)
             },
             store
@@ -927,8 +941,7 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
     # `.crop_step_ids` the cache path uses, so the two agree by
     # construction rather than as two parallel implementations.
     cell_keyed <- identical(key, "cell_ID")
-    pred_space <- .view_predicate_space(view, gobject)
-    get_pts <- .points_once(gobject, pred_space, spat_unit)
+    carriers <- .crop_carriers(gobject, spat_unit = spat_unit)
     warned <- FALSE
 
     for (step in view@steps) {
@@ -948,9 +961,7 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
             }
             next
         }
-        ids <- .crop_step_ids(gobject, step,
-            if (identical(step$geom, "centroid")) get_pts() else NULL,
-            pred_space, spat_unit = spat_unit)
+        ids <- .crop_step_ids(gobject, step, carriers)
         if (is.null(ids)) next
         dt <- dt[cell_ID %in% ids]
     }
