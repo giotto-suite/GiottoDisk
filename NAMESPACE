@@ -2,6 +2,7 @@
 
 S3method(as.list,gDirSource)
 S3method(base::as.data.frame,gDirSource)
+S3method(data.table::as.data.table,parquetEdgeStore)
 S3method(igraph::as.igraph,parquetEdgeStore)
 S3method(utils::head,parquetBase)
 S3method(utils::tail,parquetBase)
