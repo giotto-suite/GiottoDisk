@@ -402,3 +402,35 @@ test_that("as.igraph(parquetEdgeStore) forwards ... to storeRead", {
         c("weight", "distance")
     )
 })
+
+
+# ---- as.data.table ---------------------------------------------------------
+
+test_that("as.data.table(parquetEdgeStore) returns the edge table as from/to", {
+    dt <- .tiny_undirected_dt()
+    s <- storeWrite(storeCreate(type = "parquetEdgeStore"), dt,
+        type = "sNN", directed = FALSE)
+
+    out <- data.table::as.data.table(s)
+    expect_s3_class(out, "data.table")
+    # GiottoClass's edge-table contract is from/to, not the stored from_id/to_id
+    expect_false(any(c("from_id", "to_id") %in% names(out)))
+    expect_true(all(c("from", "to", "weight") %in% names(out)))
+    expect_equal(nrow(out), nrow(dt))
+    expect_type(out$from, "character")
+
+    # same edges as went in, as an undirected set
+    key <- function(a, b) paste(pmin(a, b), pmax(a, b))
+    expect_setequal(key(out$from, out$to), key(dt$from, dt$to))
+})
+
+test_that("as.data.table(parquetEdgeStore) honours a pending subset", {
+    dt <- .tiny_undirected_dt()
+    s <- storeWrite(storeCreate(type = "parquetEdgeStore"), dt,
+        type = "sNN", directed = FALSE)
+
+    sub <- s[c("a", "b", "c")]
+    out <- data.table::as.data.table(sub)
+    expect_true(all(c(out$from, out$to) %in% c("a", "b", "c")))
+    expect_lt(nrow(out), nrow(dt))
+})
