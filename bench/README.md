@@ -104,6 +104,36 @@ Worker startup is a specific trap: eight mirai daemons each attach arrow and
 data.table, and although they are warmed outside any timed case, arrow's
 per-worker pools can still grow during the first parallel case.
 
+## Wall clock
+
+Run the suite under `caffeinate -dimsu` on macOS, or wrap it in
+`GiottoUtils::gwith_awake()`. If you do not, the numbers can be silently wrong.
+
+`.timed()` measures `proc.time()[["elapsed"]]`, which is wall clock. A system
+sleep pauses the whole machine: elapsed time advances while CPU time does not, so
+an affected case does identical work and reports many times longer. Everything
+you would normally check looks clean — CPU-seconds, peak memory, page-in and swap
+counters are all unchanged, and the machine can be idle by every other measure.
+
+Two consequences, the second worse than the first:
+
+- the timing is inflated, and there is nothing in the reported columns that
+  distinguishes it from a genuinely slow case
+- `CAP` is an *elapsed* limit (`setTimeLimit(elapsed = CAP)`), so a long enough
+  sleep **aborts** the case rather than misreporting it, and the run stops with
+  what looks like a timeout
+
+This is not hypothetical. A scaling document in `examples/giottodisk_benchmarks/`
+published a 13.9 min pipeline as 41.6 min and derived scaling exponents that were
+wrong by up to a factor of two, because macOS entered Idle and Maintenance Sleep
+five times during the render — twice as a *Dark Wake Thermal Emergency*. It
+happens on AC as well as on battery.
+
+`.timed()` reports `! system slept Ns during this case` when it detects one, from
+`pmset -g log`. Discard such a case; do not average it in. Because the
+`--now`/`--ref` comparison rests on two measurements taken back to back, a sleep
+on one side destroys exactly the ratio the harness exists to produce.
+
 ## Re-run at `--workers=1` before diagnosing
 
 A change that is fine serially and bad in parallel is a fan-out problem, not an
