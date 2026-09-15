@@ -834,6 +834,13 @@ setMethod("[",
 # node IDs come from the sidecar — preserves isolated vertices. With
 # @ops pending, only nodes referenced by surviving edges are returned,
 # matching how `igraph::V` behaves on a subgraph.
+#
+# What this answers is *node* identity — it reads the `node_id` column and has
+# no opinion on what the nodes are. That it is reached through spatIDs() is
+# only right while every network in the suite is over cells. A feature-keyed
+# network would want featIDs() on the container with this same body behind it;
+# the generic the caller picks is what supplies the entity type, as
+# parquetGeomBase already does with poly_ID vs feat_ID.
 
 #' @rdname spatIDs-generic
 #' @export
@@ -914,4 +921,36 @@ setMethod("show", signature(object = "parquetEdgeStore"), function(object) {
 #' @exportS3Method igraph::as.igraph
 as.igraph.parquetEdgeStore <- function(x, ...) {
     storeRead(x, output = "igraph", ...)
+}
+
+
+# as.data.table ####
+
+# The edge-table counterpart of as.igraph() above, registered for the same
+# reason: `as.data.table()` on a network subobject hands the `@network`
+# contents here when they are backed.
+#
+# The from_id/to_id -> from/to rename lives on this side because the edge
+# schema is this package's. GiottoClass's edge-table contract is from/to --
+# what `igraph::as_data_frame(what = "edges")` produces for an in-memory
+# network -- so a caller cannot tell which carrier answered.
+
+#' @title Coerce a parquetEdgeStore to a data.table
+#' @name as.data.table.parquetEdgeStore
+#' @description Read a backed network into an in-memory edge table with
+#' character node IDs. Equivalent to `storeRead(x, output = "tibble")` with the
+#' endpoint columns renamed to the `from`/`to` the rest of the suite expects.
+#' Registered so that `as.data.table()` on a network subobject with a backed
+#' `@network` resolves without the caller naming this package.
+#' @param x `parquetEdgeStore`
+#' @param \dots passed to [storeRead()]
+#' @returns data.table with `from`, `to`, and any edge attributes stored
+#' alongside them (e.g. `weight`, `distance`)
+#' @seealso [storeRead()]
+#' @exportS3Method data.table::as.data.table
+as.data.table.parquetEdgeStore <- function(x, ...) {
+    dt <- storeRead(x, output = "tibble", ...)
+    data.table::setnames(dt, c("from_id", "to_id"), c("from", "to"),
+        skip_absent = TRUE)
+    dt[]
 }
