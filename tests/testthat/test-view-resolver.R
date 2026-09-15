@@ -38,9 +38,12 @@ skip_if_no_mini <- function() {
     methods::new("giottoView", steps = list(...))
 }
 
-.mk_space <- function(..., sample = ":default:") {
-    methods::new("giottoSpace",
-        spaces = list(s = stats::setNames(list(list(...)), sample)))
+# A frame with no sample identity -- one set of steps applied to whatever
+# subobject it is handed. That is a `perSampleSpace`; the `":default:"`
+# sample key it used to be built with is gone, because the case it stood
+# for is now the class rather than a magic key.
+.mk_space <- function(...) {
+    methods::new("perSampleSpace", name = "s", steps = list(...))
 }
 
 # filter step from an unevaluated predicate
@@ -64,7 +67,7 @@ skip_if_no_mini <- function() {
 }
 
 .stransform <- function(op, ...) {
-    sp <- methods::new("giottoSpace", spaces = list(s = list()))
+    sp <- methods::new("perSampleSpace", name = "s")
     do.call(op, c(list(x = sp), list(...)))[["s", NA_character_]][[1L]]
 }
 
