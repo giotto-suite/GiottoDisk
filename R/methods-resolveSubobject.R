@@ -292,9 +292,9 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
     parts <- lapply(names(sl), function(nm) {
         child <- sl[[nm]]
         if (!inherits(child, "spatLocsObj")) return(NULL)
-        # `[` owns the sample-resolution rule, sentinel included
+        # `[` owns the sample-resolution rule
         child <- .materialize(.apply_space_to_subobj(child, gobject,
-            space[, nm]))
+            space[nm]))
         dt <- data.table::copy(child[])
         dt[, cell_ID := paste(nm, cell_ID, sep = "::")]
         child[] <- dt
@@ -323,7 +323,7 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
             error = function(e) NULL)
         if (!inherits(gp, "giottoPolygon")) return(NULL)
         .apply_space_to_subobj(gp, g,
-            if (is.null(space) || is.na(samp)) space else space[, samp])
+            if (is.null(space) || is.na(samp)) space else space[samp])
     }
 
     if (!inherits(gobject, "giottoMulti")) return(one(gobject, NA_character_))
@@ -621,7 +621,7 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
 #' @noRd
 .space_composite_affine <- function(space, gobject) {
     if (is.null(space)) return(NULL)
-    steps <- space[[1L, NA_character_]]
+    steps <- space[[NA_character_]]
     if (length(steps) == 0L) return(NULL)
     # Probe carrier is a spatLocsObj, not a bare SpatVector: GiottoClass
     # implements all seven transform generics on spatLocsObj but not on
@@ -878,10 +878,10 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
 #' @noRd
 .apply_space_to_subobj <- function(subobj, gobject, space) {
     if (is.null(space)) return(subobj)
-    # `[[` owns sample resolution, sentinel included. NA means "no sample
+    # `[[` owns sample resolution. NA means "no sample
     # identity", which is what a single `giotto` -- or an already-scoped
-    # handle from `space[, <child>]` -- presents.
-    steps <- space[[1L, NA_character_]]
+    # handle from `space[<child>]` -- presents.
+    steps <- space[[NA_character_]]
     if (length(steps) == 0L) return(subobj)
     backed_geom <- .hasSlot(subobj, "spatVector") &&
         inherits(subobj@spatVector, "parquetBase")

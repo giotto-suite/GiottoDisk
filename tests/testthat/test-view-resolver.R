@@ -68,7 +68,7 @@ skip_if_no_mini <- function() {
 
 .stransform <- function(op, ...) {
     sp <- methods::new("perSampleSpace", name = "s")
-    do.call(op, c(list(x = sp), list(...)))[["s", NA_character_]][[1L]]
+    do.call(op, c(list(x = sp), list(...)))[[1L]]
 }
 
 # Cell_IDs inside `box`, namespaced `<sample>::<local>` the way the joint
