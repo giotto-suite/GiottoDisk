@@ -78,6 +78,7 @@ setClass("parquetEdgeStore",
         n_cells  = "numeric",
         n_edges  = "numeric",
         nodes    = "ANY",
+        node_idx = "integer",
         type     = "character",
         directed = "logical"
     ),
@@ -85,6 +86,7 @@ setClass("parquetEdgeStore",
         n_cells  = 0,
         n_edges  = 0,
         nodes    = NULL,
+        node_idx = integer(0),
         type     = NA_character_,
         directed = FALSE
     )
@@ -595,7 +597,8 @@ setMethod("storeRead", signature(store = "parquetEdgeStore"),
         }
 
         # igraph
-        .edge_to_igraph(edges_dt, store@nodes, directed = store@directed)
+        .edge_to_igraph(edges_dt, store@nodes, directed = store@directed,
+                        universe = store@node_idx)
     }
 )
 
@@ -622,9 +625,19 @@ setMethod("storeRead", signature(store = "parquetEdgeStore"),
 # referenced vertices (so the in-mem igraph never sees billion-scale
 # ids). Set V(g)$name from the sidecar so callers can address vertices
 # by their original character barcodes.
-.edge_to_igraph <- function(edges_dt, nodes, directed = FALSE) {
+.edge_to_igraph <- function(edges_dt, nodes, directed = FALSE,
+                            universe = integer(0)) {
     int_id <- node_id <- NULL  # NSE
-    used_ints <- sort(unique(c(edges_dt$from_id, edges_dt$to_id)))
+    # Vertices come from the recorded selection when there is one, unioned
+    # with whatever the edges reference. Inferring purely from edges is
+    # right for a store read whole -- it is what keeps an in-memory graph
+    # from holding a vertex per node on disk -- but it drops a selected
+    # vertex that lost all its edges, which makes an ID subset return fewer
+    # ids than were asked for. The union is bounded by the selection, so the
+    # scale property survives.
+    used_ints <- sort(unique(c(
+        as.integer(universe), edges_dt$from_id, edges_dt$to_id
+    )))
 
     # match() rank — faster than setNames(seq..., used)[as.character(...)]
     edges_dt$from_id <- match(edges_dt$from_id, used_ints)
@@ -681,6 +694,43 @@ setMethod("storeRead", signature(store = "parquetEdgeStore"),
     as.integer(ns$int_id)
 }
 
+# The vertex set the store is currently a view of, as internal ints.
+# Empty `@node_idx` means "not narrowed", whose universe is every node in
+# the sidecar -- read only when something actually needs it, since the
+# common case never does.
+.edge_node_universe <- function(x) {
+    int_id <- NULL  # NSE
+    if (length(x@node_idx) > 0L) return(x@node_idx)
+    if (is.null(x@nodes) || !storeExists(x@nodes)) return(integer(0L))
+    as.integer(
+        storeRead(x@nodes) |>
+            dplyr::select(int_id) |>
+            dplyr::collect() |>
+            dplyr::pull(int_id)
+    )
+}
+
+# Record a vertex selection on the view.
+#
+# `[` pushes an edge filter, which is what narrowing MEANS for the edges but
+# says nothing about the vertices: a selected vertex whose partners were all
+# dropped leaves no trace in the edge table, and the graph rebuilt from those
+# edges would silently be missing it. Asking for N ids should not return fewer
+# than N of them. So the selection is kept as view state alongside the filter,
+# the same split `parquetExprStore` draws between `@cell_idx` and `@ops`.
+.edge_record_vset <- function(x, v_int, negate = FALSE) {
+    if (isTRUE(negate)) {
+        x@node_idx <- setdiff(.edge_node_universe(x), v_int)
+        return(x)
+    }
+    x@node_idx <- if (length(x@node_idx) == 0L) {
+        as.integer(v_int)              # intersecting with "everything"
+    } else {
+        intersect(x@node_idx, v_int)
+    }
+    x
+}
+
 # helper — induced-subgraph filter (both endpoints in v_int).
 # Works for canonical undirected storage without OR because the AND
 # requirement catches both orientations regardless.
@@ -730,7 +780,7 @@ setMethod("[",
     function(x, i, j, ..., negate = FALSE, drop) {
         v_int <- .edge_vset_to_int(x, i)
         x@ops <- c(x@ops, list(.edge_induced_op(v_int, negate = negate)))
-        x
+        .edge_record_vset(x, v_int, negate = negate)
     }
 )
 
@@ -740,7 +790,7 @@ setMethod("[",
     function(x, i, j, ..., negate = FALSE, drop) {
         v_int <- .edge_vset_to_int(x, i)
         x@ops <- c(x@ops, list(.edge_induced_op(v_int, negate = negate)))
-        x
+        .edge_record_vset(x, v_int, negate = negate)
     }
 )
 
@@ -856,6 +906,18 @@ setMethod("spatIDs", signature(x = "parquetEdgeStore"), function(x, ...) {
         return(as.character(ids$node_id))
     }
 
+    # A recorded vertex selection is the answer outright: it is what the
+    # caller asked for, it needs no edge scan, and unlike the edge-derived
+    # path below it still counts a vertex whose partners were dropped.
+    if (length(x@node_idx) > 0L) {
+        ids <- storeRead(x@nodes) |>
+            dplyr::filter(int_id %in% !!x@node_idx) |>
+            dplyr::select(node_id) |>
+            dplyr::distinct() |>
+            dplyr::collect()
+        return(as.character(ids$node_id))
+    }
+
     # Subset is pending — read active edges (storeRead applies @ops),
     # collect referenced int IDs, look up character IDs in sidecar.
     edges <- storeRead(x, output = "arrow")
@@ -878,23 +940,58 @@ setMethod("spatIDs", signature(x = "parquetEdgeStore"), function(x, ...) {
 
 # DIM / SHOW ####
 
+# `@n_edges` and `@n_cells` describe the FILE. They are set when the store is
+# written and never move, so once a subset queues an op they stop describing
+# what the store is a view of. These helpers answer for the view.
+
+# Active edges: the count after pending ops, which needs the scan the ops
+# were deferred to avoid -- so it is only paid when there are ops to apply.
+# Returns a double, as the other stores' `nrow()` does, so an edge count
+# past 2^31 is representable.
+#' @keywords internal
+#' @noRd
+.edge_n_active <- function(x) {
+    if (length(x@ops) == 0L) return(as.numeric(x@n_edges))
+    .dplyr_nrow(storeRead(x, output = "arrow"))
+}
+
+# Active vertices. A recorded selection answers exactly and for free; with
+# ops but no selection (a from/to slice, say) the vertex set is whatever the
+# surviving edges reference, which is what `spatIDs()` already computes.
+#' @keywords internal
+#' @noRd
+.edge_n_vertices <- function(x) {
+    if (length(x@node_idx) > 0L) return(as.numeric(length(x@node_idx)))
+    if (length(x@ops) == 0L) return(as.numeric(x@n_cells))
+    as.numeric(length(spatIDs(x)))
+}
+
 setMethod("dim", signature(x = "parquetEdgeStore"), function(x) {
-    c(as.integer(x@n_edges), 4L)
+    c(.edge_n_active(x), 4)
 })
 
 setMethod("nrow", signature(x = "parquetEdgeStore"), function(x) {
-    as.integer(x@n_edges)
+    .edge_n_active(x)
 })
 
 setMethod("show", signature(object = "parquetEdgeStore"), function(object) {
     cat(sprintf("<parquetEdgeStore> type=%s directed=%s\n",
                 object@type, object@directed))
-    cat(sprintf("  n_cells: %s  n_edges: %s\n",
+    # deliberately the on-disk figures and labelled as such: `show()` is
+    # reached implicitly at the prompt and should not trigger the scan that
+    # the active counts would need. The pending-ops line below says the view
+    # differs; `nrow()` / `spatIDs()` answer for it.
+    cat(sprintf("  on disk: %s nodes, %s edges\n",
                 format(object@n_cells, big.mark = ","),
                 format(object@n_edges, big.mark = ",")))
     cat(sprintf("  path:    %s\n", object@path))
     if (length(object@ops) > 0L) {
-        cat(sprintf("  ops:     %d pending\n", length(object@ops)))
+        cat(sprintf("  ops:     %d pending (view is narrower)\n",
+                    length(object@ops)))
+    }
+    if (length(object@node_idx) > 0L) {
+        cat(sprintf("  view:    %s nodes selected\n",
+                    format(length(object@node_idx), big.mark = ",")))
     }
 })
 

@@ -434,3 +434,99 @@ test_that("as.data.table(parquetEdgeStore) honours a pending subset", {
     expect_true(all(c(out$from, out$to) %in% c("a", "b", "c")))
     expect_lt(nrow(out), nrow(dt))
 })
+
+
+# ---- vertex universe (@node_idx) -----------------------------------------
+# `[` pushes an edge filter, which says nothing about a selected vertex whose
+# partners were all dropped. Without a recorded selection the graph rebuilt
+# from surviving edges is silently missing it, so an ID subset returns fewer
+# ids than were asked for.
+
+test_that("an ID subset returns every id asked for, edges or not", {
+    st <- storeWrite(parquetEdgeStore(path = tempfile()),
+                     .tiny_undirected_dt())
+    # "e" connects only to "d", so selecting it without "d" isolates it
+    sel <- c("a", "b", "e")
+    sub <- st[sel]
+
+    g <- igraph::as.igraph(sub)
+    expect_setequal(igraph::V(g)$name, sel)
+    expect_equal(igraph::gorder(g), length(sel))
+    # only a-b survives; e keeps no edge but keeps its vertex
+    expect_equal(igraph::gsize(g), 1)
+    expect_equal(sum(igraph::degree(g) == 0), 1)
+
+    expect_setequal(spatIDs(sub), sel)
+})
+
+test_that("the recorded selection matches induced_subgraph exactly", {
+    dt <- .tiny_undirected_dt()
+    st <- storeWrite(parquetEdgeStore(path = tempfile()), dt)
+    ref <- igraph::graph_from_data_frame(dt, directed = FALSE)
+
+    for (sel in list(c("a", "b", "e"), c("a", "e"), c("c", "d", "e"))) {
+        got <- igraph::as.igraph(st[sel])
+        want <- igraph::induced_subgraph(ref, igraph::V(ref)$name %in% sel)
+        expect_setequal(igraph::V(got)$name, igraph::V(want)$name)
+        expect_equal(igraph::gsize(got), igraph::gsize(want))
+    }
+})
+
+test_that("selections compose and negate complements", {
+    st <- storeWrite(parquetEdgeStore(path = tempfile()),
+                     .tiny_undirected_dt())
+
+    # successive subsets intersect
+    expect_setequal(spatIDs(st[c("a", "b", "c")][c("b", "c")]), c("b", "c"))
+
+    # negate removes exactly the named set
+    expect_setequal(spatIDs(st[c("a", "b"), negate = TRUE]), c("c", "d", "e"))
+})
+
+test_that("an unnarrowed store still infers its vertices from edges", {
+    # the scale property: a whole-store read must not instantiate a vertex
+    # per node on disk just because the sidecar lists one
+    st <- storeWrite(parquetEdgeStore(path = tempfile()),
+                     .tiny_undirected_dt())
+    expect_length(st@node_idx, 0L)
+    expect_equal(igraph::gorder(igraph::as.igraph(st)), 5)
+})
+
+
+# ---- accessors answer for the view, not the file --------------------------
+# @n_edges / @n_cells are written once and never move, so after a subset they
+# describe the file rather than what the store is a view of.
+
+test_that("nrow / dim track pending ops rather than the file", {
+    st <- storeWrite(parquetEdgeStore(path = tempfile()),
+                     .tiny_undirected_dt())
+    expect_equal(nrow(st), 7)
+    expect_equal(dim(st)[[1L]], 7)
+
+    sub <- st[c("a", "b", "e")]      # only a-b survives
+    expect_equal(sub@n_edges, 7)     # the file is unchanged...
+    expect_equal(nrow(sub), 1)       # ...the view is not
+    expect_equal(dim(sub)[[1L]], nrow(sub))
+
+    # matches what actually materializes
+    expect_equal(nrow(sub), igraph::gsize(igraph::as.igraph(sub)))
+})
+
+test_that("a from/to slice re-scans, having recorded no vertex selection", {
+    st <- storeWrite(parquetEdgeStore(path = tempfile()),
+                     .tiny_undirected_dt())
+    sl <- st[c("a"), c("b", "c")]
+    expect_length(sl@node_idx, 0L)
+    expect_equal(nrow(sl), igraph::gsize(igraph::as.igraph(sl)))
+})
+
+test_that("show() reports the file honestly and flags the view", {
+    st <- storeWrite(parquetEdgeStore(path = tempfile()),
+                     .tiny_undirected_dt())
+    out <- paste(capture.output(show(st[c("a", "b", "e")])), collapse = "\n")
+    # the printed counts are labelled as on-disk, so they are not a claim
+    # about the view -- show() must not trigger a scan to be correct
+    expect_match(out, "on disk")
+    expect_match(out, "ops:\\s+1 pending")
+    expect_match(out, "3 nodes selected")
+})
