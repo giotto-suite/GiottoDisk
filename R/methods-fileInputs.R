@@ -908,7 +908,7 @@ setMethod("storeRead", signature("tenxZarrInput"), function(store, ...) {
 })
 
 
-# storeRead — cosmxScanInput ####
+# storeRead - cosmxScanInput ####
 
 #' @rdname storeRead
 #' @export
