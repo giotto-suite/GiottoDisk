@@ -111,7 +111,6 @@ setMethod(
             polygon_path = .poly_path,
             expression_path = .expr_path,
             metadata_path = .meta_path,
-            expr_store = NULL,
             poly_read_fun = NULL,
             feat_type = c("rna", "negprobes", "falsecode"),
             split_keyword = list("^Negative", "^SystemControl"),
@@ -131,8 +130,7 @@ setMethod(
                 instructions = instructions
             )
 
-            # polygons (disk; overridden closure). Also the source of the cell
-            # IDs and of the centroids that become spatlocs.
+            # polygons (disk; overridden closure)
             allowed_ids <- NULL
             if (isTRUE(load_polygons)) {
                 polys <- funs$load_polys(
@@ -145,22 +143,14 @@ setMethod(
                 )
             }
 
-            # expression, sliced to the cells that actually carry a boundary.
-            # `expr_store` is a parquetExprStore already written by
-            # sourceWrite(); without one the inherited closure streams the
-            # wide CSV instead.
+            # expression (disk; overridden closure)
             if (isTRUE(load_expression)) {
-                exlist <- if (!is.null(expr_store)) {
-                    .cosmx_expr_split(expr_store, feat_type, split_keyword,
-                                      "exprObj", verbose = verbose)
-                } else {
-                    funs$load_expression(
-                        path = expression_path,
-                        feat_type = feat_type,
-                        split_keyword = split_keyword,
-                        verbose = verbose
-                    )
-                }
+                exlist <- funs$load_expression(
+                    path = expression_path,
+                    feat_type = feat_type,
+                    split_keyword = split_keyword,
+                    verbose = verbose
+                )
                 for (ex in exlist) {
                     if (!is.null(allowed_ids)) {
                         bool <- colnames(ex[]) %in% allowed_ids
@@ -311,10 +301,13 @@ importCosMxDisk <- function(cosmx_dir = NULL,
     checkmate::assert_class(gsource, "gsource")
     output <- match.arg(output, choices = c("exprObj", "store"))
 
-    GiottoUtils::vmsg("[cosmx_expression_disk] streaming CSV ->",
-                       "parquetExprStore", .v = verbose)
-
     .fovs <- if (!is.null(fovs)) as.integer(fovs) else NULL
+
+    # cosmxscan emits only nonzeros: ~100 s against ~974 s for csvWideInput on
+    # a 20,378-feature panel. Optional, so fall back when absent; both inputs
+    # satisfy the same iterator contract.
+    use_scanner <- requireNamespace("cosmxscan", quietly = TRUE) &&
+        grepl("[.]gz$", path, ignore.case = TRUE)
     row_filter <- function(chunk) {
         keep <- chunk[["cell_ID"]] != 0L
         if (!is.null(.fovs)) {
@@ -323,29 +316,40 @@ importCosMxDisk <- function(cosmx_dir = NULL,
         keep
     }
 
-    inp <- csvWideInput(
-        csv_path        = path,
-        cell_id_col     = "cell_ID",
-        skip_cols       = "fov",
-        row_filter_fun  = row_filter
-    )
+    if (use_scanner) {
+        GiottoUtils::vmsg("[cosmx_expression_disk] scanning .gz ->",
+                          "parquetExprStore", .v = verbose)
+        inp <- .cosmx_scan_input(path = path, slide = slide)
+        pe <- sourceWrite(gsource, inp, store_type = "parquetExpr",
+                          verbose = verbose, ...)
+        # fov and cell_ID arrive with the counts, so the global IDs are
+        # composed during the stream and need no second pass
+    } else {
+        GiottoUtils::vmsg("[cosmx_expression_disk] streaming CSV ->",
+                          "parquetExprStore", .v = verbose)
+        inp <- csvWideInput(
+            csv_path        = path,
+            cell_id_col     = "cell_ID",
+            skip_cols       = "fov",
+            row_filter_fun  = row_filter
+        )
+        pe <- sourceWrite(gsource, inp, store_type = "parquetExpr",
+                          verbose = verbose, ...)
 
-    pe <- sourceWrite(gsource, inp, store_type = "parquetExpr",
-                       verbose = verbose, ...)
-
-    # Reconstruct globally-unique cell IDs `c_<slide>_<fov>_<cell_ID>`
-    # by re-reading just the (fov, cell_ID) columns from the source CSV.
-    cell_ID <- NULL  # NSE binding
-    id_dt <- data.table::fread(path, select = c("fov", "cell_ID"))
-    id_dt <- id_dt[cell_ID != 0L, ]
-    if (!is.null(.fovs)) id_dt <- id_dt[fov %in% .fovs, ]
-    if (nrow(id_dt) != length(pe@cell_ids)) {
-        stop("[cosmx_expression_disk] cell-row mismatch: filtered CSV ",
-             "rows = ", nrow(id_dt), ", parquetExprStore cells = ",
-             length(pe@cell_ids), ". Filter logic disagrees with the ",
-             "streamed write.", call. = FALSE)
+        # Reconstruct globally-unique cell IDs `c_<slide>_<fov>_<cell_ID>`
+        # by re-reading just the (fov, cell_ID) columns from the source CSV.
+        cell_ID <- NULL  # NSE binding
+        id_dt <- data.table::fread(path, select = c("fov", "cell_ID"))
+        id_dt <- id_dt[cell_ID != 0L, ]
+        if (!is.null(.fovs)) id_dt <- id_dt[fov %in% .fovs, ]
+        if (nrow(id_dt) != length(pe@cell_ids)) {
+            stop("[cosmx_expression_disk] cell-row mismatch: filtered CSV ",
+                 "rows = ", nrow(id_dt), ", parquetExprStore cells = ",
+                 length(pe@cell_ids), ". Filter logic disagrees with the ",
+                 "streamed write.", call. = FALSE)
+        }
+        pe@cell_ids <- sprintf("c_%d_%d_%d", slide, id_dt$fov, id_dt$cell_ID)
     }
-    pe@cell_ids <- sprintf("c_%d_%d_%d", slide, id_dt$fov, id_dt$cell_ID)
 
     .cosmx_expr_split(pe, feat_type, split_keyword, output,
                       verbose = verbose)

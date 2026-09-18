@@ -38,3 +38,4 @@ Other store types:
 \code{\link{unionParquetExprStore-class}}
 }
 \concept{store types}
+\keyword{internal}
