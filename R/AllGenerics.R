@@ -14,6 +14,8 @@ setGeneric("sourceContains", function(src, store, ...) standardGeneric("sourceCo
 setGeneric("snapshotSave", function(src, x, ...) standardGeneric("snapshotSave"))
 setGeneric("snapshotLoad", function(src, ...) standardGeneric("snapshotLoad"))
 setGeneric("snapshotDelete", function(src, name, ...) standardGeneric("snapshotDelete"))
+setGeneric("snapshotManifest", function(src, ...) standardGeneric("snapshotManifest"))
+setGeneric("snapshotHistory", function(src, ...) standardGeneric("snapshotHistory"))
 setGeneric("rowSample", function(x, size, ...) standardGeneric("rowSample"))
 setGeneric("storePaths", function(x, ...) standardGeneric("storePaths"))
 setGeneric("storeUID", function(x, ...) standardGeneric("storeUID"))
