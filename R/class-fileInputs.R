@@ -708,3 +708,70 @@ tenxZarrInput <- function(
         cells_per_block = as.integer(cells_per_block %||% 0L)
     )
 }
+
+
+
+# cosmxScanInput ####
+
+#' @name cosmxScanInput-class
+#' @title CosMx exprMat Byte-Scanner Input
+#' @description
+#' Wraps a gzipped CosMx `exprMat_file`, read by the `cosmxscan` Rust
+#' scanner. `cell_ids` are only known during the stream -- the matrix's own
+#' `cell_ID` column is FOV-local -- so the iterator composes the global
+#' `c_<slide>_<fov>_<cell_ID>` form as it advances.
+#' @slot slide integer. Slide number, used to compose global cell IDs.
+#' @slot skip_cols integer. Leading non-feature columns (`fov`, `cell_ID`).
+#' @slot batch_rows integer. Cells emitted per batch.
+#' @family store types
+setClass("cosmxScanInput",
+    contains = "exprInput",
+    slots = list(
+        slide = "integer",
+        skip_cols = "integer",
+        batch_rows = "integer"
+    ),
+    prototype = list(
+        slide = 1L,
+        skip_cols = 2L,
+        batch_rows = 10000L
+    )
+)
+
+#' @title CosMx exprMat byte-scanner input
+#' @name cosmxScanInput
+#' @description
+#' Constructs a [cosmxScanInput-class] over a gzipped CosMx `exprMat_file`.
+#' Pass it to [sourceWrite()] with `store_type = "parquetExpr"` to write a
+#' `parquetExprStore` into a `gDirSource` vault.
+#' @param path `exprMat_file.csv.gz`
+#' @param slide slide number, used to compose the global cell IDs
+#' @param skip_cols leading non-feature columns (`fov`, `cell_ID`)
+#' @param batch_rows cells per batch. Peak memory is one batch of nonzeros.
+#' @param ... additional slots
+#' @returns `cosmxScanInput` object
+#' @seealso [csvWideInput()] for the reader-independent variant
+#' @export
+cosmxScanInput <- function(path,
+                           slide = 1,
+                           skip_cols = 2L,
+                           batch_rows = 10000L,
+                           ...) {
+    checkmate::assert_file_exists(path)
+    GiottoUtils::package_check("cosmxscan")
+
+    con <- gzfile(path, "rt")
+    on.exit(close(con), add = TRUE)
+    hdr <- strsplit(readLines(con, n = 1L), ",", fixed = TRUE)[[1L]]
+    feat_ids <- hdr[-seq_len(skip_cols)]
+
+    methods::new("cosmxScanInput",
+        path = path,
+        feat_ids = feat_ids,
+        n_genes = length(feat_ids),
+        slide = as.integer(slide),
+        skip_cols = as.integer(skip_cols),
+        batch_rows = as.integer(batch_rows),
+        ...
+    )
+}
