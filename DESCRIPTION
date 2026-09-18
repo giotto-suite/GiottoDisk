@@ -25,7 +25,7 @@ Imports:
     digest,
     dplyr,
     Giotto (>= 4.3.0),
-    GiottoClass,
+    GiottoClass (>= 0.7.0),
     GiottoUtils,
     igraph,
     jsonlite,
@@ -73,6 +73,7 @@ Collate:
     'class-gsource.R'
     'class-parquetStore.R'
     'class-parquetEdgeStore.R'
+    'class-viewCoordinator.R'
     'convenience-xenium.R'
     'convenience-atera.R'
     'convenience-cosmx.R'
@@ -89,6 +90,7 @@ Collate:
     'methods-parquetExprStore.R'
     'methods-plot.R'
     'methods-rasterize.R'
+    'methods-resolveSubobject.R'
     'methods-show.R'
     'methods-snapshotDelete.R'
     'methods-snapshotLoad.R'
