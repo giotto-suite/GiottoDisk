@@ -319,7 +319,10 @@ setMethod("storeRead", signature("parquetExprStore"), function(store,
     max_cols = NULL) {
     n_rows <- as.integer(store@n_genes)
     n_cols <- as.integer(store@n_cells)
-    .pe_check_dgc_dims(n_rows, n_cols, max_rows, max_cols)
+    # `max_rows` / `max_cols` are a contract about the matrix the caller
+    # receives, so the cap is checked against the oriented dims.
+    cap <- .pe_orient(store, n_rows, n_cols)
+    .pe_check_dgc_dims(cap[[1L]], cap[[2L]], max_rows, max_cols)
 
     # `atab` is the lazy query with @ops + @cell_idx / @gene_idx already
     # composed (built by callNextMethod(output = "query") in the caller).
@@ -339,12 +342,15 @@ setMethod("storeRead", signature("parquetExprStore"), function(store,
     }
     x_col <- df$value
 
+    # Last logical-position site: which storage axis becomes the matrix row.
+    ij   <- .pe_orient(store, i_pos, j_pos)
+    dims <- unlist(.pe_orient(store, n_rows, n_cols))
     Matrix::sparseMatrix(
-        i = i_pos,
-        j = j_pos,
+        i = ij[[1L]],
+        j = ij[[2L]],
         x = as.double(x_col),
-        dims = c(n_rows, n_cols),
-        dimnames = list(store@feat_ids, store@cell_ids),
+        dims = as.integer(dims),
+        dimnames = .pe_orient(store, store@feat_ids, store@cell_ids),
         repr = "C"
     )
 }
@@ -427,7 +433,10 @@ setMethod("storeRead", signature("unionParquetExprStore"), function(store,
                                     max_rows = NULL, max_cols = NULL) {
     n_rows <- as.integer(store@n_genes)
     n_cols <- as.integer(store@n_cells)
-    .pe_check_dgc_dims(n_rows, n_cols, max_rows, max_cols)
+    # `max_rows` / `max_cols` are a contract about the matrix the caller
+    # receives, so the cap is checked against the oriented dims.
+    cap <- .pe_orient(store, n_rows, n_cols)
+    .pe_check_dgc_dims(cap[[1L]], cap[[2L]], max_rows, max_cols)
 
     df <- data.table::as.data.table(dplyr::collect(atab))
     source_id <- row_id <- col_id <- value <- NULL  # NSE
@@ -469,12 +478,14 @@ setMethod("storeRead", signature("unionParquetExprStore"), function(store,
     }
     x_col <- df$value
 
+    ij   <- .pe_orient(store, i_pos, j_pos)
+    dims <- unlist(.pe_orient(store, n_rows, n_cols))
     Matrix::sparseMatrix(
-        i = i_pos,
-        j = j_pos,
+        i = ij[[1L]],
+        j = ij[[2L]],
         x = as.double(x_col),
-        dims = c(n_rows, n_cols),
-        dimnames = list(store@feat_ids, store@cell_ids),
+        dims = as.integer(dims),
+        dimnames = .pe_orient(store, store@feat_ids, store@cell_ids),
         repr = "C"
     )
 }
@@ -564,6 +575,18 @@ setMethod(
 # Shared body for both signatures above. `data` is the input store; `store`
 # is the fresh target parquetExprStore (path + uid).
 .pestore_write_from_parquet_input <- function(store, data) {
+    # Writing bakes the queued chain into on-disk values and hands back a
+    # store with empty chains. An orientation flip is not part of that chain
+    # and would not be baked, so a transposed input would write bytes in the
+    # storage orientation while the caller believes it asked for the flipped
+    # one -- silently, since the written store reports whatever its own flag
+    # says. Refuse instead. Physically reorienting the file is a repartition,
+    # a different and materializing operation that this is not.
+    if (isTRUE(data@transposed)) {
+        stop("[storeWrite] the input store is transposed. t() is a view-time ",
+             "flip and is not baked by a write; call t() again to restore ",
+             "the storage orientation before writing.", call. = FALSE)
+    }
     if (file.exists(store@path) && !dir.exists(store@path)) {
         stop("[storeWrite] output path exists as a file: ", store@path,
             "\n  pre-allocated store path must be a directory or absent.",
@@ -808,27 +831,31 @@ setMethod(
 
 # dim / nrow / ncol ####
 # Bioconductor convention: expression matrices are gene x cell, so
-# nrow = genes and ncol = cells.
+# nrow = genes and ncol = cells -- unless `@transposed`, which presents the
+# same bytes cell x gene. These are logical-position sites, so they consult
+# the flag; nothing in the op chain does.
 
 #' @export
-setMethod("nrow", "parquetExprStore", function(x) x@n_genes)
+setMethod("dim", "parquetExprStore",
+    function(x) as.numeric(unlist(.pe_orient(x, x@n_genes, x@n_cells)))
+)
 
 #' @export
-setMethod("ncol", "parquetExprStore", function(x) x@n_cells)
+setMethod("nrow", "parquetExprStore", function(x) dim(x)[[1L]])
 
 #' @export
-setMethod("dim", "parquetExprStore", function(x) c(x@n_genes, x@n_cells))
-
-#' @export
-setMethod("nrow", "unionParquetExprStore", function(x) x@n_genes)
-
-#' @export
-setMethod("ncol", "unionParquetExprStore", function(x) x@n_cells)
+setMethod("ncol", "parquetExprStore", function(x) dim(x)[[2L]])
 
 #' @export
 setMethod("dim", "unionParquetExprStore",
-    function(x) c(x@n_genes, x@n_cells)
+    function(x) as.numeric(unlist(.pe_orient(x, x@n_genes, x@n_cells)))
 )
+
+#' @export
+setMethod("nrow", "unionParquetExprStore", function(x) dim(x)[[1L]])
+
+#' @export
+setMethod("ncol", "unionParquetExprStore", function(x) dim(x)[[2L]])
 
 # dimnames / rownames / colnames ####
 # `rownames()` and `colnames()` in base R consult `dimnames()` first; defining
@@ -836,12 +863,12 @@ setMethod("dim", "unionParquetExprStore",
 
 #' @export
 setMethod("dimnames", "unionParquetExprStore",
-    function(x) list(x@feat_ids, x@cell_ids)
+    function(x) .pe_orient(x, x@feat_ids, x@cell_ids)
 )
 
 #' @export
 setMethod("dimnames", "parquetExprStore",
-    function(x) list(x@feat_ids, x@cell_ids)
+    function(x) .pe_orient(x, x@feat_ids, x@cell_ids)
 )
 
 # `rownames<-` and `colnames<-` fall back to `dimnames<-`. Define the
@@ -947,35 +974,49 @@ setMethod("dimnames<-",
     as.integer(pe@gene_idx[subset_pos])
 }
 
+# Narrow by STORAGE axis. `gene` / `cell` are index vectors or NULL for
+# "leave this axis alone" -- an explicit sentinel rather than `missing()`,
+# so the orientation swap above can hand either side through without
+# reconstructing missingness.
+#' @keywords internal
+#' @noRd
+.pe_subset_axes <- function(x, gene = NULL, cell = NULL) {
+    if (!is.null(gene)) {
+        i_int <- .resolve_subset_idx(gene, x@feat_ids, "gene axis")
+        new_gene_idx <- if (length(x@gene_idx) == 0L) {
+            as.integer(i_int)
+        } else {
+            x@gene_idx[i_int]
+        }
+        x@feat_ids <- x@feat_ids[i_int]
+        x@gene_idx <- as.integer(new_gene_idx)
+        x@n_genes  <- as.numeric(length(x@feat_ids))
+    }
+    if (!is.null(cell)) {
+        j_int <- .resolve_subset_idx(cell, x@cell_ids, "cell axis")
+        new_cell_idx <- if (length(x@cell_idx) == 0L) {
+            as.integer(j_int)
+        } else {
+            x@cell_idx[j_int]
+        }
+        x@cell_ids <- x@cell_ids[j_int]
+        x@cell_idx <- as.integer(new_cell_idx)
+        x@n_cells  <- as.numeric(length(x@cell_ids))
+    }
+    x
+}
+
 #' @export
 setMethod("[",
     signature(x = "parquetExprStore", i = "ANY", j = "ANY", drop = "ANY"),
     function(x, i, j, ..., drop = TRUE) {
-        # i = genes (rows); j = cells (cols)
-        if (!missing(i)) {
-            i_int <- .resolve_subset_idx(i, x@feat_ids, "row (gene)")
-            new_gene_idx <- if (length(x@gene_idx) == 0L) {
-                as.integer(i_int)
-            } else {
-                x@gene_idx[i_int]
-            }
-            new_feat_ids <- x@feat_ids[i_int]
-            x@feat_ids <- new_feat_ids
-            x@gene_idx <- as.integer(new_gene_idx)
-            x@n_genes  <- as.numeric(length(x@feat_ids))
-        }
-        if (!missing(j)) {
-            j_int <- .resolve_subset_idx(j, x@cell_ids, "col (cell)")
-            new_cell_idx <- if (length(x@cell_idx) == 0L) {
-                as.integer(j_int)
-            } else {
-                x@cell_idx[j_int]
-            }
-            x@cell_ids <- x@cell_ids[j_int]
-            x@cell_idx <- as.integer(new_cell_idx)
-            x@n_cells  <- as.numeric(length(x@cell_ids))
-        }
-        x
+        # `[` indexes the LOGICAL matrix, so when transposed the caller's
+        # first index selects cells and the second genes. Resolve that here,
+        # once, and hand storage axes to the helper.
+        first  <- if (missing(i)) NULL else i
+        second <- if (missing(j)) NULL else j
+        sides  <- .pe_orient(x, first, second)
+        .pe_subset_axes(x, gene = sides[[1L]], cell = sides[[2L]])
     }
 )
 
@@ -991,13 +1032,24 @@ setMethod("[",
 setMethod("[",
     signature(x = "unionParquetExprStore", i = "ANY", j = "ANY", drop = "ANY"),
     function(x, i, j, ..., drop = TRUE) {
-        if (!missing(i)) {
-            new_stores <- lapply(x@stores, function(s) s[i, ])
+        # Same marshalling as the single-store method: `[` indexes the
+        # LOGICAL matrix, so resolve the caller's two slots to storage axes
+        # before the body, which is written in storage terms. Substores are
+        # never transposed (the constructor refuses it), so `s[gene, ]`
+        # below stays unambiguous.
+        first  <- if (missing(i)) NULL else i
+        second <- if (missing(j)) NULL else j
+        sides  <- .pe_orient(x, first, second)
+        gene   <- sides[[1L]]
+        cell   <- sides[[2L]]
+
+        if (!is.null(gene)) {
+            new_stores <- lapply(x@stores, function(s) s[gene, ])
         } else {
             new_stores <- x@stores
         }
-        if (!missing(j)) {
-            j_int <- .resolve_subset_idx(j, x@cell_ids, "col (cell)")
+        if (!is.null(cell)) {
+            j_int <- .resolve_subset_idx(cell, x@cell_ids, "cell axis")
             offsets <- c(0L, cumsum(vapply(new_stores,
                 function(s) s@n_cells, numeric(1L))))
             kept <- list()
@@ -1023,6 +1075,9 @@ setMethod("[",
         # which a narrowing view cannot move.
         new_union@ops      <- x@ops
         new_union@post_ops <- x@post_ops
+        # The constructor builds in storage orientation (it refuses
+        # transposed substores), so carry the union's own view flag across.
+        new_union@transposed <- x@transposed
         new_union
     }
 )
@@ -1061,3 +1116,61 @@ setMethod("cbind2",
     signature("unionParquetExprStore", "unionParquetExprStore"),
     function(x, y, ...) unionParquetExprStore(c(x@stores, y@stores))
 )
+
+
+# Coercion ####
+
+# `storeRead(output = "dgcmatrix")` already materializes an expression store
+# into a sparse matrix, but nothing connected that capability to the coercion
+# generic, so callers spelled for an in-memory carrier could not reach it.
+# GiottoClass's `spatValues()` is the one that matters in practice: it does
+#
+#   e[][feats, , drop = FALSE] |> t_flex() |> as("dgCMatrix") |> ...
+#
+# and with no method here the failure was swallowed by that function's error
+# handler and reported as "features ... not found", which points at the data
+# rather than at the coercion. Registering against `parquetExprBase` covers
+# the single and union stores together, since both answer `"dgcmatrix"`.
+#
+# This materializes, so it is the caller's job to narrow first --
+# `store[feats, ]` -- rather than coerce a whole atlas. Note that the
+# `t_flex()` step above still has no route for a store, so `spatValues()` is
+# not unblocked by this alone; that needs a lazy orientation flip.
+
+#' @name parquetExprStore-coerce
+#' @title Coerce an expression store to a sparse matrix
+#' @description Materializes through `storeRead(output = "dgcmatrix")`, so
+#' narrow the store first (`store[feats, ]`) rather than coercing a whole
+#' dataset.
+#' @returns `dgCMatrix`
+NULL
+
+setAs("parquetExprBase", "dgCMatrix", function(from) {
+    storeRead(from, output = "dgcmatrix")
+})
+
+
+# Orientation ####
+
+#' @rdname parquetExprStore-coerce
+#' @section Transpose:
+#' `t()` flips `@transposed` and touches nothing else -- no bytes move, no
+#' record joins the op chain, and the queued chain is untouched. Ops address
+#' semantic axes (`axis = "cell" | "feat" | "all"`) bound to on-disk columns,
+#' never logical positions, so `axis = "cell"` still resolves to `row_id`
+#' either way and no payload can be invalidated by the flip. The flag is read
+#' only where a logical position resolves to a semantic axis: `dim()`,
+#' `dimnames()`, `[`, and the reshape in `storeRead(output = "dgcmatrix")`.
+#'
+#' Being an involution, it is last-write-wins view state -- a slot beside
+#' `@cell_idx` / `@gene_idx`, not a step. `t(t(x))` is `x`.
+#'
+#' It does not reorder the file. On-disk sort is `(row_id, col_id)`, i.e.
+#' cell-major, so gene-axis access remains the scan-heavy direction however
+#' the matrix is presented. Changing that is a materializing repartition and
+#' is deliberately a different operation.
+#' @export
+setMethod("t", signature("parquetExprBase"), function(x) {
+    x@transposed <- !x@transposed
+    x
+})

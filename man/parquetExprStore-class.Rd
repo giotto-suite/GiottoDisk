@@ -105,6 +105,29 @@ Note \code{storeWrite()} \strong{renumbers} ids when the input is subset, so a
 written store's marginals are computed against the new file rather than
 inherited from its parent.}
 
+\item{\code{transposed}}{logical. Orientation of the logical matrix relative to
+what is on disk. \code{FALSE} (default) presents gene x cell; \code{TRUE} presents
+cell x gene. Flipped by \code{\link[=t]{t()}}.
+
+This is \strong{view state}, in the same category as \verb{@cell_idx} / \verb{@gene_idx}
+and for the same reason: the op chain addresses \emph{semantic} axes
+(\code{axis = "cell" | "feat" | "all"}) that are bound to on-disk columns, and
+never logical positions. \code{axis = "cell"} resolves to \code{row_id} whatever
+this flag says, because a cell \emph{is} \code{row_id} on disk. So an orientation
+flip cannot invalidate, reorder, or re-key a queued op, and does not
+belong on \verb{@ops} where records compose in sequence. It is an involution,
+so it is last-write-wins rather than "and then also". See \code{adr/0016}.
+
+Consulted only where a \emph{logical position} resolves to a semantic axis:
+\code{dim()} / \code{dimnames()}, \code{[}, and the final reshape in
+\code{storeRead(output = "dgcmatrix")}. Nothing in the op machinery reads it.
+
+The flip is free and changes no bytes. It does not change the on-disk
+sort order, which is \verb{(row_id, col_id)} — cell-major — so access along
+the gene axis stays the expensive direction whichever way the matrix is
+presented. Making that order physical is a separate, materializing
+operation and is deliberately not this.}
+
 \item{\code{cell_idx}}{integer. Active cell positions in the original Parquet
 (length 0 = no subset, all cells are active). When non-empty:
 \verb{length(cell_idx) == length(cell_ids) == n_cells}. This is \emph{view} state and
