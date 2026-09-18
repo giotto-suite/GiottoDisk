@@ -59,8 +59,30 @@ on.exit({
     "awk '/MemAvailable/{print $2*1024}' /proc/meminfo"
 } else NA_character_
 
+# Seconds of system sleep with an entry inside [t0, t1]. A sleep pauses the whole
+# machine: wall clock advances while CPU does not, so `el` below is inflated and
+# -- because CAP is an elapsed-time limit -- a sleep can spuriously ABORT a case
+# rather than merely misreport it. Run bench under `caffeinate -dimsu` (macOS) or
+# GiottoUtils::gwith_awake(); this reports it either way.
+.slept <- function(t0, t1) {
+    if (Sys.info()[["sysname"]] != "Darwin") return(0)
+    out <- tryCatch(
+        system("pmset -g log 2>/dev/null | grep 'Entering Sleep state'",
+               intern = TRUE),
+        error = function(e) character(0)
+    )
+    if (!length(out)) return(0)
+    ts <- suppressWarnings(as.POSIXct(substr(out, 1, 19),
+                                      format = "%Y-%m-%d %H:%M:%S"))
+    secs <- suppressWarnings(as.numeric(sub(".*?([0-9]+) secs.*", "\\1", out)))
+    keep <- !is.na(ts) & as.numeric(ts) >= t0 - 60 & as.numeric(ts) <= t1
+    if (!any(keep)) return(0)
+    sum(secs[keep], na.rm = TRUE)
+}
+
 .timed <- function(ex, reps, env) {
     secs <- rep(NA_real_, reps); peaks <- rep(NA_real_, reps)
+    slept <- 0
     for (i in seq_len(reps)) {
         invisible(gc(full = TRUE, reset = TRUE))
         tf <- tempfile(); sn <- tempfile(); file.create(sn)
@@ -71,12 +93,14 @@ on.exit({
                            sn, .free_cmd, tf),
                    wait = FALSE, ignore.stdout = TRUE, ignore.stderr = TRUE)
         }
+        w0 <- as.numeric(Sys.time())
         t0 <- proc.time()[["elapsed"]]
         ok <- tryCatch({
             setTimeLimit(elapsed = CAP, transient = TRUE)
             eval(ex, env); setTimeLimit(); TRUE
         }, error = function(e) { setTimeLimit(); message("  ! ", conditionMessage(e)); FALSE })
         el <- proc.time()[["elapsed"]] - t0
+        slept <- slept + .slept(w0, as.numeric(Sys.time()))
         unlink(sn); Sys.sleep(0.3)
         peaks[i] <- tryCatch((base - min(as.numeric(readLines(tf)))) / 1024^3,
                              warning = function(w) NA_real_,
@@ -85,8 +109,13 @@ on.exit({
         if (!ok) break
         secs[i] <- el
     }
+    if (slept > 0) {
+        message(sprintf(
+            "  ! system slept %.0fs during this case -- timing is invalid", slept))
+    }
     c(sec = suppressWarnings(median(secs, na.rm = TRUE)),
-      peak_gb = suppressWarnings(max(peaks, na.rm = TRUE)))
+      peak_gb = suppressWarnings(max(peaks, na.rm = TRUE)),
+      slept = slept)
 }
 
 .emit <- function(case, r) {

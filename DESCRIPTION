@@ -24,7 +24,7 @@ Imports:
     data.table (>= 1.12.2),
     digest,
     dplyr,
-    Giotto (>= 4.2.4),
+    Giotto (>= 4.3.0),
     GiottoClass (>= 0.7.0),
     GiottoUtils,
     igraph,
@@ -106,6 +106,7 @@ Collate:
     'methods-store_nostate.R'
     'methods-transforms.R'
     'pca-param.R'
+    'stream-enrich.R'
     'stream-filter.R'
     'stream-labelProportions.R'
     'stream-markers.R'
