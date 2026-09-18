@@ -1061,3 +1061,35 @@ setMethod("cbind2",
     signature("unionParquetExprStore", "unionParquetExprStore"),
     function(x, y, ...) unionParquetExprStore(c(x@stores, y@stores))
 )
+
+
+# Coercion ####
+
+# `storeRead(output = "dgcmatrix")` already materializes an expression store
+# into a sparse matrix, but nothing connected that capability to the coercion
+# generic, so callers spelled for an in-memory carrier could not reach it.
+# GiottoClass's `spatValues()` is the one that matters in practice: it does
+#
+#   e[][feats, , drop = FALSE] |> t_flex() |> as("dgCMatrix") |> ...
+#
+# and with no method here the failure was swallowed by that function's error
+# handler and reported as "features ... not found", which points at the data
+# rather than at the coercion. Registering against `parquetExprBase` covers
+# the single and union stores together, since both answer `"dgcmatrix"`.
+#
+# This materializes, so it is the caller's job to narrow first --
+# `store[feats, ]` -- rather than coerce a whole atlas. Note that the
+# `t_flex()` step above still has no route for a store, so `spatValues()` is
+# not unblocked by this alone; that needs a lazy orientation flip.
+
+#' @name parquetExprStore-coerce
+#' @title Coerce an expression store to a sparse matrix
+#' @description Materializes through `storeRead(output = "dgcmatrix")`, so
+#' narrow the store first (`store[feats, ]`) rather than coercing a whole
+#' dataset.
+#' @returns `dgCMatrix`
+NULL
+
+setAs("parquetExprBase", "dgCMatrix", function(from) {
+    storeRead(from, output = "dgcmatrix")
+})
