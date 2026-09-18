@@ -434,3 +434,60 @@ test_that("as.data.table(parquetEdgeStore) honours a pending subset", {
     expect_true(all(c(out$from, out$to) %in% c("a", "b", "c")))
     expect_lt(nrow(out), nrow(dt))
 })
+
+
+# ---- vertex universe (@node_idx) -----------------------------------------
+# `[` pushes an edge filter, which says nothing about a selected vertex whose
+# partners were all dropped. Without a recorded selection the graph rebuilt
+# from surviving edges is silently missing it, so an ID subset returns fewer
+# ids than were asked for.
+
+test_that("an ID subset returns every id asked for, edges or not", {
+    st <- storeWrite(parquetEdgeStore(path = tempfile()),
+                     .tiny_undirected_dt())
+    # "e" connects only to "d", so selecting it without "d" isolates it
+    sel <- c("a", "b", "e")
+    sub <- st[sel]
+
+    g <- igraph::as.igraph(sub)
+    expect_setequal(igraph::V(g)$name, sel)
+    expect_equal(igraph::gorder(g), length(sel))
+    # only a-b survives; e keeps no edge but keeps its vertex
+    expect_equal(igraph::gsize(g), 1)
+    expect_equal(sum(igraph::degree(g) == 0), 1)
+
+    expect_setequal(spatIDs(sub), sel)
+})
+
+test_that("the recorded selection matches induced_subgraph exactly", {
+    dt <- .tiny_undirected_dt()
+    st <- storeWrite(parquetEdgeStore(path = tempfile()), dt)
+    ref <- igraph::graph_from_data_frame(dt, directed = FALSE)
+
+    for (sel in list(c("a", "b", "e"), c("a", "e"), c("c", "d", "e"))) {
+        got <- igraph::as.igraph(st[sel])
+        want <- igraph::induced_subgraph(ref, igraph::V(ref)$name %in% sel)
+        expect_setequal(igraph::V(got)$name, igraph::V(want)$name)
+        expect_equal(igraph::gsize(got), igraph::gsize(want))
+    }
+})
+
+test_that("selections compose and negate complements", {
+    st <- storeWrite(parquetEdgeStore(path = tempfile()),
+                     .tiny_undirected_dt())
+
+    # successive subsets intersect
+    expect_setequal(spatIDs(st[c("a", "b", "c")][c("b", "c")]), c("b", "c"))
+
+    # negate removes exactly the named set
+    expect_setequal(spatIDs(st[c("a", "b"), negate = TRUE]), c("c", "d", "e"))
+})
+
+test_that("an unnarrowed store still infers its vertices from edges", {
+    # the scale property: a whole-store read must not instantiate a vertex
+    # per node on disk just because the sidecar lists one
+    st <- storeWrite(parquetEdgeStore(path = tempfile()),
+                     .tiny_undirected_dt())
+    expect_length(st@node_idx, 0L)
+    expect_equal(igraph::gorder(igraph::as.igraph(st)), 5)
+})
