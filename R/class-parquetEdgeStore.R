@@ -940,23 +940,58 @@ setMethod("spatIDs", signature(x = "parquetEdgeStore"), function(x, ...) {
 
 # DIM / SHOW ####
 
+# `@n_edges` and `@n_cells` describe the FILE. They are set when the store is
+# written and never move, so once a subset queues an op they stop describing
+# what the store is a view of. These helpers answer for the view.
+
+# Active edges: the count after pending ops, which needs the scan the ops
+# were deferred to avoid -- so it is only paid when there are ops to apply.
+# Returns a double, as the other stores' `nrow()` does, so an edge count
+# past 2^31 is representable.
+#' @keywords internal
+#' @noRd
+.edge_n_active <- function(x) {
+    if (length(x@ops) == 0L) return(as.numeric(x@n_edges))
+    .dplyr_nrow(storeRead(x, output = "arrow"))
+}
+
+# Active vertices. A recorded selection answers exactly and for free; with
+# ops but no selection (a from/to slice, say) the vertex set is whatever the
+# surviving edges reference, which is what `spatIDs()` already computes.
+#' @keywords internal
+#' @noRd
+.edge_n_vertices <- function(x) {
+    if (length(x@node_idx) > 0L) return(as.numeric(length(x@node_idx)))
+    if (length(x@ops) == 0L) return(as.numeric(x@n_cells))
+    as.numeric(length(spatIDs(x)))
+}
+
 setMethod("dim", signature(x = "parquetEdgeStore"), function(x) {
-    c(as.integer(x@n_edges), 4L)
+    c(.edge_n_active(x), 4)
 })
 
 setMethod("nrow", signature(x = "parquetEdgeStore"), function(x) {
-    as.integer(x@n_edges)
+    .edge_n_active(x)
 })
 
 setMethod("show", signature(object = "parquetEdgeStore"), function(object) {
     cat(sprintf("<parquetEdgeStore> type=%s directed=%s\n",
                 object@type, object@directed))
-    cat(sprintf("  n_cells: %s  n_edges: %s\n",
+    # deliberately the on-disk figures and labelled as such: `show()` is
+    # reached implicitly at the prompt and should not trigger the scan that
+    # the active counts would need. The pending-ops line below says the view
+    # differs; `nrow()` / `spatIDs()` answer for it.
+    cat(sprintf("  on disk: %s nodes, %s edges\n",
                 format(object@n_cells, big.mark = ","),
                 format(object@n_edges, big.mark = ",")))
     cat(sprintf("  path:    %s\n", object@path))
     if (length(object@ops) > 0L) {
-        cat(sprintf("  ops:     %d pending\n", length(object@ops)))
+        cat(sprintf("  ops:     %d pending (view is narrower)\n",
+                    length(object@ops)))
+    }
+    if (length(object@node_idx) > 0L) {
+        cat(sprintf("  view:    %s nodes selected\n",
+                    format(length(object@node_idx), big.mark = ",")))
     }
 })
 

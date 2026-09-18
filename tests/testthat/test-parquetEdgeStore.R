@@ -491,3 +491,42 @@ test_that("an unnarrowed store still infers its vertices from edges", {
     expect_length(st@node_idx, 0L)
     expect_equal(igraph::gorder(igraph::as.igraph(st)), 5)
 })
+
+
+# ---- accessors answer for the view, not the file --------------------------
+# @n_edges / @n_cells are written once and never move, so after a subset they
+# describe the file rather than what the store is a view of.
+
+test_that("nrow / dim track pending ops rather than the file", {
+    st <- storeWrite(parquetEdgeStore(path = tempfile()),
+                     .tiny_undirected_dt())
+    expect_equal(nrow(st), 7)
+    expect_equal(dim(st)[[1L]], 7)
+
+    sub <- st[c("a", "b", "e")]      # only a-b survives
+    expect_equal(sub@n_edges, 7)     # the file is unchanged...
+    expect_equal(nrow(sub), 1)       # ...the view is not
+    expect_equal(dim(sub)[[1L]], nrow(sub))
+
+    # matches what actually materializes
+    expect_equal(nrow(sub), igraph::gsize(igraph::as.igraph(sub)))
+})
+
+test_that("a from/to slice re-scans, having recorded no vertex selection", {
+    st <- storeWrite(parquetEdgeStore(path = tempfile()),
+                     .tiny_undirected_dt())
+    sl <- st[c("a"), c("b", "c")]
+    expect_length(sl@node_idx, 0L)
+    expect_equal(nrow(sl), igraph::gsize(igraph::as.igraph(sl)))
+})
+
+test_that("show() reports the file honestly and flags the view", {
+    st <- storeWrite(parquetEdgeStore(path = tempfile()),
+                     .tiny_undirected_dt())
+    out <- paste(capture.output(show(st[c("a", "b", "e")])), collapse = "\n")
+    # the printed counts are labelled as on-disk, so they are not a claim
+    # about the view -- show() must not trigger a scan to be correct
+    expect_match(out, "on disk")
+    expect_match(out, "ops:\\s+1 pending")
+    expect_match(out, "3 nodes selected")
+})
