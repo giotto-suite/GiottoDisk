@@ -333,3 +333,56 @@ test_that("a transposed store is refused where bytes would disagree", {
     # opposite axes across substores
     expect_error(unionParquetExprStore(list(t(pe), t(pe))), "transposed")
 })
+
+
+# --- margin statistics ------------------------------------------------------
+# rowSums/colSums/rowMeans/colMeans stream through the accumulator rather than
+# materializing. The cases worth pinning are the ones that fail quietly: a
+# margin with no stored entries, and a transposed store.
+
+test_that("margins match the in-memory matrix, zeros included", {
+    mat <- .tiny_mat()
+    # an all-zero feature and an all-zero cell contribute NO rows to the
+    # aggregate, so a naive result would come back short
+    mat[1, ] <- 0
+    mat[, 1] <- 0
+    mat <- Matrix::drop0(mat)
+    pe <- .tp_store(mat)
+
+    # this fixture's dimnames can carry names of their own; compare values
+    strip <- function(v) { names(v) <- as.character(unname(names(v))); v }
+
+    expect_equal(strip(rowSums(pe)),  strip(Matrix::rowSums(mat)))
+    expect_equal(strip(colSums(pe)),  strip(Matrix::colSums(mat)))
+    expect_equal(strip(rowMeans(pe)), strip(Matrix::rowMeans(mat)))
+    expect_equal(strip(colMeans(pe)), strip(Matrix::colMeans(mat)))
+
+    expect_length(rowSums(pe), nrow(mat))
+    expect_length(colSums(pe), ncol(mat))
+    expect_identical(rowSums(pe)[[1L]], 0)
+    expect_identical(colSums(pe)[[1L]], 0)
+})
+
+test_that("margins follow the logical orientation", {
+    pe <- .tp_store(.tiny_mat())
+    tp <- t(pe)
+    expect_equal(rowSums(tp),  colSums(pe))
+    expect_equal(colSums(tp),  rowSums(pe))
+    expect_equal(rowMeans(tp), colMeans(pe))
+    expect_identical(names(rowSums(tp)), colnames(pe))
+})
+
+test_that("margins see a queued op and refuse dims", {
+    old <- .tp_big_caps(); on.exit(options(old), add = TRUE)
+    mat <- .tiny_mat()
+    pe  <- .tp_store(mat)
+    rec <- list(type = "multiply", axis = "cell",
+                factors = setNames(list(rep(2, ncol(mat))), pe@uid))
+    pen <- .pe_push_op(pe, rec, phase = "lazy")
+
+    strip <- function(v) { names(v) <- as.character(unname(names(v))); v }
+    expect_equal(strip(rowSums(pen)), strip(Matrix::rowSums(mat) * 2))
+
+    # a caller passing dims = 2 means something this cannot do
+    expect_error(rowSums(pe, dims = 2), "dims")
+})
