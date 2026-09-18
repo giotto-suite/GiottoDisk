@@ -183,7 +183,9 @@ test_that("`[` errors on invalid character IDs", {
 test_that("`[` errors on logical of wrong length", {
     mat <- .tiny_mat()
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
-    expect_error(pe[c(TRUE, FALSE), ], "logical row")
+    # names the AXIS, not the position: once a store can be transposed,
+    # "row" depends on orientation while "gene" does not
+    expect_error(pe[c(TRUE, FALSE), ], "logical gene axis")
 })
 
 
@@ -229,4 +231,105 @@ test_that("filterGiotto applies on parquet backend (Step 2.3-bis end-to-end)", {
     # Backend after filter is still parquetExprStore (lazy subset)
     em <- GiottoClass::getExpression(g_pq_f)
     expect_s4_class(slot(em, "exprMat"), "parquetExprStore")
+})
+
+
+# --- orientation (`@transposed`) -------------------------------------------
+# Transpose is view state, not a chain step. These tests exist to pin that
+# claim rather than the flag's mechanics: the load-bearing ones are that the
+# flip leaves `@ops` untouched and that it commutes with a queued axis-keyed
+# op in both orders. If a positional op ever joins the expression chain those
+# two will break, which is the signal that orientation has become chain state.
+
+.tp_store <- function(mat) {
+    storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+}
+.tp_big_caps <- function() {
+    withr_opts <- options(giottodisk.dgc_max_rows = 1e6,
+                          giottodisk.dgc_max_cols = 1e6)
+    withr_opts
+}
+
+test_that("t() is an involution that never touches the chain", {
+    old <- .tp_big_caps(); on.exit(options(old), add = TRUE)
+    pe <- .tp_store(.tiny_mat())
+
+    expect_false(pe@transposed)
+    expect_true(t(pe)@transposed)
+    expect_false(t(t(pe))@transposed)
+
+    # no record joins @ops, and the existing chain is carried unchanged
+    expect_identical(t(pe)@ops, pe@ops)
+    expect_identical(t(pe)@post_ops, pe@post_ops)
+})
+
+test_that("t() flips the logical presentation only", {
+    old <- .tp_big_caps(); on.exit(options(old), add = TRUE)
+    mat <- .tiny_mat()
+    pe  <- .tp_store(mat)
+
+    expect_identical(dim(t(pe)), rev(dim(pe)))
+    expect_identical(dimnames(t(pe)), rev(dimnames(pe)))
+    expect_identical(nrow(t(pe)), ncol(pe))
+    expect_identical(ncol(t(pe)), nrow(pe))
+
+    # and it is a real transpose, not just relabelling
+    expect_equal(
+        as.matrix(as(t(pe), "dgCMatrix")),
+        t(as.matrix(as(pe, "dgCMatrix")))
+    )
+})
+
+test_that("`[` indexes the logical matrix, not the storage axes", {
+    old <- .tp_big_caps(); on.exit(options(old), add = TRUE)
+    mat   <- .tiny_mat()
+    pe    <- .tp_store(mat)
+    genes <- rownames(mat)[1:2]
+
+    upright <- pe[genes, ]      # genes are rows
+    flipped <- t(pe)[, genes]   # genes are columns once flipped
+
+    expect_identical(sort(rownames(upright)), sort(colnames(flipped)))
+    expect_true(flipped@transposed)
+    expect_equal(
+        as.matrix(as(flipped, "dgCMatrix")),
+        t(as.matrix(as(upright, "dgCMatrix")))
+    )
+})
+
+test_that("t() commutes with a queued axis-keyed op", {
+    # The claim that makes orientation view state: ops name semantic axes
+    # bound to on-disk columns, so a flip cannot re-key or reorder them.
+    old <- .tp_big_caps(); on.exit(options(old), add = TRUE)
+    mat <- .tiny_mat()
+    pe  <- .tp_store(mat)
+    f   <- runif(ncol(mat), 0.5, 2)
+    rec <- list(type = "multiply", axis = "cell",
+                factors = setNames(list(f), pe@uid))
+
+    op_then_flip <- t(.pe_push_op(pe, rec, phase = "lazy"))
+    flip_then_op <- .pe_push_op(t(pe), rec, phase = "lazy")
+
+    expect_equal(
+        as.matrix(as(op_then_flip, "dgCMatrix")),
+        as.matrix(as(flip_then_op, "dgCMatrix"))
+    )
+    # the op record itself is carried across the flip untouched
+    expect_identical(op_then_flip@ops, flip_then_op@ops)
+})
+
+test_that("a transposed store is refused where bytes would disagree", {
+    old <- .tp_big_caps(); on.exit(options(old), add = TRUE)
+    pe <- .tp_store(.tiny_mat())
+
+    # writing bakes the chain, but not the flip -- so refuse rather than
+    # persist bytes that contradict what the returned store reports
+    expect_error(
+        storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+                   t(pe)),
+        "transposed"
+    )
+    # and a union cannot mix orientations: feat_ids/cell_ids would mean
+    # opposite axes across substores
+    expect_error(unionParquetExprStore(list(t(pe), t(pe))), "transposed")
 })

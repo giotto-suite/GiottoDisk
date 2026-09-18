@@ -601,3 +601,16 @@ NULL
         logical(1L)))
     if (length(idx) == 0L) NA_integer_ else as.integer(idx[1L])
 }
+
+
+# Orientation ####
+
+# Swap a (row, col) pair iff the store is transposed. Every site that turns a
+# logical position into a semantic axis goes through this, so the flip is
+# spelled once and the op machinery never has to know about it: ops name
+# semantic axes bound to on-disk columns, so orientation is invisible to them.
+#' @keywords internal
+#' @noRd
+.pe_orient <- function(x, row_side, col_side) {
+    if (x@transposed) list(col_side, row_side) else list(row_side, col_side)
+}

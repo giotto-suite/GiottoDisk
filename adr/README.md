@@ -114,3 +114,7 @@ so the ADR captures the argument while it is fresh.
 - **Tabular growth is column-add only** (row set fixed at ingest;
   re-segmentation is a new dataset), which is why sidecar + compact was chosen
   over Iceberg/DuckLake.
+- **Transpose is view state, not a chain step** (`@transposed` slot, flipped by
+  `t()`). Safe because ops name semantic axes bound to on-disk columns, never
+  logical positions — the same guarantee that makes `@cell_idx` / `@gene_idx`
+  slots. Holds only while the expression chain has no positional op.

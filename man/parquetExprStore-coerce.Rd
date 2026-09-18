@@ -2,7 +2,11 @@
 % Please edit documentation in R/methods-parquetExprStore.R
 \name{parquetExprStore-coerce}
 \alias{parquetExprStore-coerce}
+\alias{t,parquetExprBase-method}
 \title{Coerce an expression store to a sparse matrix}
+\usage{
+\S4method{t}{parquetExprBase}(x)
+}
 \value{
 \code{dgCMatrix}
 }
@@ -11,3 +15,22 @@ Materializes through \code{storeRead(output = "dgcmatrix")}, so
 narrow the store first (\code{store[feats, ]}) rather than coercing a whole
 dataset.
 }
+\section{Transpose}{
+
+\code{t()} flips \verb{@transposed} and touches nothing else -- no bytes move, no
+record joins the op chain, and the queued chain is untouched. Ops address
+semantic axes (\code{axis = "cell" | "feat" | "all"}) bound to on-disk columns,
+never logical positions, so \code{axis = "cell"} still resolves to \code{row_id}
+either way and no payload can be invalidated by the flip. The flag is read
+only where a logical position resolves to a semantic axis: \code{dim()},
+\code{dimnames()}, \code{[}, and the reshape in \code{storeRead(output = "dgcmatrix")}.
+
+Being an involution, it is last-write-wins view state -- a slot beside
+\verb{@cell_idx} / \verb{@gene_idx}, not a step. \code{t(t(x))} is \code{x}.
+
+It does not reorder the file. On-disk sort is \verb{(row_id, col_id)}, i.e.
+cell-major, so gene-axis access remains the scan-heavy direction however
+the matrix is presented. Changing that is a materializing repartition and
+is deliberately a different operation.
+}
+
