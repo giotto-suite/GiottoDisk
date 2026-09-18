@@ -7,6 +7,7 @@
 #' @importClassesFrom Giotto binarizeThreshParam cellStatsParam featStatsParam libraryNormParam logNormParam covGroupsParam covLoessParam varParam scranMarkersParam pcaParam randomPcaParam irlbaPcaParam exactPcaParam autoPcaParam enrichParam pageEnrichParam rankEnrichParam hyperEnrichParam
 #' @importFrom GiottoUtils %null%
 #' @importClassesFrom terra SpatVector
+#' @importFrom Matrix rowSums colSums rowMeans colMeans
 #' @importClassesFrom Matrix Matrix
 #' @import data.table
 NULL
