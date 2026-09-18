@@ -23,6 +23,7 @@ named gene groups intact.}
 \seealso{
 Other store types:
 \code{\link{binGefInput-class}},
+\code{\link{cosmxScanInput-class}},
 \code{\link{csvWideInput-class}},
 \code{\link{dataStore-class}},
 \code{\link{edgeInput-class}},

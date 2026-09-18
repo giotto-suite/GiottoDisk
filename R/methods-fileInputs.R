@@ -906,3 +906,64 @@ setMethod("storeRead", signature("tenxZarrInput"), function(store, ...) {
         n_genes = function() store@n_genes
     )
 })
+
+
+# storeRead - cosmxScanInput ####
+
+#' @rdname storeRead
+#' @export
+setMethod("storeRead", signature("cosmxScanInput"), function(store, ...) {
+    GiottoUtils::package_check("cosmxscan")
+    handle <- cosmxscan::CosmxReader$new(store@path, store@skip_cols)
+    slide  <- store@slide
+    batch  <- store@batch_rows
+
+    closed         <- FALSE
+    cell_ids_acc   <- character(0L)
+    n_cells_so_far <- 0L
+
+    close_fn <- function() {
+        if (!closed) {
+            try(handle$close(), silent = TRUE)
+            closed <<- TRUE
+        }
+        invisible(NULL)
+    }
+
+    next_batch <- function() {
+        if (closed) return(NULL)
+        chunk <- handle$next_chunk(batch)
+        if (chunk$n_rows == 0L) {
+            close_fn()
+            return(NULL)
+        }
+        # The matrix's own cell_ID is FOV-local -- it only reaches 3,577 and
+        # cell_ID == 1 occurs in 392 different FOVs -- so the global id the
+        # polygons and metadata use is composed here, from the fov column the
+        # same scan already read.
+        cell_ids_acc <<- c(
+            cell_ids_acc,
+            sprintf("c_%d_%d_%d", slide, chunk$fov, chunk$cell_ID)
+        )
+        n_cells_so_far <<- n_cells_so_far + chunk$n_rows
+        out <- data.table::data.table(
+            row_id = as.integer(chunk$row_id),
+            col_id = as.integer(chunk$col_id),
+            value  = as.double(chunk$value)
+        )
+        data.table::setorder(out, row_id, col_id)
+        if (isTRUE(chunk$eof)) close_fn()
+        out
+    }
+
+    list(
+        next_batch = next_batch,
+        close      = close_fn,
+        # cell identity is only known during the stream; these accessors
+        # report what the iterator has seen so far.
+        cell_ids   = function() cell_ids_acc,
+        feat_ids   = function() store@feat_ids,
+        n_cells    = function() n_cells_so_far,
+        n_genes    = function() store@n_genes
+    )
+})

@@ -708,3 +708,59 @@ tenxZarrInput <- function(
         cells_per_block = as.integer(cells_per_block %||% 0L)
     )
 }
+
+
+
+# cosmxScanInput ####
+
+#' @name cosmxScanInput-class
+#' @title CosMx exprMat Byte-Scanner Input
+#' @description
+#' Wraps a gzipped CosMx `exprMat_file`, read by the `cosmxscan` Rust
+#' scanner. `cell_ids` are only known during the stream -- the matrix's own
+#' `cell_ID` column is FOV-local -- so the iterator composes the global
+#' `c_<slide>_<fov>_<cell_ID>` form as it advances.
+#' @slot slide integer. Slide number, used to compose global cell IDs.
+#' @slot skip_cols integer. Leading non-feature columns (`fov`, `cell_ID`).
+#' @slot batch_rows integer. Cells emitted per batch.
+#' @family store types
+#' @keywords internal
+setClass("cosmxScanInput",
+    contains = "exprInput",
+    slots = list(
+        slide = "integer",
+        skip_cols = "integer",
+        batch_rows = "integer"
+    ),
+    prototype = list(
+        slide = 1L,
+        skip_cols = 2L,
+        batch_rows = 10000L
+    )
+)
+
+# Not exported, unlike the other exprInput constructors: `cosmxscan` is a
+# Suggests, and the CosMx expression closure selects this when it is present.
+.cosmx_scan_input <- function(path,
+                           slide = 1,
+                           skip_cols = 2L,
+                           batch_rows = 10000L,
+                           ...) {
+    checkmate::assert_file_exists(path)
+    GiottoUtils::package_check("cosmxscan")
+
+    con <- gzfile(path, "rt")
+    on.exit(close(con), add = TRUE)
+    hdr <- strsplit(readLines(con, n = 1L), ",", fixed = TRUE)[[1L]]
+    feat_ids <- hdr[-seq_len(skip_cols)]
+
+    methods::new("cosmxScanInput",
+        path = path,
+        feat_ids = feat_ids,
+        n_genes = length(feat_ids),
+        slide = as.integer(slide),
+        skip_cols = as.integer(skip_cols),
+        batch_rows = as.integer(batch_rows),
+        ...
+    )
+}
