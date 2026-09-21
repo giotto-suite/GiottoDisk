@@ -747,7 +747,10 @@ setClass("cosmxScanInput",
                            batch_rows = 10000L,
                            ...) {
     checkmate::assert_file_exists(path)
-    GiottoUtils::package_check("cosmxscan")
+    GiottoUtils::package_check(
+        pkg_name = "cosmxscan",
+        repository = "github:drieslab/cosmxscan"
+    )
 
     con <- gzfile(path, "rt")
     on.exit(close(con), add = TRUE)

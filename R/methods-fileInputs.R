@@ -913,7 +913,10 @@ setMethod("storeRead", signature("tenxZarrInput"), function(store, ...) {
 #' @rdname storeRead
 #' @export
 setMethod("storeRead", signature("cosmxScanInput"), function(store, ...) {
-    GiottoUtils::package_check("cosmxscan")
+    GiottoUtils::package_check(
+        pkg_name = "cosmxscan",
+        repository = "github:drieslab/cosmxscan"
+    )
     handle <- cosmxscan::CosmxReader$new(store@path, store@skip_cols)
     slide  <- store@slide
     batch  <- store@batch_rows
