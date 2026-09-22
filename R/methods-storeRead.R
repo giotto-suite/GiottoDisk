@@ -11,6 +11,13 @@
 #' @param output `character` (default = "query"). Format to get values in:
 #'
 #'   * "query" - produces an arrow lazy query
+#'   * "arrowstream" - (`parquetEdgeStore` only) an
+#'      `arrow::RecordBatchReader` over the same query, with `@ops`
+#'      already applied. Intended for a reader outside R: the batches can
+#'      be pulled across the Arrow C Data Interface, so a consumer that
+#'      never sees the store object still observes its pending subset.
+#'      Respects `minimal`, since a stream cannot be reshaped once handed
+#'      over.
 #'   * "tibble" - materialized dplyr tibble
 #'   * "terra" - materialized `SpatVector`
 #'   * "sf" - materialized `sf` object
