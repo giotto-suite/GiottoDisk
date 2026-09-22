@@ -556,20 +556,26 @@ setMethod("storeWrite",
 }
 
 
-# STOREREAD — three output modes ####
+# STOREREAD — four output modes ####
 #
-# arrow    : lazy dataset, raw int IDs
-# tibble   : collected data.table, character IDs (sidecar-joined)
-# igraph   : in-mem igraph; int internals + character V(g)$name
+# arrow       : lazy dataset, raw int IDs
+# arrowstream : RecordBatchReader over that dataset, raw int IDs
+# tibble      : collected data.table, character IDs (sidecar-joined)
+# igraph      : in-mem igraph; int internals + character V(g)$name
 #
-# All three apply @ops first (subsetting). For tibble + igraph, the
+# All four apply @ops first (subsetting). For tibble + igraph, the
 # rank step uses match() on the subsetted edge set so the in-mem
 # materialized object only sees int32 IDs over the relevant subgraph.
+#
+# arrowstream exists for readers outside R -- an Arrow C Data Interface
+# consumer pulls batches from it, so `@ops` are honoured by a caller that
+# never sees this object. Handing out `@path` instead would read the files
+# as they sit on disk, which a pending subset is not.
 
 #' @rdname storeRead
 setMethod("storeRead", signature(store = "parquetEdgeStore"),
     function(store,
-             output  = c("arrow", "tibble", "igraph"),
+             output  = c("arrow", "arrowstream", "tibble", "igraph"),
              minimal = TRUE,
              ...) {
         output <- match.arg(output)
@@ -584,12 +590,19 @@ setMethod("storeRead", signature(store = "parquetEdgeStore"),
 
         if (output == "arrow") return(ds)
 
-        # collect with attr filtering for igraph minimal mode
-        if (output == "igraph" && isTRUE(minimal)) {
+        # Narrow to the edge columns for the two outputs whose consumer
+        # cannot reshape afterwards: an igraph, and a stream already in the
+        # hands of a foreign reader.
+        if (output %in% c("igraph", "arrowstream") && isTRUE(minimal)) {
             keep <- c("from_id", "to_id")
             if ("weight" %in% names(ds)) keep <- c(keep, "weight")
             ds <- dplyr::select(ds, dplyr::all_of(keep))
         }
+
+        if (output == "arrowstream") {
+            return(arrow::as_record_batch_reader(ds))
+        }
+
         edges_dt <- data.table::as.data.table(dplyr::collect(ds))
 
         if (output == "tibble") {
