@@ -129,8 +129,12 @@ setMethod("analyzeData",
         # group costs arithmetic rather than another scan.
         mom <- .pe_group_moments(x, groups)
 
-        if (identical(param$comparison %null% "pairwise", "one_vs_rest")) {
+        comparison <- param$comparison %null% "pairwise"
+        if (identical(comparison, "one_vs_rest")) {
             return(.pe_markers_one_vs_rest(mom, param))
+        }
+        if (identical(comparison, "nodes")) {
+            return(.pe_markers_nodes(mom, param))
         }
         .pe_markers_from_moments(.pe_moments_derive(mom), param = param)
     }
@@ -257,6 +261,49 @@ setMethod("analyzeData",
         res[[k]]
     })
     names(out) <- lvls
+    S4Vectors::SimpleList(out)
+}
+
+
+# One table per node, each comparing the node's two sides.
+#
+# The same shape as `.pe_markers_one_vs_rest()` and for the same reason: the
+# accumulators are additive, so a node costs a row-sum over its own columns
+# rather than another scan. The whole sweep is one pass regardless of how many
+# nodes are asked for.
+#
+# Only the left host is returned. In a two-group comparison the right host is
+# the same statistics with `logFC` negated, so returning both would be the same
+# numbers twice; which side a feature favours is the sign.
+.pe_markers_nodes <- function(mom, param) {
+    sets <- param$sets
+    lvls <- colnames(mom$sums)
+    miss <- setdiff(unique(unlist(lapply(sets, function(s) {
+        c(s$left, s$right)
+    }))), lvls)
+    if (length(miss) > 0L) {
+        stop("[analyzeData(parquetExprBase, scranMarkersParam)] `sets` names ",
+             "groups absent from `groups`: ",
+             paste(sort(miss), collapse = ", "), call. = FALSE)
+    }
+
+    # The two pooled groups are named positionally rather than after their
+    # member clusters. Nothing downstream reads these names: the result is
+    # keyed by node, `.scran_pair_cols()` matches `logFC.` by prefix, and the
+    # side a feature favours is the sign. Naming them after the clusters would
+    # mean agreeing a string convention with Giotto for no observable gain --
+    # a second copy of a rule, free to drift.
+    out <- lapply(names(sets), function(nm) {
+        s <- sets[[nm]]
+        pooled <- .pe_pool_moments(
+            mom, stats::setNames(list(s$left, s$right), c("left", "right"))
+        )
+        res <- .pe_markers_from_moments(
+            .pe_moments_derive(pooled), param = param
+        )
+        res[["left"]]
+    })
+    names(out) <- names(sets)
     S4Vectors::SimpleList(out)
 }
 

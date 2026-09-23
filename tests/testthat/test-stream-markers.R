@@ -347,3 +347,92 @@ test_that("one-vs-rest on disk matches the in-memory pooled scran run", {
         expect_equal(g[[nm]], r[[nm]], tolerance = 1e-10, info = nm)
     }
 })
+
+
+test_that("node comparisons on disk match scran on each node's two sides", {
+    skip_if_not_installed("Giotto")
+    skip_if_not_installed("scran")
+    mat <- .mk_mat(n_genes = 20L, n_cells = 48L, density = 0.6, seed = 73L)
+    pe <- storeWrite(
+        parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+    lv <- c("a", "b", "c", "d")
+    groups <- rep(lv, each = 12L)
+
+    # two nodes of different shape: a 1-vs-1 split and a 2-vs-2 one
+    sets <- list(
+        n1 = list(left = "a", right = "b"),
+        n2 = list(left = c("a", "b"), right = c("c", "d"))
+    )
+    got <- suppressMessages(GiottoClass::analyzeData(
+        pe, Giotto::markersParam(comparison = "nodes", sets = sets),
+        groups = groups))
+
+    # keyed by node, one table per node -- not per group
+    expect_named(as.list(got), names(sets))
+
+    # Independent ground truth: scran on the materialized matrix, restricted to
+    # the cells of each node and relabelled by side. Shares no code with the
+    # pooling path.
+    for (nm in names(sets)) {
+        s <- sets[[nm]]
+        keep <- groups %in% c(s$left, s$right)
+        lab <- ifelse(groups[keep] %in% s$left, "left", "right")
+        ref <- scran::findMarkers(
+            as.matrix(mat[, keep, drop = FALSE]), groups = lab)[["left"]]
+        g <- got[[nm]][rownames(mat), ]
+        r <- ref[rownames(mat), ]
+        expect_equal(g$p.value, r$p.value, tolerance = 1e-10, info = nm)
+        expect_equal(g$FDR, r$FDR, tolerance = 1e-10, info = nm)
+        expect_equal(g[["logFC.right"]], r[["logFC.right"]],
+            tolerance = 1e-10, info = nm)
+    }
+})
+
+
+test_that("node comparisons cost one pass regardless of node count", {
+    skip_if_not_installed("Giotto")
+    skip_if_not_installed("scran")
+    mat <- .mk_mat(n_genes = 12L, n_cells = 40L, density = 0.6, seed = 74L)
+    pe <- storeWrite(
+        parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+    lv <- c("a", "b", "c", "d")
+    groups <- rep(lv, each = 10L)
+    sets <- list(
+        n1 = list(left = "a", right = "b"),
+        n2 = list(left = "c", right = "d"),
+        n3 = list(left = c("a", "b"), right = c("c", "d"))
+    )
+
+    # `.pe_group_moments()` is the pass; count how many times it runs
+    calls <- 0L
+    orig <- GiottoDisk:::.pe_group_moments
+    testthat::local_mocked_bindings(
+        .pe_group_moments = function(...) {
+            calls <<- calls + 1L
+            orig(...)
+        },
+        .package = "GiottoDisk"
+    )
+    invisible(suppressMessages(GiottoClass::analyzeData(
+        pe, Giotto::markersParam(comparison = "nodes", sets = sets),
+        groups = groups)))
+    expect_identical(calls, 1L)
+})
+
+
+test_that("node comparisons reject sets naming absent groups", {
+    skip_if_not_installed("Giotto")
+    mat <- .mk_mat(n_genes = 10L, n_cells = 30L, seed = 75L)
+    pe <- storeWrite(
+        parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+    groups <- rep(c("a", "b", "c"), each = 10L)
+
+    expect_error(
+        suppressMessages(GiottoClass::analyzeData(
+            pe,
+            Giotto::markersParam(comparison = "nodes",
+                sets = list(n1 = list(left = "a", right = "zz"))),
+            groups = groups)),
+        "absent from `groups`"
+    )
+})
