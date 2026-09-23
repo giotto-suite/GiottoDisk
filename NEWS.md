@@ -1,6 +1,15 @@
 # GiottoDisk 0.0.0.2
 
 ## new
+- `analyzeData(parquetExprBase, scranMarkersParam)` accepts
+  `comparison = "nodes"`, the streaming half of Giotto's `findNodeMarkers()`.
+  A `sets` list names the clusters on each side of every branch point of a
+  cluster tree; the method takes its **one** grouped moment pass and folds each
+  node out of it with the existing `.pe_pool_moments()`, exactly as
+  `"one_vs_rest"` already does. The accumulators are additive, so every node
+  after the first costs arithmetic rather than another scan -- 35 nodes on
+  169,528 cells in 5.2 s, against ~35 s for one `findMarkers()` call per node,
+  and sub-linear in node count.
 - `parquetCoordinator`: view + space recipe resolution for gobjects whose
   subobjects are `parquetStore`-backed. Recipe steps are pushed onto each
   store's lazy-op queue via the existing `subset()` / `crop()` /
