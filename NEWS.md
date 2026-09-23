@@ -69,6 +69,12 @@
 
 # GiottoDisk 0.0.0.2
 
+## changes
+- Dropped the `prepareIds` import. GiottoClass removed the generic in 0.7.2:
+  it was an exported identity transform with no call sites here or anywhere
+  else, and `parquetCoordinator`'s own methods already promote an ID set to
+  the form each store wants.
+
 ## new
 - `analyzeData(parquetExprBase, scranMarkersParam)` accepts
   `comparison = "nodes"`, the streaming half of Giotto's `findNodeMarkers()`.
