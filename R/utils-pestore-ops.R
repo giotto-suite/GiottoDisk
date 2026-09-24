@@ -80,6 +80,26 @@ NULL
 #     Params:
 #       base     numeric. log base (default 2).
 #
+#   compare           (phase: lazy or post)
+#     An indicator: keep the stored entries where `value <op> e2` holds and
+#     set them to 1. Emitted by the `Compare` group methods, so `x >= 1` is
+#     this record and `rowSums(x >= 1)` counts through the accumulator.
+#     Unlike every op above it CHANGES WHICH ENTRIES ARE STORED -- it is the
+#     first record that drops rows -- but it keeps the absent-means-0
+#     invariant, because the producer refuses any comparison that is TRUE at 0
+#     (that result would be dense). 1 rather than TRUE because `value` is a
+#     double column on every carrier.
+#     Params:
+#       op       one of ">", ">=", "<", "<=", "==", "!=", store on the left
+#       axis     "all" only, today. Shaped like `multiply` so a per-axis
+#                threshold can be added without changing the record: base
+#                R's `m >= v` with length(v) == nrow(m) is a per-row
+#                threshold, which here would be `axis = "feat"` (or
+#                "cell" when transposed) with `e2` a payload keyed by
+#                on-disk id. Comparing against another store is a join,
+#                not this record.
+#       e2       numeric scalar (axis "all")
+#
 # Records are positional and self-contained: each does its work at the
 # position it occupies, and a verb appends rather than revisiting anything it
 # wrote earlier. Nothing needs to be applied in a particular order or to be
@@ -113,6 +133,7 @@ NULL
         "log"      = .op_transform_log(atab, op),
         "expm1"    = .op_transform_expm1(atab, op),
         "multiply" = .op_multiply(atab, op),
+        "compare"  = .op_compare(atab, op),
         "add"      = .op_add_refuse(op),
         stop("[.pe_apply_op] unknown arrow-side op type: ", op$type,
             call. = FALSE)
@@ -161,6 +182,29 @@ NULL
         return(x[, value := base^value - 1])
     }
     dplyr::mutate(x, value = (!!base)^value - 1)
+}
+
+# Indicator of a comparison against a scalar. One predicate call serves every
+# carrier: spliced into `filter()` it lowers to Acero and dbplyr, and evaluated
+# over the column it is the data.table row selector. `which()` drops NA the way
+# `filter()` does, so the two phases agree on a stored NA as well.
+#
+# Returns a new table rather than mutating in place, since it drops rows --
+# every caller already reassigns `df <- .pe_apply_post_ops_df(df, ...)`.
+.op_compare <- function(x, op) {
+    value <- NULL # NSE
+    if (!identical(op$axis %||% "all", "all")) {
+        stop("[.op_compare] only `axis = \"all\"` (a scalar threshold) is ",
+             "implemented; got axis \"", op$axis, "\".", call. = FALSE)
+    }
+    pred <- call(op$op, quote(value), op$e2)
+    if (data.table::is.data.table(x)) {
+        x <- x[which(eval(pred, x))]
+        return(x[, value := 1])
+    }
+    x |>
+        dplyr::filter(!!pred) |>
+        dplyr::mutate(value = 1)
 }
 
 # ---- multiply / add ---------------------------------------------------------
@@ -266,6 +310,7 @@ NULL
         "log"      = .op_transform_log(df, op),
         "expm1"    = .op_transform_expm1(df, op),
         "multiply" = .pe_apply_post_op_multiply_df(df, op),
+        "compare"  = .op_compare(df, op),
         "add"      = .op_add_refuse(op),
         stop("[.pe_apply_post_op_df] unknown post op type: ", op$type,
             call. = FALSE)

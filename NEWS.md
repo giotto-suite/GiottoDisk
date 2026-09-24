@@ -1,3 +1,15 @@
+# GiottoDisk 0.0.0.3
+
+## new
+- `Compare` methods (`>`, `>=`, `<`, `<=`, `==`, `!=`) for `parquetExprBase`
+  against a numeric scalar. `x >= t` queues a lazy indicator on the op chain
+  -- stored entries that pass read back as 1, the rest are dropped -- so
+  `rowSums(x >= 1)` and `colSums(x > 0)` stream through the existing margin
+  methods, and code written for an in-memory matrix (`rowSums_flex(x >= t)`)
+  runs unchanged on a backed one. The comparison sees values after anything
+  already queued. A comparison that is `TRUE` at 0 (`x >= 0`, `x < 1`) would
+  be dense and is an error; so is comparing two stores.
+
 # GiottoDisk 0.0.0.2
 
 ## new

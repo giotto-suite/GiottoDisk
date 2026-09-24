@@ -1150,6 +1150,88 @@ setAs("parquetExprBase", "dgCMatrix", function(from) {
 })
 
 
+# Compare ####
+
+#' @name parquetExprStore-compare
+#' @title Compare an expression store against a scalar
+#' @description
+#' `>`, `>=`, `<`, `<=`, `==` and `!=` against a numeric scalar return the
+#' store with a lazy indicator queued on its op chain: stored entries that
+#' pass keep value 1, entries that fail are dropped. Nothing is read until
+#' the result is, so `rowSums(x >= 1)` counts per feature in one streaming
+#' pass, and the comparison sees the values the chain produces -- after
+#' normalization, if normalization is queued.
+#'
+#' The result is sparse only when an unstored zero fails the comparison, so a
+#' comparison that is `TRUE` at 0 (`x >= 0`, `x < 1`, `x == 0`, ...) is an
+#' error rather than a silent densification. Materialize a bounded slice with
+#' `storeRead(x[i, j], output = "dgcmatrix")` for those.
+#'
+#' Passing entries read back as the double `1`, not `TRUE`, because a stored
+#' value is a double on every read path. Sums and counts are unaffected.
+#' @param e1,e2 a `parquetExprBase`-inheriting store and a numeric scalar, in
+#'   either order
+#' @returns the store, with a `compare` record appended to its op chain
+#' @examples
+#' \dontrun{
+#' rowSums(x >= 1)   # cells expressing each feature
+#' colSums(x > 0)    # features detected per cell
+#' }
+NULL
+
+#' @rdname parquetExprStore-compare
+#' @export
+setMethod("Compare", signature("parquetExprBase", "numeric"),
+    function(e1, e2) .pe_compare(e1, .Generic, e2)
+)
+
+#' @rdname parquetExprStore-compare
+#' @export
+setMethod("Compare", signature("numeric", "parquetExprBase"),
+    function(e1, e2) .pe_compare(e2, .pe_flip_compare(.Generic), e1)
+)
+
+#' @rdname parquetExprStore-compare
+#' @export
+setMethod("Compare", signature("parquetExprBase", "parquetExprBase"),
+    function(e1, e2) {
+        stop("[Compare] comparing two expression stores is not supported; ",
+             "compare a store against a numeric scalar.", call. = FALSE)
+    }
+)
+
+# `1 <= x` is `x >= 1`: keep the store on the left so the record has one shape.
+.pe_flip_compare <- function(op) {
+    switch(op,
+        ">"  = "<",  ">=" = "<=",
+        "<"  = ">",  "<=" = ">=",
+        op) # == and != are symmetric
+}
+
+.pe_compare <- function(x, op, e2) {
+    if (length(e2) != 1L || is.na(e2)) {
+        stop("[Compare] an expression store compares against a single ",
+             "non-NA number.", call. = FALSE)
+    }
+    e2 <- as.numeric(e2)
+    op <- as.character(op) # `.Generic` carries a package attribute
+    # The whole design rests on this: an unstored entry is 0, so if 0 passes,
+    # every unstored entry would have to become a stored 1.
+    if (isTRUE(do.call(op, list(0, e2)))) {
+        stop("[Compare] `x ", op, " ", e2, "` is TRUE for every unstored ",
+             "zero, so the result would be dense. Use a comparison that 0 ",
+             "fails, or materialize a bounded slice with ",
+             "storeRead(x[i, j], output = \"dgcmatrix\") first.",
+             call. = FALSE)
+    }
+    # Lowerable on either carrier, so it goes wherever the chain currently
+    # ends -- after a post op it has to run R-side too (monotonic rule).
+    phase <- if (length(x@post_ops) > 0L) "post" else "lazy"
+    .pe_push_op(x, list(type = "compare", op = op, axis = "all", e2 = e2),
+        phase = phase)
+}
+
+
 # Orientation ####
 
 #' @rdname parquetExprStore-coerce
