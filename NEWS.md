@@ -10,6 +10,17 @@
   already queued. A comparison that is `TRUE` at 0 (`x >= 0`, `x < 1`) would
   be dense and is an error; so is comparing two stores.
 
+## bug fixes
+- Tile stores written from a `queryableStore` or `parquetStore` (the disk
+  readers' transcript and polygon paths) no longer nest a second
+  `tile_index=000/` level inside every tile directory. Each tile took the flat
+  geom store's `tile_idx = 0L` default on top of its own `tile_index=<NNN>/`.
+  That broke `storeRead(output = "duckdb")` ("No files found") and, with
+  sedonadb >= 0.4, which discovers hive partitions, `output = "sedona"`
+  (ambiguous `tile_index`). `.write_parquet()` now errors instead of nesting a
+  `tile_index` level. Stores already written keep the nested layout until they
+  are rewritten (#74).
+
 # GiottoDisk 0.0.0.2
 
 ## new

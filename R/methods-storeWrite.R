@@ -532,6 +532,7 @@ setMethod(
                         mem_data,
                         type = type,
                         uid_partition = FALSE, # would double tag otherwise
+                        tile_idx = NULL, # tile dir is already the tile level
                         .arrow_meta = .arrow_meta_add_geoparquet(store)
                     ),
                     geom_param,
@@ -689,6 +690,7 @@ setMethod(
                         mem_data,
                         type = type,
                         uid_partition = FALSE, # would double tag otherwise
+                        tile_idx = NULL, # tile dir is already the tile level
                         split_geom = split_geom,
                         split_geom_fmt = tile_split_fmt,
                         split_geom_sourcename = split_geom_sourcename,
@@ -788,7 +790,8 @@ setMethod(
                     list(
                         tile_store,
                         tile_atab,
-                        uid_partition = FALSE # would double tag otherwise
+                        uid_partition = FALSE, # would double tag otherwise
+                        tile_idx = NULL # tile dir is already the tile level
                     ),
                     write_param
                 )
@@ -973,6 +976,14 @@ setMethod(
         path <- store@path
     }
     if (!is.null(tile_idx)) {
+        # A path that is already a tile dir means a tile writer let the
+        # flat-store `tile_idx = 0L` default through; nesting a second
+        # tile_index level breaks hive discovery in the SQL engines.
+        if (startsWith(basename(path), "tile_index=")) {
+            stop("[.write_parquet] '", path, "' is already a tile_index ",
+                "partition; pass `tile_idx = NULL` when writing a tile",
+                call. = FALSE)
+        }
         path <- file.path(path, .hive_part_col("tile_index", tile_idx))
     }
     .write_dataset(
