@@ -10,6 +10,17 @@
   already queued. A comparison that is `TRUE` at 0 (`x >= 0`, `x < 1`) would
   be dense and is an error; so is comparing two stores.
 
+## changes
+- `storeRead(output = "duckdb")` and, with sedonadb >= 0.4,
+  `storeRead(output = "sedona")` read `source_id` and `tile_index` from hive
+  partition discovery on the store root instead of reading each tile
+  directory separately and injecting the values as SQL literals. Tile
+  selection (`tile_idx`, `@tile_filter`) becomes a partition predicate that
+  both engines prune files on. The partition columns keep their types
+  (`source_id` string, `tile_index` int32). The literal path remains for
+  sedonadb < 0.4, which has no discovery, and for stores still in the nested
+  layout fixed below, which both engines now read (#74).
+
 ## bug fixes
 - Tile stores written from a `queryableStore` or `parquetStore` (the disk
   readers' transcript and polygon paths) no longer nest a second
