@@ -11,6 +11,10 @@
   be dense and is an error; so is comparing two stores.
 
 ## bug fixes
+- Parquet writes no longer store data.table's `sorted` / `index` attributes.
+  arrow restores R attributes on read; restored onto a store read back from
+  several files or after a filter they were stale, and keyed or indexed
+  subsets of the collected table could return wrong rows.
 - Tile stores written from a `queryableStore` or `parquetStore` (the disk
   readers' transcript and polygon paths) no longer nest a second
   `tile_index=000/` level inside every tile directory. Each tile took the flat
