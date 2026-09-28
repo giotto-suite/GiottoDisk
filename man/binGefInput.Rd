@@ -19,7 +19,7 @@ binGefInput(
 
 \item{gene_column}{character. \code{"geneName"} (default) or \code{"geneID"}.}
 
-\item{batch_genes}{integer. Default 500.}
+\item{batch_genes}{integer. Raw-gene rows per read of \code{geneExp}. Default 500.}
 }
 \value{
 A \code{binGefInput} object. \code{cell_ids} / \code{n_cells} are empty until

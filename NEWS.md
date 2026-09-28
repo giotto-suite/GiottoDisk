@@ -11,6 +11,13 @@
   be dense and is an error; so is comparing two stores.
 
 ## bug fixes
+- The Stereo-seq GEF readers now write cell-major stores, like every other
+  input. `cellbinGefInput` reads the cell-major `cellExp` copy; `binGefInput`
+  reorders through a temporary spill and positions bins in grid order, keeping
+  their first-appearance `bin_<id>` names. Before, each part file held one
+  gene batch across all cells, so cell-windowed passes (markers, grouped
+  `featStats`, PCA) rescanned the store once per window. Stores written earlier
+  keep the old layout until re-imported.
 - Tile stores written from a `queryableStore` or `parquetStore` (the disk
   readers' transcript and polygon paths) no longer nest a second
   `tile_index=000/` level inside every tile directory. Each tile took the flat

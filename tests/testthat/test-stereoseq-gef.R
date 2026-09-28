@@ -21,23 +21,38 @@ skip_if_not_installed("rhdf5")
 }
 
 # helper: write a cellbin .gef. `gene_names` may repeat or name a gene with no
-# records, both of which occur in real files.
-.write_cellbin_gef <- function(mat, path, gene_names = rownames(mat)) {
+# records, both of which occur in real files. Like SAW, it writes the matrix
+# twice: gene-major `geneExp` and cell-major `cellExp`, the latter indexed by
+# the cell table's `offset` / `geneCount`. `cell_exp = FALSE` leaves both out.
+.write_cellbin_gef <- function(mat, path, gene_names = rownames(mat),
+                               cell_exp = TRUE) {
     rec <- .gef_records(mat)
     n_genes <- nrow(mat)
     n_cells <- ncol(mat)
     cell_id <- seq_len(n_cells)          # on-disk ids; cell_IDs are "cell_<id>"
 
     per_gene <- tabulate(rec$gene_row, nbins = n_genes)
+    per_cell <- tabulate(rec$cell_col, nbins = n_cells)
+
+    cell_tab <- data.frame(id = as.integer(cell_id),
+                           x  = as.integer(seq_len(n_cells) * 10L),
+                           y  = as.integer(seq_len(n_cells) * 20L))
+    if (cell_exp) {
+        cell_tab$offset    <- as.integer(c(0L, cumsum(per_cell)[-n_cells]))
+        cell_tab$geneCount <- as.integer(per_cell)
+    }
 
     rhdf5::h5createFile(path)
     rhdf5::h5createGroup(path, "cellBin")
-    rhdf5::h5write(
-        data.frame(id = as.integer(cell_id),
-                   x  = as.integer(seq_len(n_cells) * 10L),
-                   y  = as.integer(seq_len(n_cells) * 20L)),
-        path, "cellBin/cell"
-    )
+    rhdf5::h5write(cell_tab, path, "cellBin/cell")
+    if (cell_exp) {
+        cm <- rec[order(rec$cell_col, rec$gene_row), , drop = FALSE]
+        rhdf5::h5write(
+            data.frame(geneID = as.integer(cm$gene_row - 1L),   # 0-based row
+                       count  = as.integer(cm$count)),
+            path, "cellBin/cellExp"
+        )
+    }
     rhdf5::h5write(
         data.frame(geneName  = as.character(gene_names),
                    geneID    = paste0("ENSG", sprintf("%05d", seq_len(n_genes))),
@@ -55,7 +70,8 @@ skip_if_not_installed("rhdf5")
 
 # helper: write a bin .gef under `geneExp/<bin_key>/`. `coords` supplies the
 # (x, y) for each cell column, so the test controls first-appearance order.
-.write_bin_gef <- function(mat, path, bin_key = "bin100", coords = NULL) {
+.write_bin_gef <- function(mat, path, bin_key = "bin100", coords = NULL,
+                           y_attrs = TRUE) {
     rec <- .gef_records(mat)
     n_genes <- nrow(mat)
     n_cells <- ncol(mat)
@@ -74,14 +90,41 @@ skip_if_not_installed("rhdf5")
                    count    = as.integer(per_gene)),
         path, paste0("geneExp/", bin_key, "/gene")
     )
+    ex_name <- paste0("geneExp/", bin_key, "/expression")
     rhdf5::h5write(
         data.frame(x     = as.integer(coords$x[rec$cell_col]),
                    y     = as.integer(coords$y[rec$cell_col]),
                    count = as.integer(rec$count)),
-        path, paste0("geneExp/", bin_key, "/expression")
+        path, ex_name
     )
+    # SAW records the coordinate range on the expression dataset
+    fid <- rhdf5::H5Fopen(path)
+    did <- rhdf5::H5Dopen(fid, ex_name)
+    for (nm in if (y_attrs) c("minY", "maxY") else character(0L)) {
+        v <- coords$y
+        rhdf5::h5writeAttribute(as.integer(if (startsWith(nm, "min")) min(v) else max(v)),
+                                did, nm)
+    }
+    rhdf5::H5Dclose(did); rhdf5::H5Fclose(fid)
     rhdf5::h5closeAll()
     list(path = path, records = rec, coords = coords)
+}
+
+# helper: per part file, the row_id range it holds, in part order
+.part_ranges <- function(out) {
+    parts <- list.files(out, pattern = "[.]parquet$", recursive = TRUE, full.names = TRUE)
+    parts <- parts[order(as.integer(sub(".*part-([0-9]+)[.]parquet$", "\\1", parts)))]
+    do.call(rbind, lapply(parts, function(f) {
+        r <- range(arrow::read_parquet(f, col_select = "row_id")$row_id)
+        data.frame(lo = r[1L], hi = r[2L])
+    }))
+}
+
+# cell-major: each part holds one ascending, non-overlapping range of cells
+.expect_cell_major <- function(out) {
+    pr <- .part_ranges(out)
+    if (nrow(pr) > 1L) expect_true(all(pr$lo[-1L] > pr$hi[-nrow(pr)]))
+    invisible(pr)
 }
 
 # helper: pull a store back into a genes x cells sparse matrix
@@ -154,9 +197,9 @@ test_that("cellbinGefInput sums duplicate gene names and drops empty genes", {
 
 test_that("cellbinGefInput sums duplicate gene names split across chunks", {
     # The case a real gene table produces: the table is ordered by geneID, so
-    # two rows sharing a geneName sit far apart and fall in different chunks.
-    # .gef_safe_chunks only holds *consecutive* runs together, so without the
-    # deferral path these reach the store as two rows for one (cell, gene).
+    # two rows sharing a geneName sit far apart and fall in different gene
+    # chunks. Only the geneExp path reads gene chunks, so the file here has no
+    # cellExp; the batch aggregate must still leave one row per (cell, gene).
     n_genes <- 10L
     mat <- Matrix::sparseMatrix(
         i = c(1L, 10L, 5L), j = c(1L, 1L, 2L), x = c(4, 5, 7),
@@ -166,7 +209,7 @@ test_that("cellbinGefInput sums duplicate gene names split across chunks", {
     names_v[c(1L, 10L)] <- "shared"          # duplicated, maximally far apart
 
     gef <- .write_cellbin_gef(mat, file.path(tempdir(), "cellbin_split.gef"),
-                              gene_names = names_v)
+                              gene_names = names_v, cell_exp = FALSE)
     out <- file.path(tempdir(), "cellbin_split_out")
     on.exit(unlink(c(gef, out), recursive = TRUE), add = TRUE)
 
@@ -178,6 +221,33 @@ test_that("cellbinGefInput sums duplicate gene names split across chunks", {
     # one row per (cell, gene) -- the invariant that duplicate names break
     expect_false(any(duplicated(df[, c("row_id", "col_id")])))
     expect_equal(unname(.pe_as_matrix(pe)["shared", 1L]), 4 + 5)
+})
+
+
+test_that("cellbinGefInput writes cell-major parts and needs no cellExp to", {
+    set.seed(11)
+    mat <- Matrix::rsparsematrix(8L, 60L, density = 0.4,
+        rand.x = function(n) as.double(rpois(n, 3) + 1))
+    names_v <- paste0("g", 1:8)
+    names_v[c(2L, 7L)] <- "dup"
+    withr::local_options(list(giottodisk.gef_batch_rows = 30L))
+
+    got <- list()
+    for (ce in c(TRUE, FALSE)) {
+        gef <- .write_cellbin_gef(mat, tempfile(fileext = ".gef"), gene_names = names_v,
+                                  cell_exp = ce)
+        out <- tempfile("cellbin_cm_")
+        inp <- cellbinGefInput(gef, batch_genes = 1L)
+        expect_identical(inp@params$has_cell_exp, ce)
+        pe <- storeWrite(parquetExprStore(path = out), inp)
+        pr <- .expect_cell_major(out)
+        expect_gt(nrow(pr), 1L)
+        got[[as.character(ce)]] <- .pe_as_matrix(pe)
+        unlink(c(gef, out), recursive = TRUE)
+    }
+    expect_equal(got[["TRUE"]], got[["FALSE"]])
+    ref <- rowsum(as.matrix(mat), names_v)[got[["TRUE"]]@Dimnames[[1L]], ]
+    expect_equal(unname(as.matrix(got[["TRUE"]])), unname(ref))
 })
 
 
@@ -203,15 +273,38 @@ test_that("binGefInput + storeWrite round-trips a bin gef losslessly", {
 
     pe <- storeWrite(parquetExprStore(path = out), inp)
 
-    # bin_IDs are assigned in first-appearance order over the record stream,
-    # which is what maps the store's columns back onto the source matrix.
+    # bin_IDs are named in first-appearance order over the record stream (the
+    # in-memory reader's numbering); the store positions them in grid order.
     appearance <- unique(fx$records$cell_col)
     expect_equal(pe@n_cells, length(appearance))
-    expect_equal(pe@cell_ids, paste0("bin_", seq_along(appearance)))
+    expect_setequal(pe@cell_ids, paste0("bin_", seq_along(appearance)))
 
-    expected <- mat[, appearance, drop = FALSE]
+    src_col <- appearance[as.integer(sub("bin_", "", pe@cell_ids))]
+    expected <- mat[, src_col, drop = FALSE]
     expect_equal(unname(as.matrix(.pe_as_matrix(pe))),
                  unname(as.matrix(expected)))
+})
+
+test_that("binGefInput positions bins in (y, x) grid order", {
+    mat <- Matrix::sparseMatrix(
+        i = c(1L, 2L, 1L, 2L, 1L, 2L), j = c(1L, 2L, 3L, 4L, 5L, 6L),
+        x = as.double(1:6), dims = c(2L, 6L)
+    )
+    rownames(mat) <- c("aaa", "bbb")
+    coords <- data.frame(x = c(30L, 10L, 20L, 10L, 30L, 20L),
+                         y = c(5L, 5L, 1L, 9L, 1L, 9L))
+    fx  <- .write_bin_gef(mat, file.path(tempdir(), "bin_grid.gef"), coords = coords)
+    out <- file.path(tempdir(), "bin_grid_out")
+    on.exit(unlink(c(fx$path, out), recursive = TRUE), add = TRUE)
+
+    inp <- binGefInput(fx$path, bin_size = "bin100")
+    pe  <- storeWrite(parquetExprStore(path = out), inp)
+
+    bc <- inp@params$coord_env$bin_coords
+    lab <- as.integer(sub("bin_", "", pe@cell_ids))
+    at <- bc[match(lab, bc$bin_ID)]
+    expect_equal(order(at$y, at$x), seq_len(nrow(at)))
+    expect_equal(bc$pos[match(lab, bc$bin_ID)], seq_along(lab))
 })
 
 test_that("binGefInput addresses the prefixed geneExp/<bin_size> group", {
@@ -335,6 +428,8 @@ test_that("createGiottoStereoSeqObjectBin(backend =) builds a disk-backed object
     sl <- GiottoClass::getSpatialLocations(g, spat_unit = "bin100",
                                            output = "data.table")
     expect_setequal(sl$cell_ID, ex[]@cell_ids)
+    # rows in store column order, which is not bin_ID order
+    expect_identical(sl$cell_ID, ex[]@cell_ids)
 
     appearance <- unique(fx$records$cell_col)
     expected <- data.frame(
@@ -373,24 +468,71 @@ test_that("the disk reader's load_expression matches the in-memory shape", {
     expect_s4_class(ed[[1L]][], "parquetExprStore")
 })
 
-test_that("binGefInput writes multiple parquet parts with a small batch_genes", {
-    mat <- Matrix::sparseMatrix(
-        i = rep(1:4, each = 3), j = rep(1:3, times = 4),
-        x = as.double(1:12), dims = c(4L, 3L)
-    )
-    rownames(mat) <- paste0("g", 1:4)
+test_that("binGefInput writes several cell-major parts on a small budget", {
+    set.seed(7)
+    mat <- Matrix::rsparsematrix(6L, 40L, density = 0.5,
+        rand.x = function(n) as.double(rpois(n, 4) + 1))
+    rownames(mat) <- paste0("g", 1:6)
+    coords <- data.frame(x = rep(1:8, 5) * 10L, y = rep(1:5, each = 8) * 10L)
 
-    fx  <- .write_bin_gef(mat, file.path(tempdir(), "bin_chunk.gef"))
+    fx  <- .write_bin_gef(mat, file.path(tempdir(), "bin_chunk.gef"), coords = coords)
     out <- file.path(tempdir(), "bin_chunk_out")
     on.exit(unlink(c(fx$path, out), recursive = TRUE), add = TRUE)
 
+    withr::local_options(list(giottodisk.gef_batch_rows = 25L))
     inp <- binGefInput(fx$path, bin_size = "bin100", batch_genes = 1L)
     pe  <- storeWrite(parquetExprStore(path = out), inp)
 
-    parts <- list.files(out, pattern = "\\.parquet$", recursive = TRUE)
-    expect_gt(length(parts), 1L)
+    pr <- .expect_cell_major(out)
+    expect_gt(nrow(pr), 1L)
+    expect_equal(max(pr$hi), pe@n_cells)
 
     appearance <- unique(fx$records$cell_col)
+    src_col <- appearance[as.integer(sub("bin_", "", pe@cell_ids))]
     expect_equal(unname(as.matrix(.pe_as_matrix(pe))),
-                 unname(as.matrix(mat[, appearance, drop = FALSE])))
+                 unname(as.matrix(mat[, src_col, drop = FALSE])))
+    # grid order holds across stripes, not only within one
+    at <- coords[src_col, ]
+    expect_equal(order(at$y, at$x), seq_len(nrow(at)))
 })
+
+test_that("binGefInput derives the y range when the file does not record it", {
+    set.seed(8)
+    mat <- Matrix::rsparsematrix(5L, 30L, density = 0.5,
+        rand.x = function(n) as.double(rpois(n, 4) + 1))
+    rownames(mat) <- paste0("g", 1:5)
+    coords <- data.frame(x = rep(1:6, 5) * 10L, y = rep(1:5, each = 6) * 10L)
+    fx  <- .write_bin_gef(mat, file.path(tempdir(), "bin_noattr.gef"),
+                          coords = coords, y_attrs = FALSE)
+    out <- file.path(tempdir(), "bin_noattr_out")
+    on.exit(unlink(c(fx$path, out), recursive = TRUE), add = TRUE)
+
+    withr::local_options(list(giottodisk.gef_batch_rows = 20L))
+    inp <- binGefInput(fx$path, bin_size = "bin100", batch_genes = 1L)
+    expect_null(inp@params$y_range)
+    pe <- storeWrite(parquetExprStore(path = out), inp)
+
+    expect_gt(nrow(.expect_cell_major(out)), 1L)
+    appearance <- unique(fx$records$cell_col)
+    src_col <- appearance[as.integer(sub("bin_", "", pe@cell_ids))]
+    expect_equal(unname(as.matrix(.pe_as_matrix(pe))),
+                 unname(as.matrix(mat[, src_col, drop = FALSE])))
+})
+
+test_that("binGefInput sums duplicate gene names split across chunks", {
+    mat <- Matrix::sparseMatrix(i = c(1L, 4L, 2L), j = c(1L, 1L, 2L),
+        x = c(4, 5, 7), dims = c(4L, 2L))
+    rownames(mat) <- c("shared", "g2", "g3", "shared")
+    fx  <- .write_bin_gef(mat, file.path(tempdir(), "bin_dup.gef"))
+    out <- file.path(tempdir(), "bin_dup_out")
+    on.exit(unlink(c(fx$path, out), recursive = TRUE), add = TRUE)
+
+    pe <- storeWrite(parquetExprStore(path = out),
+                     binGefInput(fx$path, bin_size = "bin100", batch_genes = 1L))
+    df <- as.data.frame(dplyr::collect(storeRead(pe)))
+    expect_false(any(duplicated(df[, c("row_id", "col_id")])))
+    got <- .pe_as_matrix(pe)
+    first <- paste0("bin_", 1L)   # cell column 1 appears first
+    expect_equal(unname(got["shared", first]), 4 + 5)
+})
+
