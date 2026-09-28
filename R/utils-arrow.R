@@ -23,10 +23,22 @@
     as.integer(lvl)
 }
 
+# arrow keeps a data.frame's R attributes in the parquet metadata and restores
+# them on collect. data.table's `sorted` and `index` describe the object in
+# memory, not the file: restored onto a read that spans several files, or
+# after a filter, they are stale, and data.table then answers keyed and
+# indexed subsets from them silently wrong. Rebuild the table over the same
+# columns (no data copied) so neither is written.
+.drop_dt_state <- function(x) {
+    if (data.table::is.data.table(x)) x <- data.table::setDT(as.list(x))
+    x
+}
+
 # Internal wrapper: arrow::write_parquet that honors the GiottoDisk-global
 # compression options. Direct callers should use this instead of
 # arrow::write_parquet so the codec is consistent across the package.
 .write_parquet_file <- function(x, sink, ...) {
+    x <- .drop_dt_state(x)
     args <- list(...)
     if (is.null(args$compression)) {
         args$compression <- .parquet_compression()
@@ -40,6 +52,7 @@
 
 # Internal wrapper: arrow::write_dataset honoring the global compression.
 .write_dataset <- function(dataset, path, ...) {
+    dataset <- .drop_dt_state(dataset)
     args <- list(...)
     if (is.null(args$compression)) {
         args$compression <- .parquet_compression()
