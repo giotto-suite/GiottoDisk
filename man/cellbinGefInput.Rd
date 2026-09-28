@@ -15,8 +15,8 @@ cellbinGefInput(
 
 \item{gene_column}{character. \code{"geneName"} (default) or \code{"geneID"}.}
 
-\item{batch_genes}{integer. Approximate raw-gene rows per batch.
-Default 500.}
+\item{batch_genes}{integer. Raw-gene rows per read of \code{geneExp} when the
+file has no \code{cellExp}. Default 500.}
 }
 \value{
 A \code{cellbinGefInput} object.

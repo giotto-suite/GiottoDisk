@@ -7,16 +7,23 @@
 Wraps a Stereo-seq bin \code{.gef} file (\verb{geneExp/<bin_size>/expression}
 compound dataset). Unlike cellbin, the cell identity universe (one per
 unique \verb{(x, y)} coord) is not known up-front — \verb{(x, y) -> bin_ID} is
-assigned as new coords are encountered during the gene-chunk stream.
-\code{\link[=storeRead]{storeRead()}}'s iterator publishes the accumulated \code{cell_ids} /
-\code{n_cells} via its accessors after iteration completes.
+assigned as new coords are encountered during the gene-chunk stream, in
+the same first-appearance order as Giotto's in-memory reader, so bins are
+named \verb{bin_<bin_ID>} on both backends. The file stores expression
+gene-major; \code{\link[=storeRead]{storeRead()}} reorders it through a temporary spill so the
+store is written cell-major, with bins positioned in (y, x) grid order.
+The iterator publishes the accumulated \code{cell_ids} / \code{n_cells} via its
+accessors after iteration completes.
+
+Batch size follows the chunk-sizing budget; pin it with
+\verb{options(giottodisk.gef_batch_rows = <records>)}.
 }
 \section{Slots}{
 
 \describe{
 \item{\code{bin_size}}{character. Bin size key under \verb{geneExp/} (e.g. \code{"50"}).}
 
-\item{\code{batch_genes}}{integer. Approximate raw-gene rows per batch.}
+\item{\code{batch_genes}}{integer. Raw-gene rows per read of \code{geneExp}.}
 
 \item{\code{gene_column}}{character.}
 }}

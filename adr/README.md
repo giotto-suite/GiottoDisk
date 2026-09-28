@@ -83,11 +83,12 @@ least one.
 | [0007](0007-altrep-range-indexing.md) | HDF5 slice reads index with `lo:hi`, not `seq.int()` | Accepted | 2026-05-30 |
 | [0008](0008-axis-predicate-shapes.md) | Arrow axis predicates never add a range "for good measure" | Accepted | 2026-06-12 |
 | [0009](0009-threshold-selects-population.md) | Detection thresholds gate counts, not magnitudes | Accepted | 2026-08-07 |
-| [0010](0010-gef-ingest-is-one-pass.md) | GEF ingest is a single pass: duplicates defer, coordinates ride out | Accepted | 2026-08-11 |
+| [0010](0010-gef-ingest-is-one-pass.md) | GEF ingest is a single pass: duplicates defer, coordinates ride out | Superseded by 0017 | 2026-08-11 |
 | [0011](0011-cell-windowing-over-spill.md) | Cell windowing over spill for a large grouped join | Accepted | 2026-08-20 |
 | [0012](0012-one-predicate-classifier-many-carriers.md) | Expression-store scan modifications are written once, in dplyr, for every carrier | Accepted | 2026-08-24 |
 | [0013](0013-no-second-stat-accumulator-engine.md) | No second stat accumulator engine: the win is per-window overhead, and it is small | Accepted | 2026-09-03 |
 | [0015](0015-view-steps-resolve-to-an-id-set.md) | A view step resolves to an ID set; the coordinator models the cell axis | Accepted | 2026-09-09 |
+| [0017](0017-gef-ingest-writes-cell-major.md) | GEF ingest writes cell-major: `cellExp` for cellbin, a stripe spill for bin | Accepted | 2026-09-28 |
 
 ## Backfill candidates
 

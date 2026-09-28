@@ -310,8 +310,8 @@ importStereoSeqDisk <- function(
 #   - "cell"  -> cellbinGefInput  (reads cellBin/cell + cellBin/gene)
 #   - "bin"   -> binGefInput      (reads geneExp/<bin>/gene + ../expression)
 # Routes through sourceWrite(gsource, inp, store_type = "parquetExpr").
-# The .gef file is never fully materialized -- the iterator streams
-# gene-chunks via rhdf5 hyperslabs.
+# The .gef file is never fully materialized -- the iterators stream it via
+# rhdf5 hyperslabs and write the store cell-major.
 .stereoseq_expression_disk <- function(
     path,
     gsource,
@@ -394,7 +394,14 @@ importStereoSeqDisk <- function(
     x <- y <- bin_ID <- cell_ID <- NULL  # data.table vars
 
     spat_locs <- data.table::copy(bin_coords)
-    data.table::setorder(spat_locs, bin_ID)
+    # store order when the ingest recorded it, so locations line up with the
+    # expression columns; otherwise bin_ID order. A bin's position is not its
+    # bin_ID (adr/0017), so do not sort by bin_ID when `pos` is present.
+    if ("pos" %in% names(spat_locs)) {
+        data.table::setorderv(spat_locs, "pos")
+    } else {
+        data.table::setorder(spat_locs, bin_ID)
+    }
     spat_locs[, cell_ID := paste0("bin_", bin_ID)]
     spat_locs <- spat_locs[, .(cell_ID, x, y)]
     spat_locs[, x := as.integer(x)]

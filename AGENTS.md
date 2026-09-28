@@ -206,6 +206,11 @@ the store in full, and the cost is linear in batch count rather than in features
 per batch. If a new statistic seems to want feature batching, it wants a cell
 window instead.
 
+Every importer writes that layout: each part file covers one ascending range of
+cells. A source stored gene-major is reordered before it is written — the
+cellbin GEF reader reads the cell-major `cellExp`, the bin GEF reader spills to
+y-stripes (adr/0017). A new input must do the same.
+
 Windows are exact rather than approximate only because the accumulators are
 additive over cells. A statistic that is not — anything needing a global order
 along the gene axis, e.g. a rank or a median — cannot be windowed this way and
