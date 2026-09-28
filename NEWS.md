@@ -20,6 +20,12 @@
   (ambiguous `tile_index`). `.write_parquet()` now errors instead of nesting a
   `tile_index` level. Stores already written keep the nested layout until they
   are rewritten (#74).
+- `gDirSource()` given a relative path for a directory that did not exist yet
+  kept the relative path, as did every artifact written to it. Reading those
+  artifacts from a different working directory (a knitted document, a
+  parallel worker, after `setwd()`) then pointed at the wrong place. The path
+  is now made absolute once the directory has been created. Objects created
+  before this fix keep the relative paths they were saved with.
 
 # GiottoDisk 0.0.0.2
 
