@@ -11,6 +11,13 @@
   be dense and is an error; so is comparing two stores.
 
 ## bug fixes
+- The Stereo-seq GEF readers now write cell-major stores, like every other
+  input. `cellbinGefInput` reads the cell-major `cellExp` copy; `binGefInput`
+  reorders through a temporary spill and positions bins in grid order, keeping
+  their first-appearance `bin_<id>` names. Before, each part file held one
+  gene batch across all cells, so cell-windowed passes (markers, grouped
+  `featStats`, PCA) rescanned the store once per window. Stores written earlier
+  keep the old layout until re-imported.
 - Parquet writes no longer store data.table's `sorted` / `index` attributes.
   arrow restores R attributes on read; restored onto a store read back from
   several files or after a filter they were stale, and keyed or indexed

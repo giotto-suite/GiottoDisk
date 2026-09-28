@@ -6,16 +6,19 @@
 \description{
 Wraps a Stereo-seq cellbin \code{.gef} file (HDF5 compound datasets under
 \verb{cellBin/}). The \code{cell} and \code{gene} tables are read in full at
-construction (small); the compound \code{geneExp} is streamed gene-chunk-
-wise via \code{\link[=storeRead]{storeRead()}} using rhdf5 hyperslab reads, respecting the
-safe-boundary chunk plan that keeps duplicate-named genes together.
+construction (small). \code{\link[=storeRead]{storeRead()}} streams the cell-major \code{cellExp}
+dataset in contiguous cell ranges, so the store is written cell-major
+like every other input. A file without \code{cellExp} is read from the
+gene-major \code{geneExp} and reordered through a temporary spill.
+
+Batch size follows the chunk-sizing budget; pin it with
+\verb{options(giottodisk.gef_batch_rows = <records>)}.
 }
 \section{Slots}{
 
 \describe{
-\item{\code{batch_genes}}{integer. Approximate raw-gene rows per batch
-(default 500). Actual boundaries may be expanded to keep duplicate-
-named gene groups intact.}
+\item{\code{batch_genes}}{integer. Raw-gene rows per read of \code{geneExp}, used only
+when the file has no \code{cellExp} (default 500).}
 
 \item{\code{gene_column}}{character. \code{"geneName"} (default) or \code{"geneID"}.}
 }}
