@@ -11,6 +11,14 @@
   be dense and is an error; so is comparing two stores.
 
 ## bug fixes
+- `storeWrite()` of a `parquetExprStore` or `unionParquetExprStore` into a
+  `parquetExprStore` now writes the documented cell-major layout: each file
+  sorted by cell then feature, files covering disjoint cell ranges. The sort
+  was computed and then discarded by the parallel dataset writer, so the
+  layout differed on every run. The write is also windowed by cell, so memory
+  is bounded by the window rather than by the whole output (17.9 GB peak ->
+  10.8 GB writing a 300M-value store). Stores already written keep their
+  layout until rewritten.
 - Tile stores written from a `queryableStore` or `parquetStore` (the disk
   readers' transcript and polygon paths) no longer nest a second
   `tile_index=000/` level inside every tile directory. Each tile took the flat

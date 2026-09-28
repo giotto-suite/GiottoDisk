@@ -604,8 +604,7 @@ setMethod(
     if (length(data@post_ops) > 0L) {
         .pestore_write_baked(store, data)
     } else {
-        q <- .pestore_remap_query(data)
-        .write_parquet(store, q)
+        .pestore_write_windowed(store, data)
     }
 
     # Slots copied from input -- already correctly narrowed by any
@@ -693,6 +692,58 @@ setMethod(
         }
     }
     invisible(NULL)
+}
+
+# Lazy-chain write: one cell window at a time, each sorted and written as its
+# own file, in cell order, so the output is cell-major (the layout AGENTS.md
+# states and the Gram kernel checks) with memory bounded by the window.
+#
+# The sort cannot be left to one arrange() over the whole query: write_dataset()
+# writes batches as its threads finish them and drops the order (a 169,420-cell
+# store came back in 170,944 runs of cells, a different layout every run), and
+# collecting the sorted query whole holds the entire output at once (17.9 GB
+# peak for a 300M-value store). See adr/0017.
+.pestore_write_windowed <- function(store, data) {
+    partition_dir <- .idpath(store@path, store@uid)
+    if (!dir.exists(partition_dir)) {
+        dir.create(partition_dir, recursive = TRUE, showWarnings = FALSE)
+    }
+    row_id <- NULL  # NSE
+    part_idx <- 0L
+    for (d in .pe_windows(data, .pe_write_chunk_size(data))) {
+        # window-local row ids start at 1; shift them to the output axis
+        off <- d$offset + d$cs - 1L
+        tb <- .pestore_remap_query(.pe_window_store(d)) |>
+            dplyr::mutate(row_id = row_id + off) |>
+            dplyr::compute()
+        if (tb$num_rows > 0L) {
+            .write_parquet_file(tb,
+                file.path(partition_dir, sprintf("part-%d.parquet", part_idx)),
+                chunk_size = 1048576L)
+            part_idx <- part_idx + 1L
+        }
+        # the Arrow table is freed only when R collects it, and R does not see
+        # Arrow's allocation; without this the previous window can still be
+        # resident when the next one sorts, doubling the peak
+        rm(tb)
+        invisible(gc(verbose = FALSE))
+    }
+    # a view with no stored values still has to read back as a store
+    if (part_idx == 0L) {
+        .write_parquet_file(
+            arrow::arrow_table(row_id = integer(), col_id = integer(),
+                value = double()),
+            file.path(partition_dir, "part-0.parquet"))
+    }
+    invisible(NULL)
+}
+
+# Window for the lazy-chain write. The sort holds a collected Arrow table plus
+# its sorted copy; measured at 60-100 bytes per stored value of process peak
+# (17.6M values: +1.05 GB; 300M values at 4 windows: +7.5 GB, the upper end
+# because Arrow's allocator keeps freed pages), hence 96.
+.pe_write_chunk_size <- function(pe) {
+    .pe_window_cells(pe, bytes_per_nz = 96, k = 0L)
 }
 
 # Build the lazy remapped triplet query for a (possibly subset) input.

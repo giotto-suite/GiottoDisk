@@ -88,6 +88,7 @@ least one.
 | [0012](0012-one-predicate-classifier-many-carriers.md) | Expression-store scan modifications are written once, in dplyr, for every carrier | Accepted | 2026-08-24 |
 | [0013](0013-no-second-stat-accumulator-engine.md) | No second stat accumulator engine: the win is per-window overhead, and it is small | Accepted | 2026-09-03 |
 | [0015](0015-view-steps-resolve-to-an-id-set.md) | A view step resolves to an ID set; the coordinator models the cell axis | Accepted | 2026-09-09 |
+| [0017](0017-sorted-write-by-cell-window.md) | A parquet expression write sorts per cell window and writes each window itself | Accepted | 2026-09-28 |
 
 ## Backfill candidates
 
