@@ -199,7 +199,9 @@ PCA passes, the `storeWrite` bake — takes its windows from `.pe_windows()` /
 `.pe_chunk_ranges()` (`R/utils-pestore-ops.R`). Do not hand-roll the walk.
 
 The axis is not a free choice. Stores are written cell-major
-(`setorder(row_id, col_id)`), so a contiguous cell range is the gapless case in
+(`setorder(row_id, col_id)`) — each file sorted, files covering disjoint cell
+ranges, by both parquet → parquet write paths (the lazy one windows and sorts
+per window, adr/0018) — so a contiguous cell range is the gapless case in
 `.pe_axis_pred()` and lowers to a `row_id` range predicate that prunes parquet
 row groups. Windowing the **feature** axis prunes nothing — every batch rescans
 the store in full, and the cost is linear in batch count rather than in features
@@ -232,11 +234,15 @@ float statistic is **tolerance-reproducible, not bitwise-reproducible**, even on
 one machine. Never build a bitwise hash or snapshot test on one.
 
 Windowing and folding are **not** the same set, and conflating them is the easy
-mistake. Several passes window — both PCA flavours, the `storeWrite()` bake, and
-both accumulator paths. Only the two accumulator paths *fold*, and only folding
-reassociates, so only folding is exposed to the ULP note above. PCA and the bake
-write each window into a slice nothing else touches, so they have no partials to
-combine and stay bitwise reproducible.
+mistake. Several passes window — both PCA flavours, both `storeWrite()` paths
+(the bake and the lazy-chain write), and both accumulator paths. Only the two
+accumulator paths *fold*, and only folding reassociates, so only folding is
+exposed to the ULP note above. PCA and the writes put each window into a slice
+nothing else touches, so they have no partials to combine and stay bitwise
+reproducible. With GiottoKernels installed, pass 1 sums per-thread Gram
+partials, so it is bitwise reproducible for a fixed thread count, not across
+counts — the same property the R bands already had across worker counts; pass 2
+builds each cell's row in one thread and is bitwise reproducible at any count.
 
 Of the two that fold, one is `by_cell` (grouped statistics) and the other is any
 statistic whose chain landed on `@post_ops`. In the current pipeline only the

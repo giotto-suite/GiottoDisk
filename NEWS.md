@@ -1,14 +1,17 @@
 # GiottoDisk 0.0.0.3
 
 ## new
-- `Compare` methods (`>`, `>=`, `<`, `<=`, `==`, `!=`) for `parquetExprBase`
-  against a numeric scalar. `x >= t` queues a lazy indicator on the op chain
-  -- stored entries that pass read back as 1, the rest are dropped -- so
-  `rowSums(x >= 1)` and `colSums(x > 0)` stream through the existing margin
-  methods, and code written for an in-memory matrix (`rowSums_flex(x >= t)`)
-  runs unchanged on a backed one. The comparison sees values after anything
-  already queued. A comparison that is `TRUE` at 0 (`x >= 0`, `x < 1`) would
-  be dense and is an error; so is comparing two stores.
+- Gram-eigen PCA (`gramEigenPcaParam`, and `method = "auto"` when it resolves
+  to it) runs both of its passes in the compiled `GiottoKernels` package when
+  that is installed (optional, in `Suggests`): one scan of the HVF store each,
+  with threads inside the call rather than forked R processes, so PCA no
+  longer forks and runs in Positron and on Windows. On a 169,420-cell x
+  2,000-feature store, 50 components, the whole call takes 7.3 s on one
+  thread and 6.2 s on eight, against 16.9 s serial and 8.0 s on eight forked
+  workers before. Threads follow
+  `giottodisk.par_workers` / the future plan when above one, else
+  `options(gkernels.n_threads)`. Without the package, or with
+  `options(giottodisk.use_kernels = FALSE)`, the R path runs as before.
 
 ## bug fixes
 - The Stereo-seq GEF readers now write cell-major stores, like every other
@@ -22,6 +25,15 @@
   arrow restores R attributes on read; restored onto a store read back from
   several files or after a filter they were stale, and keyed or indexed
   subsets of the collected table could return wrong rows.
+- `storeWrite()` of a `parquetExprStore` or `unionParquetExprStore` into a
+  `parquetExprStore`, the last expression-store writer that was not
+  cell-major, now writes that layout: each file sorted by cell then feature,
+  files covering disjoint cell ranges. The sort
+  was computed and then discarded by the parallel dataset writer, so the
+  layout differed on every run. The write is also windowed by cell, so memory
+  is bounded by the window rather than by the whole output (17.9 GB peak ->
+  10.8 GB writing a 300M-value store). Stores already written keep their
+  layout until rewritten.
 - Tile stores written from a `queryableStore` or `parquetStore` (the disk
   readers' transcript and polygon paths) no longer nest a second
   `tile_index=000/` level inside every tile directory. Each tile took the flat

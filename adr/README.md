@@ -89,6 +89,7 @@ least one.
 | [0013](0013-no-second-stat-accumulator-engine.md) | No second stat accumulator engine: the win is per-window overhead, and it is small | Accepted | 2026-09-03 |
 | [0015](0015-view-steps-resolve-to-an-id-set.md) | A view step resolves to an ID set; the coordinator models the cell axis | Accepted | 2026-09-09 |
 | [0017](0017-gef-ingest-writes-cell-major.md) | GEF ingest writes cell-major: `cellExp` for cellbin, a stripe spill for bin | Accepted | 2026-09-28 |
+| [0018](0018-sorted-write-by-cell-window.md) | A parquet expression write sorts per cell window and writes each window itself | Accepted | 2026-09-28 |
 
 ## Backfill candidates
 

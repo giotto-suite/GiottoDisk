@@ -553,3 +553,56 @@ test_that("gram-eigen falls back to Halko without erroring", {
         "Delegating to streaming random SVD"
     )
 })
+
+# GiottoKernels, when installed, runs both gram-eigen passes in compiled
+# kernels over the materialized store. They must agree with the R bands.
+test_that("gram-eigen passes in GiottoKernels match the R path", {
+    skip_if_not_installed("Giotto")
+    skip_if_not_installed("GiottoKernels")
+    skip_if_not(GiottoKernels::has_kernel("gram_stream") &&
+        GiottoKernels::has_kernel("project_stream"))
+    mat <- .structured_mat(n_genes = 60L, n_cells = 300L, seed = 3L)
+    pe  <- .setup_normalized_pe(mat)
+    hvg <- rownames(mat)[c(7, 1, 33, 2:6, 40:55)]  # deliberately not ascending
+
+    # the kernels are what run on the store PCA materializes
+    mat_store <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        pe[match(hvg, pe@feat_ids), ])
+    expect_false(is.null(GiottoDisk:::.gram_pass_kernel(mat_store, length(hvg))))
+    expect_false(is.null(GiottoDisk:::.coords_pass_kernel(mat_store,
+        diag(length(hvg))[, 1:2], as.integer(mat_store@n_cells))))
+
+    run <- function(use, scale) {
+        old <- options(giottodisk.use_kernels = use)
+        on.exit(options(old), add = TRUE)
+        GiottoClass::reduceData(pe, gramEigenPcaParam(ncp = 5,
+            feats_to_use = hvg, center = TRUE, scale = scale))
+    }
+    for (scale in c(FALSE, TRUE)) {
+        k <- run(TRUE, scale)
+        r <- run(FALSE, scale)
+        expect_equal(k$d, r$d, tolerance = 1e-10)
+        expect_equal(k$v, r$v, tolerance = 1e-8)
+        expect_equal(k$u, r$u, tolerance = 1e-8)
+        expect_identical(dimnames(k$u), dimnames(r$u))
+    }
+})
+
+# With the kernels installed, neither pass forks, even when workers are
+# requested -- the case where the host refuses forking (Positron).
+test_that("gram-eigen with GiottoKernels does not fork", {
+    skip_if_not_installed("Giotto")
+    skip_if_not_installed("GiottoKernels")
+    skip_if_not(GiottoKernels::has_kernel("gram_stream") &&
+        GiottoKernels::has_kernel("project_stream"))
+    mat <- .structured_mat(n_genes = 40L, n_cells = 200L, seed = 4L)
+    pe  <- .setup_normalized_pe(mat)
+    old <- options(giottodisk.par_workers = 2L, giottodisk.use_kernels = TRUE)
+    on.exit(options(old), add = TRUE)
+    local_mocked_bindings(
+        mclapply = function(...) stop("forking refused"),
+        .package = "parallel")
+    res <- GiottoClass::reduceData(pe, gramEigenPcaParam(ncp = 3,
+        feats_to_use = rownames(mat)[1:20]))
+    expect_equal(dim(res$u), c(200L, 3L))
+})
