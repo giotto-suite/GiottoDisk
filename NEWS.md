@@ -1,14 +1,17 @@
 # GiottoDisk 0.0.0.3
 
 ## new
-- `Compare` methods (`>`, `>=`, `<`, `<=`, `==`, `!=`) for `parquetExprBase`
-  against a numeric scalar. `x >= t` queues a lazy indicator on the op chain
-  -- stored entries that pass read back as 1, the rest are dropped -- so
-  `rowSums(x >= 1)` and `colSums(x > 0)` stream through the existing margin
-  methods, and code written for an in-memory matrix (`rowSums_flex(x >= t)`)
-  runs unchanged on a backed one. The comparison sees values after anything
-  already queued. A comparison that is `TRUE` at 0 (`x >= 0`, `x < 1`) would
-  be dense and is an error; so is comparing two stores.
+- Gram-eigen PCA (`gramEigenPcaParam`, and `method = "auto"` when it resolves
+  to it) runs both of its passes in the compiled `GiottoKernels` package when
+  that is installed (optional, in `Suggests`): one scan of the HVF store each,
+  with threads inside the call rather than forked R processes, so PCA no
+  longer forks and runs in Positron and on Windows. On a 169,420-cell x
+  2,000-feature store, 50 components, the whole call takes 7.3 s on one
+  thread and 6.2 s on eight, against 16.9 s serial and 8.0 s on eight forked
+  workers before. Threads follow
+  `giottodisk.par_workers` / the future plan when above one, else
+  `options(gkernels.n_threads)`. Without the package, or with
+  `options(giottodisk.use_kernels = FALSE)`, the R path runs as before.
 
 ## bug fixes
 - `storeWrite()` of a `parquetExprStore` or `unionParquetExprStore` into a

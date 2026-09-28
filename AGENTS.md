@@ -234,7 +234,10 @@ mistake. Several passes window — both PCA flavours, both `storeWrite()` paths
 accumulator paths *fold*, and only folding reassociates, so only folding is
 exposed to the ULP note above. PCA and the writes put each window into a slice
 nothing else touches, so they have no partials to combine and stay bitwise
-reproducible.
+reproducible. With GiottoKernels installed, pass 1 sums per-thread Gram
+partials, so it is bitwise reproducible for a fixed thread count, not across
+counts — the same property the R bands already had across worker counts; pass 2
+builds each cell's row in one thread and is bitwise reproducible at any count.
 
 Of the two that fold, one is `by_cell` (grouped statistics) and the other is any
 statistic whose chain landed on `@post_ops`. In the current pipeline only the
