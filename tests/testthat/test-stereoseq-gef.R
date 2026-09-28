@@ -110,23 +110,6 @@ skip_if_not_installed("rhdf5")
     list(path = path, records = rec, coords = coords)
 }
 
-# helper: per part file, the row_id range it holds, in part order
-.part_ranges <- function(out) {
-    parts <- list.files(out, pattern = "[.]parquet$", recursive = TRUE, full.names = TRUE)
-    parts <- parts[order(as.integer(sub(".*part-([0-9]+)[.]parquet$", "\\1", parts)))]
-    do.call(rbind, lapply(parts, function(f) {
-        r <- range(arrow::read_parquet(f, col_select = "row_id")$row_id)
-        data.frame(lo = r[1L], hi = r[2L])
-    }))
-}
-
-# cell-major: each part holds one ascending, non-overlapping range of cells
-.expect_cell_major <- function(out) {
-    pr <- .part_ranges(out)
-    if (nrow(pr) > 1L) expect_true(all(pr$lo[-1L] > pr$hi[-nrow(pr)]))
-    invisible(pr)
-}
-
 # helper: pull a store back into a genes x cells sparse matrix
 .pe_as_matrix <- function(pe) {
     df <- as.data.frame(dplyr::collect(storeRead(pe)))
