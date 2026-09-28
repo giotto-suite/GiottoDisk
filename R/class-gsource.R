@@ -92,7 +92,7 @@ sourceCreate <- function(path, type = "gDirSource", ...) {
 
 setMethod("initialize", signature("gDirSource"), function(.Object, ...) {
     .Object <- callNextMethod(.Object, ...)
-    p <- .Object@path <- normalizePath(.Object@path, mustWork = FALSE)
+    p <- .Object@path
     if (is.na(p)) {
         stop("[gDirSource] 'path' should be a directory path for the giotto project.\n",
             call. = FALSE
@@ -101,6 +101,10 @@ setMethod("initialize", signature("gDirSource"), function(.Object, ...) {
     if (!file.exists(.gdsrc_json_path(p))) {
         .gdsrc_json_write(p, list()) # initialize with empty list
     }
+    # normalize only once the directory exists: normalizePath() returns a
+    # missing path unchanged, which would leave a new project relative to
+    # whatever getwd() is when its artifacts are later read (knitr, workers)
+    .Object@path <- normalizePath(p, mustWork = TRUE)
     .Object
 })
 
