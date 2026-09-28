@@ -1,4 +1,4 @@
-# 0017. A parquet expression write sorts per cell window and writes each window itself
+# 0018. A parquet expression write sorts per cell window and writes each window itself
 
 - **Status:** Accepted
 - **Date:** 2026-09-28
@@ -9,8 +9,9 @@
 
 `storeWrite(parquetExprStore, <parquetExprStore | union>)` on a lazy chain ended
 in `arrange(row_id, col_id)` and handed the query to `arrow::write_dataset()`.
-Stores are meant to be cell-major (AGENTS.md), and the `@post_ops` bake path
-already wrote that layout by walking cell windows in order.
+Stores are meant to be cell-major (AGENTS.md). adr/0017 brought the GEF
+importers into line, so every importer writes that layout, and the `@post_ops`
+bake path already did by walking cell windows in order.
 
 The lazy path did not. `write_dataset()` writes batches as its threads finish
 them and has no order-preserving option in arrow 23, so the sort was paid for and
@@ -70,4 +71,5 @@ one window.
 - `.pestore_write_windowed()`, `.pe_write_chunk_size()` in
   `R/methods-parquetExprStore.R`; the bake path `.pestore_write_baked()`.
 - `tests/testthat/test-parquetExprStore-write-layout.R`.
-- adr/0011 (cell windowing over spill).
+- adr/0011 (cell windowing over spill); adr/0017 (importers write cell-major).
+- `tests/testthat/helper-cell-major.R`, the shared layout check.

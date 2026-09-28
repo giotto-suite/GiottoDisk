@@ -14,9 +14,21 @@
   `options(giottodisk.use_kernels = FALSE)`, the R path runs as before.
 
 ## bug fixes
+- The Stereo-seq GEF readers now write cell-major stores, like every other
+  input. `cellbinGefInput` reads the cell-major `cellExp` copy; `binGefInput`
+  reorders through a temporary spill and positions bins in grid order, keeping
+  their first-appearance `bin_<id>` names. Before, each part file held one
+  gene batch across all cells, so cell-windowed passes (markers, grouped
+  `featStats`, PCA) rescanned the store once per window. Stores written earlier
+  keep the old layout until re-imported.
+- Parquet writes no longer store data.table's `sorted` / `index` attributes.
+  arrow restores R attributes on read; restored onto a store read back from
+  several files or after a filter they were stale, and keyed or indexed
+  subsets of the collected table could return wrong rows.
 - `storeWrite()` of a `parquetExprStore` or `unionParquetExprStore` into a
-  `parquetExprStore` now writes the documented cell-major layout: each file
-  sorted by cell then feature, files covering disjoint cell ranges. The sort
+  `parquetExprStore`, the last expression-store writer that was not
+  cell-major, now writes that layout: each file sorted by cell then feature,
+  files covering disjoint cell ranges. The sort
   was computed and then discarded by the parallel dataset writer, so the
   layout differed on every run. The write is also windowed by cell, so memory
   is bounded by the window rather than by the whole output (17.9 GB peak ->

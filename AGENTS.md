@@ -201,12 +201,17 @@ PCA passes, the `storeWrite` bake — takes its windows from `.pe_windows()` /
 The axis is not a free choice. Stores are written cell-major
 (`setorder(row_id, col_id)`) — each file sorted, files covering disjoint cell
 ranges, by both parquet → parquet write paths (the lazy one windows and sorts
-per window, adr/0017) — so a contiguous cell range is the gapless case in
+per window, adr/0018) — so a contiguous cell range is the gapless case in
 `.pe_axis_pred()` and lowers to a `row_id` range predicate that prunes parquet
 row groups. Windowing the **feature** axis prunes nothing — every batch rescans
 the store in full, and the cost is linear in batch count rather than in features
 per batch. If a new statistic seems to want feature batching, it wants a cell
 window instead.
+
+Every importer writes that layout: each part file covers one ascending range of
+cells. A source stored gene-major is reordered before it is written — the
+cellbin GEF reader reads the cell-major `cellExp`, the bin GEF reader spills to
+y-stripes (adr/0017). A new input must do the same.
 
 Windows are exact rather than approximate only because the accumulators are
 additive over cells. A statistic that is not — anything needing a global order

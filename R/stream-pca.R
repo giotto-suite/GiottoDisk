@@ -482,7 +482,7 @@ setMethod("reduceData",
 # sequential scan of the materialized store each, into a compiled kernel, with
 # threads inside the call instead of forked R processes -- so PCA also runs
 # where forking is refused (Positron, Windows). NULL means "use the R bands".
-# The store is written cell-major (adr/0017), which the kernels require; they
+# The store is written cell-major (adr/0018), which the kernels require; they
 # check the layout and error rather than mis-sum on any other.
 # `giottodisk.use_kernels = FALSE` forces the R path.
 .pca_kernel <- function(name) {

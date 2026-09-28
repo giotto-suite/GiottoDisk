@@ -702,7 +702,7 @@ setMethod(
 # writes batches as its threads finish them and drops the order (a 169,420-cell
 # store came back in 170,944 runs of cells, a different layout every run), and
 # collecting the sorted query whole holds the entire output at once (17.9 GB
-# peak for a 300M-value store). See adr/0017.
+# peak for a 300M-value store). See adr/0018.
 .pestore_write_windowed <- function(store, data) {
     partition_dir <- .idpath(store@path, store@uid)
     if (!dir.exists(partition_dir)) {

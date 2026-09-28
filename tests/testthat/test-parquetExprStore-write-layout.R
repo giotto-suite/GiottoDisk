@@ -1,6 +1,6 @@
 # storeWrite(parquetExprStore, <parquetExprStore | union>) writes cell-major:
 # every file sorted by (row_id, col_id), files covering disjoint cell ranges.
-# AGENTS.md states the layout and the Gram kernel requires it (adr/0017).
+# AGENTS.md states the layout and the Gram kernel requires it (adr/0018).
 
 .layout_mat <- function(n_genes = 60L, n_cells = 500L, seed = 1L) {
     set.seed(seed)
@@ -20,15 +20,14 @@
         function(f) as.data.frame(arrow::read_parquet(f)))
 }
 
-.expect_cell_major <- function(pe) {
-    parts <- Filter(nrow, .files_of(pe))
-    for (d in parts) {
+# The shared check (helper-cell-major.R) asserts files cover disjoint cell
+# ranges; the kernels also need each file sorted within, so check that too.
+.expect_sorted_cell_major <- function(pe) {
+    .expect_cell_major(pe@path)
+    for (d in Filter(nrow, .files_of(pe))) {
         expect_identical(order(d$row_id, d$col_id), seq_len(nrow(d)))
         expect_false(anyDuplicated(d[c("row_id", "col_id")]) > 0L)
     }
-    rng <- do.call(rbind, lapply(parts, function(d) range(d$row_id)))
-    rng <- rng[order(rng[, 1L]), , drop = FALSE]
-    if (nrow(rng) > 1L) expect_true(all(rng[-1L, 1L] > rng[-nrow(rng), 2L]))
 }
 
 .as_dense <- function(pe) {
@@ -40,7 +39,7 @@ test_that("a subset written in caller order comes out cell-major and exact", {
     set.seed(2L)
     v <- .write_pe(m)[sample(60L, 25L), sample(500L, 300L)]
     out <- .write_pe(v)
-    .expect_cell_major(out)
+    .expect_sorted_cell_major(out)
     M <- .as_dense(out)
     expect_equal(M, as.matrix(m[rownames(M), colnames(M)]))
 })
@@ -53,7 +52,7 @@ test_that("several windows give the same store as one", {
     on.exit(options(old), add = TRUE)
     many <- .write_pe(v)
     expect_gt(length(arrow::open_dataset(many@path)$files), 1L)
-    .expect_cell_major(many)
+    .expect_sorted_cell_major(many)
     expect_identical(.as_dense(many), .as_dense(one))
 })
 
@@ -63,7 +62,7 @@ test_that("a union writes cell-major across its substores", {
     old <- options(giottodisk.chunk_size = 90L)
     on.exit(options(old), add = TRUE)
     out <- .write_pe(u[5:30, ])
-    .expect_cell_major(out)
+    .expect_sorted_cell_major(out)
     M <- .as_dense(out)
     expect_equal(M, as.matrix(m[rownames(M), colnames(M)]))
 })

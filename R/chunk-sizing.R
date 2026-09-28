@@ -20,10 +20,12 @@ NULL
 #   .sc_free_ram            per-OS free-RAM probe
 #   storeChunkInfo          exported report over both read shapes
 #
-# Two options steer it:
+# Options that steer it:
 #   giottodisk.chunk_ram_frac   fraction of free RAM to budget (default 0.25)
 #   giottodisk.chunk_size       pin an absolute window; also the fallback
 #                               when the derivation cannot run
+#   giottodisk.gef_batch_rows   pin the records per Stereo-seq GEF ingest
+#                               batch (`.gef_batch_rows()`)
 
 # Recommend a streaming chunk size from free RAM.
 #
@@ -158,6 +160,9 @@ NULL
 #'     memory cannot be read, for a shape the model sizes badly, and for tests
 #'     that need to force several windows. Also the fallback value when the
 #'     derivation cannot run.}
+#'   \item{`giottodisk.gef_batch_rows`}{pins the records per batch when a
+#'     Stereo-seq `.gef` is written to a store. Derived from the same budget
+#'     otherwise.}
 #' }
 #'
 #' Neither switches streaming on or off, and neither is a performance dial.
