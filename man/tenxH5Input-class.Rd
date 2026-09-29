@@ -2,7 +2,7 @@
 % Please edit documentation in R/class-fileInputs.R
 \name{tenxH5Input-class}
 \alias{tenxH5Input-class}
-\title{10x cell_feature_matrix.h5 Input}
+\title{10x feature-barcode matrix .h5 Input}
 \description{
 Wraps a 10x HDF5 sparse-matrix file (CSC layout with \code{data},
 \code{indices}, \code{indptr}, \code{barcodes}, \verb{features/\{id,name\}}, \code{shape}).
