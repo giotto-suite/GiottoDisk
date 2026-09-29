@@ -4,33 +4,14 @@ NULL
 # =============================================================================
 # methods-resolveSubobject.R — parquetCoordinator dispatch
 #
-# Registers:
-#   1. defaultViewCoordinator on gsource, so a gobject with a
-#      gsource-inheriting `@source` selects parquetCoordinator.
-#   2. resolveKeep for parquetCoordinator: a view evaluated into the op's
-#      surviving cell set as a LAZY arrow query -- the accumulated narrowing,
-#      run only when a target is read.
-#   3. resolve leaf methods on the subobject classes whose data slot may hold
-#      a parquetStore-inheriting backing. Each queues the `arrow` form of the
-#      set as an `id_filter`; in-memory data falls through to GiottoClass's
-#      dataTableCoordinator leaves, which read the `vector` form.
-#
-# A filter's predicate columns may live on a different subobject than the
-# target being narrowed, and either side can be backed or in memory.
-# `.find_store_with_cols()` finds the owner; a backed owner narrows lazily
-# with `subset()` and contributes its key column as a query, an in-memory
-# owner narrows eagerly and contributes an arrow Table. Crop steps reduce to
-# a cell_ID set through `.crop_step_ids()`. The steps are chained with
-# semi-joins, so the whole view is one plan that nothing executes until a
-# target store is collected -- on the arrow engine inside that target's own
-# query, on duckdb / sedona as a registered id table.
+# `resolveKeep()` evaluates a view into the op's surviving cell set as a
+# lazy arrow plan; the `resolveRecipe()` leaf methods queue it on each backed
+# store as an `id_filter` and hand in-memory data to the inherited leaves.
 # =============================================================================
 
 
 # defaultViewCoordinator dispatch ####
-# Registered against gsource so that any gobject whose @source inherits
-# from gsource auto-selects parquetCoordinator. S4 inheritance picks up
-# concrete gsource subclasses (gDirSource, etc.) automatically.
+# Any gsource subclass selects parquetCoordinator.
 
 #' @rdname parquetCoordinator-class
 #' @importFrom GiottoClass defaultViewCoordinator
@@ -42,22 +23,10 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
 
 # Helpers ####
 
-# Walk a gobject's tabular subobjects and return the first one whose data
-# covers all of `cols`. Considered slots, in the same precedence order
-# spatValues uses for column lookup:
-#
-#   1. cell metadata     (cellMetaObj@metaDT, key = cell_ID)
-#   2. feat metadata     (featMetaObj@metaDT, key = feat_ID)
-#   3. spatial locations (spatLocsObj@coordinates, key = cell_ID)
-#   4. spatial enrichment(spatEnrObj@enrichDT, key = cell_ID)
-#   5. polygon attributes(giottoPolygon@spatVector, key = poly_ID)
-#
-# Matrix-shaped slots (expression, dim_reduction) are skipped — they need
-# feat_ID-based routing rather than colname checks.
-#
-# Returns:
-#   list(kind = "parquetBase" | "data.table", source = <store|dt>, key = <id>)
-#   NULL if no slot covers all `cols`.
+# The first subobject whose data covers all of `cols`, in spatValues'
+# precedence: cell metadata, feature metadata, spatial locations, spatial
+# enrichment, polygon attributes (key poly_ID), then expression by gene name.
+# Returns `list(kind, source, key)`, or NULL.
 #
 #' @keywords internal
 #' @noRd
@@ -177,16 +146,9 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
 }
 
 
-# Materialize a "gene slice" of a parquetExprStore as a wide
-# data.table. Result has `cell_ID` plus one column per requested gene
-# (values = expression for that gene, 0 for cells with no recorded
-# value). Used by `.find_store_with_cols` to expose gene names as
-# columns to `.compute_narrowed_ids` for predicate evaluation.
-#
-# Cost: reads only the rows of the long-format parquet whose `col_id`
-# is in the requested gene set. For atlas-scale this is bounded by
-# `n_cells × |genes_requested|` (typically 1M × few genes — tens of
-# MB), much smaller than the full expression matrix.
+# A wide data.table of the requested genes (`cell_ID` plus one column per
+# gene), so a filter can reference genes as columns. Reads only those genes'
+# rows: bounded by n_cells x genes requested.
 #
 #' @keywords internal
 #' @noRd
@@ -251,28 +213,11 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
     list(ids = ids, key = key)
 }
 
-# Centroid table for the crop steps, in the PREDICATE frame.
-#
-# This is a fetch helper only. The predicate itself is GiottoClass's
-# `.cells_in_crop_step()`, which owns the crop semantics for both
-# `geom` arms — including the `disjoint` AABB exclusion and the
-# rectangle fast path. GiottoDisk deliberately does NOT keep its own
-# copy of that: an earlier duplicate here silently diverged (it had
-# neither the disjoint fix nor a geom arm), so a backed object answered
-# a different question than an in-memory one for the same recipe.
-#
-# What is local is the FETCH, because `spatLocsObj@coordinates` may hold
-# a store, which GiottoClass's `.get_projected_spatlocs()` cannot read.
-#
-# * single giotto: `getSpatialLocations(g, output = "spatLocsObj")`
-#   returns ONE spatLocsObj. Project through `space` once, then hand
-#   over the coordinates.
-#
-# * giottoMulti: the same getter returns a NAMED LIST of per-sample
-#   spatLocsObjs. Per sample: scope the space to that sample, project,
-#   and prefix cell_IDs with `<sample>::` so the result speaks the joint
-#   `@cell_metadata` vocabulary. Rows are stacked, not unioned by ID —
-#   joint cell_IDs are globally unique, so the stack is the joint table.
+# Centroids for the crop steps, in the predicate frame. Only the fetch is
+# local -- a backed `@coordinates` must be read first -- and the predicate is
+# GiottoClass's `spatRelate()`, so both backends answer the same question.
+# On a multi, cell_IDs are prefixed `<sample>::` to match the joint
+# vocabulary.
 #
 #' @keywords internal
 #' @noRd
@@ -321,13 +266,9 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
     GiottoClass::as.points(Reduce(rbind2, parts))
 }
 
-# Fetch the polygon source in the predicate frame, for a `geom = "poly"`
-# crop. Returns a `giottoPolygon`, so `spatRelate()` dispatches on it and
-# a backed `@spatVector` brings its own engines.
-#
-# giottoMulti: polygons live per child, so each child's are fetched,
-# space-scoped, and their poly_IDs prefixed to match the joint cell
-# vocabulary the resulting ID set is intersected against.
+# The polygon source for a `geom = "poly"` crop, in the predicate frame, as
+# a giottoPolygon so a backed `@spatVector` brings its own engines. On a
+# multi, poly_IDs are prefixed to match the joint vocabulary.
 #' @keywords internal
 #' @noRd
 .projected_polys <- function(gobject, space, spat_unit = NULL) {
@@ -357,13 +298,9 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
     do.call(rbind, parts)
 }
 
-# One crop step -> the cell_IDs that survive it.
-#
-# Both arms are one public expression: narrow a carrier with
-# `spatRelate()`, then read its IDs. `geom` picks WHICH carrier -- the
-# cells' centroids or their polygons -- and nothing else. The polygon
-# carrier may be backed, in which case `spatRelate()` dispatches to the
-# store's own sedona / duckdb / terra engines.
+# One crop step -> the cell_IDs that survive it. `geom` picks the carrier
+# (centroids or polygons); `spatRelate()` evaluates it on whichever engine
+# the carrier has.
 #' @keywords internal
 #' @noRd
 .crop_step_ids <- function(gobject, step, carriers) {
@@ -397,18 +334,9 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
     arrow::arrow_table(data.frame(cell_ID = ids, stringsAsFactors = FALSE))
 }
 
-# Carriers for the crop arms, plus the frame each one is projected into.
-#
-# The predicate frame is named BY THE STEP -- the frame that step's region
-# coordinates were read in. It is independent of any OUTPUT space the
-# caller asked for; that one is applied by `.apply_space_to_subobj` on the
-# subobject itself. Conflating the two is what made a `space =`-bound view
-# return rotated coordinates from a plain getter.
-#
-# Built lazily and memoised PER FRAME: two crop steps in one view may name
-# different spaces, and steps sharing a frame -- the common case -- share
-# one build. A `NULL` build is a real answer ("no spatial locations"), so
-# it is cached too and the warning fires once per frame, not once per step.
+# Carriers for the crop arms, in the frame each step names (independent of
+# the output space). Built lazily and memoised per frame; a NULL build ("no
+# spatial locations") is cached too, so its warning fires once per frame.
 #' @keywords internal
 #' @noRd
 .crop_carriers <- function(gobject, spat_unit = NULL) {
@@ -448,19 +376,10 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
     GiottoClass::giottoSpace(gobject, space_name)
 }
 
-# The whole cell-axis answer for a view, as ONE lazy arrow plan: walk the
-# recorded steps IN ORDER and semi-join what each leaves standing onto the
-# running result. Nothing is read here -- a backed filter owner contributes a
-# query -- so the plan runs once per target that is collected, inside that
-# target's own read.
-#
-# Ordered, not gathered by kind. Order is information -- a read-time
-# collapse needs it, and gathering by type discards it.
-#
-# NULL means "unconstrained", not "empty". Errors if a filter resolves
-# against a non-`cell_ID` key -- multi-key intersection is out of scope,
-# matching the in-memory coordinator. v1 models the CELL axis only; feature
-# and subcellular-point axes are deferred -- see adr/0015.
+# The view's surviving cell set as one lazy arrow plan: the steps, in order,
+# semi-joined onto a running result. Nothing is read here; the plan runs
+# inside each target's read. NULL means unconstrained, not empty. Cell axis
+# only (adr/0015).
 #' @keywords internal
 #' @noRd
 .surviving_ids_query <- function(view, gobject, spat_unit = NULL,
@@ -499,11 +418,9 @@ setMethod("defaultViewCoordinator", signature(source = "gsource"),
 
 # resolveKeep (parquetCoordinator) ####
 #
-# The set carries both forms: `arrow`, the lazy plan every backed leaf queues
-# as its `id_filter`, and `vector`, which the dataTableCoordinator leaves read
-# when an in-memory subobject inside a backed gobject falls through to them.
-# `vector` can only be had by running the plan, so it is installed as a
-# promise and collected only if such a leaf reads it.
+# `arrow` is the plan backed leaves queue; `vector` is what an in-memory
+# subobject falling through to the dataTableCoordinator leaves reads. It can
+# only be had by running the plan, so it is a promise.
 
 #' @rdname parquetCoordinator-class
 #' @importFrom GiottoClass resolveKeep
@@ -524,37 +441,11 @@ setMethod("resolveKeep", signature(coordinator = "parquetCoordinator"),
 )
 
 
-# Apply a giottoSpace's per-sample transform steps to a subobject.
-#
-# Dispatch routing:
-#
-# * Backed `giottoPolygon` / `giottoPoints` (whose @spatVector inherits
-#   parquetBase): dispatch transforms DIRECTLY on the inner store. The
-#   wrapper methods on giottoPolygon/giottoPoints (`.shift_gpoly`,
-#   `.do_gpoly + terra::spin`, `.affine_sv`, etc.) are SpatVector-
-#   specific and call terra:: functions that have no parquetGeomBase
-#   methods. The parquetGeomBase has its own transform methods (`spin`,
-#   `affine`, `spatShift`, `rescale`, `shear`, `flip`, `t`) that
-#   compose into @post_ops via matrix product — multi-step recipes
-#   accumulate into a single affine2d at storeRead time.
-#
-# * In-mem / DT-backed subobjects (spatLocsObj, in-mem giottoPolygon):
-#   dispatch on the subobj itself; existing GiottoClass methods mutate
-#   coordinates / SpatVector eagerly.
-#
-# Affine matrix coercion: a transform step whose `op == "affine"` records
-# `args = list(y = <matrix>)`. parquetGeomBase has an
-# `(parquetGeomBase, affine2d)` method but NOT `(parquetGeomBase,
-# matrix)` (dispatch would fail). Wrap the matrix in an affine2d before
-# dispatch.
-#
-# Sample-key resolution: use the `:default:` sentinel for single-
-# giotto contexts; the single key if just one is present; otherwise
-# a no-op.
-#
-# This deliberately shadows nothing: GiottoClass has an internal of the
-# same name, but it dispatches transforms on the subobject wrapper, which
-# is exactly what a backed geometry must NOT do.
+# Apply a space's transform steps to a subobject. A backed polygon / points
+# store is transformed directly (its methods compose into `@post_ops`),
+# because the wrapper methods call terra; anything else dispatches on the
+# subobject. An `affine` step's matrix is wrapped in an affine2d, the only
+# form the store method takes.
 #
 #' @keywords internal
 #' @noRd
@@ -587,11 +478,8 @@ setMethod("resolveKeep", signature(coordinator = "parquetCoordinator"),
 
 # resolve leaf methods (parquetCoordinator) ####
 #
-# Each method narrows a BACKED slot and hands anything in memory to the
-# inherited dataTableCoordinator leaf with `callNextMethod()`, which reads
-# the `vector` form. featMetaObj and dimObj register nothing here: feature
-# metadata is not cell-keyed, and no pipeline produces backed dim-reduction
-# coordinates, so both inherit the in-memory leaf outright.
+# Each method narrows a backed slot and hands in-memory data to the
+# inherited leaf. featMetaObj and dimObj inherit the in-memory leaf outright.
 
 # Queue the op's surviving set on a backed store. `by` maps the store's key
 # column onto the set's `cell_ID`.
@@ -656,12 +544,9 @@ setMethod("resolveRecipe",
     }
 )
 
-# Points are not cell-keyed: one row is one transcript, so a cell_ID set
-# does not address rows, and a crop means "clip these points" -- a
-# `spat_relate` op on the store's own geometry, in the output frame. The
-# region is projected there from the frame its step was drawn in, looked up
-# in `spaces`. Filter steps are skipped, as the in-memory leaf skips them:
-# filters are cell-centric, and a feature-select step would be its own axis.
+# Points are not cell-keyed, so a crop clips the store's own geometry in the
+# output frame, projected from the frame its step names. Filter steps are
+# skipped, as in memory.
 
 #' @rdname parquetCoordinator-class
 #' @export
