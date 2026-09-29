@@ -124,6 +124,10 @@ R/
                          #   Xenium disk reader; layouts are identical
                          #   today, so it overrides nothing but the
                          #   platform label)
+  convenience-visiumhd.R # Visium HD import convenience (binned +
+                         #   segmented; several bins into one object)
+  reader-shared.R        # technology-agnostic reader pieces:
+                         #   parent-unit metadata
   zarr-source.R          # zarr v2 source layer: in-place .zarr.zip reads
                          #   (seek-based, STORED entries only) + dir trees;
                          #   .zarr_blosc_decompress() is the SINGLE call
@@ -630,6 +634,24 @@ construction. `all_feat_ids`/`all_cell_ids` params preserve zero-overlap entries
   `(i, j, n)` → `(col_id, row_id, value)`, arranges by `row_id` for row-group skipping,
   streams record batches to a `parquetExprStore` — **no MTX intermediate, no dgCMatrix
   materialization**.
+
+## Binned-grid readers (Visium HD / Stereo-seq)
+
+Both give one object shape: bin spat_units named as the in-memory readers
+name them (`bin008`, `bin100`, `cell`), `rna`/`raw` expression in a
+`parquetExprStore`, `raw` spatlocs, and the finest bins (2 um / bin1) as the
+in-memory `giottoBinPoints` -- GiottoClass keeps it in memory on a backed
+object, since it has no disk representation yet.
+
+- Readers subclass the Giotto reader and override only what goes to disk.
+  Polygons keep the inherited in-memory loader; drop its terra centroids and
+  attach it to the backed object, whose setter writes it to the vault.
+- A multi-unit `create_gobject()` loops per-unit readers into one `gobject`;
+  it does not merge objects. The unit hierarchy is cell metadata
+  (`.add_parent_units`, `R/reader-shared.R`): one column per parent unit,
+  kept only where the relation is one-to-one.
+- The disk `create_gobject()` accepts every argument of the parent's, so the
+  Giotto `createGiotto*Object*()` wrappers can call either.
 
 ## Zarr input (Xenium / Atera)
 

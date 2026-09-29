@@ -1,6 +1,15 @@
 # GiottoDisk 0.0.0.3
 
 ## new
+- `importVisiumHDDisk()`: disk-backed Visium HD reader (binned and segmented
+  outputs), also reached through `backend =` on `Giotto::importVisiumHD()`
+  and `createGiottoVisiumHDObjectBin()` / `createGiottoVisiumHDObjectCell()`. It
+  gives the same barcodes, features, spatial locations and counts as the
+  in-memory reader; the 2 um bin points stay an in-memory `giottoBinPoints`.
+  `create_gobject()` takes several `bin`s, a `gobject` to add into, and
+  `load_bin_mapping = TRUE` to record each unit's parent units (from
+  `barcode_mappings.parquet`) as cell metadata. Only extracted output
+  directories are read.
 - Gram-eigen PCA (`gramEigenPcaParam`, and `method = "auto"` when it resolves
   to it) runs both of its passes in the compiled `GiottoKernels` package when
   that is installed (optional, in `Suggests`): one scan of the HVF store each,
@@ -12,6 +21,14 @@
   `giottodisk.par_workers` / the future plan when above one, else
   `options(gkernels.n_threads)`. Without the package, or with
   `options(giottodisk.use_kernels = FALSE)`, the R path runs as before.
+- `Compare` methods (`>`, `>=`, `<`, `<=`, `==`, `!=`) for `parquetExprBase`
+  against a numeric scalar. `x >= t` queues a lazy indicator on the op chain
+  -- stored entries that pass read back as 1, the rest are dropped -- so
+  `rowSums(x >= 1)` and `colSums(x > 0)` stream through the existing margin
+  methods, and code written for an in-memory matrix (`rowSums_flex(x >= t)`)
+  runs unchanged on a backed one. The comparison sees values after anything
+  already queued. A comparison that is `TRUE` at 0 (`x >= 0`, `x < 1`) would
+  be dense and is an error; so is comparing two stores.
 
 ## bug fixes
 - The Stereo-seq GEF readers now write cell-major stores, like every other

@@ -774,31 +774,34 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
 
 ## expression ####
 
-# Disk-backed Xenium expression ingestion.
+# Disk-backed 10x expression ingestion, shared by the 10x-format readers
+# (Xenium / Atera / VisiumHD).
 #
 # Builds an `exprInput` marker (`mtxInput` for the 10x mtx triple,
-# `tenxH5Input` for cell_feature_matrix.h5) and routes it through
-# `sourceWrite(gsource, inp, store_type = "parquetExpr")` into the
-# project vault. tar.gz inputs are unpacked under `tempdir()` and the
-# resulting cell_feature_matrix/ directory feeds the mtx path.
+# `tenxH5Input` for a 10x feature-barcode .h5, `tenxZarrInput` for zarr) and
+# routes it through `sourceWrite(gsource, inp, store_type = "parquetExpr")`
+# into the project vault. tar.gz inputs are unpacked under `tempdir()` and
+# the resulting cell_feature_matrix/ directory feeds the mtx path.
 #
-# Xenium-specific post-processing matches Giotto's in-mem
-# `.xenium_expression`: drop zero-detection features (Arrow distinct on
-# col_id), split by feature class (features.tsv column 3, or
-# /features/feature_type on h5), and rename to Giotto feat_type
-# conventions ("Gene Expression" -> "rna", etc).
-.xenium_expression_disk <- function(
+# Post-processing matches Giotto's in-mem 10x readers: drop zero-detection
+# features (Arrow distinct on col_id), split by feature class (features.tsv
+# column 3, or /features/feature_type on h5), and rename to Giotto feat_type
+# conventions ("Gene Expression" -> "rna", etc). `spat_unit` names the
+# unit the barcodes are: "cell" for segmented output, "bin008" etc. for
+# VisiumHD bins.
+.tenx_expression_disk <- function(
     path,
     gsource,
     gene_ids = "symbols",
     remove_zero_rows = TRUE,
     split_by_type = TRUE,
+    spat_unit = "cell",
     output = c("exprObj", "store"),
     verbose = NULL,
     ...
 ) {
     if (missing(path)) {
-        stop("[xenium_expression_disk] no path provided", call. = FALSE)
+        stop("[tenx_expression_disk] no path provided", call. = FALSE)
     }
     checkmate::assert_class(gsource, "gsource")
     output <- match.arg(output, choices = c("exprObj", "store"))
@@ -806,7 +809,7 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
     feature_id_col <- switch(gene_ids,
         "ensembl" = 1L,
         "symbols" = 2L,
-        stop("[xenium_expression_disk] unknown gene_ids: ", gene_ids,
+        stop("[tenx_expression_disk] unknown gene_ids: ", gene_ids,
              call. = FALSE)
     )
 
@@ -824,12 +827,12 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
             "h5"  = "h5",
             "mtx" = "mtx",
             "gz"  = "mtx",   # matrix.mtx.gz inside a 10x dir is handled below
-            stop("[xenium_expression_disk] unsupported expression format: ",
+            stop("[tenx_expression_disk] unsupported expression format: ",
                  path, call. = FALSE)
         )
     }
 
-    GiottoUtils::vmsg("[xenium_expression_disk] format:", fmt, .v = verbose)
+    GiottoUtils::vmsg("[tenx_expression_disk] format:", fmt, .v = verbose)
 
     # tar.gz -> unpack to tempdir, fall through to mtx path
     if (fmt == "tar.gz") {
@@ -844,7 +847,7 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
         candidates <- list.dirs(unpack_root, recursive = FALSE)
         unpacked <- candidates[grepl("cell_feature_matrix$", candidates)][1L]
         if (is.na(unpacked) || !dir.exists(unpacked)) {
-            stop("[xenium_expression_disk] tarball did not contain a ",
+            stop("[tenx_expression_disk] tarball did not contain a ",
                  "cell_feature_matrix/ directory.", call. = FALSE)
         }
         path <- unpacked
@@ -928,12 +931,14 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
         methods::new("exprObj",
             name       = "raw",
             exprMat    = store_list[[i]],
-            spat_unit  = "cell",
+            spat_unit  = spat_unit,
             feat_type  = names(store_list)[[i]],
-            provenance = "cell"
+            provenance = spat_unit
         )
     })
 }
+
+.xenium_expression_disk <- function(...) .tenx_expression_disk(...)
 
 
 # Feature class extractor: 10x mtx triple. Reads column 3 of features.tsv
