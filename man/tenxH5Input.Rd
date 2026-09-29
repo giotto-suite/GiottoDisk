@@ -2,12 +2,15 @@
 % Please edit documentation in R/class-fileInputs.R
 \name{tenxH5Input}
 \alias{tenxH5Input}
-\title{Create a 10x cell_feature_matrix.h5 input}
+\title{Create a 10x feature-barcode matrix .h5 input}
 \usage{
 tenxH5Input(h5_path, feature_id_col = 2L, batch_cells = 250000L)
 }
 \arguments{
-\item{h5_path}{character. Path to \code{cell_feature_matrix.h5}.}
+\item{h5_path}{character. Path to a 10x feature-barcode matrix \code{.h5}:
+Xenium \code{cell_feature_matrix.h5}, Visium HD \code{raw_feature_bc_matrix.h5} /
+\code{filtered_feature_bc_matrix.h5} (bins) or \code{raw_feature_cell_matrix.h5} /
+\code{filtered_feature_cell_matrix.h5} (segmented cells).}
 
 \item{feature_id_col}{integer. \code{1L} = Ensembl ID, \code{2L} = gene symbol
 (default).}

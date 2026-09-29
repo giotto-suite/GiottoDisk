@@ -778,7 +778,9 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
 # (Xenium / Atera / VisiumHD).
 #
 # Builds an `exprInput` marker (`mtxInput` for the 10x mtx triple,
-# `tenxH5Input` for a 10x feature-barcode .h5, `tenxZarrInput` for zarr) and
+# `tenxH5Input` for a 10x feature-barcode matrix .h5 -- Xenium
+# `cell_feature_matrix.h5`, Visium HD `*_feature_bc_matrix.h5` /
+# `*_feature_cell_matrix.h5` -- `tenxZarrInput` for zarr) and
 # routes it through `sourceWrite(gsource, inp, store_type = "parquetExpr")`
 # into the project vault. tar.gz inputs are unpacked under `tempdir()` and
 # the resulting cell_feature_matrix/ directory feeds the mtx path.
