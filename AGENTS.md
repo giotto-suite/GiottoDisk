@@ -94,10 +94,10 @@ R/
   methods-plot.R         # plot methods (parquetGeomBase)
   methods-aggregate.R    # calculateOverlap, overlapToMatrix, overlapPointDisk class
   methods-rasterize.R    # terra::rasterize, terra::centroids for parquetGeomBase
-  methods-resolveSubobject.R  # parquetCoordinator + resolveSubobject methods (view/space
-                              # resolution path); .push_view_to_dt, .push_view_to_pstore,
-                              # .surviving_cell_ids_arrow, .cells_in_region_for_view,
-                              # .space_composite_affine, .project_region_between_spaces
+  methods-resolveSubobject.R  # parquetCoordinator view/space resolution: resolveKeep
+                              # (the surviving set as a lazy arrow plan,
+                              # .surviving_ids_query) + resolveRecipe leaf methods that
+                              # queue it as one id_filter; .find_store_with_cols
   methods-giotto.R       # createGiottoPoints, createGiottoPolygon for parquetGeomBase
   methods-parquetExprStore.R  # subset / union / storeWrite / generic dispatch
                               # for parquetExprStore

@@ -67,13 +67,39 @@
   is now made absolute once the directory has been created. Objects created
   before this fix keep the relative paths they were saved with.
 
-# GiottoDisk 0.0.0.2
-
 ## changes
-- Dropped the `prepareIds` import. GiottoClass removed the generic in 0.7.2:
+- **View resolution follows GiottoClass 0.7.3's `resolveRecipe()`** (the
+  former `materialize()` / `resolveSubobject()`), which now requires
+  GiottoClass >= 0.7.3. A view is evaluated once per resolve op into the
+  surviving cell set by a `resolveKeep()` method, and each backed subobject
+  queues that set as one `id_filter` without being handed the gobject.
+  - **The set is a lazy arrow plan**, not a collected table: a backed filter
+    owner contributes `subset(owner, pred)` as a query, crops contribute
+    their cell_IDs, and the steps are chained with semi-joins, so nothing is
+    read until a target is collected. Backed getters (`getCellMetadata(g,
+    view = )` and friends) stay lazy this way; previously they took a
+    separate per-target pushdown path, and `resolveRecipe()` collected an ID
+    table up front. The in-memory `vector` form is collected only if an
+    in-memory subobject inside a backed object asks for it.
+  - A filter whose owner is a backed store now works: the old path called
+    `store[, key, drop = FALSE]`, which no store method accepts.
+  - A polygon store's own attributes can be filtered on (`region ==
+    "tumor"`), with `poly_ID` answering for the cell axis, as `spatValues()`
+    allows in memory.
+  - Backed transcript points skip filter steps, as the in-memory leaf does;
+    a crop still clips their own geometry. A crop drawn in a named space now
+    clips in that frame: the region projection dropped translation (it put
+    it in the affine's row 3, which `affine()` ignores), so a shifted space
+    clipped the wrong area. It now uses GiottoClass's `project_region()`.
+  - Feature metadata and dimension reductions inherit the in-memory leaf.
+    Backed feature metadata used to be given a cell_ID `id_filter` it has no
+    column for.
+- Dropped the `prepareIds` import. GiottoClass removed the generic in 0.7.3:
   it was an exported identity transform with no call sites here or anywhere
   else, and `parquetCoordinator`'s own methods already promote an ID set to
   the form each store wants.
+
+# GiottoDisk 0.0.0.2
 
 ## new
 - `analyzeData(parquetExprBase, scranMarkersParam)` accepts

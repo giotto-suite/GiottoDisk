@@ -25,7 +25,7 @@ Imports:
     digest,
     dplyr,
     Giotto (>= 4.3.0),
-    GiottoClass (>= 0.7.0),
+    GiottoClass (>= 0.7.3),
     GiottoUtils,
     igraph,
     jsonlite,

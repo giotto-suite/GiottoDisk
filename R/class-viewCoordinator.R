@@ -28,16 +28,17 @@ NULL
 # points — adr/0015 "Consequences".
 #
 # Cross-storage bridging (an in-memory column needed to filter a backed
-# store) is handled in `.narrow_store_by_predicate` / `.narrow_dt_via_arrow`:
-# a backed owner narrows lazily and joins, an in-memory owner narrows
-# eagerly and inlines its ids.
+# store) happens once per resolve op, in `resolveKeep()`: a backed owner
+# narrows lazily and contributes a query, an in-memory owner narrows eagerly
+# and contributes a table, and the steps are chained with semi-joins into
+# one plan that runs when a target is read.
 #
 # Why inheritance from dataTableCoordinator: a mixed gobject (some slots
 # backed, some in-memory) hits the parquetCoordinator's methods for backed
 # subobjects and inherits dataTableCoordinator's methods for in-memory
 # ones automatically. Same coordinator instance handles both.
 #
-# See `R/methods-resolveSubobject.R` for the resolveSubobject methods
+# See `R/methods-resolveSubobject.R` for the resolveKeep and resolveRecipe methods
 # and the `defaultViewCoordinator` dispatch registration on `gsource`.
 # =============================================================================
 
