@@ -38,6 +38,7 @@ Suggests:
     bit64,
     cosmxscan,
     BPCells,
+    codetools,
     DBI,
     dbplyr,
     duckdb,
@@ -46,6 +47,7 @@ Suggests:
     HDF5Array,
     hdf5r,
     knitr,
+    mirai,
     nanoarrow,
     qs,
     Rarr,
@@ -68,6 +70,9 @@ Collate:
     'AllGenerics.R'
     'pkg_imports.R'
     'utils.R'
+    'kernel-ops.R'
+    'kernel-scan.R'
+    'kernel-write.R'
     'class-dataStore.R'
     'class-parquetExprStore.R'
     'chunk-sizing.R'
@@ -119,6 +124,7 @@ Collate:
     'utils-spatial.R'
     'tilework.R'
     'utils-arrow.R'
+    'utils-isolate.R'
     'utils-parquetExprStore.R'
     'zarr-array.R'
     'zarr-convert.R'

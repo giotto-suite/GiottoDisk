@@ -23,7 +23,7 @@ NULL
 #
 # Correctness rests on absent entries meaning zero, which the op registry
 # maintains rather than this file checking — see the `add` note in
-# R/utils-pestore-ops.R.
+# R/kernel-ops.R.
 #
 # Nothing here takes a view on WHICH values these are; `expression_values` is
 # resolved upstream by `getExpression()`. Unlike Pearson residual variance, a

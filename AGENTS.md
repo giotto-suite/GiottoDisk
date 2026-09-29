@@ -142,6 +142,14 @@ R/
   utils-arrow.R          # .arrow_sample_max_rows, .dplyr_ext, .dplyr_crop, etc.
   utils-spatial.R        # affine half-plane helpers, AABB, etc.
   utils-parquetExprStore.R # .pestore_* helpers (LUT remap, finalize, etc.)
+  kernel-scan.R          # KERNEL (see "Kernel" below): axis predicates,
+                         #   .pe_compose_scan, the id remap joins, .make_uid
+  kernel-ops.R           # KERNEL: op chain header (model, registry,
+                         #   extension protocol) + @ops / @post_ops executors
+  kernel-write.R         # KERNEL: parquet codec options, .write_parquet_file,
+                         #   the per-window write task
+  utils-isolate.R        # .kernel_bundle / .isolated_map: run kernel code on
+                         #   a per-call mirai pool that never loads GiottoDisk
   tilework.R             # tile plan integration
 ```
 
@@ -266,6 +274,31 @@ window-count dependent, and HVG selection is a discrete top-N cut **upstream**
 of PCA. That is the one route by which a last-bit difference could become a
 visibly different clustering. If you add such an op, check HVG selection
 stability across window counts before assuming it does not matter.
+
+### Kernel: code that runs without GiottoDisk loaded
+`R/kernel-*.R` is the part of the package a worker runs without loading it.
+`.kernel_bundle()` copies a kernel function and everything it reaches out of the
+namespace into a plain environment, and `.isolated_map()` ships that to a mirai
+pool started for the call (adr/0019). The windowed parquet expression write is
+the one consumer today: with `.par_workers() > 1` and mirai installed, its
+windows are lowered to data in the parent (`.pe_lower_read()`,
+`.pestore_remap_luts()`) and written by `.pestore_write_window_task()`.
+
+The contract, enforced by `test-kernel-isolation.R`:
+- a kernel function takes plain data (op records, axis plans, lookup tables,
+  paths) plus a lazy query or data.table — never a store;
+- it calls other packages only as `pkg::fn`, and GiottoDisk functions only if
+  they are in `R/kernel-*.R`;
+- it reaches no S4 generic or class. That includes base names GiottoDisk turns
+  into generics (`unique`, `t`, `subset`, `colnames`, `as.data.frame`): a
+  worker resolves a bare call to base, the parent to the generic, so the kernel
+  writes `base::unique`;
+- it reads options only with a default; a worker gets a snapshot of the
+  `giottodisk.*` options, not the parent's session.
+
+A kernel function that needs a store is a shell function: lower the store to
+data first, in the shell, and pass the data in. Code outside the kernel may
+call kernel functions freely.
 
 ### Lazy ops via @ops slot
 Operations recorded lazily as a list of steps. User-facing op types:

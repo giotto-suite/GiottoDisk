@@ -62,7 +62,7 @@ verb is how you ask for a statistic over a new population; subsetting is
 not. See \code{adr/0006}.
 
 Empty by default; populated by \code{processData()} methods. See
-\code{R/utils-pestore-ops.R} for the op type registry.}
+\code{R/kernel-ops.R} for the op type registry.}
 
 \item{\code{n_cells}}{numeric. Number of cells in the dataset
 (length of \code{cell_ids}).}

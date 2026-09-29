@@ -1,6 +1,16 @@
 # GiottoDisk 0.0.0.3
 
 ## new
+- `storeWrite()` from one expression store to another writes its cell windows
+  in parallel when `giottodisk.par_workers` or the future plan allows more than
+  one worker and `mirai` is installed (both optional, in `Suggests`). The
+  workers are started for the call and never load GiottoDisk, so this runs on
+  Windows and in Positron, and leaves the plan's own workers untouched. The
+  written store is the same file for file. On a 170,044-cell x 18,028-gene
+  normalized store, the write takes 7.3 s on eight workers against 22 s
+  serial. The window budget is shared between the workers, so memory stays
+  bounded by the same budget. Stores with pending `@post_ops`, or a custom reader,
+  still write serially.
 - `importVisiumHDDisk()`: disk-backed Visium HD reader (binned and segmented
   outputs), also reached through `backend =` on `Giotto::importVisiumHD()`
   and `createGiottoVisiumHDObjectBin()` / `createGiottoVisiumHDObjectCell()`. It

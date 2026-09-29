@@ -62,7 +62,7 @@ NULL
 #'   not. See `adr/0006`.
 #'
 #'   Empty by default; populated by `processData()` methods. See
-#'   `R/utils-pestore-ops.R` for the op type registry.
+#'   `R/kernel-ops.R` for the op type registry.
 #' @slot n_cells numeric. Number of cells in the dataset
 #'   (length of `cell_ids`).
 #' @slot n_genes numeric. Number of genes / features
@@ -261,7 +261,7 @@ setMethod("initialize", signature("parquetExprStore"), function(.Object, ...) {
     .Object <- callNextMethod(.Object, ...)
     # default reader is arrow::open_dataset (handles file or directory)
     if (.is_empty_fun(.Object@read_fun)) {
-        .Object@read_fun <- function(x, ...) arrow::open_dataset(sources = x, ...)
+        .Object@read_fun <- .pe_read_dataset
     }
     .Object
 })
@@ -307,7 +307,7 @@ setMethod("initialize", signature("parquetExprStore"), function(.Object, ...) {
 #'   self-sufficient. `storeWrite()` bakes the chain into on-disk values,
 #'   leaving the output store with empty chains. Once `@post_ops` is
 #'   non-empty, subsequent op pushes are routed here regardless of their
-#'   natural phase (monotonic phase rule). See `R/utils-pestore-ops.R`.
+#'   natural phase (monotonic phase rule). See `R/kernel-ops.R`.
 #' @family store types
 NULL
 

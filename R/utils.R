@@ -126,35 +126,6 @@ getArtifactDumpDir <- function() {
 #' counter.
 NULL
 
-.make_uid <- function(n = 8L, include_node = NULL, include_pid = NULL) {
-    include_node <- include_node %||% 
-        getOption("giottodisk.uid_include_node", FALSE)
-    include_pid <- include_pid %||% 
-        getOption("giottodisk.uid_include_pid", TRUE)
-    count <- getOption("giottodisk.uid_count", 1L)
-    on.exit({
-        options("giottodisk.uid_count" = count + 1L)
-    })
-    GiottoUtils::gwith_seed(seed = Sys.time() + count, {
-        sampleset <- sample(c(letters, LETTERS, as.character(0:9)), 
-            size = n,
-            replace = TRUE
-        )
-        rand <- paste(sampleset, collapse = "")
-    })
-
-    parts <- rand
-    if (include_pid) {
-        pid <- Sys.getpid()
-        parts <- c(pid, parts)
-    }
-    if (include_node) {
-        host <- substr(Sys.info()[["nodename"]], 1, 8)
-        parts <- c(host, parts)
-    }
-    paste0(parts, collapse = "_")
-}
-
 # generate geom_id from available special cols (source_id, tile_index, row_index).
 # called at write time before special cols are dropped, so all components are present.
 .auto_geom_id <- function(data, prefix) {
