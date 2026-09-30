@@ -31,6 +31,18 @@
   be dense and is an error; so is comparing two stores.
 
 ## bug fixes
+- `snapshotLoad()` returned images whose terra pointers were no longer valid,
+  so the first use of an image, or a following `snapshotSave()`, failed with
+  "NULL value passed as symbol address". Images are now reconnected on load,
+  as `GiottoClass::loadGiotto()` already did.
+- `snapshotSave()` failed on an object holding `giottoBinPoints` (Visium HD
+  `load_transcripts = TRUE`) with "object of type 'S4' is not subsettable".
+  Bin points have no disk representation; their in-memory `SpatVector` is now
+  packed into the written snapshot and unpacked by `snapshotLoad()`.
+- `gDirSource()` with a path whose parent directory does not exist failed with
+  "cannot open the connection". It now stops with an error naming the missing
+  parent. Parents are still not created, so a mistyped path cannot build a
+  directory tree somewhere unexpected.
 - The Stereo-seq GEF readers now write cell-major stores, like every other
   input. `cellbinGefInput` reads the cell-major `cellExp` copy; `binGefInput`
   reorders through a temporary spill and positions bins in grid order, keeping
