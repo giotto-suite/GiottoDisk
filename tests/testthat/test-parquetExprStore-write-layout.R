@@ -82,3 +82,81 @@ test_that("a view with no stored values still writes a readable store", {
     out <- .write_pe(.write_pe(m)[, 1:10])
     expect_equal(sum(.as_dense(out)), 0)
 })
+
+# Fanned out (adr/0019), the windows are written by workers without GiottoDisk
+# and renamed into place; the store must be the one the serial loop writes.
+.write_pe_with <- function(x, workers) {
+    old <- options(giottodisk.par_workers = workers)
+    on.exit(options(old), add = TRUE)
+    .write_pe(x)
+}
+
+.expect_fanout_matches_serial <- function(v) {
+    old <- options(giottodisk.chunk_size = 37L)
+    on.exit(options(old), add = TRUE)
+    # otherwise the write falls back to serial and matches trivially
+    wins <- .pe_windows(v, 37L)
+    expect_gt(length(wins), 1L)
+    for (d in wins) expect_false(is.null(.pe_lower_read(.pe_window_store(d))))
+    old_w <- options(giottodisk.par_workers = 2L)
+    expect_identical(.isolated_workers(), 2L)
+    options(old_w)
+    serial <- .write_pe_with(v, 1L)
+    fanned <- .write_pe_with(v, 2L)
+    expect_gt(length(arrow::open_dataset(serial@path)$files), 1L)
+    expect_identical(basename(arrow::open_dataset(fanned@path)$files),
+                     basename(arrow::open_dataset(serial@path)$files))
+    expect_identical(.files_of(fanned), .files_of(serial))
+    .expect_sorted_cell_major(fanned)
+    invisible(fanned)
+}
+
+# a multiply payload keyed by on-disk id plus a log, so both the payload join
+# and a plain transform run in the worker
+.with_ops <- function(pe) {
+    set.seed(3L)
+    pe@ops <- list(
+        list(type = "multiply", axis = "cell",
+             factors = stats::setNames(list(stats::runif(pe@n_cells)), pe@uid)),
+        list(type = "log", base = 2))
+    pe
+}
+
+test_that("a fanned-out write gives the serial store", {
+    skip_on_cran()
+    skip_if_not_installed("mirai")
+    skip_if_not_installed("codetools")
+    m <- .layout_mat()
+    set.seed(4L)
+    v <- .with_ops(.write_pe(m))[sample(60L, 25L), 20:480]
+    .expect_fanout_matches_serial(v)
+})
+
+test_that("a fanned-out union write gives the serial store", {
+    skip_on_cran()
+    skip_if_not_installed("mirai")
+    skip_if_not_installed("codetools")
+    m <- .layout_mat()
+    u <- unionParquetExprStore(list(.write_pe(m[, 1:200]), .write_pe(m[, 201:500])))
+    .expect_fanout_matches_serial(u[5:30, ])
+})
+
+test_that("empty windows keep the serial file numbering when fanned out", {
+    skip_on_cran()
+    skip_if_not_installed("mirai")
+    skip_if_not_installed("codetools")
+    m <- .layout_mat()
+    m[, 1:120] <- 0
+    m <- Matrix::drop0(m)
+    .expect_fanout_matches_serial(.write_pe(m)[, 1:300])
+})
+
+test_that("a store with its own reader is written serially, unchanged", {
+    m <- .layout_mat()
+    v <- .write_pe(m)[1:40, ]
+    v@read_fun <- function(x, ...) arrow::open_dataset(x, ...)
+    expect_null(.pe_lower_read(v))
+    old <- options(giottodisk.chunk_size = 37L)
+    on.exit(options(old), add = TRUE)
+    expect_identical(.files_of(.write_pe_with(v, 2L)), .files_of(.write_pe_with(v, 1L)))
+})

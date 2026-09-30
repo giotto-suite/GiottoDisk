@@ -90,6 +90,7 @@ least one.
 | [0015](0015-view-steps-resolve-to-an-id-set.md) | A view step resolves to an ID set; the coordinator models the cell axis | Accepted | 2026-09-09 |
 | [0017](0017-gef-ingest-writes-cell-major.md) | GEF ingest writes cell-major: `cellExp` for cellbin, a stripe spill for bin | Accepted | 2026-09-28 |
 | [0018](0018-sorted-write-by-cell-window.md) | A parquet expression write sorts per cell window and writes each window itself | Accepted | 2026-09-28 |
+| [0019](0019-isolated-kernel-fanout.md) | Parallel windows run as kernel code on a per-call pool that never loads GiottoDisk | Accepted | 2026-09-29 |
 
 ## Backfill candidates
 

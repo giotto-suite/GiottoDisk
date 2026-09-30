@@ -106,7 +106,7 @@ setMethod("analyzeData",
 # Build a `multiply` payload for a per-feature vector given in VIEW order.
 #
 # The op registry keys factors by on-disk id per substore uid (see the
-# `multiply` note in utils-pestore-ops.R), and `.pe_axis_pos_map()` is the
+# `multiply` note in kernel-ops.R), and `.pe_axis_pos_map()` is the
 # view-position -> on-disk-key map that every other consumer uses. A single
 # store's map carries no `source_id`, so the payload is keyed by its own uid.
 .pe_feat_factor_payload <- function(pe, w) {

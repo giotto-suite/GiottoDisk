@@ -43,122 +43,6 @@ NULL
 # The tabular outputs are expected to converge on dgcmatrix's remapped
 # coordinates; until they do, treat their id columns as on-disk.
 
-# ---- shared axis predicates -------------------------------------------------
-#
-# `cell_idx` / `gene_idx` narrowing becomes an arrow predicate. Three shapes,
-# all exact -- the predicate admits precisely the in-view entries, so nothing
-# downstream re-filters:
-#
-#   1. gapless               -> range alone
-#   2. gaps, few dropped     -> range AND `!(x %in% dropped)`
-#                               (the range is required for CORRECTNESS here)
-#   3. gaps, few kept        -> `x %in% kept` alone, NO range
-#
-# Case 3 looks like an omission and is not: a `col_id` range prunes no row
-# groups (the file is cell-major) while still costing a comparison per row.
-# Adding it "for symmetry" is a measured regression. adr/0008 has the numbers
-# and the sort-order argument.
-#
-# Bounds come from min/max, never first/last -- `idx` is not guaranteed sorted
-# (`feats_to_use` may be HVG-rank ordered). Gap detection runs on unique values
-# so duplicates cannot make `n == span` accidentally true, and `dropped` is
-# materialized only when case 2 wins.
-
-#' @keywords internal
-#' @noRd
-.pe_axis_pred <- function(idx) {
-    if (length(idx) == 0L) return(NULL)
-    u  <- unique(as.integer(idx))
-    lo <- min(u)
-    hi <- max(u)
-    span <- hi - lo + 1L
-    gapless  <- (length(u) == span)
-    use_anti <- !gapless && (span - length(u)) < length(u)
-    list(lo = lo, hi = hi,
-         gapless   = gapless,
-         use_anti  = use_anti,
-         use_range = gapless || use_anti,
-         dropped   = if (use_anti) setdiff(lo:hi, u) else integer(0),
-         kept      = u)
-}
-
-# Emit a plan as quoted predicate expressions over column `col`, with values
-# inlined as literals. One emitter for both consumers: `storeRead` chains them
-# onto a lazy query, `.union_substore_filter_expr()` ANDs them into a
-# per-substore clause. Returns list() when there is nothing to filter.
-
-#' @keywords internal
-#' @noRd
-.pe_axis_pred_exprs <- function(plan, col) {
-    if (is.null(plan)) return(list())
-    sym <- as.name(col)
-    out <- list()
-    if (plan$use_range) {
-        out[[length(out) + 1L]] <-
-            bquote(.(sym) >= .(plan$lo) & .(sym) <= .(plan$hi))
-    }
-    if (!plan$gapless) {
-        out[[length(out) + 1L]] <- if (plan$use_anti) {
-            bquote(!(.(sym) %in% .(plan$dropped)))
-        } else {
-            bquote(.(sym) %in% .(plan$kept))
-        }
-    }
-    out
-}
-
-# Apply an axis plan to a lazy query, on either carrier. One site for both, so
-# a subset can never be applied to one output and skipped on the other.
-#
-# The shapes come from `.pe_axis_pred_exprs()` in every case; this only decides
-# HOW a membership set reaches the engine. Acero takes it as a hash set, which
-# is what adr/0008 measured and there is nothing to fix. dbplyr inlines it into
-# the query TEXT, so on a tbl_dbi a large set becomes a large SQL string:
-# measured over a 500k-row scan, 1k ids cost the same as a registered
-# semi-join, 20k cost 8x, and 100k cost 38x on top of 778 KB of SQL. Above the
-# threshold the ids are registered instead and the test becomes a semi/anti
-# join, which dbplyr renders as EXISTS / NOT EXISTS -- the same shape the
-# tabular path's `id_filter` already uses, and NULL-safe where NOT IN is not.
-#
-# The range half is kept as literals either way: shape 2 needs it for
-# correctness (adr/0008), and it is also the only half DuckDB can turn into a
-# row-group prune.
-
-#' @keywords internal
-#' @noRd
-.pe_apply_axis_pred <- function(x, plan, col) {
-    if (is.null(plan)) return(x)
-    ids <- if (plan$use_anti) plan$dropped else if (!plan$gapless) plan$kept
-           else integer(0L)
-    thresh <- getOption("giottodisk.duckdb_in_subquery_threshold", 1000L)
-    if (!inherits(x, "tbl_dbi") || length(ids) <= thresh) {
-        for (p in .pe_axis_pred_exprs(plan, col)) x <- dplyr::filter(x, !!p)
-        return(x)
-    }
-    if (plan$use_range) {
-        sym <- as.name(col)
-        x <- dplyr::filter(x,
-            !!bquote(.(sym) >= .(plan$lo) & .(sym) <= .(plan$hi)))
-    }
-    ids_tbl <- .pe_register_ids(dbplyr::remote_con(x), ids, col)
-    if (plan$use_anti) {
-        dplyr::anti_join(x, ids_tbl, by = col)
-    } else {
-        dplyr::semi_join(x, ids_tbl, by = col)
-    }
-}
-
-#' @keywords internal
-#' @noRd
-.pe_register_ids <- function(conn, ids, col) {
-    name <- tolower(paste0("gd_peid_", .make_uid()))
-    tab <- do.call(arrow::arrow_table,
-        stats::setNames(list(as.integer(ids)), col))
-    duckdb::duckdb_register_arrow(conn, name, tab)
-    dplyr::tbl(conn, name)
-}
-
-
 # * pestore ####
 
 #' @rdname storeRead
@@ -236,11 +120,7 @@ setMethod("storeRead", signature("parquetExprStore"), function(store,
         gi_plan <- .pe_axis_pred(store@gene_idx)
 
         store@read_fun <- function(x, ...) {
-            ds <- orig_rf(x, ...)
-            ds <- .pe_apply_axis_pred(ds, ci_plan, "row_id")
-            ds <- .pe_apply_axis_pred(ds, gi_plan, "col_id")
-            if (length(ops) > 0L) ds <- .pe_apply_ops(ds, ops)
-            ds
+            .pe_compose_scan(orig_rf(x, ...), ci_plan, gi_plan, ops)
         }
     }
 
@@ -703,14 +583,39 @@ setMethod(
 # store came back in 170,944 runs of cells, a different layout every run), and
 # collecting the sorted query whole holds the entire output at once (17.9 GB
 # peak for a 300M-value store). See adr/0018.
+#
+# Windows are independent, so with more than one worker they fan out to a pool
+# that never loads GiottoDisk (adr/0019). Each window is lowered to plain data
+# and written by the kernel's `.pestore_write_window_task()`; the files are then
+# named as the serial loop names them, so both paths give the same store.
 .pestore_write_windowed <- function(store, data) {
     partition_dir <- .idpath(store@path, store@uid)
     if (!dir.exists(partition_dir)) {
         dir.create(partition_dir, recursive = TRUE, showWarnings = FALSE)
     }
+    n_workers <- .isolated_workers()
+    wins <- .pe_windows(data, .pe_write_chunk_size(data, n_workers))
+    part_idx <- if (n_workers > 1L && length(wins) > 1L) {
+        .pestore_write_windows_fanout(wins, partition_dir, n_workers)
+    }
+    if (is.null(part_idx)) {
+        part_idx <- .pestore_write_windows_serial(wins, partition_dir)
+    }
+    # a view with no stored values still has to read back as a store
+    if (part_idx == 0L) {
+        .write_parquet_file(
+            arrow::arrow_table(row_id = integer(), col_id = integer(),
+                value = double()),
+            file.path(partition_dir, "part-0.parquet"))
+    }
+    invisible(NULL)
+}
+
+# Returns the number of part files written.
+.pestore_write_windows_serial <- function(wins, partition_dir) {
     row_id <- NULL  # NSE
     part_idx <- 0L
-    for (d in .pe_windows(data, .pe_write_chunk_size(data))) {
+    for (d in wins) {
         # window-local row ids start at 1; shift them to the output axis
         off <- d$offset + d$cs - 1L
         tb <- .pestore_remap_query(.pe_window_store(d)) |>
@@ -728,29 +633,80 @@ setMethod(
         rm(tb)
         invisible(gc(verbose = FALSE))
     }
-    # a view with no stored values still has to read back as a store
-    if (part_idx == 0L) {
-        .write_parquet_file(
-            arrow::arrow_table(row_id = integer(), col_id = integer(),
-                value = double()),
-            file.path(partition_dir, "part-0.parquet"))
+    part_idx
+}
+
+# Returns the number of part files written, or NULL when some window cannot
+# be lowered, so the caller writes serially instead. Workers write into a
+# dot-prefixed staging directory, which arrow's dataset discovery skips, and
+# the non-empty files are renamed into place in window order afterwards.
+.pestore_write_windows_fanout <- function(wins, partition_dir, n_workers) {
+    staging <- file.path(partition_dir, paste0(".fanout_", .make_uid()))
+    tasks <- vector("list", length(wins))
+    for (i in seq_along(wins)) {
+        d  <- wins[[i]]
+        ws <- .pe_window_store(d)
+        scan <- .pe_lower_read(ws)
+        if (is.null(scan)) return(NULL)
+        tasks[[i]] <- list(scan = scan,
+            luts = .pestore_remap_luts(ws),
+            off  = d$offset + d$cs - 1L,
+            file = file.path(staging, sprintf("win-%d.parquet", i)))
     }
-    invisible(NULL)
+    dir.create(staging)
+    on.exit(unlink(staging, recursive = TRUE), add = TRUE)
+    n_rows <- unlist(.isolated_map(tasks, .pestore_write_window_task,
+        n_workers = n_workers, site = "storeWrite"))
+    part_idx <- 0L
+    for (i in which(n_rows > 0L)) {
+        file.rename(tasks[[i]]$file,
+            file.path(partition_dir, sprintf("part-%d.parquet", part_idx)))
+        part_idx <- part_idx + 1L
+    }
+    part_idx
+}
+
+# A single store's lazy scan as data -- path, both axis plans and @ops -- which
+# the kernel's `.pe_compose_scan()` turns back into the scan storeRead() builds.
+# NULL when it would not be that scan: a union (its read composes a
+# per-substore filter), pending @post_ops (applied after collection), or a
+# @read_fun other than the default.
+.pe_lower_read <- function(pe) {
+    if (!methods::is(pe, "parquetExprStore") || length(pe@post_ops) > 0L) {
+        return(NULL)
+    }
+    rf <- pe@read_fun
+    if (!identical(body(rf), body(.pe_read_dataset)) ||
+        !identical(formals(rf), formals(.pe_read_dataset))) return(NULL)
+    list(path    = pe@path,
+         ci_plan = .pe_axis_pred(pe@cell_idx),
+         gi_plan = .pe_axis_pred(pe@gene_idx),
+         ops     = pe@ops)
 }
 
 # Window for the lazy-chain write. The sort holds a collected Arrow table plus
 # its sorted copy; measured at 60-100 bytes per stored value of process peak
 # (17.6M values: +1.05 GB; 300M values at 4 windows: +7.5 GB, the upper end
-# because Arrow's allocator keeps freed pages), hence 96.
-.pe_write_chunk_size <- function(pe) {
-    .pe_window_cells(pe, bytes_per_nz = 96, k = 0L)
+# because Arrow's allocator keeps freed pages), hence 96. Fanned out, every
+# worker holds a window at once, so they share the budget.
+.pe_write_chunk_size <- function(pe, n_workers = 1L) {
+    .pe_window_cells(pe, bytes_per_nz = 96 * n_workers, k = 0L)
 }
 
 # Build the lazy remapped triplet query for a (possibly subset) input.
 # Returns an arrow_dplyr_query whose schema is (row_id, col_id, value),
 # row_id / col_id renumbered to local positions in the input's narrowed
 # `@cell_ids` / `@feat_ids` universe, sorted by (row_id, col_id).
+#
+# The lookup tables are built here from the store's slots; the joins are the
+# kernel's `.pestore_apply_remap()`, which a fanned-out write runs in a worker.
 .pestore_remap_query <- function(pe) {
+    .pestore_apply_remap(storeRead(pe), .pestore_remap_luts(pe))
+}
+
+# Remap lookup tables for `pe`, as plain data: `cell` (keyed by source_id too
+# for a union) and `gene`, NULL when no gene subset is queued.
+.pestore_remap_luts <- function(pe) {
     is_union <- inherits(pe, "unionParquetExprStore")
 
     # ---- row_id (cell) remap table ----
@@ -788,44 +744,19 @@ setMethod(
             row_id_new  = as.integer(seq_along(local_orig))
         )
     }
-    cell_remap <- arrow::as_arrow_table(cell_remap_dt)
 
     # ---- col_id (gene) remap table ----
     # Gene-axis subset applies uniformly across union substores (the union's
     # `[` method calls `s[i, ]` on each substore), so any substore's
     # `@gene_idx` is representative.
     gene_idx <- if (is_union) pe@stores[[1L]]@gene_idx else pe@gene_idx
-    do_gene_remap <- length(gene_idx) > 0L
-    if (do_gene_remap) {
-        gene_remap <- arrow::as_arrow_table(data.table::data.table(
+    gene_remap_dt <- if (length(gene_idx) > 0L) {
+        data.table::data.table(
             col_id_orig = as.integer(gene_idx),
             col_id_new  = as.integer(seq_along(gene_idx))
-        ))
+        )
     }
-
-    # ---- join + remap ----
-    # `by` must be fully named -- arrow's dplyr join handler trips on the
-    # mixed-named form `c("source_id", "row_id" = "row_id_orig")` because
-    # the unnamed element parses with an empty name on the right side.
-    q <- storeRead(pe)
-    if (is_union) {
-        q <- dplyr::left_join(q, cell_remap,
-            by = c("source_id" = "source_id",
-                   "row_id" = "row_id_orig"))
-    } else {
-        q <- dplyr::left_join(q, cell_remap,
-            by = c("row_id" = "row_id_orig"))
-    }
-    q <- dplyr::mutate(q, row_id = row_id_new)
-    q <- dplyr::select(q, -dplyr::any_of(c("row_id_new", "source_id")))
-    if (do_gene_remap) {
-        q <- dplyr::left_join(q, gene_remap,
-            by = c("col_id" = "col_id_orig"))
-        q <- dplyr::mutate(q, col_id = col_id_new)
-        q <- dplyr::select(q, -col_id_new)
-    }
-    q <- dplyr::arrange(q, row_id, col_id)
-    dplyr::select(q, row_id, col_id, value)
+    list(cell = cell_remap_dt, gene = gene_remap_dt, by_source = is_union)
 }
 
 # from a dgCMatrix / Matrix / matrix.  Convenience path: useful for tests
