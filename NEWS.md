@@ -68,6 +68,8 @@
   before this fix keep the relative paths they were saved with.
 
 ## changes
+- `cellStatsParam` and `featStatsParam` are imported from GiottoClass, where
+  they moved from Giotto. Requires GiottoClass >= 0.7.4. No change in behaviour.
 - **View resolution follows GiottoClass 0.7.3's `resolveRecipe()`** (the
   former `materialize()` / `resolveSubobject()`), which now requires
   GiottoClass >= 0.7.3. A view is evaluated once per resolve op into the
