@@ -3,7 +3,7 @@
 #
 # A `zarr_source` wraps either a filesystem directory or a `.zarr.zip`
 # archive. The zip variant caches the central directory once via
-# `zip::zip_list()` and serves per-entry reads with a seek + 30-byte
+# `.zip_central_directory()` and serves per-entry reads with a seek + 30-byte
 # local-header parse + raw read on a single long-lived connection. This
 # relies on Xenium archives storing entries UNCOMPRESSED in the zip (each
 # chunk is already blosc-compressed) -- `.zarr_open()` refuses archives
@@ -33,15 +33,104 @@
     invisible(NULL)
 }
 
+# Central directory entries: filename, local-header offset and compressed size.
+# Replaces zip::zip_list(), which cannot parse a zip64 central directory.
+# Xenium writes one for transcripts.zarr.zip whatever the archive size.
+.zip_central_directory <- function(path) {
+    size <- file.info(path)$size
+    con <- file(path, open = "rb")
+    on.exit(close(con), add = TRUE)
+
+    rd <- function(pos, n) {
+        seek(con, pos)
+        readBin(con, "raw", n)
+    }
+    u16 <- function(r, i) sum(as.numeric(r[i + 1:2]) * 256^(0:1))
+    u32 <- function(r, i) sum(as.numeric(r[i + 1:4]) * 256^(0:3))
+    u64 <- function(r, i) sum(as.numeric(r[i + 1:8]) * 256^(0:7))
+    zip64_na <- 4294967295
+
+    tail_n <- min(size, 65557)
+    tl <- rd(size - tail_n, tail_n)
+    n <- length(tl)
+    hits <- which(
+        tl[1:(n - 3)] == as.raw(0x50) & tl[2:(n - 2)] == as.raw(0x4b) &
+            tl[3:(n - 1)] == as.raw(0x05) & tl[4:n] == as.raw(0x06)
+    )
+    if (!length(hits)) {
+        stop("[zip] no end-of-central-directory record in ", path,
+            call. = FALSE)
+    }
+    e <- hits[length(hits)] - 1L
+    n_entries <- u16(tl, e + 10)
+    cd_size <- u32(tl, e + 12)
+    cd_offset <- u32(tl, e + 16)
+
+    if (e >= 20) {
+        loc <- tl[(e - 20) + 1:20]
+        if (identical(loc[1:4], as.raw(c(0x50, 0x4b, 0x06, 0x07)))) {
+            z <- rd(u64(loc, 8), 56)
+            if (identical(z[1:4], as.raw(c(0x50, 0x4b, 0x06, 0x06)))) {
+                n_entries <- u64(z, 32)
+                cd_size <- u64(z, 40)
+                cd_offset <- u64(z, 48)
+            }
+        }
+    }
+
+    cd <- rd(cd_offset, cd_size)
+    fn <- character(n_entries)
+    off <- numeric(n_entries)
+    csz <- numeric(n_entries)
+    p <- 0
+    for (i in seq_len(n_entries)) {
+        if (!identical(cd[p + 1:4], as.raw(c(0x50, 0x4b, 0x01, 0x02)))) {
+            stop("[zip] malformed central directory entry ", i, " in ", path,
+                call. = FALSE)
+        }
+        c_size <- u32(cd, p + 20)
+        u_size <- u32(cd, p + 24)
+        n_len <- u16(cd, p + 28)
+        e_len <- u16(cd, p + 30)
+        k_len <- u16(cd, p + 32)
+        lho <- u32(cd, p + 42)
+        fn[i] <- rawToChar(cd[p + 46 + seq_len(n_len)])
+        if (e_len > 0 &&
+            (c_size == zip64_na || u_size == zip64_na || lho == zip64_na)) {
+            ex <- cd[p + 46 + n_len + seq_len(e_len)]
+            q <- 0
+            while (q + 4 <= e_len) {
+                if (u16(ex, q) == 1) {
+                    r <- q + 4
+                    if (u_size == zip64_na) {
+                        u_size <- u64(ex, r)
+                        r <- r + 8
+                    }
+                    if (c_size == zip64_na) {
+                        c_size <- u64(ex, r)
+                        r <- r + 8
+                    }
+                    if (lho == zip64_na) lho <- u64(ex, r)
+                    break
+                }
+                q <- q + 4 + u16(ex, q + 2)
+            }
+        }
+        off[i] <- lho
+        csz[i] <- c_size
+        p <- p + 46 + n_len + e_len + k_len
+    }
+    list(filename = fn, offset = off, compressed_size = csz)
+}
+
 .zarr_open <- function(path) {
     .zarr_check_rarr()
     meta_cache <- new.env(parent = emptyenv())
     if (grepl("\\.zip$", path, ignore.case = TRUE)) {
-        GiottoUtils::package_check("zip")
         if (!file.exists(path)) {
             stop("[zarr] archive does not exist: ", path, call. = FALSE)
         }
-        entries <- zip::zip_list(path)
+        entries <- .zip_central_directory(path)
         con <- file(path, open = "rb")
         structure(
             list(
@@ -187,16 +276,18 @@
 
 # dtype / decompression ####
 
-# Parse a zarr v2 dtype string ("<u4", "<f4", "|u1", ...) into readBin
-# parameters. `kind` is one of u/i/f/b; `size` in bytes.
+# Parse a zarr v2 dtype string ("<u4", "<f4", "|u1", "u1", ...) into readBin
+# parameters. `kind` is one of u/i/f/b; `size` in bytes. The byte-order prefix
+# is optional for single-byte types.
 .parse_zarr_dtype <- function(dtype) {
     bo <- substr(dtype, 1L, 1L)
-    rest <- substring(dtype, 2L)
+    has_bo <- bo %in% c("<", ">", "|", "=")
+    rest <- if (has_bo) substring(dtype, 2L) else dtype
     list(
         kind = substr(rest, 1L, 1L),
         size = as.integer(substring(rest, 2L)),
         # "|" (n/a) and "=" (native) behave as little on Xenium hardware
-        endian = if (bo == ">") "big" else "little"
+        endian = if (has_bo && bo == ">") "big" else "little"
     )
 }
 

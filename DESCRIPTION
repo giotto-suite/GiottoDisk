@@ -56,7 +56,6 @@ Suggests:
     sedonadb,
     testthat,
     wk,
-    zip,
     TileDBArray
 VignetteBuilder: knitr
 Remotes:
