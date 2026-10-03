@@ -223,3 +223,24 @@ for (src in names(.vhd_sources)) local({
                         "giottoBinPoints")
     })
 })
+
+test_that("[fixture] snapshots round trip images and 2 um bin points", {
+    fx <- .vhd_fixture
+    proj <- file.path(withr::local_tempdir(), "proj")
+    g <- .q(importVisiumHDDisk(file.path(fx$root, "binned_outputs"),
+        backend = proj, bin = 2)$
+        create_gobject(load_image = TRUE, load_transcripts = TRUE,
+                       verbose = FALSE))
+    expect_no_error(.q(snapshotSave(g@source, g, name = "s1")))
+    # the object handed back keeps its live bin points
+    gbp <- GiottoClass::getFeatureInfo(g, return_giottoPoints = TRUE)
+    expect_s4_class(gbp@spatial, "SpatVector")
+
+    g2 <- .q(snapshotLoad(proj, name = "s1"))
+    img <- GiottoClass::getGiottoImage(g2, name = "image")
+    expect_no_error(terra::ext(img@raster_object))
+    gbp2 <- GiottoClass::getFeatureInfo(g2, return_giottoPoints = TRUE)
+    expect_equal(terra::ext(gbp2@spatial), terra::ext(gbp@spatial))
+    # and it can be snapshotted again
+    expect_no_error(.q(snapshotSave(g2@source, g2, name = "s2")))
+})

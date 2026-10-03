@@ -81,20 +81,21 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
         giottosave = name,
         verbose = verbose
     )
-  
+
     vmsg(.v = verbose, "[GiottoDisk] writing snapshot")
+    x_out <- .ss_pack_binpoints(x) # returned `x` keeps its live SpatVectors
     temp <- .dump_tempfile() # temp location for atomic writes
     switch(method,
         "rds" = {
             fullpath <- file.path(gsdir, paste0(name, ".rds"))
-            a <- c(list(object = x, file = temp), method_params)
+            a <- c(list(object = x_out, file = temp), method_params)
             do.call(saveRDS, a)
         },
         "qs" = {
             package_check(pkg_name = "qs", repository = "CRAN")
             qsave_fun <- get("qsave", asNamespace("qs"))
             fullpath <- file.path(gsdir, paste0(name, ".qs"))
-            a <- c(list(x = x, file = temp), method_params)
+            a <- c(list(x = x_out, file = temp), method_params)
             do.call(qsave_fun, a)
         }
     )
@@ -305,7 +306,9 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
 .ss_gdsrc_detect_uid_spatial_points <- function(gobject) {
     pts_list <- gobject[["feat_info"]]
     is_tracked_class <- vapply(pts_list,
-        function(x) inherits(x[], "dataStore"),
+        # giottoBinPoints has no disk representation and no `[]`
+        function(x) !inherits(x, "giottoBinPoints") &&
+            inherits(x[], "dataStore"),
         FUN.VALUE = logical(1L)
     )
     pts_list <- pts_list[is_tracked_class]
@@ -356,11 +359,27 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
     uids
 }
 
+# giottoBinPoints keeps its bins as an in-memory SpatVector, whose pointer
+# does not survive serialization. Pack it for the written copy only;
+# snapshotLoad() unpacks it.
+.ss_pack_binpoints <- function(gobject) {
+    for (i in seq_along(gobject@feat_info)) {
+        pts <- gobject@feat_info[[i]]
+        if (inherits(pts, "giottoBinPoints") &&
+            inherits(pts@spatial, "SpatVector")) {
+            gobject@feat_info[[i]]@spatial <- terra::wrap(pts@spatial)
+        }
+    }
+    gobject
+}
+
 .ss_gdsrc_register_external_geom <- function(gobject, giottosave, verbose = NULL) {
     src <- gobject@source
 
     pts_list <- gobject[["feat_info"]]
     for (pts_obj in pts_list) {
+        # giottoBinPoints has no disk representation and no `[]`
+        if (inherits(pts_obj, "giottoBinPoints")) next
         store <- pts_obj[]
         if (!inherits(store, "dataStore")) next
         if (sourceContains(src, store)) next

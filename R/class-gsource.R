@@ -98,6 +98,14 @@ setMethod("initialize", signature("gDirSource"), function(.Object, ...) {
             call. = FALSE
         )
     }
+    # the project dir is created, but not its parents: a typo in the path
+    # should not silently build a directory tree somewhere unexpected
+    if (!dir.exists(dirname(p))) {
+        stop("[gDirSource] parent directory does not exist:\n  ",
+            dirname(p), "\nCreate it first to set up a project at:\n  ", p,
+            call. = FALSE
+        )
+    }
     if (!file.exists(.gdsrc_json_path(p))) {
         .gdsrc_json_write(p, list()) # initialize with empty list
     }
