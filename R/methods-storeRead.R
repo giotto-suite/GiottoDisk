@@ -1584,6 +1584,8 @@ sd_view_ref <- function(sdf) {
 
 # Emit a SQL IN clause, switching to a VALUES subquery above the threshold to
 # allow DataFusion to use a hash join rather than a flat literal list scan.
+# Shared by the sedona and duckdb paths, so the VALUES column is named
+# explicitly: DataFusion defaults it to `column1`, DuckDB to `col0`.
 .sql_in_clause <- function(col_sql, vals) {
     threshold <- getOption("giottodisk.sedona_in_subquery_threshold", 1000L)
     if (length(vals) > threshold) {
@@ -1592,7 +1594,8 @@ sd_view_ref <- function(sdf) {
         } else {
             paste(sprintf("(%s)", vals), collapse = ", ")
         }
-        sprintf("%s IN (SELECT column1 FROM (VALUES %s) AS _in)", col_sql, vals_sql)
+        sprintf("%s IN (SELECT v FROM (VALUES %s) AS _in(v))",
+            col_sql, vals_sql)
     } else {
         vals_str <- if (is.character(vals)) {
             paste(sprintf("'%s'", gsub("'", "''", vals)), collapse = ", ")

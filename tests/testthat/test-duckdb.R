@@ -104,6 +104,17 @@ test_that("duckdb: @ops filter translates to SQL", {
     expect_setequal(df$cell_ID, c("cell_1", "cell_2"))
 })
 
+test_that("duckdb: %in% above the threshold uses a VALUES subquery", {
+    # DuckDB names a VALUES column `col0`, not DataFusion's `column1`.
+    skip_if_not_installed("duckdb")
+    old <- options(giottodisk.sedona_in_subquery_threshold = 1L)
+    on.exit(options(old), add = TRUE)
+    pgs <- parquetGeomStore() |> storeWrite(make_pts_dd(5))
+    pgs_f <- subset(pgs, cell_ID %in% c("cell_1", "cell_2"))
+    df <- storeRead(pgs_f, output = "duckdb") |> dplyr::collect()
+    expect_setequal(df$cell_ID, c("cell_1", "cell_2"))
+})
+
 
 # affine transform ####
 
