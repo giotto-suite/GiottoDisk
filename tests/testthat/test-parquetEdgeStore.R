@@ -118,15 +118,23 @@ test_that("storeRead arrow returns a queryable arrow dataset with raw ints", {
     expect_equal(nrow(r), 7L)
 })
 
-test_that("storeRead arrowstream yields a RecordBatchReader of edge columns", {
+.collect_stream <- function(x) {
+    as.data.frame(nanoarrow::convert_array_stream(x))
+}
+
+.stream_names <- function(x) {
+    names(nanoarrow::infer_nanoarrow_schema(x)$children)
+}
+
+test_that("storeRead arrowstream yields a nanoarrow stream of edge columns", {
     s <- storeWrite(storeCreate(type = "parquetEdgeStore"),
                     .tiny_undirected_dt(),
                     type = "sNN", directed = FALSE)
-    rbr <- storeRead(s, output = "arrowstream")
-    expect_s3_class(rbr, "RecordBatchReader")
-    expect_setequal(names(rbr), c("from_id", "to_id", "weight"))
+    st <- storeRead(s, output = "arrowstream")
+    expect_s3_class(st, "nanoarrow_array_stream")
+    expect_setequal(.stream_names(st), c("from_id", "to_id", "weight"))
 
-    r <- dplyr::collect(rbr)
+    r <- .collect_stream(st)
     expect_equal(nrow(r), 7L)
     expect_equal(sort(r$from_id),
                  sort(dplyr::collect(storeRead(s, output = "arrow"))$from_id))
@@ -136,9 +144,10 @@ test_that("storeRead arrowstream honours minimal = FALSE", {
     s <- storeWrite(storeCreate(type = "parquetEdgeStore"),
                     .tiny_undirected_dt(),
                     type = "sNN", directed = FALSE)
-    wide <- names(storeRead(s, output = "arrowstream", minimal = FALSE))
+    wide <- .stream_names(storeRead(s, output = "arrowstream", minimal = FALSE))
+    narrow <- .stream_names(storeRead(s, output = "arrowstream"))
     expect_true(all(c("from_id", "to_id") %in% wide))
-    expect_true(length(wide) >= length(names(storeRead(s, output = "arrowstream"))))
+    expect_gte(length(wide), length(narrow))
 })
 
 test_that("storeRead arrowstream applies pending @ops", {
@@ -149,24 +158,22 @@ test_that("storeRead arrowstream applies pending @ops", {
     expect_gt(length(sub@ops), 0L)
 
     # the files on disk still hold all 7 edges; the stream must not
-    full <- dplyr::collect(storeRead(s, output = "arrowstream"))
-    got <- dplyr::collect(storeRead(sub, output = "arrowstream"))
+    full <- .collect_stream(storeRead(s, output = "arrowstream"))
+    got <- .collect_stream(storeRead(sub, output = "arrowstream"))
     expect_lt(nrow(got), nrow(full))
     expect_equal(nrow(got),
                  nrow(dplyr::collect(storeRead(sub, output = "arrow"))))
 })
 
-test_that("an arrowstream crosses the Arrow C Data Interface intact", {
-    skip_if_not_installed("nanoarrow")
+test_that("an arrowstream crosses into R arrow with the subset applied", {
     s <- storeWrite(storeCreate(type = "parquetEdgeStore"),
                     .tiny_undirected_dt(),
                     type = "sNN", directed = FALSE)
     sub <- s[c("a", "b", "c")]
 
-    # what a foreign reader sees after export/import round trip
-    rt <- as.data.frame(nanoarrow::convert_array_stream(
-        nanoarrow::as_nanoarrow_array_stream(
-            storeRead(sub, output = "arrowstream"))))
+    # a consumer on the arrow side of the C Data Interface
+    rbr <- arrow::as_record_batch_reader(storeRead(sub, output = "arrowstream"))
+    rt <- as.data.frame(rbr$read_table())
     expect_equal(nrow(rt),
                  nrow(dplyr::collect(storeRead(sub, output = "arrow"))))
     expect_setequal(names(rt), c("from_id", "to_id", "weight"))

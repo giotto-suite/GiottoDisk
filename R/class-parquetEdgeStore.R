@@ -559,7 +559,7 @@ setMethod("storeWrite",
 # STOREREAD — four output modes ####
 #
 # arrow       : lazy dataset, raw int IDs
-# arrowstream : RecordBatchReader over that dataset, raw int IDs
+# arrowstream : nanoarrow_array_stream over that dataset, raw int IDs
 # tibble      : collected data.table, character IDs (sidecar-joined)
 # igraph      : in-mem igraph; int internals + character V(g)$name
 #
@@ -571,6 +571,13 @@ setMethod("storeWrite",
 # consumer pulls batches from it, so `@ops` are honoured by a caller that
 # never sees this object. Handing out `@path` instead would read the files
 # as they sit on disk, which a pending subset is not.
+#
+# It is a nanoarrow stream rather than an arrow RecordBatchReader so the
+# contract does not name the engine that produced it: a later DuckDB- or
+# SedonaDB-routed result can be returned through the same output, and
+# sedona's view-typed columns pass through without R arrow touching them.
+# A stream reads once and cannot be narrowed further without losing the
+# source; narrowing belongs on the store or on output = "arrow".
 
 #' @rdname storeRead
 setMethod("storeRead", signature(store = "parquetEdgeStore"),
@@ -600,7 +607,7 @@ setMethod("storeRead", signature(store = "parquetEdgeStore"),
         }
 
         if (output == "arrowstream") {
-            return(arrow::as_record_batch_reader(ds))
+            return(nanoarrow::as_nanoarrow_array_stream(ds))
         }
 
         edges_dt <- data.table::as.data.table(dplyr::collect(ds))

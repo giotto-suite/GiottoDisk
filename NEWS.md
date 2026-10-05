@@ -1,15 +1,16 @@
 # GiottoDisk 0.0.0.2
 
 ## new
-- `storeRead(<parquetEdgeStore>, output = "arrowstream")` returns an
-  `arrow::RecordBatchReader` over the same query `output = "arrow"` builds,
+- `storeRead(<parquetEdgeStore>, output = "arrowstream")` returns a
+  `nanoarrow_array_stream` over the same query `output = "arrow"` builds,
   with `@ops` already applied. It exists for readers outside R: the batches
   can be pulled across the Arrow C Data Interface, so a consumer holding
   only the stream still observes a pending subset. The alternative a caller
   otherwise reaches for -- taking `@path` and opening the parquet directly --
   reads the files as they sit on disk, which a pending subset is not, and
   also assumes one file per subdirectory. Respects `minimal`, because a
-  stream cannot be reshaped once handed over.
+  stream cannot be reshaped once handed over. The stream reads once;
+  narrow the store before asking for it. {nanoarrow} moves to Imports.
 - `parquetCoordinator`: view + space recipe resolution for gobjects whose
   subobjects are `parquetStore`-backed. Recipe steps are pushed onto each
   store's lazy-op queue via the existing `subset()` / `crop()` /

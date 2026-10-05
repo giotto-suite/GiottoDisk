@@ -31,6 +31,7 @@ Imports:
     jsonlite,
     Matrix,
     methods,
+    nanoarrow,
     rlang,
     terra,
     tilework
@@ -45,7 +46,6 @@ Suggests:
     HDF5Array,
     hdf5r,
     knitr,
-    nanoarrow,
     qs,
     Rarr,
     rhdf5,
