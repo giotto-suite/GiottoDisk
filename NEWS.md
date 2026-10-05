@@ -39,14 +39,15 @@
   also assumes one file per subdirectory. Respects `minimal`, because a
   stream cannot be reshaped once handed over. The stream reads once;
   narrow the store before asking for it. {nanoarrow} moves to Imports.
-- Motif enrichment on a backed spatial network. `analyzeData()` on a
-  `parquetEdgeStore` with `motifParam(method = "auto")` resolves to the new
-  `smotifrsParam`, which streams the edges into {smotifrs} through
-  `storeRead(output = "arrowstream")` -- a pending subset is honoured and the
-  network is never read into an `igraph`. Options the stream does not cover
-  (a stratified null, `strata`, `anchored_on`), and a {smotifrs} without
-  `motif_enrichment_stream()`, read the store into an `igraph` and run the
-  in-memory engine. Labels are expected named by node ID.
+- Motif enrichment on a backed spatial network:
+  `analyzeData(<parquetEdgeStore>, <smotifParam>)`, reached from
+  `cellProximityMotifs()` at the default `method = "auto"`. The edges cross
+  into smotif's `motif_enrichment_stream()` through
+  `storeRead(output = "arrowstream")`, so a pending subset is honoured and the
+  network is never read into an `igraph`; whether smotif runs that in R or in
+  its Rust backend is smotif's choice. Labels are expected named by node ID.
+  `strata` and `anchored_on` are not supported on a backed network yet and
+  error rather than falling back.
 
 ## bug fixes
 - The Stereo-seq GEF readers now write cell-major stores, like every other

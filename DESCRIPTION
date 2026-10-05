@@ -55,7 +55,6 @@ Suggests:
     scran,
     sedonadb,
     smotif,
-    smotifrs,
     testthat,
     wk,
     zip,
