@@ -170,39 +170,6 @@ NULL
 }
 
 
-# ---- op payloads -----------------------------------------------------------
-#
-# Same indexing convention as the `@stats` marginals above: a numeric vector
-# whose POSITION is the on-disk row_id / col_id. Kept together because that
-# convention is the thing to preserve -- it is what makes both invariant under
-# `[`, and what lets the R-side executor index directly where arrow has to
-# join.
-
-# Resolve a payload to a full-length numeric vector for one substore.
-.pe_axis_payload_vec <- function(payload, uid, n) {
-    if (is.null(payload)) return(NULL)
-    if (!is.list(payload)) return(rep_len(as.numeric(payload), n))
-    v <- payload[[as.character(uid)]]
-    if (is.null(v)) return(NULL)
-    as.numeric(v)
-}
-
-# Build the joinable (source_id, <key>, w) table an Acero plan needs. Arrow
-# cannot index an R vector from inside a query, so per-axis state has to arrive
-# as a table -- rebuilt per call, which is what the previous executor did too.
-.pe_axis_payload_table <- function(payload, key) {
-    src <- names(payload)
-    data.table::rbindlist(lapply(src, function(u) {
-        v <- as.numeric(payload[[u]])
-        data.table::data.table(
-            source_id = rep_len(as.character(u), length(v)),
-            key_id    = seq_along(v),
-            w         = v
-        )
-    }))[!is.na(w)]
-}
-
-
 # ---- GEF ingest: cell-major batches ----------------------------------------
 #
 # Every expression store is written cell-major: each part file covers one

@@ -50,7 +50,7 @@ and \verb{@post_ops} onto each substore via
 self-sufficient. \code{storeWrite()} bakes the chain into on-disk values,
 leaving the output store with empty chains. Once \verb{@post_ops} is
 non-empty, subsequent op pushes are routed here regardless of their
-natural phase (monotonic phase rule). See \code{R/utils-pestore-ops.R}.}
+natural phase (monotonic phase rule). See \code{R/kernel-ops.R}.}
 }}
 
 \seealso{
