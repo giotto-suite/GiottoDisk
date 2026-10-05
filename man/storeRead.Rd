@@ -25,7 +25,12 @@
 \alias{storeRead,bpcMatrixStore-method}
 \title{Read a \code{dataStore}}
 \usage{
-\S4method{storeRead}{parquetEdgeStore}(store, output = c("arrow", "tibble", "igraph"), minimal = TRUE, ...)
+\S4method{storeRead}{parquetEdgeStore}(
+  store,
+  output = c("arrow", "arrowstream", "tibble", "igraph"),
+  minimal = TRUE,
+  ...
+)
 
 \S4method{storeRead}{mtxInput}(store, ...)
 
@@ -137,6 +142,15 @@
 \item{output}{\code{character} (default = "query"). Format to get values in:
 \itemize{
 \item "query" - produces an arrow lazy query
+\item "arrowstream" - (\code{parquetEdgeStore} only) a
+\code{nanoarrow_array_stream} over the same query, with \verb{@ops}
+already applied. Intended for a reader outside R: the batches can
+be pulled across the Arrow C Data Interface, so a consumer that
+never sees the store object still observes its pending subset.
+The stream can be read only once, and further filtering on it
+happens after the rows are read; narrow the store (or use
+\code{"query"}) before asking for it. Respects \code{minimal}, since a
+stream cannot be reshaped once handed over.
 \item "tibble" - materialized dplyr tibble
 \item "terra" - materialized \code{SpatVector}
 \item "sf" - materialized \code{sf} object

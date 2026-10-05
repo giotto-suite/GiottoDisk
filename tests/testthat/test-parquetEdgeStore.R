@@ -118,6 +118,67 @@ test_that("storeRead arrow returns a queryable arrow dataset with raw ints", {
     expect_equal(nrow(r), 7L)
 })
 
+.collect_stream <- function(x) {
+    as.data.frame(nanoarrow::convert_array_stream(x))
+}
+
+.stream_names <- function(x) {
+    names(nanoarrow::infer_nanoarrow_schema(x)$children)
+}
+
+test_that("storeRead arrowstream yields a nanoarrow stream of edge columns", {
+    s <- storeWrite(storeCreate(type = "parquetEdgeStore"),
+                    .tiny_undirected_dt(),
+                    type = "sNN", directed = FALSE)
+    st <- storeRead(s, output = "arrowstream")
+    expect_s3_class(st, "nanoarrow_array_stream")
+    expect_setequal(.stream_names(st), c("from_id", "to_id", "weight"))
+
+    r <- .collect_stream(st)
+    expect_equal(nrow(r), 7L)
+    expect_equal(sort(r$from_id),
+                 sort(dplyr::collect(storeRead(s, output = "arrow"))$from_id))
+})
+
+test_that("storeRead arrowstream honours minimal = FALSE", {
+    s <- storeWrite(storeCreate(type = "parquetEdgeStore"),
+                    .tiny_undirected_dt(),
+                    type = "sNN", directed = FALSE)
+    wide <- .stream_names(storeRead(s, output = "arrowstream", minimal = FALSE))
+    narrow <- .stream_names(storeRead(s, output = "arrowstream"))
+    expect_true(all(c("from_id", "to_id") %in% wide))
+    expect_gte(length(wide), length(narrow))
+})
+
+test_that("storeRead arrowstream applies pending @ops", {
+    s <- storeWrite(storeCreate(type = "parquetEdgeStore"),
+                    .tiny_undirected_dt(),
+                    type = "sNN", directed = FALSE)
+    sub <- s[c("a", "b", "c")]
+    expect_gt(length(sub@ops), 0L)
+
+    # the files on disk still hold all 7 edges; the stream must not
+    full <- .collect_stream(storeRead(s, output = "arrowstream"))
+    got <- .collect_stream(storeRead(sub, output = "arrowstream"))
+    expect_lt(nrow(got), nrow(full))
+    expect_equal(nrow(got),
+                 nrow(dplyr::collect(storeRead(sub, output = "arrow"))))
+})
+
+test_that("an arrowstream crosses into R arrow with the subset applied", {
+    s <- storeWrite(storeCreate(type = "parquetEdgeStore"),
+                    .tiny_undirected_dt(),
+                    type = "sNN", directed = FALSE)
+    sub <- s[c("a", "b", "c")]
+
+    # a consumer on the arrow side of the C Data Interface
+    rbr <- arrow::as_record_batch_reader(storeRead(sub, output = "arrowstream"))
+    rt <- as.data.frame(rbr$read_table())
+    expect_equal(nrow(rt),
+                 nrow(dplyr::collect(storeRead(sub, output = "arrow"))))
+    expect_setequal(names(rt), c("from_id", "to_id", "weight"))
+})
+
 test_that("storeRead tibble joins char node IDs via sidecar", {
     s <- storeWrite(storeCreate(type = "parquetEdgeStore"),
                     .tiny_undirected_dt(),
