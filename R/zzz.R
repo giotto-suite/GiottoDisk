@@ -41,4 +41,7 @@
     init_option("giottodisk.plot_sample_max", 1e5)
     # -- sedona SQL translation
     init_option("giottodisk.sedona_in_subquery_threshold", 1000L)
+    # -- compiled kernels (GiottoKernels, Suggests). Used when installed;
+    #    FALSE forces the R implementation.
+    init_option("giottodisk.use_kernels", TRUE)
 }

@@ -85,6 +85,16 @@ test_that("sedonadb: @ops filter translates to SQL", {
     expect_setequal(df$cell_ID, c("cell_1", "cell_2"))
 })
 
+test_that("sedonadb: %in% above the threshold uses a VALUES subquery", {
+    skip_if_not_installed("sedonadb")
+    old <- options(giottodisk.sedona_in_subquery_threshold = 1L)
+    on.exit(options(old), add = TRUE)
+    pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb(5))
+    pgs_f <- subset(pgs, cell_ID %in% c("cell_1", "cell_2"))
+    df <- sedonadb::sd_collect(storeRead(pgs_f, output = "sedona"))
+    expect_setequal(df$cell_ID, c("cell_1", "cell_2"))
+})
+
 # affine transform ####
 
 test_that("sedonadb: pending affine applies via ST_Affine", {

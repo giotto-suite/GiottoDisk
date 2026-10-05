@@ -39,8 +39,8 @@ GiottoDisk builds against **development branches** of the suite. `Remotes:` in
 
 | Package | Branch | Required because | Drop the pin when |
 |---|---|---|---|
-| `GiottoClass` | `gsource` | `analyzeData`, `reduceData`, `filterData` generics (all in `NAMESPACE` imports) and `labelProportionsParam` (`R/stream-labelProportions.R`) are gsource-only. | those four are exported on `dev`. |
-| `Giotto` | `gsource` | The whole param layer dispatched on: `pcaParam` / `autoPcaParam` / `randomPcaParam` / `irlbaPcaParam` / `exactPcaParam`, `varParam`, `covLoessParam`, `covGroupsParam`, `cellStatsParam`, `featStatsParam`, `scranMarkersParam`, `logNormParam`, `filterParam`. Also the `backend =` argument on `importStereoSeq()` / `createGiottoStereoSeqObjectBin()` / `createGiottoStereoSeqObjectCell()`, which `tests/testthat/test-stereoseq-gef.R` calls — its `skip_if_not_installed("Giotto")` skips on an absent Giotto but *errors* on one predating that argument. Floored at `>= 4.2.4` in `Imports:` for the `AteraReader` class that `R/convenience-atera.R` subclasses; below that, loading fails with an S4 inheritance error rather than a version message. | `suite_dev` exports them. |
+| `GiottoClass` | `gsource` | `analyzeData`, `reduceData`, `filterData` generics (all in `NAMESPACE` imports) and `labelProportionsParam` (`R/stream-labelProportions.R`) are gsource-only, as are `cellStatsParam` / `featStatsParam` (floored at `>= 0.7.4`, where they moved down from Giotto). | those six are exported on `dev`. |
+| `Giotto` | `gsource` | The whole param layer dispatched on: `pcaParam` / `autoPcaParam` / `randomPcaParam` / `irlbaPcaParam` / `exactPcaParam`, `varParam`, `covLoessParam`, `covGroupsParam`, `scranMarkersParam`, `logNormParam`, `filterParam`. Also the `backend =` argument on `importStereoSeq()` / `createGiottoStereoSeqObjectBin()` / `createGiottoStereoSeqObjectCell()`, which `tests/testthat/test-stereoseq-gef.R` calls — its `skip_if_not_installed("Giotto")` skips on an absent Giotto but *errors* on one predating that argument. Floored at `>= 4.2.4` in `Imports:` for the `AteraReader` class that `R/convenience-atera.R` subclasses; below that, loading fails with an S4 inheritance error rather than a version message. | `suite_dev` exports them. |
 | `GiottoUtils` | `dev` | Suite convention; `dev` carries everything used. | `main` catches up. |
 | `tilework` | default | Hard `Imports:` dependency, `drieslab/tilework`, not on CRAN. | it ships to CRAN. |
 
@@ -94,10 +94,10 @@ R/
   methods-plot.R         # plot methods (parquetGeomBase)
   methods-aggregate.R    # calculateOverlap, overlapToMatrix, overlapPointDisk class
   methods-rasterize.R    # terra::rasterize, terra::centroids for parquetGeomBase
-  methods-resolveSubobject.R  # parquetCoordinator + resolveSubobject methods (view/space
-                              # resolution path); .push_view_to_dt, .push_view_to_pstore,
-                              # .surviving_cell_ids_arrow, .cells_in_region_for_view,
-                              # .space_composite_affine, .project_region_between_spaces
+  methods-resolveSubobject.R  # parquetCoordinator view/space resolution: resolveKeep
+                              # (the surviving set as a lazy arrow plan,
+                              # .surviving_ids_query) + resolveRecipe leaf methods that
+                              # queue it as one id_filter; .find_store_with_cols
   methods-giotto.R       # createGiottoPoints, createGiottoPolygon for parquetGeomBase
   methods-parquetExprStore.R  # subset / union / storeWrite / generic dispatch
                               # for parquetExprStore
@@ -124,6 +124,10 @@ R/
                          #   Xenium disk reader; layouts are identical
                          #   today, so it overrides nothing but the
                          #   platform label)
+  convenience-visiumhd.R # Visium HD import convenience (binned +
+                         #   segmented; several bins into one object)
+  reader-shared.R        # technology-agnostic reader pieces:
+                         #   parent-unit metadata
   zarr-source.R          # zarr v2 source layer: in-place .zarr.zip reads
                          #   (seek-based, STORED entries only) + dir trees;
                          #   .zarr_blosc_decompress() is the SINGLE call
@@ -199,12 +203,19 @@ PCA passes, the `storeWrite` bake — takes its windows from `.pe_windows()` /
 `.pe_chunk_ranges()` (`R/utils-pestore-ops.R`). Do not hand-roll the walk.
 
 The axis is not a free choice. Stores are written cell-major
-(`setorder(row_id, col_id)`), so a contiguous cell range is the gapless case in
+(`setorder(row_id, col_id)`) — each file sorted, files covering disjoint cell
+ranges, by both parquet → parquet write paths (the lazy one windows and sorts
+per window, adr/0018) — so a contiguous cell range is the gapless case in
 `.pe_axis_pred()` and lowers to a `row_id` range predicate that prunes parquet
 row groups. Windowing the **feature** axis prunes nothing — every batch rescans
 the store in full, and the cost is linear in batch count rather than in features
 per batch. If a new statistic seems to want feature batching, it wants a cell
 window instead.
+
+Every importer writes that layout: each part file covers one ascending range of
+cells. A source stored gene-major is reordered before it is written — the
+cellbin GEF reader reads the cell-major `cellExp`, the bin GEF reader spills to
+y-stripes (adr/0017). A new input must do the same.
 
 Windows are exact rather than approximate only because the accumulators are
 additive over cells. A statistic that is not — anything needing a global order
@@ -227,11 +238,15 @@ float statistic is **tolerance-reproducible, not bitwise-reproducible**, even on
 one machine. Never build a bitwise hash or snapshot test on one.
 
 Windowing and folding are **not** the same set, and conflating them is the easy
-mistake. Several passes window — both PCA flavours, the `storeWrite()` bake, and
-both accumulator paths. Only the two accumulator paths *fold*, and only folding
-reassociates, so only folding is exposed to the ULP note above. PCA and the bake
-write each window into a slice nothing else touches, so they have no partials to
-combine and stay bitwise reproducible.
+mistake. Several passes window — both PCA flavours, both `storeWrite()` paths
+(the bake and the lazy-chain write), and both accumulator paths. Only the two
+accumulator paths *fold*, and only folding reassociates, so only folding is
+exposed to the ULP note above. PCA and the writes put each window into a slice
+nothing else touches, so they have no partials to combine and stay bitwise
+reproducible. With GiottoKernels installed, pass 1 sums per-thread Gram
+partials, so it is bitwise reproducible for a fixed thread count, not across
+counts — the same property the R bands already had across worker counts; pass 2
+builds each cell's row in one thread and is bitwise reproducible at any count.
 
 Of the two that fold, one is `by_cell` (grouped statistics) and the other is any
 statistic whose chain landed on `@post_ops`. In the current pipeline only the
@@ -619,6 +634,24 @@ construction. `all_feat_ids`/`all_cell_ids` params preserve zero-overlap entries
   `(i, j, n)` → `(col_id, row_id, value)`, arranges by `row_id` for row-group skipping,
   streams record batches to a `parquetExprStore` — **no MTX intermediate, no dgCMatrix
   materialization**.
+
+## Binned-grid readers (Visium HD / Stereo-seq)
+
+Both give one object shape: bin spat_units named as the in-memory readers
+name them (`bin008`, `bin100`, `cell`), `rna`/`raw` expression in a
+`parquetExprStore`, `raw` spatlocs, and the finest bins (2 um / bin1) as the
+in-memory `giottoBinPoints` -- GiottoClass keeps it in memory on a backed
+object, since it has no disk representation yet.
+
+- Readers subclass the Giotto reader and override only what goes to disk.
+  Polygons keep the inherited in-memory loader; drop its terra centroids and
+  attach it to the backed object, whose setter writes it to the vault.
+- A multi-unit `create_gobject()` loops per-unit readers into one `gobject`;
+  it does not merge objects. The unit hierarchy is cell metadata
+  (`.add_parent_units`, `R/reader-shared.R`): one column per parent unit,
+  kept only where the relation is one-to-one.
+- The disk `create_gobject()` accepts every argument of the parent's, so the
+  Giotto `createGiotto*Object*()` wrappers can call either.
 
 ## Zarr input (Xenium / Atera)
 

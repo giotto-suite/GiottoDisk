@@ -1,6 +1,34 @@
-# GiottoDisk 0.0.0.2
+# GiottoDisk 0.0.0.3
 
 ## new
+- `importVisiumHDDisk()`: disk-backed Visium HD reader (binned and segmented
+  outputs), also reached through `backend =` on `Giotto::importVisiumHD()`
+  and `createGiottoVisiumHDObjectBin()` / `createGiottoVisiumHDObjectCell()`. It
+  gives the same barcodes, features, spatial locations and counts as the
+  in-memory reader; the 2 um bin points stay an in-memory `giottoBinPoints`.
+  `create_gobject()` takes several `bin`s, a `gobject` to add into, and
+  `load_bin_mapping = TRUE` to record each unit's parent units (from
+  `barcode_mappings.parquet`) as cell metadata. Only extracted output
+  directories are read.
+- Gram-eigen PCA (`gramEigenPcaParam`, and `method = "auto"` when it resolves
+  to it) runs both of its passes in the compiled `GiottoKernels` package when
+  that is installed (optional, in `Suggests`): one scan of the HVF store each,
+  with threads inside the call rather than forked R processes, so PCA no
+  longer forks and runs in Positron and on Windows. On a 169,420-cell x
+  2,000-feature store, 50 components, the whole call takes 7.3 s on one
+  thread and 6.2 s on eight, against 16.9 s serial and 8.0 s on eight forked
+  workers before. Threads follow
+  `giottodisk.par_workers` / the future plan when above one, else
+  `options(gkernels.n_threads)`. Without the package, or with
+  `options(giottodisk.use_kernels = FALSE)`, the R path runs as before.
+- `Compare` methods (`>`, `>=`, `<`, `<=`, `==`, `!=`) for `parquetExprBase`
+  against a numeric scalar. `x >= t` queues a lazy indicator on the op chain
+  -- stored entries that pass read back as 1, the rest are dropped -- so
+  `rowSums(x >= 1)` and `colSums(x > 0)` stream through the existing margin
+  methods, and code written for an in-memory matrix (`rowSums_flex(x >= t)`)
+  runs unchanged on a backed one. The comparison sees values after anything
+  already queued. A comparison that is `TRUE` at 0 (`x >= 0`, `x < 1`) would
+  be dense and is an error; so is comparing two stores.
 - `storeRead(<parquetEdgeStore>, output = "arrowstream")` returns a
   `nanoarrow_array_stream` over the same query `output = "arrow"` builds,
   with `@ops` already applied. It exists for readers outside R: the batches
@@ -11,6 +39,90 @@
   also assumes one file per subdirectory. Respects `minimal`, because a
   stream cannot be reshaped once handed over. The stream reads once;
   narrow the store before asking for it. {nanoarrow} moves to Imports.
+
+## bug fixes
+- The Stereo-seq GEF readers now write cell-major stores, like every other
+  input. `cellbinGefInput` reads the cell-major `cellExp` copy; `binGefInput`
+  reorders through a temporary spill and positions bins in grid order, keeping
+  their first-appearance `bin_<id>` names. Before, each part file held one
+  gene batch across all cells, so cell-windowed passes (markers, grouped
+  `featStats`, PCA) rescanned the store once per window. Stores written earlier
+  keep the old layout until re-imported.
+- Parquet writes no longer store data.table's `sorted` / `index` attributes.
+  arrow restores R attributes on read; restored onto a store read back from
+  several files or after a filter they were stale, and keyed or indexed
+  subsets of the collected table could return wrong rows.
+- `storeWrite()` of a `parquetExprStore` or `unionParquetExprStore` into a
+  `parquetExprStore`, the last expression-store writer that was not
+  cell-major, now writes that layout: each file sorted by cell then feature,
+  files covering disjoint cell ranges. The sort
+  was computed and then discarded by the parallel dataset writer, so the
+  layout differed on every run. The write is also windowed by cell, so memory
+  is bounded by the window rather than by the whole output (17.9 GB peak ->
+  10.8 GB writing a 300M-value store). Stores already written keep their
+  layout until rewritten.
+- Tile stores written from a `queryableStore` or `parquetStore` (the disk
+  readers' transcript and polygon paths) no longer nest a second
+  `tile_index=000/` level inside every tile directory. Each tile took the flat
+  geom store's `tile_idx = 0L` default on top of its own `tile_index=<NNN>/`.
+  That broke `storeRead(output = "duckdb")` ("No files found") and, with
+  sedonadb >= 0.4, which discovers hive partitions, `output = "sedona"`
+  (ambiguous `tile_index`). `.write_parquet()` now errors instead of nesting a
+  `tile_index` level. Stores already written keep the nested layout until they
+  are rewritten (#74).
+- `gDirSource()` given a relative path for a directory that did not exist yet
+  kept the relative path, as did every artifact written to it. Reading those
+  artifacts from a different working directory (a knitted document, a
+  parallel worker, after `setwd()`) then pointed at the wrong place. The path
+  is now made absolute once the directory has been created. Objects created
+  before this fix keep the relative paths they were saved with.
+
+## changes
+- `cellStatsParam` and `featStatsParam` are imported from GiottoClass, where
+  they moved from Giotto. Requires GiottoClass >= 0.7.4. No change in behaviour.
+- **View resolution follows GiottoClass 0.7.3's `resolveRecipe()`** (the
+  former `materialize()` / `resolveSubobject()`), which now requires
+  GiottoClass >= 0.7.3. A view is evaluated once per resolve op into the
+  surviving cell set by a `resolveKeep()` method, and each backed subobject
+  queues that set as one `id_filter` without being handed the gobject.
+  - **The set is a lazy arrow plan**, not a collected table: a backed filter
+    owner contributes `subset(owner, pred)` as a query, crops contribute
+    their cell_IDs, and the steps are chained with semi-joins, so nothing is
+    read until a target is collected. Backed getters (`getCellMetadata(g,
+    view = )` and friends) stay lazy this way; previously they took a
+    separate per-target pushdown path, and `resolveRecipe()` collected an ID
+    table up front. The in-memory `vector` form is collected only if an
+    in-memory subobject inside a backed object asks for it.
+  - A filter whose owner is a backed store now works: the old path called
+    `store[, key, drop = FALSE]`, which no store method accepts.
+  - A polygon store's own attributes can be filtered on (`region ==
+    "tumor"`), with `poly_ID` answering for the cell axis, as `spatValues()`
+    allows in memory.
+  - Backed transcript points skip filter steps, as the in-memory leaf does;
+    a crop still clips their own geometry. A crop drawn in a named space now
+    clips in that frame: the region projection dropped translation (it put
+    it in the affine's row 3, which `affine()` ignores), so a shifted space
+    clipped the wrong area. It now uses GiottoClass's `project_region()`.
+  - Feature metadata and dimension reductions inherit the in-memory leaf.
+    Backed feature metadata used to be given a cell_ID `id_filter` it has no
+    column for.
+- Dropped the `prepareIds` import. GiottoClass removed the generic in 0.7.3:
+  it was an exported identity transform with no call sites here or anywhere
+  else, and `parquetCoordinator`'s own methods already promote an ID set to
+  the form each store wants.
+
+# GiottoDisk 0.0.0.2
+
+## new
+- `analyzeData(parquetExprBase, scranMarkersParam)` accepts
+  `comparison = "nodes"`, the streaming half of Giotto's `findNodeMarkers()`.
+  A `sets` list names the clusters on each side of every branch point of a
+  cluster tree; the method takes its **one** grouped moment pass and folds each
+  node out of it with the existing `.pe_pool_moments()`, exactly as
+  `"one_vs_rest"` already does. The accumulators are additive, so every node
+  after the first costs arithmetic rather than another scan -- 35 nodes on
+  169,528 cells in 5.2 s, against ~35 s for one `findMarkers()` call per node,
+  and sub-linear in node count.
 - `parquetCoordinator`: view + space recipe resolution for gobjects whose
   subobjects are `parquetStore`-backed. Recipe steps are pushed onto each
   store's lazy-op queue via the existing `subset()` / `crop()` /

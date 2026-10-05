@@ -203,40 +203,142 @@ NULL
 }
 
 
-# Feature indices (col_id) backed by more than one raw geneDT row. Two rows
-# with distinct geneIDs can carry the same geneName, and their records must
-# sum into one matrix entry.
+# ---- GEF ingest: cell-major batches ----------------------------------------
 #
-# Adjacency cannot be assumed: a real gene table is ordered by geneID, so the
-# duplicates of a name scatter arbitrarily (measured on a mouse tissue.gef:
-# 16 duplicated names, gaps up to 25400 rows). `.gef_safe_chunks` only keeps
-# *consecutive* runs together, so these land in different chunks, get
-# aggregated separately, and reach the store as two rows for one (cell, gene)
-# pair. Callers hold records for these columns back and flush them once at
-# end of stream instead -- bounded by the duplicated genes alone, not the
-# matrix.
-.gef_dup_cols <- function(name_to_row) {
-    v <- name_to_row[!is.na(name_to_row)]
-    if (!length(v)) return(integer(0L))
-    tb <- tabulate(v)
-    which(tb > 1L)
+# Every expression store is written cell-major: each part file covers one
+# ascending range of cells (AGENTS.md, "window the CELL axis"). A GEF stores
+# its expression gene-major, so the readers either read a cell-major copy
+# (cellbin `cellExp`) or reorder out of core through a spill (bin GEF, and
+# cellbin files without `cellExp`). Duplicate gene names are summed by the
+# final `(row_id, col_id)` aggregate: a cell never spans two batches, so no
+# record for it can be left behind in another one.
+
+# TRUE when the HDF5 file has an object at `name` (every level checked, since
+# H5Lexists on a path through a missing group errors).
+.h5_has <- function(path, name) {
+    fid <- rhdf5::H5Fopen(path, flags = "H5F_ACC_RDONLY")
+    on.exit(rhdf5::H5Fclose(fid), add = TRUE)
+    cur <- character(0L)
+    for (p in strsplit(name, "/", fixed = TRUE)[[1L]]) {
+        cur <- paste(c(cur, p), collapse = "/")
+        if (!rhdf5::H5Lexists(fid, cur)) return(FALSE)
+    }
+    TRUE
 }
 
-# Aggregate the held-back records into one final batch. NULL when nothing
-# was deferred, which is the common case.
-.gef_flush_deferred <- function(deferred) {
-    row_id <- col_id <- value <- NULL  # data.table vars
-    if (!length(deferred)) return(NULL)
-    out <- data.table::rbindlist(deferred)
-    if (!nrow(out)) return(NULL)
-    out[, .(value = sum(value)), keyby = .(row_id, col_id)]
+# Records per ingest batch, from the same free-RAM model the streaming passes
+# use. A GEF batch holds the compound read, the triplet frame and the
+# aggregate's copy at once, about 96 B per record -- twice the collected
+# triplet frame alone. `options(giottodisk.gef_batch_rows =)` pins it; when free
+# RAM cannot be read, `.gef_batch_rows_fallback` records are used.
+.gef_batch_rows_fallback <- 5e6
+
+.gef_batch_rows <- function() {
+    pinned <- getOption("giottodisk.gef_batch_rows")
+    if (!is.null(pinned)) return(max(1, as.numeric(pinned)))
+    free <- tryCatch(.sc_free_ram(), error = function(e) NA_real_)
+    if (!isTRUE(is.finite(free)) || free <= 0) return(.gef_batch_rows_fallback)
+    ram_frac <- getOption("giottodisk.chunk_ram_frac", 0.25)
+    budget <- .chunk_budget(free, ram_frac, n_cells = 0, k = 0, p = 0)
+    max(1e6, floor(budget / 96))
+}
+
+# Contiguous cell ranges of at most `max_rows` records each, cut greedily; a
+# single cell with more records than that gets a range of its own. Returns a
+# list of c(a, b).
+.gef_cell_ranges <- function(n_per_cell, max_rows) {
+    n <- length(n_per_cell)
+    if (!n) return(list())
+    cs <- c(0, cumsum(as.numeric(n_per_cell)))   # cs[i + 1] = records through cell i
+    out <- list()
+    a <- 1L
+    while (a <= n) {
+        b <- min(n, max(a, findInterval(cs[a] + max_rows, cs) - 1L))
+        out[[length(out) + 1L]] <- c(a, b)
+        a <- b + 1L
+    }
+    out
+}
+
+# Fine buckets for a spill of `n_records`: several per budget-sized batch, so
+# that pass 2 can group consecutive buckets under the budget even when records
+# are unevenly spread over the cell axis.
+.gef_n_buckets <- function(n_records, max_rows, per_batch = 8L) {
+    max(1L, as.integer(per_batch * ceiling(n_records / max_rows)))
+}
+
+# Two-pass iterator for gene-major records. Pass 1 (on the first
+# `next_batch()`) calls `produce(i)` for i in seq_len(n_chunks); each returns a
+# data.table with an integer bucket column `b` in 1..n_buckets and whatever
+# `finish()` needs, and is spilled to one parquet file per (bucket, chunk)
+# under the artifact dump directory. Pass 2 groups consecutive buckets while
+# their records fit `max_rows` (a bucket larger than that goes alone) and
+# returns `finish(dt)` for each group in ascending order: the batch's
+# `(row_id, col_id, value)`, keyed. Buckets must partition the cell axis in
+# ascending order for the output to be cell-major. The spill is removed on
+# close.
+.gef_spill_iterator <- function(produce, n_chunks, n_buckets, finish, max_rows) {
+    b <- NULL  # data.table var
+    spill <- .dump_tempfile()
+    spilled <- FALSE
+    groups <- list()
+    g_i <- 0L
+    closed <- FALSE
+
+    run_pass1 <- function() {
+        dir.create(spill, recursive = TRUE, showWarnings = FALSE)
+        rows <- numeric(n_buckets)
+        for (i in seq_len(n_chunks)) {
+            dt <- produce(i)
+            if (is.null(dt) || !nrow(dt)) next
+            rows <- rows + tabulate(dt$b, nbins = n_buckets)
+            parts <- split(dt, by = "b", keep.by = FALSE, sorted = TRUE)
+            for (nm in names(parts)) {
+                d <- file.path(spill, sprintf("b%06d", as.integer(nm)))
+                dir.create(d, showWarnings = FALSE)
+                .write_parquet_file(parts[[nm]], file.path(d, sprintf("c%06d.parquet", i)))
+            }
+        }
+        # consecutive non-empty buckets, grouped under the budget
+        nz <- which(rows > 0)
+        cur <- integer(0L); acc <- 0
+        for (k in nz) {
+            if (length(cur) && acc + rows[k] > max_rows) {
+                groups[[length(groups) + 1L]] <<- cur
+                cur <- integer(0L); acc <- 0
+            }
+            cur <- c(cur, k); acc <- acc + rows[k]
+        }
+        if (length(cur)) groups[[length(groups) + 1L]] <<- cur
+        spilled <<- TRUE
+    }
+
+    close_fn <- function() {
+        closed <<- TRUE
+        unlink(spill, recursive = TRUE)
+        invisible(NULL)
+    }
+
+    next_batch <- function() {
+        if (closed) return(NULL)
+        if (!spilled) run_pass1()
+        if (g_i >= length(groups)) return(NULL)
+        g_i <<- g_i + 1L
+        dirs <- file.path(spill, sprintf("b%06d", groups[[g_i]]))
+        fs <- list.files(dirs, pattern = "[.]parquet$", full.names = TRUE)
+        dt <- data.table::setDT(dplyr::collect(arrow::open_dataset(fs)))
+        unlink(dirs, recursive = TRUE)
+        finish(dt)
+    }
+
+    list(next_batch = next_batch, close = close_fn)
 }
 
 
 # Build chunk boundaries that respect duplicate-name groups: never split
 # a run of raw geneDT rows that share the same name_to_row between two
-# chunks. Non-adjacent duplicates are out of reach here and are handled by
-# the deferral path above. Returns a list of c(g_lo, g_hi) integer pairs
+# chunks. Non-adjacent duplicates are summed later, by the batch aggregate of
+# `.gef_spill_iterator()`. Returns a list of c(g_lo, g_hi) integer pairs
 # covering 1..n. `target_size` is the desired chunk size in raw geneDT rows.
 .gef_safe_chunks <- function(name_to_row, target_size) {
     n <- length(name_to_row)

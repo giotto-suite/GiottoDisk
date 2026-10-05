@@ -6,35 +6,47 @@
 \alias{parquetCoordinator-class}
 \alias{parquetCoordinator}
 \alias{defaultViewCoordinator,gsource-method}
-\alias{resolveSubobject,cellMetaObj,ANY,ANY,ANY,parquetCoordinator-method}
-\alias{resolveSubobject,featMetaObj,ANY,ANY,ANY,parquetCoordinator-method}
-\alias{resolveSubobject,spatLocsObj,ANY,ANY,ANY,parquetCoordinator-method}
-\alias{resolveSubobject,spatEnrObj,ANY,ANY,ANY,parquetCoordinator-method}
-\alias{resolveSubobject,giottoPolygon,ANY,ANY,ANY,parquetCoordinator-method}
-\alias{resolveSubobject,giottoPoints,ANY,ANY,ANY,parquetCoordinator-method}
-\alias{resolveSubobject,exprObj,ANY,ANY,ANY,parquetCoordinator-method}
-\alias{resolveSubobject,dimObj,ANY,ANY,ANY,parquetCoordinator-method}
+\alias{resolveKeep,parquetCoordinator-method}
+\alias{resolveRecipe,cellMetaObj,parquetCoordinator-method}
+\alias{resolveRecipe,spatEnrObj,parquetCoordinator-method}
+\alias{resolveRecipe,spatLocsObj,parquetCoordinator-method}
+\alias{resolveRecipe,giottoPolygon,parquetCoordinator-method}
+\alias{resolveRecipe,giottoPoints,parquetCoordinator-method}
+\alias{resolveRecipe,exprObj,parquetCoordinator-method}
 \title{parquetCoordinator}
 \usage{
 parquetCoordinator()
 
 \S4method{defaultViewCoordinator}{gsource}(source, ...)
 
-\S4method{resolveSubobject}{cellMetaObj,ANY,ANY,ANY,parquetCoordinator}(subobj, gobject, view, space, coordinator, ...)
+\S4method{resolveKeep}{parquetCoordinator}(
+  coordinator,
+  gobject,
+  view,
+  spat_unit = NULL,
+  feat_type = NULL,
+  ...
+)
 
-\S4method{resolveSubobject}{featMetaObj,ANY,ANY,ANY,parquetCoordinator}(subobj, gobject, view, space, coordinator, ...)
+\S4method{resolveRecipe}{cellMetaObj,parquetCoordinator}(x, coordinator, keep = NULL, space = NULL, view = NULL, ...)
 
-\S4method{resolveSubobject}{spatLocsObj,ANY,ANY,ANY,parquetCoordinator}(subobj, gobject, view, space, coordinator, ...)
+\S4method{resolveRecipe}{spatEnrObj,parquetCoordinator}(x, coordinator, keep = NULL, space = NULL, view = NULL, ...)
 
-\S4method{resolveSubobject}{spatEnrObj,ANY,ANY,ANY,parquetCoordinator}(subobj, gobject, view, space, coordinator, ...)
+\S4method{resolveRecipe}{spatLocsObj,parquetCoordinator}(x, coordinator, keep = NULL, space = NULL, view = NULL, ...)
 
-\S4method{resolveSubobject}{giottoPolygon,ANY,ANY,ANY,parquetCoordinator}(subobj, gobject, view, space, coordinator, ...)
+\S4method{resolveRecipe}{giottoPolygon,parquetCoordinator}(x, coordinator, keep = NULL, space = NULL, view = NULL, ...)
 
-\S4method{resolveSubobject}{giottoPoints,ANY,ANY,ANY,parquetCoordinator}(subobj, gobject, view, space, coordinator, ...)
+\S4method{resolveRecipe}{giottoPoints,parquetCoordinator}(
+  x,
+  coordinator,
+  keep = NULL,
+  space = NULL,
+  view = NULL,
+  spaces = NULL,
+  ...
+)
 
-\S4method{resolveSubobject}{exprObj,ANY,ANY,ANY,parquetCoordinator}(subobj, gobject, view, space, coordinator, ...)
-
-\S4method{resolveSubobject}{dimObj,ANY,ANY,ANY,parquetCoordinator}(subobj, gobject, view, space, coordinator, ...)
+\S4method{resolveRecipe}{exprObj,parquetCoordinator}(x, coordinator, keep = NULL, space = NULL, view = NULL, ...)
 }
 \value{
 \code{parquetCoordinator}

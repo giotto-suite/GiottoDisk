@@ -604,8 +604,7 @@ setMethod(
     if (length(data@post_ops) > 0L) {
         .pestore_write_baked(store, data)
     } else {
-        q <- .pestore_remap_query(data)
-        .write_parquet(store, q)
+        .pestore_write_windowed(store, data)
     }
 
     # Slots copied from input -- already correctly narrowed by any
@@ -693,6 +692,58 @@ setMethod(
         }
     }
     invisible(NULL)
+}
+
+# Lazy-chain write: one cell window at a time, each sorted and written as its
+# own file, in cell order, so the output is cell-major (the layout AGENTS.md
+# states and the Gram kernel checks) with memory bounded by the window.
+#
+# The sort cannot be left to one arrange() over the whole query: write_dataset()
+# writes batches as its threads finish them and drops the order (a 169,420-cell
+# store came back in 170,944 runs of cells, a different layout every run), and
+# collecting the sorted query whole holds the entire output at once (17.9 GB
+# peak for a 300M-value store). See adr/0018.
+.pestore_write_windowed <- function(store, data) {
+    partition_dir <- .idpath(store@path, store@uid)
+    if (!dir.exists(partition_dir)) {
+        dir.create(partition_dir, recursive = TRUE, showWarnings = FALSE)
+    }
+    row_id <- NULL  # NSE
+    part_idx <- 0L
+    for (d in .pe_windows(data, .pe_write_chunk_size(data))) {
+        # window-local row ids start at 1; shift them to the output axis
+        off <- d$offset + d$cs - 1L
+        tb <- .pestore_remap_query(.pe_window_store(d)) |>
+            dplyr::mutate(row_id = row_id + off) |>
+            dplyr::compute()
+        if (tb$num_rows > 0L) {
+            .write_parquet_file(tb,
+                file.path(partition_dir, sprintf("part-%d.parquet", part_idx)),
+                chunk_size = 1048576L)
+            part_idx <- part_idx + 1L
+        }
+        # the Arrow table is freed only when R collects it, and R does not see
+        # Arrow's allocation; without this the previous window can still be
+        # resident when the next one sorts, doubling the peak
+        rm(tb)
+        invisible(gc(verbose = FALSE))
+    }
+    # a view with no stored values still has to read back as a store
+    if (part_idx == 0L) {
+        .write_parquet_file(
+            arrow::arrow_table(row_id = integer(), col_id = integer(),
+                value = double()),
+            file.path(partition_dir, "part-0.parquet"))
+    }
+    invisible(NULL)
+}
+
+# Window for the lazy-chain write. The sort holds a collected Arrow table plus
+# its sorted copy; measured at 60-100 bytes per stored value of process peak
+# (17.6M values: +1.05 GB; 300M values at 4 windows: +7.5 GB, the upper end
+# because Arrow's allocator keeps freed pages), hence 96.
+.pe_write_chunk_size <- function(pe) {
+    .pe_window_cells(pe, bytes_per_nz = 96, k = 0L)
 }
 
 # Build the lazy remapped triplet query for a (possibly subset) input.
@@ -1148,6 +1199,88 @@ NULL
 setAs("parquetExprBase", "dgCMatrix", function(from) {
     storeRead(from, output = "dgcmatrix")
 })
+
+
+# Compare ####
+
+#' @name parquetExprStore-compare
+#' @title Compare an expression store against a scalar
+#' @description
+#' `>`, `>=`, `<`, `<=`, `==` and `!=` against a numeric scalar return the
+#' store with a lazy indicator queued on its op chain: stored entries that
+#' pass keep value 1, entries that fail are dropped. Nothing is read until
+#' the result is, so `rowSums(x >= 1)` counts per feature in one streaming
+#' pass, and the comparison sees the values the chain produces -- after
+#' normalization, if normalization is queued.
+#'
+#' The result is sparse only when an unstored zero fails the comparison, so a
+#' comparison that is `TRUE` at 0 (`x >= 0`, `x < 1`, `x == 0`, ...) is an
+#' error rather than a silent densification. Materialize a bounded slice with
+#' `storeRead(x[i, j], output = "dgcmatrix")` for those.
+#'
+#' Passing entries read back as the double `1`, not `TRUE`, because a stored
+#' value is a double on every read path. Sums and counts are unaffected.
+#' @param e1,e2 a `parquetExprBase`-inheriting store and a numeric scalar, in
+#'   either order
+#' @returns the store, with a `compare` record appended to its op chain
+#' @examples
+#' \dontrun{
+#' rowSums(x >= 1)   # cells expressing each feature
+#' colSums(x > 0)    # features detected per cell
+#' }
+NULL
+
+#' @rdname parquetExprStore-compare
+#' @export
+setMethod("Compare", signature("parquetExprBase", "numeric"),
+    function(e1, e2) .pe_compare(e1, .Generic, e2)
+)
+
+#' @rdname parquetExprStore-compare
+#' @export
+setMethod("Compare", signature("numeric", "parquetExprBase"),
+    function(e1, e2) .pe_compare(e2, .pe_flip_compare(.Generic), e1)
+)
+
+#' @rdname parquetExprStore-compare
+#' @export
+setMethod("Compare", signature("parquetExprBase", "parquetExprBase"),
+    function(e1, e2) {
+        stop("[Compare] comparing two expression stores is not supported; ",
+             "compare a store against a numeric scalar.", call. = FALSE)
+    }
+)
+
+# `1 <= x` is `x >= 1`: keep the store on the left so the record has one shape.
+.pe_flip_compare <- function(op) {
+    switch(op,
+        ">"  = "<",  ">=" = "<=",
+        "<"  = ">",  "<=" = ">=",
+        op) # == and != are symmetric
+}
+
+.pe_compare <- function(x, op, e2) {
+    if (length(e2) != 1L || is.na(e2)) {
+        stop("[Compare] an expression store compares against a single ",
+             "non-NA number.", call. = FALSE)
+    }
+    e2 <- as.numeric(e2)
+    op <- as.character(op) # `.Generic` carries a package attribute
+    # The whole design rests on this: an unstored entry is 0, so if 0 passes,
+    # every unstored entry would have to become a stored 1.
+    if (isTRUE(do.call(op, list(0, e2)))) {
+        stop("[Compare] `x ", op, " ", e2, "` is TRUE for every unstored ",
+             "zero, so the result would be dense. Use a comparison that 0 ",
+             "fails, or materialize a bounded slice with ",
+             "storeRead(x[i, j], output = \"dgcmatrix\") first.",
+             call. = FALSE)
+    }
+    # Lowerable on either carrier, so it goes wherever the chain currently
+    # ends -- after a post op it has to run R-side too (monotonic rule).
+    phase <- if (length(x@post_ops) > 0L) "post" else "lazy"
+    .pe_push_op(x, list(type = "compare", op = op, axis = "all", e2 = e2),
+        phase = phase)
+}
 
 
 # Orientation ####

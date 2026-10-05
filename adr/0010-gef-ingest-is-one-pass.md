@@ -1,9 +1,9 @@
 # 0010. GEF ingest is a single pass: duplicates defer, coordinates ride out
 
-- **Status:** Accepted
+- **Status:** Superseded by 0017
 - **Date:** 2026-08-11
 - **Supersedes:** —
-- **Superseded by:** —
+- **Superseded by:** [0017](0017-gef-ingest-writes-cell-major.md)
 
 ## Context
 
