@@ -14,6 +14,7 @@
   store_type = getOption("giotto.gdsrc_sparsematrix_format", "parquetExpr"),
   path = .dump_tempfile(),
   output = c("store", "exprObj"),
+  engine = NULL,
   ...
 )
 
@@ -40,6 +41,11 @@ rows. Useful when feature detections carry a \code{count} field.}
 
 \item{path}{\code{character} output directory for the matrix store}
 
+\item{engine}{(\code{overlapPointDisk} only) \code{character} \code{"duckdb"} or
+\code{"arrow"}, or \code{NULL} (default): duckdb when it is installed and
+\code{store_type = "parquetExpr"}, arrow otherwise. duckdb builds only
+\code{"parquetExpr"}.}
+
 \item{...}{additional params to pass}
 
 \item{feat_id_col}{\code{character} feature ID column name (default \code{"feat_ID"})}
@@ -53,8 +59,9 @@ the matrix store, or an \code{exprObj} wrapping it when
 \description{
 Aggregates the output of \code{\link[=calculateOverlap]{calculateOverlap()}} into a feature x cell sparse
 count matrix store. \code{store_type = "parquetExpr"} (the default) writes a
-\code{parquetExprStore}, built in one DuckDB query when duckdb is installed.
-\code{"bpcells"} and \code{"h5"} go through a Matrix Market intermediate.
+\code{parquetExprStore}, built in one DuckDB query by default (see \code{engine}).
+\code{"bpcells"} and \code{"h5"} are built in Arrow through a Matrix Market
+intermediate.
 
 The matrix covers the overlap's feature and cell ID universes
 (\verb{@feat_ids} / \verb{@spat_ids}, or \code{all_feat_ids} / \code{all_cell_ids}): IDs with

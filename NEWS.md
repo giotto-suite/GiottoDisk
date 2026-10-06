@@ -26,7 +26,9 @@
   thread: about 4 minutes on the Atera sample instead of about 12.
 - `overlapToMatrix()` to a `parquetExprStore` runs as one DuckDB query when
   duckdb is installed: 17.5 s for the Atera sample's 300M values, against
-  80 s through Arrow, which remains the path without duckdb.
+  80 s through Arrow, which remains the path without duckdb. A new `engine`
+  argument (`"duckdb"` or `"arrow"`) picks one explicitly; the default
+  `NULL` takes duckdb and falls back to arrow.
 - `overlapToMatrix()` drops overlap rows outside the feature and cell ID
   universes instead of writing them with missing keys, so narrowing an
   overlap's `@spat_ids` / `@feat_ids` narrows the matrix.

@@ -190,6 +190,26 @@ describe("calculateOverlap engine resolution", {
     })
 })
 
+describe("overlapToMatrix engine resolution", {
+    test_that("NULL takes duckdb for parquetExpr, arrow otherwise", {
+        expected <- if (requireNamespace("duckdb", quietly = TRUE)) "duckdb"
+            else "arrow"
+        expect_identical(.resolve_matrix_engine(NULL, "parquetExpr"), expected)
+        expect_identical(.resolve_matrix_engine(NULL, "bpcells"), "arrow")
+        expect_identical(.resolve_matrix_engine("arrow", "parquetExpr"), "arrow")
+    })
+
+    test_that("duckdb builds only parquetExpr; unknown engines error", {
+        skip_if_not_installed("duckdb")
+        expect_identical(.resolve_matrix_engine("duckdb", "parquetexpr"),
+            "duckdb")
+        expect_error(.resolve_matrix_engine("duckdb", "bpcells"),
+            "builds only")
+        expect_error(.resolve_matrix_engine("sedona", "parquetExpr"),
+            "should be one of")
+    })
+})
+
 describe("overlapToMatrix", {
     test_that("the parquetExpr build matches the truth, cell-major", {
         skip_if_not_installed("duckdb")
@@ -207,9 +227,8 @@ describe("overlapToMatrix", {
         skip_if_not_installed("duckdb")
         fx <- .ov_fx()
         ov <- calculateOverlap(fx$polys, fx$pts_flat)
-        via_duckdb <- overlapToMatrix(ov, path = tempfile())
-        via_arrow <- overlapToMatrix(ov@data, path = tempfile(),
-            all_feat_ids = ov@feat_ids, all_cell_ids = ov@spat_ids)
+        via_duckdb <- overlapToMatrix(ov, path = tempfile(), engine = "duckdb")
+        via_arrow <- overlapToMatrix(ov, path = tempfile(), engine = "arrow")
         expect_identical(via_duckdb@cell_ids, via_arrow@cell_ids)
         expect_identical(via_duckdb@feat_ids, via_arrow@feat_ids)
         expect_identical(.ov_dense(via_duckdb), .ov_dense(via_arrow))
@@ -228,8 +247,8 @@ describe("overlapToMatrix", {
         expect_equal(M, .ov_counts(fx$truth, c("b", "c"), c("p1", "p2"))[
             rownames(M), colnames(M)])
         # the arrow build narrows the same way
-        M2 <- .ov_dense(overlapToMatrix(ov@data, path = tempfile(),
-            all_feat_ids = ov@feat_ids, all_cell_ids = ov@spat_ids))
+        M2 <- .ov_dense(overlapToMatrix(ov, path = tempfile(),
+            engine = "arrow"))
         expect_identical(M2, M)
     })
 })
