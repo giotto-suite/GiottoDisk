@@ -61,10 +61,27 @@ setMethod("snapshotLoad", signature("gDirSource"), function(src,
     }
 
     gobject <- .load_serialized(snap_path, load_params = load_params)
+
+    # terra pointers do not survive serialization: reopen the images from
+    # their files, as GiottoClass::loadGiotto() does, and unpack the bin
+    # points that snapshotSave() packed
+    if (inherits(gobject, "giotto")) {
+        if (length(gobject[["images"]]) > 0) {
+            imglist <- lapply(gobject[["images"]], GiottoClass::reconnect)
+            gobject <- GiottoClass::setGiotto(gobject, imglist,
+                verbose = FALSE, initialize = FALSE
+            )
+        }
+        for (i in seq_along(gobject@feat_info)) {
+            if (inherits(gobject@feat_info[[i]]@spatial, "PackedSpatVector")) {
+                gobject@feat_info[[i]]@spatial <-
+                    terra::unwrap(gobject@feat_info[[i]]@spatial)
+            }
+        }
+    }
     return(gobject)
-    
+
     # to be completed by GiottoClass::loadGiotto
-    # - image reconnection
     # - python path handling
     # - data.table overallocation
     # - gobject initialization

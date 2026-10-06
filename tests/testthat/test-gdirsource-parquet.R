@@ -10,6 +10,13 @@
 }
 
 
+test_that("gDirSource does not create missing parent directories", {
+    p <- file.path(withr::local_tempdir(), "missing", "proj")
+    expect_error(gDirSource(p), "parent directory does not exist")
+    expect_false(dir.exists(dirname(p)))
+})
+
+
 test_that("storeCreate('parquetExpr') builds a parquetExprStore", {
     s <- storeCreate(type = "parquetExpr")
     expect_s4_class(s, "parquetExprStore")
