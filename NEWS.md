@@ -40,6 +40,18 @@
   stream cannot be reshaped once handed over. The stream reads once;
   narrow the store before asking for it. {nanoarrow} moves to Imports.
 
+## changes
+- `storeRead(output = "duckdb")` and `storeRead(output = "sedona")` read
+  `source_id` and `tile_index` from hive partition discovery on the store
+  root instead of reading each tile directory separately and injecting the
+  values as SQL literals. Tile selection (`tile_idx`, `@tile_filter`) becomes
+  a partition predicate that both engines prune files on. The partition
+  columns keep their types (`source_id` string, `tile_index` int32). The
+  per-tile reads crashed sedona on stores with a few hundred tiles or more.
+- sedonadb >= 0.4.0 is required, for its hive partition discovery. An older
+  install is passed over by `"auto"` spatial engine selection, and
+  `storeRead(output = "sedona")` errors on it.
+
 ## bug fixes
 - The Stereo-seq GEF readers now write cell-major stores, like every other
   input. `cellbinGefInput` reads the cell-major `cellExp` copy; `binGefInput`

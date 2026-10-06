@@ -796,23 +796,21 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
 # original on-disk parquet files. SedonaDB reads the files directly via DataFusion,
 # preserving GeoParquet metadata so geometry columns are natively recognised.
 #
-# Hive partition columns (`source_id`, `tile_index`) require special handling:
-# the sedonadb R binding hard-codes `GeoParquetReadOptions::default()` and does
-# not expose `table_partition_cols`, so DataFusion does not auto-promote hive
-# directory segments to columns. Without them, `row_index` collides across tiles
-# and source provenance is lost. We compensate at the R/SQL layer by registering
-# each `tile_index=<n>/` directory as its own sub-view and reconstructing the
-# partition cols via SQL literal injection. Per-tile SELECTs are UNION ALL'd
-# into a single base view that downstream WHERE/projection/affine SQL targets.
+# Hive partition columns (`source_id`, `tile_index`) are virtual: they come
+# from the directory layout, and without them `row_index` collides across
+# tiles and source provenance is lost. sedonadb >= 0.4 discovers them when the
+# store root is read, so the base view is built over that discovery
+# (`.pstore_hive_base_sql`). One scan per root, not one view per tile: a
+# per-tile UNION ALL overflows DataFusion's planner stack at a few hundred
+# tiles (853-tile Atera transcripts: SIGILL).
 #
 # Pipeline:
 #   1. Resolve tile specs (`.pstore_tile_specs`): one entry per
-#      surviving `source_id=<uid>/tile_index=<n>/` directory. Honors
-#      `tile_idx` arg and `@tile_filter` via file-level pruning — the pruned
-#      tile dirs never reach DataFusion.
-#   2. Register each tile dir as a sub-view; build per-tile
-#      `SELECT *, '<uid>' AS source_id, <n> AS tile_index FROM <tile_view>`.
-#      UNION ALL the per-tile SELECTs as the base view.
+#      surviving `source_id=<uid>/tile_index=<n>/` directory, honoring the
+#      `tile_idx` arg and `@tile_filter`.
+#   2. Build the base view: one arm per substore root with a `source_id` /
+#      `tile_index` predicate that DataFusion prunes files on -- the single
+#      base view that downstream WHERE/projection/affine SQL targets.
 #   3. SQL WHERE from: @crop/@window AABB on x_index/y_index (parquet stats
 #      pushdown), @ops filter exprs via .r_expr_to_sql().
 #   4. SELECT DISTINCT / LIMIT for distinct/head ops; tail/sample/join warn
@@ -825,6 +823,10 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
 .pstore_to_sedona <- function(store, fields = NULL, ...) {
     GiottoUtils::package_check("sedonadb",
         repository = "github:apache/sedona-db/r/sedonadb")
+    if (!.sedonadb_has_discovery()) {
+        stop("[storeRead][sedona] sedonadb >= 0.4.0 is required (installed: ",
+            utils::packageVersion("sedonadb"), ")", call. = FALSE)
+    }
 
     extra_args <- list(...)
     extent_arg <- extra_args$extent
@@ -838,7 +840,7 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
 
     aff <- if (inherits(store, "parquetGeomBase")) .pgeom_pending_transform(store) else NULL
 
-    # --- 1. Resolve tile specs + register per-tile sub-views ---
+    # --- 1. Resolve tile specs + register one view per substore root ---
     specs <- .pstore_tile_specs(store, tile_idx_arg = tile_idx_arg)
     if (length(specs) == 0L) {
         stop("[storeRead][sedona] no tile directories match the requested filter\n",
@@ -847,17 +849,21 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
     # View names must be lowercase: DataFusion normalises unquoted identifiers
     # to lowercase at registration time, which would break double-quoted SQL refs.
     base_view_name <- tolower(paste0("gd_", .make_uid()))
-    union_sqls <- vapply(seq_along(specs), function(i) {
-        spec <- specs[[i]]
-        tile_view_name <- sprintf("%s_t%d", base_view_name, i)
-        sedonadb::sd_to_view(
-            sedonadb::sd_read_parquet(spec$dir_path),
-            tile_view_name, overwrite = TRUE
-        )
-        sprintf('SELECT *, %s FROM "%s"',
-            .pstore_tile_literal_cols(spec), tile_view_name)
-    }, FUN.VALUE = character(1L))
-    base_sql <- paste(union_sqls, collapse = " UNION ALL ")
+    root_i <- 0L
+    base_sql <- .pstore_hive_base_sql(specs,
+        from_fn = function(root, has_tile) {
+            root_i <<- root_i + 1L
+            root_view_name <- sprintf("%s_r%d", base_view_name, root_i)
+            sedonadb::sd_to_view(
+                sedonadb::sd_read_parquet(paste0(root, "/")),
+                root_view_name, overwrite = TRUE
+            )
+            sprintf('"%s"', root_view_name)
+        },
+        cast_fn = function(col, type) {
+            sprintf("arrow_cast(%s, '%s')", col,
+                if (type == "int") "Int32" else "Utf8")
+        })
     sedonadb::sd_to_view(
         sedonadb::sd_sql(base_sql),
         base_view_name, overwrite = TRUE
@@ -924,8 +930,8 @@ sd_view_ref <- function(sdf) {
 #
 # Translate a store's full state into a DuckDB lazy `tbl_dbi` backed by the
 # original on-disk parquet files via DuckDB's `read_parquet` scanner.
-# Mirrors `.pstore_to_sedona`: per-tile UNION ALL with `source_id` /
-# `tile_index` SQL literal injection, WHERE for @crop/@window AABB + @ops
+# Mirrors `.pstore_to_sedona`: base view over hive discovery, WHERE for
+# @crop/@window AABB + @ops
 # filter exprs, DISTINCT / LIMIT for distinct/head, spatial extension's
 # ST_* for spat_relate, ST_Affine wrap for pending transforms.
 #
@@ -982,17 +988,20 @@ sd_view_ref <- function(sdf) {
             "  store path: ", toString(storePaths(store)), call. = FALSE)
     }
     base_view_name <- tolower(paste0("gd_dd_", .make_uid()))
-    union_sqls <- vapply(seq_along(specs), function(i) {
-        spec <- specs[[i]]
-        # `read_parquet('dir/*.parquet')` with hive_partitioning disabled —
-        # we inject source_id / tile_index as SQL literals (mirrors sedona)
-        # and want to avoid duckdb auto-promoting them from the directory
-        # layout (which would also coerce them to types that may not match).
-        path_escaped <- gsub("'", "''", spec$dir_path, fixed = TRUE)
-        sprintf("SELECT *, %s FROM read_parquet('%s*.parquet', hive_partitioning=false)",
-            .pstore_tile_literal_cols(spec), path_escaped)
-    }, FUN.VALUE = character(1L))
-    base_sql <- paste(union_sqls, collapse = " UNION ALL ")
+    base_sql <- .pstore_hive_base_sql(specs,
+        from_fn = function(root, has_tile) {
+            # `hive_types`: `tile_index=001` is zero-padded, which stops
+            # duckdb inferring an integer; left alone it is VARCHAR.
+            types <- if (has_tile) {
+                "{'source_id': VARCHAR, 'tile_index': INTEGER}"
+            } else {
+                "{'source_id': VARCHAR}"
+            }
+            sprintf(paste0("read_parquet('%s/**/*.parquet', ",
+                "hive_partitioning = true, hive_types = %s)"),
+                gsub("'", "''", root, fixed = TRUE), types)
+        },
+        cast_fn = function(col, type) col)
     DBI::dbExecute(conn,
         sprintf('CREATE OR REPLACE TEMP VIEW "%s" AS %s',
             base_view_name, base_sql))
@@ -1083,7 +1092,7 @@ sd_view_ref <- function(sdf) {
     arms <- vapply(specs, function(spec) {
         path_escaped <- gsub("'", "''", spec$dir_path, fixed = TRUE)
         sprintf("SELECT *, %s FROM read_parquet('%s*.parquet', hive_partitioning=false)",
-            .pstore_tile_literal_cols(spec), path_escaped)
+            .pstore_source_literal_col(spec), path_escaped)
     }, FUN.VALUE = character(1L))
     DBI::dbExecute(conn, sprintf('CREATE OR REPLACE TEMP VIEW "%s" AS %s',
         base_view_name, paste(arms, collapse = " UNION ALL ")))
@@ -1179,9 +1188,10 @@ sd_view_ref <- function(sdf) {
 # metadata).
 #
 # Returns a list of specs, each:
-#   list(uid, tile_index, dir_path, has_tile_index)
+#   list(uid, root, tile_index, dir_path, has_tile_index)
 #
 # - `uid`: source uid for the substore (becomes `source_id` literal).
+# - `root`: the substore's hive root (`@path`), which holds `source_id=<uid>/`.
 # - `tile_index`: integer index parsed from `tile_index=<n>/` (or 0L for stores
 #   without a tile_index partition layer; in that case `has_tile_index = FALSE`
 #   and tile_index is unused).
@@ -1191,6 +1201,9 @@ sd_view_ref <- function(sdf) {
 # - `has_tile_index`: TRUE for `parquetGeomBase`-inheriting stores (flat geom +
 #   tiled geom both write a `tile_index=<n>` partition); FALSE for flat tabular
 #   `parquetStore` which only has the `source_id=<uid>` partition.
+#
+# The list carries attribute `tile_filtered`: TRUE when a `tile_idx` arg or
+# `@tile_filter` selected a subset of tiles.
 #
 # Pruning rules:
 #   - If `tile_idx_arg` is supplied: keep only matching `tile_index=<n>` dirs.
@@ -1226,12 +1239,13 @@ sd_view_ref <- function(sdf) {
         NULL
     }
 
-    unlist(lapply(substores, function(s) {
+    specs <- unlist(lapply(substores, function(s) {
         uid <- s@uid
         source_dir <- file.path(s@path, paste0("source_id=", uid))
         if (!has_tile_index) {
             return(list(list(
                 uid = uid,
+                root = s@path,
                 tile_index = 0L,
                 dir_path = paste0(source_dir, "/"),
                 has_tile_index = FALSE
@@ -1249,31 +1263,61 @@ sd_view_ref <- function(sdf) {
         if (length(tile_dirs) == 0L) return(list())
         Map(function(n, p) list(
             uid = uid,
+            root = s@path,
             tile_index = n,
             dir_path = paste0(p, "/"),
             has_tile_index = TRUE
         ), tile_idxs, tile_dirs)
     }), recursive = FALSE)
+    attr(specs, "tile_filtered") <- !is.null(eff_tile_idx)
+    specs
 }
 
-# Build the per-tile literal-column SQL fragment that injects
-# `source_id` (and `tile_index` when applicable) into a per-tile SELECT.
-# Shared by `.pstore_to_sedona` and `.pstore_to_duckdb`.
-.pstore_tile_literal_cols <- function(spec) {
-    uid_lit <- gsub("'", "''", spec$uid, fixed = TRUE)
-    if (spec$has_tile_index) {
-        # CAST AS INT keeps the literal at int32 so it matches the on-disk
-        # hive partition column type. Without the cast, DataFusion infers
-        # Int64 (default for integer literals); sd_collect then surfaces
-        # that as R `numeric`, and arrow::as_arrow_table() promotes it to
-        # float64 -- which then fails to semi_join against the int32
-        # tile_index column from the parquet schema. `INT` is the
-        # portable Int32 name across DataFusion / DuckDB.
-        sprintf("'%s' AS source_id, CAST(%d AS INT) AS tile_index",
-            uid_lit, spec$tile_index)
-    } else {
-        sprintf("'%s' AS source_id", uid_lit)
-    }
+# sedonadb gained hive partition discovery in 0.4.0, which the sedona reader
+# is built on. Older versions count as not installed for engine selection.
+.sedonadb_has_discovery <- function() {
+    utils::packageVersion("sedonadb") >= "0.4.0"
+}
+
+# Base-view SQL over hive discovery: one arm per substore root, narrowed to
+# that substore's `source_id` and, when tiles were selected, to those
+# `tile_index` values. Both engines prune files on these partition
+# predicates, so tile selection stays file-level without per-tile views.
+#
+# `from_fn(root)` returns the engine's FROM target for a root. `cast_fn(col,
+# type)` casts a discovered partition column: duckdb types them through
+# `hive_types` already, sedona discovers them as Utf8View and needs
+# `arrow_cast` to reach the Utf8 / Int32 the rest of the package joins on.
+.pstore_hive_base_sql <- function(specs, from_fn, cast_fn) {
+    uids <- unique(vapply(specs, `[[`, character(1L), "uid"))
+    tile_filtered <- isTRUE(attr(specs, "tile_filtered"))
+    arms <- vapply(uids, function(uid) {
+        sp <- Filter(function(x) identical(x$uid, uid), specs)
+        has_tile <- sp[[1L]]$has_tile_index
+        part <- if (has_tile) c("source_id", "tile_index") else "source_id"
+        select_sql <- sprintf("* EXCLUDE (%s), %s AS source_id",
+            paste(part, collapse = ", "), cast_fn("source_id", "string"))
+        where_sql <- sprintf("source_id = '%s'", gsub("'", "''", uid))
+        if (has_tile) {
+            tile_sql <- cast_fn("tile_index", "int")
+            select_sql <- paste0(select_sql, ", ", tile_sql, " AS tile_index")
+            if (tile_filtered) {
+                tiles <- vapply(sp, `[[`, integer(1L), "tile_index")
+                where_sql <- sprintf("%s AND %s IN (%s)", where_sql,
+                    tile_sql, paste(tiles, collapse = ", "))
+            }
+        }
+        sprintf("SELECT %s FROM %s WHERE %s", select_sql,
+            from_fn(sp[[1L]]$root, has_tile), where_sql)
+    }, FUN.VALUE = character(1L))
+    paste(arms, collapse = " UNION ALL ")
+}
+
+# Literal `source_id` column for one per-source SELECT arm. Only the
+# expression-store duckdb path reads per source; its union filter relies on
+# DuckDB folding each arm's constant `source_id` away.
+.pstore_source_literal_col <- function(spec) {
+    sprintf("'%s' AS source_id", gsub("'", "''", spec$uid, fixed = TRUE))
 }
 
 

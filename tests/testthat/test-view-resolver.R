@@ -384,7 +384,7 @@ test_that("the poly arm gives the same ID set on every engine", {
     v <- .mk_view(.vcrop(c(2.5, 6.5, 2.5, 6.5), geom = "poly"))
     engines <- c("terra",
         if (requireNamespace("duckdb", quietly = TRUE)) "duckdb",
-        if (requireNamespace("sedonadb", quietly = TRUE)) "sedona")
+        if (.spat_engine_available("sedonadb")) "sedona")
     answers <- lapply(engines, function(e) {
         GiottoUtils::gwith_options(
             list(giottodisk.spatial_query_engine = e), .keep_ids(g, v))
