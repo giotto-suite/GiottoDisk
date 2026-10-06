@@ -124,6 +124,51 @@ describe("calculateOverlap engines", {
     })
 })
 
+describe("calculateOverlap engine resolution", {
+    auto_pick <- if (.spat_engine_available("sedonadb")) "sedona" else
+        if (.spat_engine_available("duckdb")) "duckdb" else "terra"
+    with_opt <- function(val, expr) GiottoUtils::gwith_options(
+        list(giottodisk.spatial_query_engine = val), expr)
+
+    test_that("an explicit engine wins, then the option, then auto", {
+        expect_identical(with_opt("duckdb", .resolve_overlap_engine("terra")),
+            "terra")
+        expect_identical(with_opt("duckdb", .resolve_overlap_engine()), "duckdb")
+        expect_identical(with_opt("auto", suppressMessages(
+            .resolve_overlap_engine())), auto_pick)
+        expect_identical(with_opt(NULL, suppressMessages(
+            .resolve_overlap_engine())), auto_pick)
+        expect_error(.resolve_overlap_engine("geos"), "should be one of")
+    })
+
+    test_that("auto picks terra when a tiling param is supplied", {
+        expect_identical(with_opt("auto",
+            .resolve_overlap_engine(tiling = TRUE)), "terra")
+        # a named engine is honoured; it ignores the tiling params
+        expect_identical(with_opt("auto",
+            .resolve_overlap_engine("duckdb", tiling = TRUE)), "duckdb")
+        expect_identical(with_opt("sedona",
+            .resolve_overlap_engine(tiling = TRUE)), "sedona")
+    })
+
+    test_that("a tiling param reaches the resolver from the method", {
+        skip_if_not_installed("duckdb")
+        skip_if_not_installed("dbplyr")
+        fx <- .ov_fx()
+        files <- function(ov) basename(list.files(ov@data@path,
+            pattern = "[.]parquet$", recursive = TRUE))
+        # terra writes tile_NNNN.parquet files, duckdb one overlap.parquet
+        with_opt("auto", {
+            tiled <- calculateOverlap(fx$polys, fx$pts_tile, prune_tiles = TRUE)
+        })
+        expect_true(all(grepl("^tile_[0-9]+[.]parquet$", files(tiled))))
+        with_opt("duckdb", {
+            untiled <- calculateOverlap(fx$polys, fx$pts_tile)
+        })
+        expect_identical(files(untiled), "overlap.parquet")
+    })
+})
+
 describe("overlapToMatrix", {
     test_that("the parquetExpr build matches the truth, cell-major", {
         skip_if_not_installed("duckdb")

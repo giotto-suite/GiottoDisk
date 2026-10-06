@@ -13,7 +13,7 @@
   threshold = NULL,
   tiles = NULL,
   pad_y = 500,
-  engine = c("terra", "duckdb", "sedona"),
+  engine = NULL,
   path = .dump_tempfile(),
   poly_id_col = "poly_ID",
   feat_id_col = "feat_ID",
@@ -29,7 +29,7 @@
   pad_y = NULL,
   tile_idx = NULL,
   prune_tiles = FALSE,
-  engine = c("terra", "duckdb", "sedona"),
+  engine = NULL,
   path = .dump_tempfile(),
   poly_id_col = "poly_ID",
   feat_id_col = "feat_ID",
@@ -61,9 +61,12 @@ around each tile extent when fetching points.
 Supply a value directly when \code{max_poly_radius} was not recorded at write time.
 }}
 
-\item{engine}{\code{character} one of \code{"terra"}, \code{"duckdb"} or \code{"sedona"}
-(default = \code{"terra"}). \code{"terra"} iterates over adaptive polygon tiles
-(or point tiles for \code{parquetGeomTileStore} \code{y}). \code{"duckdb"} and
+\item{engine}{\code{character} one of \code{"terra"}, \code{"duckdb"} or \code{"sedona"}, or
+\code{NULL} (default) to use \code{getOption("giottodisk.spatial_query_engine")},
+the same option \code{\link[GiottoClass:spatRelate]{spatRelate()}} reads. Unset or \code{"auto"}, that picks the
+first installed of sedona, duckdb and terra, except that supplying any
+tiling param below picks terra. \code{"terra"} iterates over adaptive polygon
+tiles (or point tiles for \code{parquetGeomTileStore} \code{y}). \code{"duckdb"} and
 \code{"sedona"} perform one full-dataset spatial join over the stores'
 \code{\link[=storeRead]{storeRead()}} scans, so filters pending on \code{x} and \code{y} apply; tiling
 params (\code{threshold}, \code{tiles}, \code{pad_y}, \code{poly_buf_factor}, \code{tile_idx},

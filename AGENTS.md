@@ -633,6 +633,12 @@ Both are the `engine = "terra"` paths. `engine = "duckdb"` / `"sedona"` take
 the two stores' `storeRead()` scans, so pending ops on either store apply.
 All paths return `overlapPointDisk`.
 
+`engine = NULL` resolves through `.resolve_overlap_engine()`, which wraps the
+spat_relate resolver (`.resolve_spatial_engine()`: per-call > option
+`giottodisk.spatial_query_engine` > auto sedona > duckdb > terra). One extra
+rule: under auto, any terra tiling arg supplied picks terra, since the SQL
+engines ignore those args.
+
 ### overlapToMatrix
 The ID universes (`@feat_ids` / `@spat_ids`, or `all_feat_ids` / `all_cell_ids`)
 define the matrix axes, sorted via `GiottoUtils::mixedsort()` when `sort = TRUE`.

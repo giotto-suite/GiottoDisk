@@ -1,6 +1,12 @@
 # GiottoDisk 0.0.0.4
 
 ## breaking changes
+- `calculateOverlap()` on disk stores picks its engine the way `spatRelate()`
+  does: `engine = NULL` (the new default) reads
+  `options(giottodisk.spatial_query_engine)`, and unset or `"auto"` takes the
+  first installed of sedona, duckdb and terra. It was always terra before. A
+  call that supplies a terra tiling argument (`threshold`, `tiles`, `pad_y`,
+  `poly_buf_factor`, `tile_idx`, `prune_tiles`) still gets terra under auto.
 - `calculateOverlap()` on disk stores returns its overlap in a
   `queryableStore` instead of a `parquetStore`. The files no longer carry a
   `row_index` column; a row is keyed by `(pt_tile_index, pt_row_index,

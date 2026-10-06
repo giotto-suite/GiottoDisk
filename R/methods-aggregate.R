@@ -45,9 +45,12 @@
 #'   that contain no polygon centroids. Enable when polygons are coarsely
 #'   distributed relative to the point tile plan to avoid spawning empty workers.
 #'   (For example when coarsely binning)
-#' @param engine `character` one of `"terra"`, `"duckdb"` or `"sedona"`
-#'   (default = `"terra"`). `"terra"` iterates over adaptive polygon tiles
-#'   (or point tiles for `parquetGeomTileStore` `y`). `"duckdb"` and
+#' @param engine `character` one of `"terra"`, `"duckdb"` or `"sedona"`, or
+#'   `NULL` (default) to use `getOption("giottodisk.spatial_query_engine")`,
+#'   the same option [spatRelate()] reads. Unset or `"auto"`, that picks the
+#'   first installed of sedona, duckdb and terra, except that supplying any
+#'   tiling param below picks terra. `"terra"` iterates over adaptive polygon
+#'   tiles (or point tiles for `parquetGeomTileStore` `y`). `"duckdb"` and
 #'   `"sedona"` perform one full-dataset spatial join over the stores'
 #'   [storeRead()] scans, so filters pending on `x` and `y` apply; tiling
 #'   params (`threshold`, `tiles`, `pad_y`, `poly_buf_factor`, `tile_idx`,
@@ -111,7 +114,7 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomStore"),
         threshold = NULL,
         tiles = NULL,
         pad_y = 500,
-        engine = c("terra", "duckdb", "sedona"),
+        engine = NULL,
         path = .dump_tempfile(),
         poly_id_col = "poly_ID",
         feat_id_col = "feat_ID",
@@ -119,7 +122,8 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomStore"),
         ...
     ) {
     method <- match.arg(method, c("vector", "raster"))
-    engine <- match.arg(engine, c("terra", "duckdb", "sedona"))
+    engine <- .resolve_overlap_engine(engine,
+        tiling = !missing(threshold) || !missing(tiles) || !missing(pad_y))
     if (inherits(x, "unionParquetStore") || inherits(y, "unionParquetStore")) {
         stop(
             "[calculateOverlap] union stores are not supported; ",
@@ -165,7 +169,7 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
         pad_y = NULL,
         tile_idx = NULL,
         prune_tiles = FALSE,
-        engine = c("terra", "duckdb", "sedona"),
+        engine = NULL,
         path = .dump_tempfile(),
         poly_id_col = "poly_ID",
         feat_id_col = "feat_ID",
@@ -173,7 +177,9 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
         ...
     ) {
     method <- match.arg(method, c("vector", "raster"))
-    engine <- match.arg(engine, c("terra", "duckdb", "sedona"))
+    engine <- .resolve_overlap_engine(engine,
+        tiling = !missing(poly_buf_factor) || !missing(pad_y) ||
+            !missing(tile_idx) || !missing(prune_tiles))
     spat_ids <- .collect_ids(x, poly_id_col)
     feat_ids <- .collect_ids(y, feat_id_col)
     result <- if (engine != "terra") {
@@ -205,6 +211,18 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
 })
 
 ## internals ####
+
+# Engine for calculateOverlap: the shared spatial-engine resolver, except that
+# "auto" with a terra tiling param supplied means terra -- the SQL engines
+# ignore those params, and auto must not drop them silently. An engine named
+# explicitly (argument or option) is honoured as given.
+.resolve_overlap_engine <- function(engine = NULL, tiling = FALSE) {
+    auto <- is.null(engine) &&
+        identical(getOption("giottodisk.spatial_query_engine", "auto"), "auto")
+    resolved <- if (auto && isTRUE(tiling)) "terra" else
+        .resolve_spatial_engine(engine, verb = "calculateOverlap")
+    match.arg(resolved, c("terra", "duckdb", "sedona"))
+}
 
 .calculate_overlap_terra_tiled <- function(x, y,
     dir = file.path(tempdir(), .make_uid()),

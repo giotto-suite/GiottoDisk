@@ -399,7 +399,7 @@ setMethod(
         }
     }
 
-    engine <- .resolve_spat_relate_engine(op$engine)
+    engine <- .resolve_spatial_engine(op$engine)
     switch(engine,
         "sedona" = .spat_relate_narrow_sedona(trim_store, op, id_cols, store),
         "duckdb" = .spat_relate_narrow_duckdb(trim_store, op, id_cols, store),
@@ -417,16 +417,18 @@ setMethod(
 }
 
 
-# Resolve the spatial-query engine to use for spat_relate narrowing.
+# Resolve the spatial engine for a verb: spat_relate narrowing and
+# calculateOverlap share it, so one option sets both.
 # Honors (in precedence order):
-#   1. `op_engine` — per-call engine passed to `spatRelate(..., engine = ...)`
+#   1. `op_engine` — per-call engine (`spatRelate(..., engine = ...)`,
+#      `calculateOverlap(..., engine = ...)`)
 #   2. `giottodisk.spatial_query_engine` option — user / session default
 #   3. "auto" — best available (sedona > duckdb > terra)
 # When "auto" falls through to terra (because no SQL spatial backend is
-# installed) we emit a one-shot `rlang::inform` nudging the user toward a
-# faster engine -- but only when the user hasn't already made a
+# installed) we emit a one-shot `rlang::inform` per verb nudging the user
+# toward a faster engine -- but only when the user hasn't already made a
 # deliberate engine choice via the arg or the option.
-.resolve_spat_relate_engine <- function(op_engine = NULL) {
+.resolve_spatial_engine <- function(op_engine = NULL, verb = "spat_relate") {
     # Per-call engine arg wins over the option.
     eff <- op_engine %||% getOption("giottodisk.spatial_query_engine", "auto")
     if (!identical(eff, "auto")) return(eff)
@@ -434,15 +436,15 @@ setMethod(
     if (.spat_engine_available("duckdb"))   return("duckdb")
     rlang::inform(
         paste0(
-            "spat_relate is using the terra engine (the default fallback ",
-            "when no SQL spatial backend is installed). For ad-hoc ",
-            "spatial queries, sedonadb or duckdb are typically faster. ",
+            verb, " is using the terra engine (the default fallback ",
+            "when no SQL spatial backend is installed). ",
+            "sedonadb or duckdb are typically faster. ",
             "Install one and set ",
             "`options(giottodisk.spatial_query_engine = \"sedona\")` or ",
             "`\"duckdb\"` to silence this message."
         ),
         .frequency = "once",
-        .frequency_id = "giottodisk.spat_relate_terra_nudge"
+        .frequency_id = paste0("giottodisk.", verb, "_terra_nudge")
     )
     "terra"
 }
