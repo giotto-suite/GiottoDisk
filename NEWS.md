@@ -32,6 +32,9 @@
   overlap's `@spat_ids` / `@feat_ids` narrows the matrix.
 
 ## bug fixes
+- `calculateOverlap(engine = "terra", tile_idx = )` on a point tile store
+  failed for any `tile_idx`: it widened the outermost tiles' bounds on the
+  tile selection, which exposes no bounds, instead of on the plan (#92).
 - `overlapToMatrix()` on an `overlapPointDisk` read the overlap with the
   input stores' ID column names. The overlap files always name them
   `poly_ID` and `feat_ID`, so non-default `poly_id_col` / `feat_id_col`

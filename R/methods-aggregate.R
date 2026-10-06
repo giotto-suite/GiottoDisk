@@ -241,10 +241,6 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
         warning("[calculateOverlap] no point tiles found", call. = FALSE)
         return(.overlap_store(dir))
     }
-    if (!is.null(tile_idx)) {
-        tile_sel <- tile_sel[i = as.integer(tile_idx), drop = FALSE]
-    }
-
     # Expand outermost tile bounds to cover polygon centroid extent.
     # Catches polygons whose centroids are outside the point tile plan but
     # whose geometry still overlaps points in the outermost tiles.
@@ -264,6 +260,12 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
         if (expand[[3L]]) b[b[, 3L] == plan_ext[[3L]], 3L] <- poly_data_ext[[3L]]
         if (expand[[4L]]) b[b[, 4L] == plan_ext[[4L]], 4L] <- poly_data_ext[[4L]]
         tile_sel$bounds <- b
+    }
+    # Select after expanding: `$bounds` is plan geometry, which a
+    # tileSelection does not expose (its `$` reads per-tile metadata), and
+    # "outermost" means outermost in the plan, not in the selection.
+    if (!is.null(tile_idx)) {
+        tile_sel <- tile_sel[i = as.integer(tile_idx), drop = FALSE]
     }
 
     # polygon buffer: explicit pad_y takes priority; otherwise derive from

@@ -110,6 +110,27 @@ describe("calculateOverlap engines", {
         })
     }
 
+    test_that("terra tile_idx keeps the cells centred in those point tiles", {
+        fx <- .ov_fx()
+        full <- storeRead(calculateOverlap(fx$polys, fx$pts_tile,
+            engine = "terra")@data, output = "tibble")
+        b <- fx$pts_tile@tiles$bounds
+        cent <- storeRead(fx$polys, output = "tibble",
+            omit_internals = FALSE)
+        for (ti in list(1L, 2:3, c(1L, 4L))) {
+            in_sel <- Reduce(`|`, lapply(ti, function(k) {
+                cent$x_index >= b[k, 1L] & cent$x_index <= b[k, 2L] &
+                    cent$y_index >= b[k, 3L] & cent$y_index <= b[k, 4L]
+            }))
+            d <- storeRead(calculateOverlap(fx$polys, fx$pts_tile,
+                engine = "terra", tile_idx = ti)@data, output = "tibble")
+            key <- function(z) sort(paste(z$pt_tile_index, z$pt_row_index,
+                z$poly_ID))
+            expect_identical(key(d),
+                key(full[full$poly_ID %in% cent$poly_ID[in_sel], ]))
+        }
+    })
+
     test_that("an overlap with no hits still reads, as zero rows", {
         fx <- .ov_fx()
         # two cells: the terra path cannot plan tiles for a single polygon
