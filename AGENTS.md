@@ -612,25 +612,48 @@ Inherits `overlapInfo`. Wraps overlap `parquetStore` with metadata:
 - `overlapPointDisk` → `list(poly = ..., feat = ...)` named list of UID vectors
 
 ### Unified overlap result schema
-Both dispatch paths produce a flat `parquetStore`:
-- `poly_ID`, `feat_ID` (character) — polygon and feature IDs
+Every engine produces a `queryableStore` (`.overlap_store()`) over parquet
+files, not a `parquetStore` (adr/0019):
+- `poly_ID`, `feat_ID` (character) — polygon and feature IDs, always these
+  names whatever the input columns were called
 - `keep_cols` (optional) — extra columns from point store
 - `count` (if present in point store)
 - `pt_tile_index`, `pt_row_index` — join keys back to point store
+
+A row is keyed by `(pt_tile_index, pt_row_index, poly_ID)`. There is no
+`row_index`: do not add one (a global `row_number()` serialises the DuckDB
+join). A run with no hits still writes one zero-row file.
 
 ### calculateOverlap dispatches
 - `(parquetGeomStore, parquetGeomTileStore)`: `tileApply` with `pad_y` padding
 - `(parquetGeomStore, parquetGeomStore)`: `quadtreePlan` + `tileApply`
 
-Both paths return `overlapPointDisk`. Internals return plain `parquetStore`.
+Both are the `engine = "terra"` paths. `engine = "duckdb"` / `"sedona"` take
+`.calculate_overlap_sql()` from either signature: one `ST_Intersects` join over
+the two stores' `storeRead()` scans, so pending ops on either store apply.
+All paths return `overlapPointDisk`.
+
+`engine = NULL` resolves through `.resolve_overlap_engine()`, which wraps the
+spat_relate resolver (`.resolve_spatial_engine()`: per-call > option
+`giottodisk.spatial_query_engine` > auto sedona > duckdb > terra). One extra
+rule: under auto, any terra tiling arg supplied picks terra, since the SQL
+engines ignore those args.
 
 ### overlapToMatrix
-Groups by `(feat_ID, poly_ID)`, counts/sums, builds COO on integer keys (string→int LUTs
-joined onto raw batches *before* aggregation — aggregating strings first leaves dangling
-utf8_view buffers at scale). IDs sorted via `GiottoUtils::mixedsort()` before COO
-construction. `all_feat_ids`/`all_cell_ids` params preserve zero-overlap entries.
+The ID universes (`@feat_ids` / `@spat_ids`, or `all_feat_ids` / `all_cell_ids`)
+define the matrix axes, sorted via `GiottoUtils::mixedsort()` when `sort = TRUE`.
+Overlap rows are **inner**-joined onto them, so IDs with no overlaps keep empty
+rows/columns and rows outside them are dropped — narrowing the universes is how
+an overlap is subset.
 
-**Destination branches on `store_type`** (default: `getOption("giotto.gdsrc_matrix_format", "bpcells")`):
+`overlapPointDisk` + `store_type = "parquetExpr"` + duckdb installed:
+`.overlap_to_pestore_duckdb()`, one query (integer LUT joins, `GROUP BY`,
+`ORDER BY row_id, col_id`, `COPY` to one file). Everything else goes to the
+`queryableStore` method below, in Arrow: string→int LUTs joined onto raw batches
+*before* aggregation — aggregating strings first leaves dangling utf8_view
+buffers at scale.
+
+**Destination branches on `store_type`** (default: `getOption("giotto.gdsrc_sparsematrix_format", "parquetExpr")`):
 - `"bpcells"` / `"hdf5"`: COO → `.write_overlap_mtx()` (streamed Matrix Market) →
   `.mtx_to_store()` → BPCells or HDF5Array.
 - `"parquetexpr"`: COO → `.coo_to_parquetexpr()` directly. Transmutes
