@@ -646,10 +646,13 @@ Overlap rows are **inner**-joined onto them, so IDs with no overlaps keep empty
 rows/columns and rows outside them are dropped — narrowing the universes is how
 an overlap is subset.
 
-`overlapPointDisk` + `store_type = "parquetExpr"` + duckdb installed:
+`overlapPointDisk` method, `engine` (`.resolve_matrix_engine()`): `NULL` takes
+duckdb when installed and `store_type = "parquetExpr"`, else arrow; an explicit
+`"duckdb"` with another `store_type` errors. duckdb is
 `.overlap_to_pestore_duckdb()`, one query (integer LUT joins, `GROUP BY`,
-`ORDER BY row_id, col_id`, `COPY` to one file). Everything else goes to the
-`queryableStore` method below, in Arrow: string→int LUTs joined onto raw batches
+`ORDER BY row_id, col_id`, `COPY` to one file). sedona was measured for this
+step and left out (Atera: 40 s, 32-36 GB vs duckdb 7 s, 10-11 GB). arrow goes
+to the `queryableStore` method below: string→int LUTs joined onto raw batches
 *before* aggregation — aggregating strings first leaves dangling utf8_view
 buffers at scale.
 

@@ -71,8 +71,9 @@ NULL
 #' @description
 #' Aggregates the output of [calculateOverlap()] into a feature x cell sparse
 #' count matrix store. `store_type = "parquetExpr"` (the default) writes a
-#' `parquetExprStore`, built in one DuckDB query when duckdb is installed.
-#' `"bpcells"` and `"h5"` go through a Matrix Market intermediate.
+#' `parquetExprStore`, built in one DuckDB query by default (see `engine`).
+#' `"bpcells"` and `"h5"` are built in Arrow through a Matrix Market
+#' intermediate.
 #'
 #' The matrix covers the overlap's feature and cell ID universes
 #' (`@feat_ids` / `@spat_ids`, or `all_feat_ids` / `all_cell_ids`): IDs with
@@ -85,6 +86,10 @@ NULL
 #' @param poly_id_col `character` polygon ID column name (default `"poly_ID"`)
 #' @param count_col `character` (optional) column to sum instead of counting
 #'   rows. Useful when feature detections carry a `count` field.
+#' @param engine (`overlapPointDisk` only) `character` `"duckdb"` or
+#'   `"arrow"`, or `NULL` (default): duckdb when it is installed and
+#'   `store_type = "parquetExpr"`, arrow otherwise. duckdb builds only
+#'   `"parquetExpr"`.
 #' @param ... additional params to pass
 #' @returns the matrix store, or an `exprObj` wrapping it when
 #'   `output = "exprObj"`
@@ -619,13 +624,14 @@ setMethod("overlapToMatrix", signature("overlapPointDisk"),
         store_type = getOption("giotto.gdsrc_sparsematrix_format", "parquetExpr"),
         path = .dump_tempfile(),
         output = c("store", "exprObj"),
+        engine = NULL,
         ...
     ) {
     output <- match.arg(tolower(output), choices = c("store", "exprobj"))
+    engine <- .resolve_matrix_engine(engine, store_type)
     # The overlap files always carry the fixed `poly_ID` / `feat_ID` schema;
     # @poly_id_col / @feat_id_col name the INPUT stores' columns.
-    mat_store <- if (tolower(store_type) == "parquetexpr" &&
-            requireNamespace("duckdb", quietly = TRUE)) {
+    mat_store <- if (engine == "duckdb") {
         feat_ids <- x@feat_ids
         cell_ids <- x@spat_ids
         if (isTRUE(sort)) {
@@ -754,6 +760,30 @@ setMethod("overlapToMatrix", signature("queryableStore"),
 })
 
 ## internals ####
+
+# Engine for the overlap -> matrix build. NULL takes duckdb and degrades to
+# arrow when duckdb is not installed or the destination is not a
+# parquetExprStore (the only one the duckdb build writes). sedona was measured
+# and not added: on Atera, 40 s and 32-36 GB peak against duckdb's 7 s and
+# 10-11 GB, same output.
+.resolve_matrix_engine <- function(engine = NULL, store_type) {
+    pe_dest <- tolower(store_type) == "parquetexpr"
+    if (is.null(engine)) {
+        return(if (pe_dest && requireNamespace("duckdb", quietly = TRUE)) {
+            "duckdb"
+        } else {
+            "arrow"
+        })
+    }
+    engine <- match.arg(engine, c("duckdb", "arrow"))
+    if (engine == "duckdb" && !pe_dest) {
+        stop("[overlapToMatrix] engine = \"duckdb\" builds only ",
+            "store_type = \"parquetExpr\"; use engine = \"arrow\" for '",
+            store_type, "'", call. = FALSE)
+    }
+    if (engine == "duckdb") GiottoUtils::package_check("duckdb")
+    engine
+}
 
 # Overlap -> parquetExprStore in one DuckDB query: join the ID universes as
 # integer LUTs, aggregate, sort cell-major, write. DuckDB runs the aggregate
