@@ -58,7 +58,7 @@ test_that("spatRelate(): rejects empty WKT", {
 # chain stays lazy on the arrow side.
 
 test_that("spatRelate(): arrow path -- intersects matches expected ids", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- .make_pts_store()
     tbl <- spatRelate(pgs, .roi(), "intersects") |>
         storeRead(output = "tibble")
@@ -66,7 +66,7 @@ test_that("spatRelate(): arrow path -- intersects matches expected ids", {
 })
 
 test_that("spatRelate(): arrow path -- each predicate produces sane result", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- .make_pts_store()
     roi <- .roi()
     results <- lapply(
@@ -86,7 +86,7 @@ test_that("spatRelate(): arrow path -- two spat_relate ops compose", {
     # Caching path: the second spat_relate's trimmed-store evaluation
     # narrows via the cached ids from the first (as an `id_filter` op),
     # not re-evaluating the first's spatial predicate.
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- .make_pts_store()
     roi1 <- .roi("POLYGON ((0 0, 6 0, 6 6, 0 6, 0 0))")  # hits a, b, c
     roi2 <- .roi("POLYGON ((2 2, 8 2, 8 8, 2 8, 2 2))")  # hits b, c, d
@@ -97,7 +97,7 @@ test_that("spatRelate(): arrow path -- two spat_relate ops compose", {
 })
 
 test_that("spatRelate(): arrow path -- three spat_relate ops compose", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- .make_pts_store()
     roi1 <- .roi("POLYGON ((0 0, 8 0, 8 8, 0 8, 0 0))")  # hits a, b, c, d
     roi2 <- .roi("POLYGON ((2 2, 10 2, 10 10, 2 10, 2 2))")  # hits b..e
@@ -112,7 +112,7 @@ test_that("spatRelate(): arrow path -- three spat_relate ops compose", {
 test_that("spatRelate(): arrow path -- spat_relate interleaved with filter", {
     # An attribute filter sitting between two spat_relate ops shouldn't
     # break the cache or change the row set.
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- .make_pts_store()
     roi1 <- .roi("POLYGON ((0 0, 6 0, 6 6, 0 6, 0 0))")  # hits a, b, c
     roi2 <- .roi("POLYGON ((2 2, 8 2, 8 8, 2 8, 2 2))")  # hits b, c, d
@@ -124,7 +124,7 @@ test_that("spatRelate(): arrow path -- spat_relate interleaved with filter", {
 })
 
 test_that("spatRelate(): arrow path -- different predicates compose", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- .make_pts_store()
     big_box <- .roi("POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))")  # all 5
     small_box <- .roi("POLYGON ((2 2, 4 2, 4 4, 2 4, 2 2))")    # contains b only
@@ -136,7 +136,7 @@ test_that("spatRelate(): arrow path -- different predicates compose", {
 })
 
 test_that("spatRelate(): arrow + sedona paths agree on two-op chain", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- .make_pts_store()
     roi1 <- .roi("POLYGON ((0 0, 6 0, 6 6, 0 6, 0 0))")
     roi2 <- .roi("POLYGON ((2 2, 8 2, 8 8, 2 8, 2 2))")
@@ -157,7 +157,7 @@ test_that("spatRelate(): arrow + sedona paths agree on two-op chain", {
 # ROI is the square (0,0)-(4,4). Expected hits: a, b.
 
 test_that("spatRelate(): sedona path -- intersects matches expected ids", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- .make_pts_store()
     sdf <- spatRelate(pgs, .roi(), "intersects") |>
         storeRead(output = "sedona")
@@ -166,7 +166,7 @@ test_that("spatRelate(): sedona path -- intersects matches expected ids", {
 })
 
 test_that("spatRelate(): sedona path -- each predicate produces sane result", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- .make_pts_store()
     roi <- .roi()
     results <- lapply(
@@ -187,7 +187,7 @@ test_that("spatRelate(): sedona path -- each predicate produces sane result", {
 # spat_relate composes with the existing op queue (subset, [, j], head, etc.).
 
 test_that("spatRelate(): composes with subset() on a different col", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- .make_pts_store()
     tbl <- spatRelate(pgs, .roi(), "intersects") |>
         subset(id != "a") |>
@@ -196,7 +196,7 @@ test_that("spatRelate(): composes with subset() on a different col", {
 })
 
 test_that("spatRelate(): composes with [, j] narrowing", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- .make_pts_store()
     tbl <- spatRelate(pgs, .roi(), "intersects")[, "id"] |>
         storeRead(output = "tibble")
@@ -205,7 +205,7 @@ test_that("spatRelate(): composes with [, j] narrowing", {
 })
 
 test_that("spatRelate(): composes with head()", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- .make_pts_store()
     tbl <- spatRelate(pgs, .roi(), "intersects") |>
         head(1L) |>
@@ -281,7 +281,7 @@ test_that("spatRelate(): (SpatVector, parquetGeomBase) is rejected", {
 # saveRDS roundtrip ####
 
 test_that("spatRelate(): saveRDS roundtrip preserves op + result", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- .make_pts_store()
     s <- spatRelate(pgs, .roi(), "intersects")
     pre <- storeRead(s, output = "tibble")
@@ -342,7 +342,7 @@ test_that("spatRelate(): `engine` defaults to NULL on the op (option-driven)", {
 })
 
 test_that("spatRelate(): explicit duckdb engine produces same ids as sedona", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     skip_if_not_installed("duckdb")
     pgs <- .make_pts_store()
     sedona_tbl <- GiottoUtils::gwith_options(
@@ -422,7 +422,7 @@ test_that("spatRelate(): terra engine streams parquetGeomTileStore via tileApply
 })
 
 test_that("spatRelate(): terra/sedona/duckdb engines agree on results", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     skip_if_not_installed("duckdb")
     pgs <- .make_pts_store()
     by_engine <- function(eng) {
@@ -455,7 +455,7 @@ test_that("spatRelate(): auto fallback to terra nudges via inform", {
 
 test_that("spatRelate(): auto engine resolves to an installed backend", {
     skip_if_not(
-        requireNamespace("sedonadb", quietly = TRUE) ||
+        .spat_engine_available("sedonadb") ||
         requireNamespace("duckdb", quietly = TRUE),
         "no SQL spatial engine installed"
     )

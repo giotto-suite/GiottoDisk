@@ -412,7 +412,8 @@ setMethod(
 # Internal indirection so tests can mock the "is this engine installed?"
 # check without touching base::requireNamespace.
 .spat_engine_available <- function(pkg) {
-    requireNamespace(pkg, quietly = TRUE)
+    requireNamespace(pkg, quietly = TRUE) &&
+        (pkg != "sedonadb" || .sedonadb_has_discovery())
 }
 
 

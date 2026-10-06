@@ -446,14 +446,17 @@ somebody else's session lifetime.
 - `"query"`: Arrow lazy dataset (default)
 - `"tibble"`: collected data.table, arranged by source_id/tile_index/row_index
 - `"duckdb"`: lazy `tbl_dbi` over a duckdb `TEMP VIEW` of the parquet dataset.
-  Native compile path via `.pstore_to_duckdb` — `read_parquet` SQL with
-  per-tile UNION ALL, `@ops` translated to WHERE/SELECT/LIMIT/EXISTS, spatial
+  Native compile path via `.pstore_to_duckdb` — `read_parquet` SQL over hive
+  discovery on each store root (`.pstore_hive_base_sql`), `@ops` translated to
+  WHERE/SELECT/LIMIT/EXISTS, spatial
   extension's `ST_*` for any pending transforms or spat_relate ops. User-
   supplied connection honoured via `duckdb_params$conn`; otherwise an
   ephemeral in-memory connection is created and kept alive by the returned
   `tbl_dbi`.
-- `"sedona"`: lazy `sedonadb_dataframe` (DataFusion via sedonadb) — same
-  shape as duckdb path: per-tile UNION ALL, `@ops` translated, `ST_*` for
+- `"sedona"`: lazy `sedonadb_dataframe` (DataFusion via sedonadb >= 0.4) —
+  same shape as duckdb path: one scan per store root over hive discovery,
+  never a per-tile UNION ALL (it overflows DataFusion's planner stack at a few
+  hundred tiles), `@ops` translated, `ST_*` for
   spatial. Built by `.pstore_to_sedona`. Shares the @ops translation
   builder `.pstore_sql_inner` with the duckdb path.
 

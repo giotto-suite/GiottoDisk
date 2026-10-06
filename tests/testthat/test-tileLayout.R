@@ -106,19 +106,6 @@ test_that(".write_parquet refuses to nest a tile_index level", {
     parquetGeomTileStore() |> storeWrite(pgs, threshold = 4L)
 }
 
-# Rewrite a tile store into the pre-#74 layout: every tile's files moved
-# down into a second `tile_index=000/` level.
-.nest_tile_store <- function(store) {
-    src <- file.path(storePaths(store), paste0("source_id=", store@uid))
-    for (d in list.files(src, pattern = "^tile_index=", full.names = TRUE)) {
-        leaf <- file.path(d, "tile_index=000")
-        dir.create(leaf)
-        files <- list.files(d, pattern = "\\.parquet$", full.names = TRUE)
-        file.rename(files, file.path(leaf, basename(files)))
-    }
-    store
-}
-
 .sql_read <- function(store, engine, ...) {
     out <- storeRead(store, output = engine, ...)
     as.data.frame(if (engine == "sedona") sedonadb::sd_collect(out) else
@@ -132,25 +119,13 @@ test_that(".write_parquet refuses to nest a tile_index level", {
 
 describe("SQL readers take partition columns from hive discovery", {
 
-    test_that("discovery is chosen unless the layout or sedonadb rules it out", {
-        s <- .layout_tile_store()
-        specs <- .pstore_tile_specs(s)
-        expect_true(.pstore_sql_discovery(specs, "duckdb"))
-        nested <- .pstore_tile_specs(.nest_tile_store(s))
-        expect_true(all(vapply(nested, `[[`, logical(1L), "nested")))
-        expect_false(.pstore_sql_discovery(nested, "duckdb"))
-        skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
-        expect_true(.pstore_sql_discovery(specs, "sedona"))
-        expect_false(.pstore_sql_discovery(nested, "sedona"))
-    })
-
     for (engine in c("duckdb", "sedona")) {
         test_that(sprintf("%s: partition columns keep their types", engine), {
             if (engine == "duckdb") {
                 skip_if_not_installed("duckdb")
                 skip_if_not_installed("dbplyr")
             } else {
-                skip_if_not_installed("sedonadb")
+                skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
             }
             s <- .layout_tile_store()
             df <- .sql_read(s, engine)
@@ -166,29 +141,13 @@ describe("SQL readers take partition columns from hive discovery", {
                 skip_if_not_installed("duckdb")
                 skip_if_not_installed("dbplyr")
             } else {
-                skip_if_not_installed("sedonadb")
+                skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
             }
             s <- .layout_tile_store()
             ti <- .expected_tiles(s)[2L]
             df <- .sql_read(s, engine, tile_idx = ti)
             expect_gt(nrow(df), 0L)
             expect_true(all(df$tile_index == ti))
-        })
-
-        test_that(sprintf("%s: reads a store in the pre-#74 nested layout", engine), {
-            if (engine == "duckdb") {
-                skip_if_not_installed("duckdb")
-                skip_if_not_installed("dbplyr")
-            } else {
-                skip_if_not_installed("sedonadb")
-            }
-            s <- .layout_tile_store()
-            tiles <- .expected_tiles(s)
-            .nest_tile_store(s)
-            df <- .sql_read(s, engine)
-            expect_equal(nrow(df), nrow(s))
-            expect_type(df$tile_index, "integer")
-            expect_equal(sort(unique(df$tile_index)), tiles)
         })
     }
 })

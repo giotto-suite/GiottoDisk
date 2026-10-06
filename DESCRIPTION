@@ -53,7 +53,7 @@ Suggests:
     rmarkdown,
     S4Vectors,
     scran,
-    sedonadb,
+    sedonadb (>= 0.4.0),
     testthat,
     wk,
     zip,
