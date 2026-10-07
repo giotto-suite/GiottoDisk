@@ -14,6 +14,15 @@
   on load, with a warning; rerun `calculateOverlap()` to rebuild them.
 
 ## new
+- Motif enrichment on a backed spatial network:
+  `analyzeData(<parquetEdgeStore>, <smotifParam>)`, reached from
+  `cellProximityMotifs()` at the default `method = "auto"`. The edges cross
+  into smotif's `motif_enrichment_stream()` through
+  `storeRead(output = "arrowstream")`, so a pending subset is honoured and the
+  network is never read into an `igraph`; whether smotif runs that in R or in
+  its Rust backend is smotif's choice. Labels are expected named by node ID.
+  `strata` and `anchored_on` are not supported on a backed network yet and
+  error rather than falling back. Needs smotif >= 0.2.0 (Suggests).
 - `calculateOverlap(engine = "sedona")` (sedonadb >= 0.4): one spatial join
   over both stores. On a 624M-point, 170k-cell Atera sample it takes 39 s,
   against about 12 minutes for `engine = "terra"`.
