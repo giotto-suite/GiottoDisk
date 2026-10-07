@@ -1,5 +1,6 @@
 # Motif enrichment on a parquetEdgeStore. Labels are named by node ID, as
-# Giotto's router passes them, and must be realigned by name.
+# Giotto's router passes them; the method maps them to int_id through the
+# node sidecar and sends only that lookup alongside the edge stream.
 
 .motif_store <- function(n = 60L, k = 4L, seed = 3L) {
     set.seed(seed)
@@ -24,23 +25,20 @@
         "motif_enrichment_stream" %in% getNamespaceExports("smotif")
 }
 
-test_that("the active node set matches the igraph the store reads into", {
+test_that("the label lookup goes through the sidecar, by name", {
     f <- .motif_store()
-    for (s in list(f$store, f$store[names(f$lab)[1:25]])) {
-        nodes <- .edge_active_nodes(s)
-        expect_setequal(nodes$node_id, igraph::V(igraph::as.igraph(s))$name)
-        expect_false(is.unsorted(nodes$int_id))
-    }
+    lk <- .edge_label_lookup(f$store, rev(f$lab))
+    nodes <- data.table::as.data.table(dplyr::collect(storeRead(f$store@nodes)))
+    expect_setequal(lk$int_id, nodes$int_id)
+    got <- lk$label[match(nodes$int_id, lk$int_id)]
+    expect_identical(got, unname(f$lab[as.character(nodes$node_id)]))
 })
 
-test_that("labels must be named, and every node needs one", {
+test_that("the lookup leaves out unlabelled nodes and needs names", {
     f <- .motif_store()
-    expect_error(.motif_realign(unname(f$lab), names(f$lab), "cell_type"),
-        "must be named")
-    expect_error(.motif_realign(f$lab[-1], names(f$lab), "cell_type"),
-        "1 network node")
-    expect_identical(.motif_realign(rev(f$lab), names(f$lab), "cell_type"),
-        unname(f$lab))
+    lk <- .edge_label_lookup(f$store, f$lab[1:10])
+    expect_length(lk$int_id, 10L)
+    expect_error(.edge_label_lookup(f$store, unname(f$lab)), "must be named")
 })
 
 test_that("strata and anchored_on are refused, not approximated", {

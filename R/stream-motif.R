@@ -8,9 +8,11 @@ NULL
 # store is never read into an igraph. Whether smotif runs that stream in R or
 # hands it to its Rust backend is smotif's decision, not this package's.
 #
-# Labels arrive named by node ID (Giotto names them by spatIDs()) and are
-# realigned by name, because the store's node order is not the order the
-# caller read the IDs in.
+# The node sidecar is this method's concern only. Labels arrive named by node
+# ID (Giotto names them by spatIDs()); the sidecar turns them into a label per
+# int_id, and only that lookup crosses with the edge stream. The engine takes
+# its node set from the edges it receives, so a pending subset decides which
+# cells are in the network and the lookup may cover more than that.
 
 #' @rdname analyzeData
 #' @export
@@ -30,11 +32,11 @@ setMethod("analyzeData",
         }
         package_check("smotif", repository = "github:drieslab/smotif")
 
-        nodes <- .edge_active_nodes(x)
+        lookup <- .edge_label_lookup(x, cell_type)
         smotif::motif_enrichment_stream(
             storeRead(x, output = "arrowstream"),
-            int_ids = nodes$int_id,
-            cell_type = .motif_realign(cell_type, nodes$node_id, "cell_type"),
+            int_ids = lookup$int_id,
+            cell_type = lookup$label,
             size = param$size,
             n_perm = param$n_perm,
             seed = as.integer(param$seed_number),
@@ -47,40 +49,23 @@ setMethod("analyzeData",
 
 # helpers ####
 
-.motif_realign <- function(lab, ids, what) {
+# Labels named by node ID -> one label per int_id, through the node sidecar.
+# The sidecar is one row per cell, so it is read whole and matched in R rather
+# than filtered in Arrow against a literal set of every label name. Nodes
+# without a label are left out: an edge that reaches one is the engine's error
+# to raise, since only the stream knows which nodes are in the network.
+.edge_label_lookup <- function(x, lab) {
+    int_id <- node_id <- NULL  # NSE
     if (is.null(names(lab))) {
-        stop(sprintf("[analyzeData] %s must be named by node ID", what),
-            call. = FALSE)
+        stop("[analyzeData] cell_type must be named by node ID", call. = FALSE)
     }
-    out <- lab[ids]
-    if (anyNA(out)) {
-        stop(sprintf("[analyzeData] %d network node(s) have no %s label",
-            sum(is.na(out)), what), call. = FALSE)
-    }
-    unname(out)
-}
-
-# The vertex set as.igraph() builds for this store -- the recorded selection
-# unioned with every node an active edge references -- so the store and the
-# igraph method permute labels over the same cells. Ordered by int_id.
-.edge_active_nodes <- function(x) {
-    int_id <- node_id <- from_id <- to_id <- NULL  # NSE
-    edges <- storeRead(x, output = "arrow")
-    used <- dplyr::union(
-        edges |> dplyr::select(int_id = from_id),
-        edges |> dplyr::select(int_id = to_id)
-    ) |>
-        dplyr::collect() |>
-        dplyr::pull(int_id)
-    used <- sort(unique(c(as.integer(x@node_idx), as.integer(used))))
     nm <- storeRead(x@nodes) |>
-        dplyr::filter(int_id %in% !!used) |>
         dplyr::select(int_id, node_id) |>
-        dplyr::collect() |>
-        data.table::as.data.table()
-    nm <- nm[match(used, nm$int_id)]
-    data.table::data.table(
-        node_id = as.character(nm$node_id),
-        int_id = as.integer(nm$int_id)
+        dplyr::collect()
+    i <- match(as.character(nm$node_id), names(lab))
+    keep <- !is.na(i)
+    list(
+        int_id = as.integer(nm$int_id[keep]),
+        label = unname(lab[i[keep]])
     )
 }
