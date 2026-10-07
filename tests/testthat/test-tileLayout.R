@@ -97,3 +97,57 @@ test_that(".write_parquet refuses to nest a tile_index level", {
         "already a tile_index partition"
     )
 })
+
+# SQL readers over hive discovery ####
+
+.layout_tile_store <- function() {
+    pts <- terra::vect(.layout_pts_df(), geom = c("x", "y"), crs = "")
+    pgs <- parquetGeomStore() |> storeWrite(pts)
+    parquetGeomTileStore() |> storeWrite(pgs, threshold = 4L)
+}
+
+.sql_read <- function(store, engine, ...) {
+    out <- storeRead(store, output = engine, ...)
+    as.data.frame(if (engine == "sedona") sedonadb::sd_collect(out) else
+        dplyr::collect(out))
+}
+
+.expected_tiles <- function(store) {
+    tbl <- storeRead(store, output = "tibble", omit_internals = FALSE)
+    sort(unique(tbl$tile_index))
+}
+
+describe("SQL readers take partition columns from hive discovery", {
+
+    for (engine in c("duckdb", "sedona")) {
+        test_that(sprintf("%s: partition columns keep their types", engine), {
+            if (engine == "duckdb") {
+                skip_if_not_installed("duckdb")
+                skip_if_not_installed("dbplyr")
+            } else {
+                skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
+            }
+            s <- .layout_tile_store()
+            df <- .sql_read(s, engine)
+            expect_type(df$source_id, "character")
+            expect_type(df$tile_index, "integer")
+            expect_setequal(unique(df$source_id), s@uid)
+            expect_equal(sort(unique(df$tile_index)), .expected_tiles(s))
+            expect_equal(nrow(df), nrow(s))
+        })
+
+        test_that(sprintf("%s: tile_idx narrows to that tile", engine), {
+            if (engine == "duckdb") {
+                skip_if_not_installed("duckdb")
+                skip_if_not_installed("dbplyr")
+            } else {
+                skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
+            }
+            s <- .layout_tile_store()
+            ti <- .expected_tiles(s)[2L]
+            df <- .sql_read(s, engine, tile_idx = ti)
+            expect_gt(nrow(df), 0L)
+            expect_true(all(df$tile_index == ti))
+        })
+    }
+})

@@ -61,6 +61,7 @@ setMethod("snapshotLoad", signature("gDirSource"), function(src,
     }
 
     gobject <- .load_serialized(snap_path, load_params = load_params)
+    gobject <- .drop_legacy_overlaps(gobject)
     return(gobject)
     
     # to be completed by GiottoClass::loadGiotto
@@ -97,6 +98,31 @@ setMethod("snapshotLoad", signature("gDirSource"), function(src,
     paste0(head_msg, " Available: ",
         paste(shQuote(head(available, 10L)), collapse = ", "),
         if (length(available) > 10L) ", ..." else "")
+}
+
+# Overlaps saved before 0.0.0.4 hold a parquetStore, which the current
+# overlap code no longer reads. Overlaps are scratch results of
+# calculateOverlap(), so a loaded snapshot drops them rather than converting;
+# rerunning calculateOverlap() rebuilds them.
+.drop_legacy_overlaps <- function(gobject) {
+    if (!methods::is(gobject, "giotto")) return(gobject)
+    dropped <- character()
+    for (su in names(gobject@spatial_info)) {
+        poly <- gobject@spatial_info[[su]]
+        legacy <- vapply(poly@overlaps, function(o) {
+            inherits(o, "overlapPointDisk") && inherits(o@data, "parquetStore")
+        }, logical(1L))
+        if (!any(legacy)) next
+        dropped <- c(dropped, paste0(su, "/", names(poly@overlaps)[legacy]))
+        poly@overlaps <- poly@overlaps[!legacy]
+        gobject@spatial_info[[su]] <- poly
+    }
+    if (length(dropped) > 0L) {
+        warning("[snapshotLoad] dropped overlaps saved by an older GiottoDisk: ",
+            toString(dropped), "\n  rerun calculateOverlap() to rebuild them",
+            call. = FALSE)
+    }
+    gobject
 }
 
 .load_serialized <- function(path, load_params = list()) {

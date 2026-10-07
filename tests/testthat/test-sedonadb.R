@@ -13,14 +13,14 @@ make_pts_sdb <- function(n = 5) {
 # output type ####
 
 test_that("sedonadb: storeRead returns sedonadb_dataframe", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb())
     sdf <- storeRead(pgs, output = "sedona")
     expect_s3_class(sdf, "sedonadb_dataframe")
 })
 
 test_that("sedonadb: collect returns correct row count", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb(5))
     sdf <- storeRead(pgs, output = "sedona")
     df <- sedonadb::sd_collect(sdf)
@@ -28,7 +28,7 @@ test_that("sedonadb: collect returns correct row count", {
 })
 
 test_that("sedonadb: geom column is geoarrow_vctr after collect", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb(5))
     sdf <- storeRead(pgs, output = "sedona")
     df <- sedonadb::sd_collect(sdf)
@@ -38,7 +38,7 @@ test_that("sedonadb: geom column is geoarrow_vctr after collect", {
 # sd_view_ref ####
 
 test_that("sedonadb: sd_view_ref returns double-quoted lowercase name", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb())
     sdf <- storeRead(pgs, output = "sedona")
     ref <- sd_view_ref(sdf)
@@ -51,7 +51,7 @@ test_that("sedonadb: sd_view_ref errors on object without view_name attribute", 
 })
 
 test_that("sedonadb: view is queryable via sd_sql", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb(5))
     sdf <- storeRead(pgs, output = "sedona")
     result <- sedonadb::sd_collect(
@@ -63,7 +63,7 @@ test_that("sedonadb: view is queryable via sd_sql", {
 # filtering ####
 
 test_that("sedonadb: crop reduces row count", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pts <- terra::vect(
         data.frame(x = 1:10, y = 1:10),
         geom = c("x", "y"), crs = ""
@@ -76,7 +76,7 @@ test_that("sedonadb: crop reduces row count", {
 })
 
 test_that("sedonadb: @ops filter translates to SQL", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb(5))
     pgs_f <- subset(pgs, cell_ID %in% c("cell_1", "cell_2"))
     sdf <- storeRead(pgs_f, output = "sedona")
@@ -86,7 +86,7 @@ test_that("sedonadb: @ops filter translates to SQL", {
 })
 
 test_that("sedonadb: %in% above the threshold uses a VALUES subquery", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     old <- options(giottodisk.sedona_in_subquery_threshold = 1L)
     on.exit(options(old), add = TRUE)
     pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb(5))
@@ -98,7 +98,7 @@ test_that("sedonadb: %in% above the threshold uses a VALUES subquery", {
 # affine transform ####
 
 test_that("sedonadb: pending affine applies via ST_Affine", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb(5))
     aff <- GiottoClass::affine(diag(c(2, 1)))  # scale x by 2, y unchanged
     pgs2 <- affine(pgs, aff)
@@ -113,7 +113,7 @@ test_that("sedonadb: pending affine applies via ST_Affine", {
 # Shear catches the ST_Affine sedona-vs-duckdb transpose. Diagonal
 # scale is transpose-invariant so needs off-diagonal to expose the bug.
 test_that("sedonadb: pending affine applies via ST_Affine (shear, off-diagonal)", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb(5))
     # Row-vector post-mult M = [[1, 0.5], [0, 1]]:
     #   x' = x*M[1,1] + y*M[2,1] = x
@@ -149,7 +149,7 @@ test_that("sedonadb: pending affine applies via ST_Affine (shear, off-diagonal)"
 }
 
 test_that("sedonadb: flat parquetStore injects source_id only (no tile_index)", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     ps <- parquetStore() |> storeWrite(mtcars)
     sdf <- storeRead(ps, output = "sedona")
     df <- sedonadb::sd_collect(sdf)
@@ -159,7 +159,7 @@ test_that("sedonadb: flat parquetStore injects source_id only (no tile_index)", 
 })
 
 test_that("sedonadb: parquetGeomStore injects source_id and tile_index=0", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb(5))
     sdf <- storeRead(pgs, output = "sedona")
     df <- sedonadb::sd_collect(sdf)
@@ -169,7 +169,7 @@ test_that("sedonadb: parquetGeomStore injects source_id and tile_index=0", {
 })
 
 test_that("sedonadb: parquetGeomTileStore unions all tiles, (tile_index, row_index) is unique", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- parquetGeomStore() |> storeWrite(.make_tile_pts_sdb())
     pgts <- parquetGeomTileStore() |> storeWrite(pgs, threshold = 4L)
     sdf <- storeRead(pgts, output = "sedona")
@@ -182,7 +182,7 @@ test_that("sedonadb: parquetGeomTileStore unions all tiles, (tile_index, row_ind
 })
 
 test_that("sedonadb: @tile_filter prunes at file level", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- parquetGeomStore() |> storeWrite(.make_tile_pts_sdb())
     pgts <- parquetGeomTileStore() |> storeWrite(pgs, threshold = 4L)
     pgts_cropped <- crop(pgts, terra::ext(0, 25, 0, 25))
@@ -194,7 +194,7 @@ test_that("sedonadb: @tile_filter prunes at file level", {
 })
 
 test_that("sedonadb: tile_idx arg overrides filter, selects only that tile", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- parquetGeomStore() |> storeWrite(.make_tile_pts_sdb())
     pgts <- parquetGeomTileStore() |> storeWrite(pgs, threshold = 4L)
     sdf <- storeRead(pgts, output = "sedona", tile_idx = 1L)
@@ -203,7 +203,7 @@ test_that("sedonadb: tile_idx arg overrides filter, selects only that tile", {
 })
 
 test_that("sedonadb: tile_idx with no matching tile errors clearly", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb(5))
     expect_error(
         storeRead(pgs, output = "sedona", tile_idx = 999L),
@@ -217,7 +217,7 @@ test_that("sedonadb: tile_idx with no matching tile errors clearly", {
 # direct `fields = ...` arg behaves the same.
 
 test_that("sedonadb: [, j] column selection narrows projection", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     ps <- parquetStore() |> storeWrite(mtcars)
     sdf <- ps[, c("mpg", "cyl")] |> storeRead(output = "sedona")
     df <- sedonadb::sd_collect(sdf)
@@ -225,7 +225,7 @@ test_that("sedonadb: [, j] column selection narrows projection", {
 })
 
 test_that("sedonadb: fields= arg narrows projection", {
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     ps <- parquetStore() |> storeWrite(mtcars)
     sdf <- storeRead(ps, output = "sedona", fields = c("mpg", "hp"))
     df <- sedonadb::sd_collect(sdf)
@@ -235,7 +235,7 @@ test_that("sedonadb: fields= arg narrows projection", {
 test_that("sedonadb: col-select + filter on different col composes", {
     # Same composition as test-parquetStore.R but through the SQL path --
     # WHERE references a col not in SELECT; sedona's FROM scope covers it.
-    skip_if_not_installed("sedonadb")
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     ps <- parquetStore() |> storeWrite(mtcars)
     sdf <- ps[, "mpg"] |> subset(cyl == 4) |> storeRead(output = "sedona")
     df <- sedonadb::sd_collect(sdf)

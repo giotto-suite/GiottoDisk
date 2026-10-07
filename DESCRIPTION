@@ -1,7 +1,7 @@
 Package: GiottoDisk
 Type: Package
 Title: Disk backed representations for Giotto
-Version: 0.0.0.3
+Version: 0.0.0.4
 Authors@R: c(
     person("Ruben", "Dries", email = "rubendries@gmail.com",
 		 role = c("aut", "cre"), comment = c(ORCID = "0000-0001-7650-7754")),
@@ -53,8 +53,8 @@ Suggests:
     rmarkdown,
     S4Vectors,
     scran,
-    sedonadb,
-    smotif,
+    sedonadb (>= 0.4.0),
+    smotif (>= 0.2.0),
     testthat,
     wk,
     zip,
