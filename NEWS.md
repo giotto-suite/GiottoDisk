@@ -28,6 +28,10 @@
   against about 12 minutes for `engine = "terra"`.
 
 ## changes
+- Requires `Giotto (>= 4.3.1)`, up from 4.3.0. The motif enrichment method
+  imports `smotifParam`, which a `gsource` install reporting 4.3.0 may predate;
+  against one, loading failed with an S4 import error instead of a version
+  message.
 - `calculateOverlap(engine = "duckdb")` reads both stores through
   `storeRead()`, so filters pending on either store now apply (it used to
   read the raw files and count filtered-out cells and features). It no
