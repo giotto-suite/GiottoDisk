@@ -101,6 +101,10 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     
     res <- file.rename(from = temp, to = fullpath)
     if (!res) stop("[snapshotSave] save failed\n", call. = FALSE)
+
+    # sidecars: what the snapshot is, and why. Derived, so never fatal.
+    vmsg(.v = verbose, "[GiottoDisk] writing snapshot sidecars")
+    .ss_gdsrc_write_sidecars(x, p = p, name = name, verbose = verbose)
   
     # tagging --------------------------------------------------- #
     vmsg(.v = verbose, "[GiottoDisk] tagging snapshot artifacts...")

@@ -32,7 +32,10 @@ setMethod("snapshotDelete", signature("gDirSource", "character"), function(src, 
         full.names = TRUE,
         recursive = FALSE
     )
-    if (length(save_path) == 0L) {
+    # sidecars share the `<name>.` prefix but are not the snapshot; only the
+    # payload decides existence and is what the cascade below loads
+    snap_path <- grep("\\.(rds|qs)$", save_path, value = TRUE)
+    if (length(snap_path) == 0L) {
         stop(
             sprintf("[snapshotDelete] no snapshot found with name '%s'\n", name),
             call. = FALSE
@@ -50,7 +53,7 @@ setMethod("snapshotDelete", signature("gDirSource", "character"), function(src, 
     # whose snapshot was already deleted produces a warning, not a
     # hard error — the multi delete always proceeds.
     snap <- tryCatch(
-        .load_serialized(save_path[[1L]]),
+        .load_serialized(snap_path[[1L]]),
         error = function(e) NULL
     )
     if (inherits(snap, "giottoMulti")) {
