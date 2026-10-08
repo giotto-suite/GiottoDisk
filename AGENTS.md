@@ -39,8 +39,8 @@ GiottoDisk builds against **development branches** of the suite. `Remotes:` in
 
 | Package | Branch | Required because | Drop the pin when |
 |---|---|---|---|
-| `GiottoClass` | `gsource` | `analyzeData`, `reduceData`, `filterData` generics (all in `NAMESPACE` imports) and `labelProportionsParam` (`R/stream-labelProportions.R`) are gsource-only. | those four are exported on `dev`. |
-| `Giotto` | `gsource` | The whole param layer dispatched on: `pcaParam` / `autoPcaParam` / `randomPcaParam` / `irlbaPcaParam` / `exactPcaParam`, `varParam`, `covLoessParam`, `covGroupsParam`, `cellStatsParam`, `featStatsParam`, `scranMarkersParam`, `logNormParam`, `filterParam`. Also the `backend =` argument on `importStereoSeq()` / `createGiottoStereoSeqObjectBin()` / `createGiottoStereoSeqObjectCell()`, which `tests/testthat/test-stereoseq-gef.R` calls — its `skip_if_not_installed("Giotto")` skips on an absent Giotto but *errors* on one predating that argument. Floored at `>= 4.2.4` in `Imports:` for the `AteraReader` class that `R/convenience-atera.R` subclasses; below that, loading fails with an S4 inheritance error rather than a version message. | `suite_dev` exports them. |
+| `GiottoClass` | `gsource` | `analyzeData`, `reduceData`, `filterData` generics (all in `NAMESPACE` imports) and `labelProportionsParam` (`R/stream-labelProportions.R`) are gsource-only, as are `cellStatsParam` / `featStatsParam` (floored at `>= 0.7.4`, where they moved down from Giotto). | those six are exported on `dev`. |
+| `Giotto` | `gsource` | The whole param layer dispatched on: `pcaParam` / `autoPcaParam` / `randomPcaParam` / `irlbaPcaParam` / `exactPcaParam`, `varParam`, `covLoessParam`, `covGroupsParam`, `scranMarkersParam`, `logNormParam`, `filterParam`, `smotifParam`. Also the `backend =` argument on `importStereoSeq()` / `createGiottoStereoSeqObjectBin()` / `createGiottoStereoSeqObjectCell()`, which `tests/testthat/test-stereoseq-gef.R` calls — its `skip_if_not_installed("Giotto")` skips on an absent Giotto but *errors* on one predating that argument. Floored at `>= 4.3.1` in `Imports:` for `smotifParam`, which `R/stream-motif.R` dispatches on: the motif layer landed after `gsource` reached 4.3.0, so a 4.3.0 install may lack it, and loading then fails with an S4 import error rather than a version message. (The floor also covers the `AteraReader` class `R/convenience-atera.R` subclasses, added in 4.2.4, which fails the same way.) | `suite_dev` exports them. |
 | `GiottoUtils` | `dev` | Suite convention; `dev` carries everything used. | `main` catches up. |
 | `tilework` | default | Hard `Imports:` dependency, `drieslab/tilework`, not on CRAN. | it ships to CRAN. |
 
@@ -94,6 +94,10 @@ R/
   methods-plot.R         # plot methods (parquetGeomBase)
   methods-aggregate.R    # calculateOverlap, overlapToMatrix, overlapPointDisk class
   methods-rasterize.R    # terra::rasterize, terra::centroids for parquetGeomBase
+  methods-resolveSubobject.R  # parquetCoordinator view/space resolution: resolveKeep
+                              # (the surviving set as a lazy arrow plan,
+                              # .surviving_ids_query) + resolveRecipe leaf methods that
+                              # queue it as one id_filter; .find_store_with_cols
   methods-giotto.R       # createGiottoPoints, createGiottoPolygon for parquetGeomBase
   methods-parquetExprStore.R  # subset / union / storeWrite / generic dispatch
                               # for parquetExprStore
@@ -121,6 +125,10 @@ R/
                          #   Xenium disk reader; layouts are identical
                          #   today, so it overrides nothing but the
                          #   platform label)
+  convenience-visiumhd.R # Visium HD import convenience (binned +
+                         #   segmented; several bins into one object)
+  reader-shared.R        # technology-agnostic reader pieces:
+                         #   parent-unit metadata
   zarr-source.R          # zarr v2 source layer: in-place .zarr.zip reads
                          #   (seek-based, STORED entries only) + dir trees;
                          #   .zarr_blosc_decompress() is the SINGLE call
@@ -196,12 +204,19 @@ PCA passes, the `storeWrite` bake — takes its windows from `.pe_windows()` /
 `.pe_chunk_ranges()` (`R/utils-pestore-ops.R`). Do not hand-roll the walk.
 
 The axis is not a free choice. Stores are written cell-major
-(`setorder(row_id, col_id)`), so a contiguous cell range is the gapless case in
+(`setorder(row_id, col_id)`) — each file sorted, files covering disjoint cell
+ranges, by both parquet → parquet write paths (the lazy one windows and sorts
+per window, adr/0018) — so a contiguous cell range is the gapless case in
 `.pe_axis_pred()` and lowers to a `row_id` range predicate that prunes parquet
 row groups. Windowing the **feature** axis prunes nothing — every batch rescans
 the store in full, and the cost is linear in batch count rather than in features
 per batch. If a new statistic seems to want feature batching, it wants a cell
 window instead.
+
+Every importer writes that layout: each part file covers one ascending range of
+cells. A source stored gene-major is reordered before it is written — the
+cellbin GEF reader reads the cell-major `cellExp`, the bin GEF reader spills to
+y-stripes (adr/0017). A new input must do the same.
 
 Windows are exact rather than approximate only because the accumulators are
 additive over cells. A statistic that is not — anything needing a global order
@@ -224,11 +239,15 @@ float statistic is **tolerance-reproducible, not bitwise-reproducible**, even on
 one machine. Never build a bitwise hash or snapshot test on one.
 
 Windowing and folding are **not** the same set, and conflating them is the easy
-mistake. Several passes window — both PCA flavours, the `storeWrite()` bake, and
-both accumulator paths. Only the two accumulator paths *fold*, and only folding
-reassociates, so only folding is exposed to the ULP note above. PCA and the bake
-write each window into a slice nothing else touches, so they have no partials to
-combine and stay bitwise reproducible.
+mistake. Several passes window — both PCA flavours, both `storeWrite()` paths
+(the bake and the lazy-chain write), and both accumulator paths. Only the two
+accumulator paths *fold*, and only folding reassociates, so only folding is
+exposed to the ULP note above. PCA and the writes put each window into a slice
+nothing else touches, so they have no partials to combine and stay bitwise
+reproducible. With GiottoKernels installed, pass 1 sums per-thread Gram
+partials, so it is bitwise reproducible for a fixed thread count, not across
+counts — the same property the R bands already had across worker counts; pass 2
+builds each cell's row in one thread and is bitwise reproducible at any count.
 
 Of the two that fold, one is `by_cell` (grouped statistics) and the other is any
 statistic whose chain landed on `@post_ops`. In the current pipeline only the
@@ -428,14 +447,17 @@ somebody else's session lifetime.
 - `"query"`: Arrow lazy dataset (default)
 - `"tibble"`: collected data.table, arranged by source_id/tile_index/row_index
 - `"duckdb"`: lazy `tbl_dbi` over a duckdb `TEMP VIEW` of the parquet dataset.
-  Native compile path via `.pstore_to_duckdb` — `read_parquet` SQL with
-  per-tile UNION ALL, `@ops` translated to WHERE/SELECT/LIMIT/EXISTS, spatial
+  Native compile path via `.pstore_to_duckdb` — `read_parquet` SQL over hive
+  discovery on each store root (`.pstore_hive_base_sql`), `@ops` translated to
+  WHERE/SELECT/LIMIT/EXISTS, spatial
   extension's `ST_*` for any pending transforms or spat_relate ops. User-
   supplied connection honoured via `duckdb_params$conn`; otherwise an
   ephemeral in-memory connection is created and kept alive by the returned
   `tbl_dbi`.
-- `"sedona"`: lazy `sedonadb_dataframe` (DataFusion via sedonadb) — same
-  shape as duckdb path: per-tile UNION ALL, `@ops` translated, `ST_*` for
+- `"sedona"`: lazy `sedonadb_dataframe` (DataFusion via sedonadb >= 0.4) —
+  same shape as duckdb path: one scan per store root over hive discovery,
+  never a per-tile UNION ALL (it overflows DataFusion's planner stack at a few
+  hundred tiles), `@ops` translated, `ST_*` for
   spatial. Built by `.pstore_to_sedona`. Shares the @ops translation
   builder `.pstore_sql_inner` with the duckdb path.
 
@@ -599,31 +621,75 @@ Inherits `overlapInfo`. Wraps overlap `parquetStore` with metadata:
 - `overlapPointDisk` → `list(poly = ..., feat = ...)` named list of UID vectors
 
 ### Unified overlap result schema
-Both dispatch paths produce a flat `parquetStore`:
-- `poly_ID`, `feat_ID` (character) — polygon and feature IDs
+Every engine produces a `queryableStore` (`.overlap_store()`) over parquet
+files, not a `parquetStore` (adr/0019):
+- `poly_ID`, `feat_ID` (character) — polygon and feature IDs, always these
+  names whatever the input columns were called
 - `keep_cols` (optional) — extra columns from point store
 - `count` (if present in point store)
 - `pt_tile_index`, `pt_row_index` — join keys back to point store
+
+A row is keyed by `(pt_tile_index, pt_row_index, poly_ID)`. There is no
+`row_index`: do not add one (a global `row_number()` serialises the DuckDB
+join). A run with no hits still writes one zero-row file.
 
 ### calculateOverlap dispatches
 - `(parquetGeomStore, parquetGeomTileStore)`: `tileApply` with `pad_y` padding
 - `(parquetGeomStore, parquetGeomStore)`: `quadtreePlan` + `tileApply`
 
-Both paths return `overlapPointDisk`. Internals return plain `parquetStore`.
+Both are the `engine = "terra"` paths. `engine = "duckdb"` / `"sedona"` take
+`.calculate_overlap_sql()` from either signature: one `ST_Intersects` join over
+the two stores' `storeRead()` scans, so pending ops on either store apply.
+All paths return `overlapPointDisk`.
+
+`engine = NULL` resolves through `.resolve_overlap_engine()`, which wraps the
+spat_relate resolver (`.resolve_spatial_engine()`: per-call > option
+`giottodisk.spatial_query_engine` > auto sedona > duckdb > terra). One extra
+rule: under auto, any terra tiling arg supplied picks terra, since the SQL
+engines ignore those args.
 
 ### overlapToMatrix
-Groups by `(feat_ID, poly_ID)`, counts/sums, builds COO on integer keys (string→int LUTs
-joined onto raw batches *before* aggregation — aggregating strings first leaves dangling
-utf8_view buffers at scale). IDs sorted via `GiottoUtils::mixedsort()` before COO
-construction. `all_feat_ids`/`all_cell_ids` params preserve zero-overlap entries.
+The ID universes (`@feat_ids` / `@spat_ids`, or `all_feat_ids` / `all_cell_ids`)
+define the matrix axes, sorted via `GiottoUtils::mixedsort()` when `sort = TRUE`.
+Overlap rows are **inner**-joined onto them, so IDs with no overlaps keep empty
+rows/columns and rows outside them are dropped — narrowing the universes is how
+an overlap is subset.
 
-**Destination branches on `store_type`** (default: `getOption("giotto.gdsrc_matrix_format", "bpcells")`):
+`overlapPointDisk` method, `engine` (`.resolve_matrix_engine()`): `NULL` takes
+duckdb when installed and `store_type = "parquetExpr"`, else arrow; an explicit
+`"duckdb"` with another `store_type` errors. duckdb is
+`.overlap_to_pestore_duckdb()`, one query (integer LUT joins, `GROUP BY`,
+`ORDER BY row_id, col_id`, `COPY` to one file). sedona was measured for this
+step and left out (Atera: 40 s, 32-36 GB vs duckdb 7 s, 10-11 GB). arrow goes
+to the `queryableStore` method below: string→int LUTs joined onto raw batches
+*before* aggregation — aggregating strings first leaves dangling utf8_view
+buffers at scale.
+
+**Destination branches on `store_type`** (default: `getOption("giotto.gdsrc_sparsematrix_format", "parquetExpr")`):
 - `"bpcells"` / `"hdf5"`: COO → `.write_overlap_mtx()` (streamed Matrix Market) →
   `.mtx_to_store()` → BPCells or HDF5Array.
 - `"parquetexpr"`: COO → `.coo_to_parquetexpr()` directly. Transmutes
   `(i, j, n)` → `(col_id, row_id, value)`, arranges by `row_id` for row-group skipping,
   streams record batches to a `parquetExprStore` — **no MTX intermediate, no dgCMatrix
   materialization**.
+
+## Binned-grid readers (Visium HD / Stereo-seq)
+
+Both give one object shape: bin spat_units named as the in-memory readers
+name them (`bin008`, `bin100`, `cell`), `rna`/`raw` expression in a
+`parquetExprStore`, `raw` spatlocs, and the finest bins (2 um / bin1) as the
+in-memory `giottoBinPoints` -- GiottoClass keeps it in memory on a backed
+object, since it has no disk representation yet.
+
+- Readers subclass the Giotto reader and override only what goes to disk.
+  Polygons keep the inherited in-memory loader; drop its terra centroids and
+  attach it to the backed object, whose setter writes it to the vault.
+- A multi-unit `create_gobject()` loops per-unit readers into one `gobject`;
+  it does not merge objects. The unit hierarchy is cell metadata
+  (`.add_parent_units`, `R/reader-shared.R`): one column per parent unit,
+  kept only where the relation is one-to-one.
+- The disk `create_gobject()` accepts every argument of the parent's, so the
+  Giotto `createGiotto*Object*()` wrappers can call either.
 
 ## Zarr input (Xenium / Atera)
 

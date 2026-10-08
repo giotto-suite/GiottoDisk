@@ -261,6 +261,62 @@ setMethod("window<-", signature("parquetGeomBase"), function(x, ..., value) {
     x
 })
 
+
+#' @title as.data.table for parquetGeomBase
+#' @name as.data.table.parquetGeomBase
+#' @description Materialize a `parquetGeomBase` (parquetGeomStore or
+#' parquetGeomTileStore) to a `data.table`. Mirrors `terra`'s
+#' `as.data.table` signature for `SpatVector`:
+#'
+#' - `geom = ""` (default): attributes only, no geometry column.
+#' - `geom = "wkb"`: include a `geom` column with raw WKB blobs.
+#' - `geom = "XY"`: expand to one row per vertex with `x`, `y`, plus
+#'   `feature_id` / `part_id` / `ring_id` for grouping in plot consumers
+#'   (e.g. `ggplot2::geom_polygon(aes(group = feature_id))`).
+#'
+#' The `geom = "XY"` path goes through `wk::wk_coords` — no terra
+#' `SpatVector` intermediate, no GDAL allocation. Requires the `wk`
+#' package (Suggests).
+#'
+#' Registered as an S3 method on the virtual `parquetGeomBase` class so
+#' `data.table::as.data.table`'s class-chain iteration picks it up for
+#' the concrete subclasses (`parquetGeomStore`, `parquetGeomTileStore`,
+#' `unionParquetGeomStore`).
+#' @param x a `parquetGeomBase` store
+#' @param keep.rownames unused; kept for S3 generic conformance
+#' @param geom one of `""`, `"wkb"`, `"XY"`
+#' @param include_values when `geom = "XY"`, include attribute columns
+#'   alongside vertex coordinates. Mirrors `as.data.table` / `as.data.frame`
+#'   on a terra `SpatVector`.
+#' @param geomtype unused; kept for SpatVector signature conformance
+#' @param ... passed to `storeRead`
+#' @returns a `data.table`
+#' @method as.data.table parquetGeomBase
+#' @export
+as.data.table.parquetGeomBase <- function(x, keep.rownames = FALSE, ...,
+    geom = "", include_values = TRUE, geomtype = NULL) {
+    # explicit check — match.arg trips on "" (empty partial-matches everything)
+    if (!geom %in% c("", "wkb", "XY")) {
+        stop("[as.data.table] `geom` must be one of '', 'wkb', 'XY' ",
+            "(got '", geom, "')", call. = FALSE)
+    }
+    # include_values = FALSE: push a minimal `fields` projection down into
+    # the arrow scan so attribute cols are never read from disk. `geom` and
+    # internals (x_index/y_index/tile_index/source_id/row_index) are
+    # auto-injected by .pstore_lazy_fields.
+    fields <- if (isTRUE(include_values)) NULL else "poly_ID"
+
+    if (geom == "XY") {
+        return(storeRead(x, output = "vertex_dt", fields = fields, ...))
+    }
+    dt <- data.table::as.data.table(
+        storeRead(x, output = "tibble", fields = fields, ...))
+    if (geom == "" && "geom" %in% names(dt)) {
+        dt[, geom := NULL]
+    }
+    dt
+}
+
 # Back-project e through any pending affine into intrinsic space, injecting a
 # half-plane filter into x@ops when rotation/shear is pending. Also resolves
 # the tightest available intrinsic baseline (disk_extent or live scan).

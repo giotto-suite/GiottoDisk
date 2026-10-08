@@ -319,7 +319,10 @@ setMethod("storeRead", signature("parquetExprStore"), function(store,
     max_cols = NULL) {
     n_rows <- as.integer(store@n_genes)
     n_cols <- as.integer(store@n_cells)
-    .pe_check_dgc_dims(n_rows, n_cols, max_rows, max_cols)
+    # `max_rows` / `max_cols` are a contract about the matrix the caller
+    # receives, so the cap is checked against the oriented dims.
+    cap <- .pe_orient(store, n_rows, n_cols)
+    .pe_check_dgc_dims(cap[[1L]], cap[[2L]], max_rows, max_cols)
 
     # `atab` is the lazy query with @ops + @cell_idx / @gene_idx already
     # composed (built by callNextMethod(output = "query") in the caller).
@@ -339,12 +342,15 @@ setMethod("storeRead", signature("parquetExprStore"), function(store,
     }
     x_col <- df$value
 
+    # Last logical-position site: which storage axis becomes the matrix row.
+    ij   <- .pe_orient(store, i_pos, j_pos)
+    dims <- unlist(.pe_orient(store, n_rows, n_cols))
     Matrix::sparseMatrix(
-        i = i_pos,
-        j = j_pos,
+        i = ij[[1L]],
+        j = ij[[2L]],
         x = as.double(x_col),
-        dims = c(n_rows, n_cols),
-        dimnames = list(store@feat_ids, store@cell_ids),
+        dims = as.integer(dims),
+        dimnames = .pe_orient(store, store@feat_ids, store@cell_ids),
         repr = "C"
     )
 }
@@ -427,7 +433,10 @@ setMethod("storeRead", signature("unionParquetExprStore"), function(store,
                                     max_rows = NULL, max_cols = NULL) {
     n_rows <- as.integer(store@n_genes)
     n_cols <- as.integer(store@n_cells)
-    .pe_check_dgc_dims(n_rows, n_cols, max_rows, max_cols)
+    # `max_rows` / `max_cols` are a contract about the matrix the caller
+    # receives, so the cap is checked against the oriented dims.
+    cap <- .pe_orient(store, n_rows, n_cols)
+    .pe_check_dgc_dims(cap[[1L]], cap[[2L]], max_rows, max_cols)
 
     df <- data.table::as.data.table(dplyr::collect(atab))
     source_id <- row_id <- col_id <- value <- NULL  # NSE
@@ -469,12 +478,14 @@ setMethod("storeRead", signature("unionParquetExprStore"), function(store,
     }
     x_col <- df$value
 
+    ij   <- .pe_orient(store, i_pos, j_pos)
+    dims <- unlist(.pe_orient(store, n_rows, n_cols))
     Matrix::sparseMatrix(
-        i = i_pos,
-        j = j_pos,
+        i = ij[[1L]],
+        j = ij[[2L]],
         x = as.double(x_col),
-        dims = c(n_rows, n_cols),
-        dimnames = list(store@feat_ids, store@cell_ids),
+        dims = as.integer(dims),
+        dimnames = .pe_orient(store, store@feat_ids, store@cell_ids),
         repr = "C"
     )
 }
@@ -564,6 +575,18 @@ setMethod(
 # Shared body for both signatures above. `data` is the input store; `store`
 # is the fresh target parquetExprStore (path + uid).
 .pestore_write_from_parquet_input <- function(store, data) {
+    # Writing bakes the queued chain into on-disk values and hands back a
+    # store with empty chains. An orientation flip is not part of that chain
+    # and would not be baked, so a transposed input would write bytes in the
+    # storage orientation while the caller believes it asked for the flipped
+    # one -- silently, since the written store reports whatever its own flag
+    # says. Refuse instead. Physically reorienting the file is a repartition,
+    # a different and materializing operation that this is not.
+    if (isTRUE(data@transposed)) {
+        stop("[storeWrite] the input store is transposed. t() is a view-time ",
+             "flip and is not baked by a write; call t() again to restore ",
+             "the storage orientation before writing.", call. = FALSE)
+    }
     if (file.exists(store@path) && !dir.exists(store@path)) {
         stop("[storeWrite] output path exists as a file: ", store@path,
             "\n  pre-allocated store path must be a directory or absent.",
@@ -581,8 +604,7 @@ setMethod(
     if (length(data@post_ops) > 0L) {
         .pestore_write_baked(store, data)
     } else {
-        q <- .pestore_remap_query(data)
-        .write_parquet(store, q)
+        .pestore_write_windowed(store, data)
     }
 
     # Slots copied from input -- already correctly narrowed by any
@@ -670,6 +692,58 @@ setMethod(
         }
     }
     invisible(NULL)
+}
+
+# Lazy-chain write: one cell window at a time, each sorted and written as its
+# own file, in cell order, so the output is cell-major (the layout AGENTS.md
+# states and the Gram kernel checks) with memory bounded by the window.
+#
+# The sort cannot be left to one arrange() over the whole query: write_dataset()
+# writes batches as its threads finish them and drops the order (a 169,420-cell
+# store came back in 170,944 runs of cells, a different layout every run), and
+# collecting the sorted query whole holds the entire output at once (17.9 GB
+# peak for a 300M-value store). See adr/0018.
+.pestore_write_windowed <- function(store, data) {
+    partition_dir <- .idpath(store@path, store@uid)
+    if (!dir.exists(partition_dir)) {
+        dir.create(partition_dir, recursive = TRUE, showWarnings = FALSE)
+    }
+    row_id <- NULL  # NSE
+    part_idx <- 0L
+    for (d in .pe_windows(data, .pe_write_chunk_size(data))) {
+        # window-local row ids start at 1; shift them to the output axis
+        off <- d$offset + d$cs - 1L
+        tb <- .pestore_remap_query(.pe_window_store(d)) |>
+            dplyr::mutate(row_id = row_id + off) |>
+            dplyr::compute()
+        if (tb$num_rows > 0L) {
+            .write_parquet_file(tb,
+                file.path(partition_dir, sprintf("part-%d.parquet", part_idx)),
+                chunk_size = 1048576L)
+            part_idx <- part_idx + 1L
+        }
+        # the Arrow table is freed only when R collects it, and R does not see
+        # Arrow's allocation; without this the previous window can still be
+        # resident when the next one sorts, doubling the peak
+        rm(tb)
+        invisible(gc(verbose = FALSE))
+    }
+    # a view with no stored values still has to read back as a store
+    if (part_idx == 0L) {
+        .write_parquet_file(
+            arrow::arrow_table(row_id = integer(), col_id = integer(),
+                value = double()),
+            file.path(partition_dir, "part-0.parquet"))
+    }
+    invisible(NULL)
+}
+
+# Window for the lazy-chain write. The sort holds a collected Arrow table plus
+# its sorted copy; measured at 60-100 bytes per stored value of process peak
+# (17.6M values: +1.05 GB; 300M values at 4 windows: +7.5 GB, the upper end
+# because Arrow's allocator keeps freed pages), hence 96.
+.pe_write_chunk_size <- function(pe) {
+    .pe_window_cells(pe, bytes_per_nz = 96, k = 0L)
 }
 
 # Build the lazy remapped triplet query for a (possibly subset) input.
@@ -808,27 +882,31 @@ setMethod(
 
 # dim / nrow / ncol ####
 # Bioconductor convention: expression matrices are gene x cell, so
-# nrow = genes and ncol = cells.
+# nrow = genes and ncol = cells -- unless `@transposed`, which presents the
+# same bytes cell x gene. These are logical-position sites, so they consult
+# the flag; nothing in the op chain does.
 
 #' @export
-setMethod("nrow", "parquetExprStore", function(x) x@n_genes)
+setMethod("dim", "parquetExprStore",
+    function(x) as.numeric(unlist(.pe_orient(x, x@n_genes, x@n_cells)))
+)
 
 #' @export
-setMethod("ncol", "parquetExprStore", function(x) x@n_cells)
+setMethod("nrow", "parquetExprStore", function(x) dim(x)[[1L]])
 
 #' @export
-setMethod("dim", "parquetExprStore", function(x) c(x@n_genes, x@n_cells))
-
-#' @export
-setMethod("nrow", "unionParquetExprStore", function(x) x@n_genes)
-
-#' @export
-setMethod("ncol", "unionParquetExprStore", function(x) x@n_cells)
+setMethod("ncol", "parquetExprStore", function(x) dim(x)[[2L]])
 
 #' @export
 setMethod("dim", "unionParquetExprStore",
-    function(x) c(x@n_genes, x@n_cells)
+    function(x) as.numeric(unlist(.pe_orient(x, x@n_genes, x@n_cells)))
 )
+
+#' @export
+setMethod("nrow", "unionParquetExprStore", function(x) dim(x)[[1L]])
+
+#' @export
+setMethod("ncol", "unionParquetExprStore", function(x) dim(x)[[2L]])
 
 # dimnames / rownames / colnames ####
 # `rownames()` and `colnames()` in base R consult `dimnames()` first; defining
@@ -836,12 +914,12 @@ setMethod("dim", "unionParquetExprStore",
 
 #' @export
 setMethod("dimnames", "unionParquetExprStore",
-    function(x) list(x@feat_ids, x@cell_ids)
+    function(x) .pe_orient(x, x@feat_ids, x@cell_ids)
 )
 
 #' @export
 setMethod("dimnames", "parquetExprStore",
-    function(x) list(x@feat_ids, x@cell_ids)
+    function(x) .pe_orient(x, x@feat_ids, x@cell_ids)
 )
 
 # `rownames<-` and `colnames<-` fall back to `dimnames<-`. Define the
@@ -947,35 +1025,49 @@ setMethod("dimnames<-",
     as.integer(pe@gene_idx[subset_pos])
 }
 
+# Narrow by STORAGE axis. `gene` / `cell` are index vectors or NULL for
+# "leave this axis alone" -- an explicit sentinel rather than `missing()`,
+# so the orientation swap above can hand either side through without
+# reconstructing missingness.
+#' @keywords internal
+#' @noRd
+.pe_subset_axes <- function(x, gene = NULL, cell = NULL) {
+    if (!is.null(gene)) {
+        i_int <- .resolve_subset_idx(gene, x@feat_ids, "gene axis")
+        new_gene_idx <- if (length(x@gene_idx) == 0L) {
+            as.integer(i_int)
+        } else {
+            x@gene_idx[i_int]
+        }
+        x@feat_ids <- x@feat_ids[i_int]
+        x@gene_idx <- as.integer(new_gene_idx)
+        x@n_genes  <- as.numeric(length(x@feat_ids))
+    }
+    if (!is.null(cell)) {
+        j_int <- .resolve_subset_idx(cell, x@cell_ids, "cell axis")
+        new_cell_idx <- if (length(x@cell_idx) == 0L) {
+            as.integer(j_int)
+        } else {
+            x@cell_idx[j_int]
+        }
+        x@cell_ids <- x@cell_ids[j_int]
+        x@cell_idx <- as.integer(new_cell_idx)
+        x@n_cells  <- as.numeric(length(x@cell_ids))
+    }
+    x
+}
+
 #' @export
 setMethod("[",
     signature(x = "parquetExprStore", i = "ANY", j = "ANY", drop = "ANY"),
     function(x, i, j, ..., drop = TRUE) {
-        # i = genes (rows); j = cells (cols)
-        if (!missing(i)) {
-            i_int <- .resolve_subset_idx(i, x@feat_ids, "row (gene)")
-            new_gene_idx <- if (length(x@gene_idx) == 0L) {
-                as.integer(i_int)
-            } else {
-                x@gene_idx[i_int]
-            }
-            new_feat_ids <- x@feat_ids[i_int]
-            x@feat_ids <- new_feat_ids
-            x@gene_idx <- as.integer(new_gene_idx)
-            x@n_genes  <- as.numeric(length(x@feat_ids))
-        }
-        if (!missing(j)) {
-            j_int <- .resolve_subset_idx(j, x@cell_ids, "col (cell)")
-            new_cell_idx <- if (length(x@cell_idx) == 0L) {
-                as.integer(j_int)
-            } else {
-                x@cell_idx[j_int]
-            }
-            x@cell_ids <- x@cell_ids[j_int]
-            x@cell_idx <- as.integer(new_cell_idx)
-            x@n_cells  <- as.numeric(length(x@cell_ids))
-        }
-        x
+        # `[` indexes the LOGICAL matrix, so when transposed the caller's
+        # first index selects cells and the second genes. Resolve that here,
+        # once, and hand storage axes to the helper.
+        first  <- if (missing(i)) NULL else i
+        second <- if (missing(j)) NULL else j
+        sides  <- .pe_orient(x, first, second)
+        .pe_subset_axes(x, gene = sides[[1L]], cell = sides[[2L]])
     }
 )
 
@@ -991,13 +1083,24 @@ setMethod("[",
 setMethod("[",
     signature(x = "unionParquetExprStore", i = "ANY", j = "ANY", drop = "ANY"),
     function(x, i, j, ..., drop = TRUE) {
-        if (!missing(i)) {
-            new_stores <- lapply(x@stores, function(s) s[i, ])
+        # Same marshalling as the single-store method: `[` indexes the
+        # LOGICAL matrix, so resolve the caller's two slots to storage axes
+        # before the body, which is written in storage terms. Substores are
+        # never transposed (the constructor refuses it), so `s[gene, ]`
+        # below stays unambiguous.
+        first  <- if (missing(i)) NULL else i
+        second <- if (missing(j)) NULL else j
+        sides  <- .pe_orient(x, first, second)
+        gene   <- sides[[1L]]
+        cell   <- sides[[2L]]
+
+        if (!is.null(gene)) {
+            new_stores <- lapply(x@stores, function(s) s[gene, ])
         } else {
             new_stores <- x@stores
         }
-        if (!missing(j)) {
-            j_int <- .resolve_subset_idx(j, x@cell_ids, "col (cell)")
+        if (!is.null(cell)) {
+            j_int <- .resolve_subset_idx(cell, x@cell_ids, "cell axis")
             offsets <- c(0L, cumsum(vapply(new_stores,
                 function(s) s@n_cells, numeric(1L))))
             kept <- list()
@@ -1023,6 +1126,9 @@ setMethod("[",
         # which a narrowing view cannot move.
         new_union@ops      <- x@ops
         new_union@post_ops <- x@post_ops
+        # The constructor builds in storage orientation (it refuses
+        # transposed substores), so carry the union's own view flag across.
+        new_union@transposed <- x@transposed
         new_union
     }
 )
@@ -1061,3 +1167,143 @@ setMethod("cbind2",
     signature("unionParquetExprStore", "unionParquetExprStore"),
     function(x, y, ...) unionParquetExprStore(c(x@stores, y@stores))
 )
+
+
+# Coercion ####
+
+# `storeRead(output = "dgcmatrix")` already materializes an expression store
+# into a sparse matrix, but nothing connected that capability to the coercion
+# generic, so callers spelled for an in-memory carrier could not reach it.
+# GiottoClass's `spatValues()` is the one that matters in practice: it does
+#
+#   e[][feats, , drop = FALSE] |> t_flex() |> as("dgCMatrix") |> ...
+#
+# and with no method here the failure was swallowed by that function's error
+# handler and reported as "features ... not found", which points at the data
+# rather than at the coercion. Registering against `parquetExprBase` covers
+# the single and union stores together, since both answer `"dgcmatrix"`.
+#
+# This materializes, so it is the caller's job to narrow first --
+# `store[feats, ]` -- rather than coerce a whole atlas. Note that the
+# `t_flex()` step above still has no route for a store, so `spatValues()` is
+# not unblocked by this alone; that needs a lazy orientation flip.
+
+#' @name parquetExprStore-coerce
+#' @title Coerce an expression store to a sparse matrix
+#' @description Materializes through `storeRead(output = "dgcmatrix")`, so
+#' narrow the store first (`store[feats, ]`) rather than coercing a whole
+#' dataset.
+#' @returns `dgCMatrix`
+NULL
+
+setAs("parquetExprBase", "dgCMatrix", function(from) {
+    storeRead(from, output = "dgcmatrix")
+})
+
+
+# Compare ####
+
+#' @name parquetExprStore-compare
+#' @title Compare an expression store against a scalar
+#' @description
+#' `>`, `>=`, `<`, `<=`, `==` and `!=` against a numeric scalar return the
+#' store with a lazy indicator queued on its op chain: stored entries that
+#' pass keep value 1, entries that fail are dropped. Nothing is read until
+#' the result is, so `rowSums(x >= 1)` counts per feature in one streaming
+#' pass, and the comparison sees the values the chain produces -- after
+#' normalization, if normalization is queued.
+#'
+#' The result is sparse only when an unstored zero fails the comparison, so a
+#' comparison that is `TRUE` at 0 (`x >= 0`, `x < 1`, `x == 0`, ...) is an
+#' error rather than a silent densification. Materialize a bounded slice with
+#' `storeRead(x[i, j], output = "dgcmatrix")` for those.
+#'
+#' Passing entries read back as the double `1`, not `TRUE`, because a stored
+#' value is a double on every read path. Sums and counts are unaffected.
+#' @param e1,e2 a `parquetExprBase`-inheriting store and a numeric scalar, in
+#'   either order
+#' @returns the store, with a `compare` record appended to its op chain
+#' @examples
+#' \dontrun{
+#' rowSums(x >= 1)   # cells expressing each feature
+#' colSums(x > 0)    # features detected per cell
+#' }
+NULL
+
+#' @rdname parquetExprStore-compare
+#' @export
+setMethod("Compare", signature("parquetExprBase", "numeric"),
+    function(e1, e2) .pe_compare(e1, .Generic, e2)
+)
+
+#' @rdname parquetExprStore-compare
+#' @export
+setMethod("Compare", signature("numeric", "parquetExprBase"),
+    function(e1, e2) .pe_compare(e2, .pe_flip_compare(.Generic), e1)
+)
+
+#' @rdname parquetExprStore-compare
+#' @export
+setMethod("Compare", signature("parquetExprBase", "parquetExprBase"),
+    function(e1, e2) {
+        stop("[Compare] comparing two expression stores is not supported; ",
+             "compare a store against a numeric scalar.", call. = FALSE)
+    }
+)
+
+# `1 <= x` is `x >= 1`: keep the store on the left so the record has one shape.
+.pe_flip_compare <- function(op) {
+    switch(op,
+        ">"  = "<",  ">=" = "<=",
+        "<"  = ">",  "<=" = ">=",
+        op) # == and != are symmetric
+}
+
+.pe_compare <- function(x, op, e2) {
+    if (length(e2) != 1L || is.na(e2)) {
+        stop("[Compare] an expression store compares against a single ",
+             "non-NA number.", call. = FALSE)
+    }
+    e2 <- as.numeric(e2)
+    op <- as.character(op) # `.Generic` carries a package attribute
+    # The whole design rests on this: an unstored entry is 0, so if 0 passes,
+    # every unstored entry would have to become a stored 1.
+    if (isTRUE(do.call(op, list(0, e2)))) {
+        stop("[Compare] `x ", op, " ", e2, "` is TRUE for every unstored ",
+             "zero, so the result would be dense. Use a comparison that 0 ",
+             "fails, or materialize a bounded slice with ",
+             "storeRead(x[i, j], output = \"dgcmatrix\") first.",
+             call. = FALSE)
+    }
+    # Lowerable on either carrier, so it goes wherever the chain currently
+    # ends -- after a post op it has to run R-side too (monotonic rule).
+    phase <- if (length(x@post_ops) > 0L) "post" else "lazy"
+    .pe_push_op(x, list(type = "compare", op = op, axis = "all", e2 = e2),
+        phase = phase)
+}
+
+
+# Orientation ####
+
+#' @rdname parquetExprStore-coerce
+#' @section Transpose:
+#' `t()` flips `@transposed` and touches nothing else -- no bytes move, no
+#' record joins the op chain, and the queued chain is untouched. Ops address
+#' semantic axes (`axis = "cell" | "feat" | "all"`) bound to on-disk columns,
+#' never logical positions, so `axis = "cell"` still resolves to `row_id`
+#' either way and no payload can be invalidated by the flip. The flag is read
+#' only where a logical position resolves to a semantic axis: `dim()`,
+#' `dimnames()`, `[`, and the reshape in `storeRead(output = "dgcmatrix")`.
+#'
+#' Being an involution, it is last-write-wins view state -- a slot beside
+#' `@cell_idx` / `@gene_idx`, not a step. `t(t(x))` is `x`.
+#'
+#' It does not reorder the file. On-disk sort is `(row_id, col_id)`, i.e.
+#' cell-major, so gene-axis access remains the scan-heavy direction however
+#' the matrix is presented. Changing that is a materializing repartition and
+#' is deliberately a different operation.
+#' @export
+setMethod("t", signature("parquetExprBase"), function(x) {
+    x@transposed <- !x@transposed
+    x
+})

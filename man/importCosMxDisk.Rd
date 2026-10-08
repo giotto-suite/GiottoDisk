@@ -12,7 +12,7 @@ importCosMxDisk(
   version = "default",
   micron = FALSE,
   px2um = 0.12028,
-  poly_pref = c("mask", "csv")
+  poly_pref = c("csv", "mask")
 )
 }
 \arguments{
@@ -22,7 +22,8 @@ importCosMxDisk(
 Naming matches \code{\link[GiottoClass:createGiottoObject]{GiottoClass::createGiottoObject()}}'s \code{backend} param.}
 
 \item{slide, fovs, version, micron, px2um, poly_pref}{passed through to the
-parent \code{CosmxReader} initializer.}
+parent \code{CosmxReader} initializer. \code{poly_pref} defaults to \code{"csv"}
+because the disk polygon loader reads the vertex CSV, not masks.}
 }
 \value{
 \code{CosMxDiskReader} object

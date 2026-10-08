@@ -9,6 +9,7 @@
 \alias{storeRead,binGefInput-method}
 \alias{storeRead,csvWideInput-method}
 \alias{storeRead,tenxZarrInput-method}
+\alias{storeRead,cosmxScanInput-method}
 \alias{storeRead,parquetExprStore-method}
 \alias{storeRead,unionParquetExprStore-method}
 \alias{storeRead}
@@ -24,7 +25,12 @@
 \alias{storeRead,bpcMatrixStore-method}
 \title{Read a \code{dataStore}}
 \usage{
-\S4method{storeRead}{parquetEdgeStore}(store, output = c("arrow", "tibble", "igraph"), minimal = TRUE, ...)
+\S4method{storeRead}{parquetEdgeStore}(
+  store,
+  output = c("arrow", "arrowstream", "tibble", "igraph"),
+  minimal = TRUE,
+  ...
+)
 
 \S4method{storeRead}{mtxInput}(store, ...)
 
@@ -37,6 +43,8 @@
 \S4method{storeRead}{csvWideInput}(store, ...)
 
 \S4method{storeRead}{tenxZarrInput}(store, ...)
+
+\S4method{storeRead}{cosmxScanInput}(store, ...)
 
 \S4method{storeRead}{parquetExprStore}(
   store,
@@ -92,7 +100,7 @@
   store,
   extent = NULL,
   fields = NULL,
-  output = c("query", "tibble", "terra", "sf", "duckdb", "sedona"),
+  output = c("query", "tibble", "terra", "sf", "duckdb", "sedona", "vertex_dt"),
   callback = NULL,
   duckdb_params = list(),
   omit_internals = TRUE,
@@ -103,7 +111,7 @@
   store,
   extent = NULL,
   fields = NULL,
-  output = c("query", "tibble", "terra", "sf", "duckdb", "sedona"),
+  output = c("query", "tibble", "terra", "sf", "duckdb", "sedona", "vertex_dt"),
   callback = NULL,
   duckdb_params = list(),
   omit_internals = TRUE,
@@ -115,7 +123,7 @@
   extent = NULL,
   tile_idx = NULL,
   fields = NULL,
-  output = c("query", "tibble", "terra", "sf", "duckdb", "sedona"),
+  output = c("query", "tibble", "terra", "sf", "duckdb", "sedona", "vertex_dt"),
   callback = NULL,
   duckdb_params = list(),
   omit_internals = TRUE,
@@ -134,6 +142,15 @@
 \item{output}{\code{character} (default = "query"). Format to get values in:
 \itemize{
 \item "query" - produces an arrow lazy query
+\item "arrowstream" - (\code{parquetEdgeStore} only) a
+\code{nanoarrow_array_stream} over the same query, with \verb{@ops}
+already applied. Intended for a reader outside R: the batches can
+be pulled across the Arrow C Data Interface, so a consumer that
+never sees the store object still observes its pending subset.
+The stream can be read only once, and further filtering on it
+happens after the rows are read; narrow the store (or use
+\code{"query"}) before asking for it. Respects \code{minimal}, since a
+stream cannot be reshaped once handed over.
 \item "tibble" - materialized dplyr tibble
 \item "terra" - materialized \code{SpatVector}
 \item "sf" - materialized \code{sf} object

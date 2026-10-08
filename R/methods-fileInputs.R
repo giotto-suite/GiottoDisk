@@ -175,68 +175,74 @@ setMethod("storeRead", signature("tenxH5Input"), function(store, ...) {
 
 # storeRead — cellbinGefInput ####
 
+# Cell-major by construction. A cellbin GEF keeps a cell-major copy of the
+# matrix, `cellBin/cellExp`, whose records for cell i start at
+# `cellBin/cell$offset[i]` and number `geneCount[i]`; contiguous cell ranges
+# are therefore contiguous hyperslabs. Files without `cellExp` fall back to
+# reordering the gene-major `geneExp` through `.gef_spill_iterator()`
+# (adr/0017).
+
 #' @rdname storeRead
 #' @export
 setMethod("storeRead", signature("cellbinGefInput"), function(store, ...) {
+    row_id <- col_id <- value <- NULL  # NSE bindings
     gef_path    <- store@path
-    cell_id_map <- store@params$cell_id_map
-    cnt         <- store@params$gene_cnt
     name_to_row <- store@params$name_to_row
-    cum         <- store@params$cum_offsets
+    max_rows    <- .gef_batch_rows()
 
-    chunks <- .gef_safe_chunks(name_to_row, store@batch_genes)
-    chunk_i <- 0L
-    closed  <- FALSE
-
-    # Columns whose raw gene rows may straddle chunks; their records are
-    # held back and flushed as one aggregated batch. See .gef_dup_cols().
-    dup_cols <- .gef_dup_cols(name_to_row)
-    deferred <- list()
-    flushed  <- FALSE
-
-    close_fn <- function() { closed <<- TRUE; invisible(NULL) }
-
-    next_batch <- function() {
-        row_id <- col_id <- value <- NULL  # NSE bindings
-        repeat {
-            if (closed || chunk_i >= length(chunks)) {
-                if (!closed && !flushed) {
-                    flushed <<- TRUE
-                    fl <- .gef_flush_deferred(deferred)
-                    deferred <<- list()
-                    if (!is.null(fl)) return(fl)
-                }
-                close_fn(); return(NULL)
+    if (isTRUE(store@params$has_cell_exp)) {
+        off  <- store@params$cell_offset       # double, 0-based
+        gcnt <- store@params$cell_gene_count   # integer
+        ranges <- .gef_cell_ranges(gcnt, max_rows)
+        i <- 0L
+        closed <- FALSE
+        close_fn <- function() { closed <<- TRUE; invisible(NULL) }
+        next_batch <- function() {
+            repeat {
+                if (closed || i >= length(ranges)) { close_fn(); return(NULL) }
+                i <<- i + 1L
+                a <- ranges[[i]][1L]; b <- ranges[[i]][2L]
+                n_rec <- off[b] + gcnt[b] - off[a]
+                if (n_rec > 0) break
             }
-            chunk_i <<- chunk_i + 1L
-            chunk_def <- chunks[[chunk_i]]
-            g_lo <- chunk_def[1L]; g_hi <- chunk_def[2L]
-            slice_lo <- cum[g_lo] + 1L
-            slice_hi <- cum[g_hi + 1L]
-            if (slice_hi >= slice_lo) break
+            chunk <- data.table::setDT(rhdf5::h5read(
+                gef_path, "cellBin/cellExp", start = off[a] + 1, count = n_rec
+            ))
+            out <- data.table::data.table(
+                row_id = rep.int(seq.int(a, b), gcnt[a:b]),
+                col_id = as.integer(name_to_row[as.integer(chunk$geneID) + 1L]),
+                value  = as.double(chunk$count)
+            )
+            out[!is.na(col_id), .(value = sum(value)), keyby = .(row_id, col_id)]
         }
-        chunk <- data.table::setDT(rhdf5::h5read(
-            gef_path, "cellBin/geneExp",
-            start = slice_lo,
-            count = slice_hi - slice_lo + 1L
-        ))
-        gene_idx_raw <- rep.int(seq.int(g_lo, g_hi), cnt[g_lo:g_hi])
-        out <- data.table::data.table(
-            row_id = as.integer(cell_id_map[as.character(chunk$cellID)]),
-            col_id = as.integer(name_to_row[gene_idx_raw]),
-            value  = as.double(chunk$count)
-        )
-        # Aggregate duplicate-name collapses within the chunk.
-        out <- out[!is.na(row_id) & !is.na(col_id),
-                   .(value = sum(value)), keyby = .(row_id, col_id)]
-        if (length(dup_cols)) {
-            hold <- out[col_id %in% dup_cols]
-            if (nrow(hold)) {
-                deferred[[length(deferred) + 1L]] <<- hold
-                out <- out[!col_id %in% dup_cols]
-            }
+    } else {
+        cell_id_map <- store@params$cell_id_map
+        cnt  <- store@params$gene_cnt
+        cum  <- store@params$cum_offsets
+        chunks <- .gef_safe_chunks(name_to_row, store@batch_genes)
+        n_cells <- as.integer(store@n_cells)
+        n_buckets <- .gef_n_buckets(cum[length(cum)], max_rows)
+        per_bucket <- max(1L, as.integer(ceiling(n_cells / n_buckets)))
+        n_buckets <- as.integer(ceiling(n_cells / per_bucket))
+        produce <- function(k) {
+            g_lo <- chunks[[k]][1L]; g_hi <- chunks[[k]][2L]
+            lo <- cum[g_lo] + 1; hi <- cum[g_hi + 1L]
+            if (hi < lo) return(NULL)
+            chunk <- data.table::setDT(rhdf5::h5read(
+                gef_path, "cellBin/geneExp", start = lo, count = hi - lo + 1
+            ))
+            rid <- as.integer(cell_id_map[as.character(chunk$cellID)])
+            data.table::data.table(
+                b      = (rid - 1L) %/% per_bucket + 1L,
+                row_id = rid,
+                col_id = as.integer(name_to_row[rep.int(seq.int(g_lo, g_hi), cnt[g_lo:g_hi])]),
+                value  = as.double(chunk$count)
+            )[!is.na(row_id) & !is.na(col_id)]
         }
-        out
+        finish <- function(dt) dt[, .(value = sum(value)), keyby = .(row_id, col_id)]
+        itr <- .gef_spill_iterator(produce, length(chunks), n_buckets, finish, max_rows)
+        next_batch <- itr$next_batch
+        close_fn <- itr$close
     }
 
     list(
@@ -252,9 +258,19 @@ setMethod("storeRead", signature("cellbinGefInput"), function(store, ...) {
 
 # storeRead — binGefInput ####
 
+# A bin GEF has no cell-major copy, so the expression is reordered out of
+# core. Pass 1 streams gene chunks, labels each new (x, y) with the next
+# bin_ID in first-appearance order -- the numbering Giotto's in-memory reader
+# uses, so `bin_<id>` names agree across backends -- and spills every record
+# to a horizontal stripe of the chip. Pass 2 emits the stripes in ascending y;
+# within a stripe, bins take store positions in (y, x) order. Positions are
+# therefore grid-ordered and cell-major while names keep in-memory parity
+# (adr/0017).
+
 #' @rdname storeRead
 #' @export
 setMethod("storeRead", signature("binGefInput"), function(store, ...) {
+    x <- y <- bin_ID <- row_id <- col_id <- value <- pos <- NULL  # NSE bindings
     gef_path    <- store@path
     cnt         <- store@params$gene_cnt
     name_to_row <- store@params$name_to_row
@@ -263,118 +279,107 @@ setMethod("storeRead", signature("binGefInput"), function(store, ...) {
     expr_path   <- paste0("geneExp/", store@bin_size, "/expression")
 
     chunks <- .gef_safe_chunks(name_to_row, store@batch_genes)
-    chunk_i <- 0L
-    closed  <- FALSE
-    exhausted <- FALSE
+    max_rows <- .gef_batch_rows()
 
-    # Columns whose raw gene rows may straddle chunks; their records are
-    # held back and flushed as one aggregated batch. See .gef_dup_cols().
-    dup_cols <- .gef_dup_cols(name_to_row)
-    deferred <- list()
-    flushed  <- FALSE
+    read_chunk <- function(k) {
+        g_lo <- chunks[[k]][1L]; g_hi <- chunks[[k]][2L]
+        lo <- cum[g_lo] + 1; hi <- cum[g_hi + 1L]
+        if (hi < lo) return(NULL)
+        data.table::setDT(rhdf5::h5read(gef_path, expr_path,
+            start = lo, count = hi - lo + 1))
+    }
 
-    # Running (x, y) -> bin_ID lookup. Persists across batches; published
-    # to the iterator's metadata accessors when iteration completes.
-    xy_to_bin <- data.table::data.table(
-        x = integer(0), y = integer(0), bin_ID = integer(0)
-    )
+    # Horizontal stripes over y, several per budget-sized batch. The y range
+    # comes from the file's attributes; without them, from one extra pass.
+    n_buckets <- .gef_n_buckets(cum[length(cum)], max_rows)
+    yr <- store@params$y_range
+    if (n_buckets > 1L && is.null(yr)) {
+        yr <- c(Inf, -Inf)
+        for (k in seq_along(chunks)) {
+            ch <- read_chunk(k)
+            if (!is.null(ch)) yr <- c(min(yr[1L], ch$y), max(yr[2L], ch$y))
+        }
+    }
+    height <- if (n_buckets > 1L) ceiling((yr[2L] - yr[1L] + 1) / n_buckets) else Inf
+    y0 <- if (is.null(yr)) 0 else yr[1L]
+
+    # (x, y) -> first-appearance bin_ID, accumulated over pass 1
+    xy_to_bin <- data.table::data.table(x = integer(0), y = integer(0), bin_ID = integer(0))
     data.table::setkey(xy_to_bin, x, y)
     n_bins <- 0L
+    # store position -> bin_ID, filled in pass 2
+    pos_to_bin <- integer(0L)
+    exhausted <- FALSE
+
+    produce <- function(k) {
+        chunk <- read_chunk(k)
+        if (is.null(chunk)) return(NULL)
+        g_lo <- chunks[[k]][1L]; g_hi <- chunks[[k]][2L]
+        new_xy <- unique(chunk[, .(x, y)])[!xy_to_bin, on = c("x", "y")]
+        if (nrow(new_xy) > 0L) {
+            new_xy[, bin_ID := seq.int(n_bins + 1L, n_bins + .N)]
+            n_bins <<- n_bins + nrow(new_xy)
+            xy_to_bin <<- data.table::setkey(rbind(xy_to_bin, new_xy), x, y)
+        }
+        out <- data.table::data.table(
+            b      = if (is.finite(height)) as.integer((chunk$y - y0) %/% height) + 1L else 1L,
+            x      = chunk$x,
+            y      = chunk$y,
+            col_id = as.integer(name_to_row[rep.int(seq.int(g_lo, g_hi), cnt[g_lo:g_hi])]),
+            value  = as.double(chunk$count)
+        )[!is.na(col_id)]
+        out[b < 1L, b := 1L][b > n_buckets, b := n_buckets]
+        out
+    }
+
+    finish <- function(dt) {
+        bins <- unique(dt[, .(x, y)])
+        data.table::setorder(bins, y, x)
+        bins[, pos := length(pos_to_bin) + seq_len(.N)]
+        bins[xy_to_bin, bin_ID := i.bin_ID, on = c("x", "y")]
+        pos_to_bin <<- c(pos_to_bin, bins$bin_ID)
+        dt[bins, row_id := i.pos, on = c("x", "y")]
+        dt[, .(value = sum(value)), keyby = .(row_id, col_id)]
+    }
+
+    itr <- .gef_spill_iterator(produce, length(chunks), n_buckets, finish, max_rows)
 
     # Hand the finished coordinate map back to the input object, which
     # outlives this iterator. Only on a full pass -- a partial map would
     # silently produce spatial locations for a subset of the bins. See
-    # binGefInput()'s `coord_env` note.
+    # binGefInput()'s `coord_env` note. `pos` is the store position.
     .publish_coords <- function() {
         if (!exhausted || is.null(coord_env)) return(invisible(NULL))
-        data.table::setorder(xy_to_bin, bin_ID)
-        coord_env$bin_coords <- data.table::copy(xy_to_bin)
-        invisible(NULL)
-    }
-
-    close_fn <- function() {
-        closed <<- TRUE
-        .publish_coords()
+        out <- data.table::copy(xy_to_bin)
+        out[, pos := match(bin_ID, pos_to_bin)]
+        data.table::setorder(out, bin_ID)
+        coord_env$bin_coords <- out
         invisible(NULL)
     }
 
     next_batch <- function() {
-        # NSE bindings
-        x <- y <- bin_ID <- row_id <- col_id <- value <- NULL
-        repeat {
-            if (closed || chunk_i >= length(chunks)) {
-                if (chunk_i >= length(chunks)) exhausted <<- TRUE
-                # Flush held-back duplicate-name records before closing. The
-                # coordinate map is already complete -- bin_IDs are assigned
-                # on the full chunk, ahead of the deferral split.
-                if (!closed && !flushed) {
-                    flushed <<- TRUE
-                    fl <- .gef_flush_deferred(deferred)
-                    deferred <<- list()
-                    if (!is.null(fl)) return(fl)
-                }
-                close_fn(); return(NULL)
-            }
-            chunk_i <<- chunk_i + 1L
-            chunk_def <- chunks[[chunk_i]]
-            g_lo <- chunk_def[1L]; g_hi <- chunk_def[2L]
-            slice_lo <- cum[g_lo] + 1L
-            slice_hi <- cum[g_hi + 1L]
-            if (slice_hi >= slice_lo) break
-        }
-        chunk <- data.table::setDT(rhdf5::h5read(
-            gef_path, expr_path,
-            start = slice_lo,
-            count = slice_hi - slice_lo + 1L
-        ))
-        gene_idx_raw <- rep.int(seq.int(g_lo, g_hi), cnt[g_lo:g_hi])
-
-        # Assign bin_IDs for any (x, y) coords not seen before.
-        chunk_xy <- unique(chunk[, .(x, y)])
-        new_xy <- chunk_xy[!xy_to_bin, on = c("x", "y")]
-        if (nrow(new_xy) > 0L) {
-            new_xy[, bin_ID := seq.int(n_bins + 1L, n_bins + .N)]
-            n_bins <<- n_bins + nrow(new_xy)
-            xy_to_bin <<- rbind(xy_to_bin, new_xy)
-            data.table::setkey(xy_to_bin, x, y)
-        }
-        chunk[, bin_ID := xy_to_bin[.SD, on = c("x", "y"), bin_ID]]
-
-        out <- data.table::data.table(
-            row_id = as.integer(chunk$bin_ID),
-            col_id = as.integer(name_to_row[gene_idx_raw]),
-            value  = as.double(chunk$count)
-        )
-        out <- out[!is.na(row_id) & !is.na(col_id),
-                   .(value = sum(value)), keyby = .(row_id, col_id)]
-        if (length(dup_cols)) {
-            hold <- out[col_id %in% dup_cols]
-            if (nrow(hold)) {
-                deferred[[length(deferred) + 1L]] <<- hold
-                out <- out[!col_id %in% dup_cols]
-            }
-        }
-        out
+        dt <- itr$next_batch()
+        if (is.null(dt)) exhausted <<- TRUE
+        dt
+    }
+    close_fn <- function() {
+        .publish_coords()
+        itr$close()
     }
 
-    # Accessors. cell_ids / n_cells reflect accumulated state, so they
-    # change as iteration advances. Callers should query them after the
-    # iterator is exhausted.
+    # cell_ids / n_cells reflect accumulated state; the storeWrite driver
+    # reads them after the iterator is exhausted.
     list(
         next_batch = next_batch,
         close      = close_fn,
-        cell_ids   = function() {
-            if (n_bins == 0L) return(character(0L))
-            data.table::setorder(xy_to_bin, bin_ID)
-            paste0("bin_", seq_len(n_bins))
-        },
+        cell_ids   = function() paste0("bin_", pos_to_bin),
         feat_ids   = function() store@feat_ids,
-        n_cells    = function() n_bins,
+        n_cells    = function() length(pos_to_bin),
         n_genes    = function() store@n_genes,
-        # Bonus: expose the (x, y) lookup for downstream spatial use.
         bin_coords = function() {
-            data.table::setorder(xy_to_bin, bin_ID)
-            data.table::copy(xy_to_bin)
+            out <- data.table::copy(xy_to_bin)
+            out[, pos := match(bin_ID, pos_to_bin)]
+            data.table::setorder(out, bin_ID)[]
         }
     )
 })
@@ -904,5 +909,69 @@ setMethod("storeRead", signature("tenxZarrInput"), function(store, ...) {
         feat_ids = function() store@feat_ids,
         n_cells = function() store@n_cells,
         n_genes = function() store@n_genes
+    )
+})
+
+
+# storeRead - cosmxScanInput ####
+
+#' @rdname storeRead
+#' @export
+setMethod("storeRead", signature("cosmxScanInput"), function(store, ...) {
+    GiottoUtils::package_check(
+        pkg_name = "cosmxscan",
+        repository = "github:drieslab/cosmxscan"
+    )
+    handle <- cosmxscan::CosmxReader$new(store@path, store@skip_cols)
+    slide  <- store@slide
+    batch  <- store@batch_rows
+
+    closed         <- FALSE
+    cell_ids_acc   <- character(0L)
+    n_cells_so_far <- 0L
+
+    close_fn <- function() {
+        if (!closed) {
+            try(handle$close(), silent = TRUE)
+            closed <<- TRUE
+        }
+        invisible(NULL)
+    }
+
+    next_batch <- function() {
+        if (closed) return(NULL)
+        chunk <- handle$next_chunk(batch)
+        if (chunk$n_rows == 0L) {
+            close_fn()
+            return(NULL)
+        }
+        # The matrix's own cell_ID is FOV-local -- it only reaches 3,577 and
+        # cell_ID == 1 occurs in 392 different FOVs -- so the global id the
+        # polygons and metadata use is composed here, from the fov column the
+        # same scan already read.
+        cell_ids_acc <<- c(
+            cell_ids_acc,
+            sprintf("c_%d_%d_%d", slide, chunk$fov, chunk$cell_ID)
+        )
+        n_cells_so_far <<- n_cells_so_far + chunk$n_rows
+        out <- data.table::data.table(
+            row_id = as.integer(chunk$row_id),
+            col_id = as.integer(chunk$col_id),
+            value  = as.double(chunk$value)
+        )
+        data.table::setorder(out, row_id, col_id)
+        if (isTRUE(chunk$eof)) close_fn()
+        out
+    }
+
+    list(
+        next_batch = next_batch,
+        close      = close_fn,
+        # cell identity is only known during the stream; these accessors
+        # report what the iterator has seen so far.
+        cell_ids   = function() cell_ids_acc,
+        feat_ids   = function() store@feat_ids,
+        n_cells    = function() n_cells_so_far,
+        n_genes    = function() store@n_genes
     )
 })

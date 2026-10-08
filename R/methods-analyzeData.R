@@ -1087,3 +1087,98 @@ setMethod("analyzeData",
                    .warn_raw = length(pe@ops) == 0L &&
                                length(pe@post_ops) == 0L)
 }
+
+# Margin statistics ####
+
+# Any statistic over stored expression values goes through the accumulator
+# rather than materializing. `.stream_expr_accum()` picks the Acero or the
+# chunked R path depending on whether the queued chain forces materialization,
+# folds a feature's contributions across substores, and returns a FULL-LENGTH
+# vector -- which is the part that is easy to get wrong by hand, because an
+# all-zero row or column contributes no rows to the aggregate and would
+# otherwise be silently short.
+#
+# Orientation: these name a LOGICAL margin, so `rowMeans()` on a transposed
+# store is the cell margin. `.pe_orient()` is the single place that decides,
+# the same one `dim()` and `[` use.
+#
+# `na.rm`: the accumulator sums with `na.rm = TRUE` throughout, so these
+# behave as `na.rm = TRUE` regardless of what is passed. That matches how a
+# count matrix is actually used and cannot be honoured per-call without a
+# second aggregate; an NA-bearing expression store is pathological rather than
+# expected. Flagged here because the divergence from the base default is
+# silent by nature.
+#
+# `dims` is refused rather than ignored -- an expression store is a matrix,
+# and a caller passing `dims = 2` means something this cannot do.
+#' @keywords internal
+#' @noRd
+.pe_margin <- function(x, margin = c("row", "col"), mean = FALSE, dims = 1) {
+    margin <- match.arg(margin)
+    if (!identical(as.numeric(dims), 1)) {
+        stop("[", margin, if (mean) "Means" else "Sums",
+            "] `dims` other than 1 is not supported on an expression store.",
+            call. = FALSE)
+    }
+    # logical row axis, logical column axis
+    axes <- .pe_orient(x, "feat", "cell")
+    axis <- if (identical(margin, "row")) axes[[1L]] else axes[[2L]]
+
+    out <- .stream_expr_accum(x, axis = axis, stats = "sum")$sum
+    names(out) <- if (identical(margin, "row")) rownames(x) else colnames(x)
+    if (!isTRUE(mean)) return(out)
+
+    # the extent of the OTHER margin, oriented -- zeros are not stored, so a
+    # mean is the sum over the full extent rather than over stored entries
+    n <- if (identical(margin, "row")) ncol(x) else nrow(x)
+    out / n
+}
+
+#' @name parquetExprStore-margins
+#' @title Margin statistics over an expression store
+#' @description
+#' `rowSums()` / `colSums()` / `rowMeans()` / `colMeans()` computed by
+#' streaming the stored values rather than materializing the matrix. On a
+#' transposed store these follow the logical orientation, so `rowMeans()` is
+#' the cell margin.
+#'
+#' Means divide by the full extent of the other margin, not by the number of
+#' stored entries, since an unstored value is a zero rather than a missing one.
+#' @param x `parquetExprBase`-inheriting store
+#' @param na.rm ignored; the underlying accumulation always drops `NA`
+#' @param dims must be 1
+#' @param ... unused
+#' @returns named `numeric` of length `nrow(x)` or `ncol(x)`
+NULL
+
+#' @rdname parquetExprStore-margins
+#' @export
+setMethod("rowSums", "parquetExprBase",
+    function(x, na.rm = FALSE, dims = 1, ...) {
+        .pe_margin(x, "row", mean = FALSE, dims = dims)
+    }
+)
+
+#' @rdname parquetExprStore-margins
+#' @export
+setMethod("colSums", "parquetExprBase",
+    function(x, na.rm = FALSE, dims = 1, ...) {
+        .pe_margin(x, "col", mean = FALSE, dims = dims)
+    }
+)
+
+#' @rdname parquetExprStore-margins
+#' @export
+setMethod("rowMeans", "parquetExprBase",
+    function(x, na.rm = FALSE, dims = 1, ...) {
+        .pe_margin(x, "row", mean = TRUE, dims = dims)
+    }
+)
+
+#' @rdname parquetExprStore-margins
+#' @export
+setMethod("colMeans", "parquetExprBase",
+    function(x, na.rm = FALSE, dims = 1, ...) {
+        .pe_margin(x, "col", mean = TRUE, dims = dims)
+    }
+)

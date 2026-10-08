@@ -115,12 +115,39 @@ NULL
 # positions.
 #
 # Concrete subclasses (`parquetExprStore`, `unionParquetExprStore`) keep
-# their own slot declarations; this is a tag-only virtual to avoid any
-# slot-relocation churn or RDS deserialization risk.
+# their own slot declarations. This was a tag-only virtual for that reason;
+# `@transposed` is the one exception, and it is here precisely because it is
+# NOT per-subclass state -- orientation means the same thing for a single
+# store and a union, and both must answer `t()` identically. Keeping it here
+# is what stops the two classes drifting into separate flags.
 #' @rdname parquetExprStore-class
 #' @exportClass parquetExprBase
+#' @slot transposed logical. Orientation of the logical matrix relative to
+#'   what is on disk. `FALSE` (default) presents gene x cell; `TRUE` presents
+#'   cell x gene. Flipped by [t()].
+#'
+#'   This is **view state**, in the same category as `@cell_idx` / `@gene_idx`
+#'   and for the same reason: the op chain addresses *semantic* axes
+#'   (`axis = "cell" | "feat" | "all"`) that are bound to on-disk columns, and
+#'   never logical positions. `axis = "cell"` resolves to `row_id` whatever
+#'   this flag says, because a cell *is* `row_id` on disk. So an orientation
+#'   flip cannot invalidate, reorder, or re-key a queued op, and does not
+#'   belong on `@ops` where records compose in sequence. It is an involution,
+#'   so it is last-write-wins rather than "and then also". See `adr/0016`.
+#'
+#'   Consulted only where a *logical position* resolves to a semantic axis:
+#'   `dim()` / `dimnames()`, `[`, and the final reshape in
+#'   `storeRead(output = "dgcmatrix")`. Nothing in the op machinery reads it.
+#'
+#'   The flip is free and changes no bytes. It does not change the on-disk
+#'   sort order, which is `(row_id, col_id)` — cell-major — so access along
+#'   the gene axis stays the expensive direction whichever way the matrix is
+#'   presented. Making that order physical is a separate, materializing
+#'   operation and is deliberately not this.
 setClass("parquetExprBase",
-    contains = "VIRTUAL"
+    contains = "VIRTUAL",
+    slots = list(transposed = "logical"),
+    prototype = list(transposed = FALSE)
 )
 
 #' @rdname parquetExprStore-class
@@ -349,6 +376,17 @@ unionParquetExprStore <- function(stores) {
              "into a fresh raw store, or run processData() on the union ",
              "after cbind. Per-substore ops are not composed across ",
              "unions.", call. = FALSE)
+    }
+    # A transposed substore would make `feat_ids` / `cell_ids` mean the
+    # opposite axes from its siblings, and the ordering check just below
+    # would then compare a gene vector against a cell vector -- passing or
+    # failing for the wrong reason. Orientation is a presentation choice on
+    # a finished matrix, so require it un-flipped going in and let the
+    # caller transpose the union afterwards.
+    if (any(vapply(stores, function(s) isTRUE(s@transposed), logical(1L)))) {
+        stop("[unionParquetExprStore] one or more substores is transposed. ",
+             "Combine in the storage orientation and call t() on the ",
+             "resulting union instead.", call. = FALSE)
     }
     # feat_ids must be identical and in identical order across substores.
     f0 <- stores[[1L]]@feat_ids

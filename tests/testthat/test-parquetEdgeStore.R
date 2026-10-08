@@ -118,6 +118,67 @@ test_that("storeRead arrow returns a queryable arrow dataset with raw ints", {
     expect_equal(nrow(r), 7L)
 })
 
+.collect_stream <- function(x) {
+    as.data.frame(nanoarrow::convert_array_stream(x))
+}
+
+.stream_names <- function(x) {
+    names(nanoarrow::infer_nanoarrow_schema(x)$children)
+}
+
+test_that("storeRead arrowstream yields a nanoarrow stream of edge columns", {
+    s <- storeWrite(storeCreate(type = "parquetEdgeStore"),
+                    .tiny_undirected_dt(),
+                    type = "sNN", directed = FALSE)
+    st <- storeRead(s, output = "arrowstream")
+    expect_s3_class(st, "nanoarrow_array_stream")
+    expect_setequal(.stream_names(st), c("from_id", "to_id", "weight"))
+
+    r <- .collect_stream(st)
+    expect_equal(nrow(r), 7L)
+    expect_equal(sort(r$from_id),
+                 sort(dplyr::collect(storeRead(s, output = "arrow"))$from_id))
+})
+
+test_that("storeRead arrowstream honours minimal = FALSE", {
+    s <- storeWrite(storeCreate(type = "parquetEdgeStore"),
+                    .tiny_undirected_dt(),
+                    type = "sNN", directed = FALSE)
+    wide <- .stream_names(storeRead(s, output = "arrowstream", minimal = FALSE))
+    narrow <- .stream_names(storeRead(s, output = "arrowstream"))
+    expect_true(all(c("from_id", "to_id") %in% wide))
+    expect_gte(length(wide), length(narrow))
+})
+
+test_that("storeRead arrowstream applies pending @ops", {
+    s <- storeWrite(storeCreate(type = "parquetEdgeStore"),
+                    .tiny_undirected_dt(),
+                    type = "sNN", directed = FALSE)
+    sub <- s[c("a", "b", "c")]
+    expect_gt(length(sub@ops), 0L)
+
+    # the files on disk still hold all 7 edges; the stream must not
+    full <- .collect_stream(storeRead(s, output = "arrowstream"))
+    got <- .collect_stream(storeRead(sub, output = "arrowstream"))
+    expect_lt(nrow(got), nrow(full))
+    expect_equal(nrow(got),
+                 nrow(dplyr::collect(storeRead(sub, output = "arrow"))))
+})
+
+test_that("an arrowstream crosses into R arrow with the subset applied", {
+    s <- storeWrite(storeCreate(type = "parquetEdgeStore"),
+                    .tiny_undirected_dt(),
+                    type = "sNN", directed = FALSE)
+    sub <- s[c("a", "b", "c")]
+
+    # a consumer on the arrow side of the C Data Interface
+    rbr <- arrow::as_record_batch_reader(storeRead(sub, output = "arrowstream"))
+    rt <- as.data.frame(rbr$read_table())
+    expect_equal(nrow(rt),
+                 nrow(dplyr::collect(storeRead(sub, output = "arrow"))))
+    expect_setequal(names(rt), c("from_id", "to_id", "weight"))
+})
+
 test_that("storeRead tibble joins char node IDs via sidecar", {
     s <- storeWrite(storeCreate(type = "parquetEdgeStore"),
                     .tiny_undirected_dt(),
@@ -433,4 +494,100 @@ test_that("as.data.table(parquetEdgeStore) honours a pending subset", {
     out <- data.table::as.data.table(sub)
     expect_true(all(c(out$from, out$to) %in% c("a", "b", "c")))
     expect_lt(nrow(out), nrow(dt))
+})
+
+
+# ---- vertex universe (@node_idx) -----------------------------------------
+# `[` pushes an edge filter, which says nothing about a selected vertex whose
+# partners were all dropped. Without a recorded selection the graph rebuilt
+# from surviving edges is silently missing it, so an ID subset returns fewer
+# ids than were asked for.
+
+test_that("an ID subset returns every id asked for, edges or not", {
+    st <- storeWrite(parquetEdgeStore(path = tempfile()),
+                     .tiny_undirected_dt())
+    # "e" connects only to "d", so selecting it without "d" isolates it
+    sel <- c("a", "b", "e")
+    sub <- st[sel]
+
+    g <- igraph::as.igraph(sub)
+    expect_setequal(igraph::V(g)$name, sel)
+    expect_equal(igraph::gorder(g), length(sel))
+    # only a-b survives; e keeps no edge but keeps its vertex
+    expect_equal(igraph::gsize(g), 1)
+    expect_equal(sum(igraph::degree(g) == 0), 1)
+
+    expect_setequal(spatIDs(sub), sel)
+})
+
+test_that("the recorded selection matches induced_subgraph exactly", {
+    dt <- .tiny_undirected_dt()
+    st <- storeWrite(parquetEdgeStore(path = tempfile()), dt)
+    ref <- igraph::graph_from_data_frame(dt, directed = FALSE)
+
+    for (sel in list(c("a", "b", "e"), c("a", "e"), c("c", "d", "e"))) {
+        got <- igraph::as.igraph(st[sel])
+        want <- igraph::induced_subgraph(ref, igraph::V(ref)$name %in% sel)
+        expect_setequal(igraph::V(got)$name, igraph::V(want)$name)
+        expect_equal(igraph::gsize(got), igraph::gsize(want))
+    }
+})
+
+test_that("selections compose and negate complements", {
+    st <- storeWrite(parquetEdgeStore(path = tempfile()),
+                     .tiny_undirected_dt())
+
+    # successive subsets intersect
+    expect_setequal(spatIDs(st[c("a", "b", "c")][c("b", "c")]), c("b", "c"))
+
+    # negate removes exactly the named set
+    expect_setequal(spatIDs(st[c("a", "b"), negate = TRUE]), c("c", "d", "e"))
+})
+
+test_that("an unnarrowed store still infers its vertices from edges", {
+    # the scale property: a whole-store read must not instantiate a vertex
+    # per node on disk just because the sidecar lists one
+    st <- storeWrite(parquetEdgeStore(path = tempfile()),
+                     .tiny_undirected_dt())
+    expect_length(st@node_idx, 0L)
+    expect_equal(igraph::gorder(igraph::as.igraph(st)), 5)
+})
+
+
+# ---- accessors answer for the view, not the file --------------------------
+# @n_edges / @n_cells are written once and never move, so after a subset they
+# describe the file rather than what the store is a view of.
+
+test_that("nrow / dim track pending ops rather than the file", {
+    st <- storeWrite(parquetEdgeStore(path = tempfile()),
+                     .tiny_undirected_dt())
+    expect_equal(nrow(st), 7)
+    expect_equal(dim(st)[[1L]], 7)
+
+    sub <- st[c("a", "b", "e")]      # only a-b survives
+    expect_equal(sub@n_edges, 7)     # the file is unchanged...
+    expect_equal(nrow(sub), 1)       # ...the view is not
+    expect_equal(dim(sub)[[1L]], nrow(sub))
+
+    # matches what actually materializes
+    expect_equal(nrow(sub), igraph::gsize(igraph::as.igraph(sub)))
+})
+
+test_that("a from/to slice re-scans, having recorded no vertex selection", {
+    st <- storeWrite(parquetEdgeStore(path = tempfile()),
+                     .tiny_undirected_dt())
+    sl <- st[c("a"), c("b", "c")]
+    expect_length(sl@node_idx, 0L)
+    expect_equal(nrow(sl), igraph::gsize(igraph::as.igraph(sl)))
+})
+
+test_that("show() reports the file honestly and flags the view", {
+    st <- storeWrite(parquetEdgeStore(path = tempfile()),
+                     .tiny_undirected_dt())
+    out <- paste(capture.output(show(st[c("a", "b", "e")])), collapse = "\n")
+    # the printed counts are labelled as on-disk, so they are not a claim
+    # about the view -- show() must not trigger a scan to be correct
+    expect_match(out, "on disk")
+    expect_match(out, "ops:\\s+1 pending")
+    expect_match(out, "3 nodes selected")
 })

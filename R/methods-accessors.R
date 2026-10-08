@@ -172,3 +172,31 @@ setMethod("ext", signature("parquetGeomBase"), function(x, exact = TRUE, ...) {
 setMethod("geomtype", signature("parquetGeomBase"), function(x) {
     x@geomtype
 })
+
+# * spatIDs / featIDs ####
+# ID extraction is the carrier's own job. GiottoClass's
+# `spatIDs(giottoPolygon)` / `featIDs(giottoPoints)` delegate here when
+# `@spatVector` holds a store.
+#
+# Both go through `.collect_ids()`, the same helper `createGiottoPolygon`
+# / `createGiottoPoints` use to seed `unique_ID_cache`. It selects on the
+# arrow query rather than narrowing the store with `[, j]`, which is what
+# keeps the special cols a queued `spat_relate` joins on.
+#
+# The column is named by the caller, not derived from `@geomtype`:
+# `spatIDs` reads `poly_ID`, `featIDs` reads `feat_ID`, matching the
+# `poly_ID_colname` / `feat_ID_colname` arguments on the constructors.
+
+#' @rdname spatIDs-generic
+#' @export
+setMethod("spatIDs", signature(x = "parquetGeomBase"),
+    function(x, uniques = TRUE, ...) {
+        .collect_ids(x, "poly_ID", uniques = uniques)
+    })
+
+#' @rdname spatIDs-generic
+#' @export
+setMethod("featIDs", signature(x = "parquetGeomBase"),
+    function(x, uniques = TRUE, ...) {
+        .collect_ids(x, "feat_ID", uniques = uniques)
+    })

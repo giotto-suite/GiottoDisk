@@ -72,3 +72,18 @@ test_that("parquetExpr artifact path has the expected layout", {
 
     unlink(proj_dir, recursive = TRUE)
 })
+
+
+test_that("gDirSource stores an absolute path for a new relative directory", {
+    wd <- tempfile("gdsrc_wd_")
+    dir.create(wd)
+    old <- setwd(wd)
+    on.exit(setwd(old), add = TRUE)
+
+    src <- suppressMessages(gDirSource("proj"))
+    expect_identical(src@path, normalizePath(file.path(wd, "proj")))
+
+    # artifact paths stay valid after the working directory moves
+    setwd(tempdir())
+    expect_true(file.exists(.gdsrc_json_path(src@path)))
+})

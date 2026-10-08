@@ -298,13 +298,16 @@ tenxH5Input <- function(
 #' @description
 #' Wraps a Stereo-seq cellbin `.gef` file (HDF5 compound datasets under
 #' `cellBin/`). The `cell` and `gene` tables are read in full at
-#' construction (small); the compound `geneExp` is streamed gene-chunk-
-#' wise via [storeRead()] using rhdf5 hyperslab reads, respecting the
-#' safe-boundary chunk plan that keeps duplicate-named genes together.
+#' construction (small). [storeRead()] streams the cell-major `cellExp`
+#' dataset in contiguous cell ranges, so the store is written cell-major
+#' like every other input. A file without `cellExp` is read from the
+#' gene-major `geneExp` and reordered through a temporary spill.
 #'
-#' @slot batch_genes integer. Approximate raw-gene rows per batch
-#'   (default 500). Actual boundaries may be expanded to keep duplicate-
-#'   named gene groups intact.
+#' Batch size follows the chunk-sizing budget; pin it with
+#' `options(giottodisk.gef_batch_rows = <records>)`.
+#'
+#' @slot batch_genes integer. Raw-gene rows per read of `geneExp`, used only
+#'   when the file has no `cellExp` (default 500).
 #' @slot gene_column character. `"geneName"` (default) or `"geneID"`.
 #' @family store types
 NULL
@@ -325,8 +328,8 @@ setClass("cellbinGefInput",
 #' @title Create a Stereo-seq cellbin GEF input
 #' @param gef_path character. Path to a Stereo-seq cellbin `.gef` file.
 #' @param gene_column character. `"geneName"` (default) or `"geneID"`.
-#' @param batch_genes integer. Approximate raw-gene rows per batch.
-#'   Default 500.
+#' @param batch_genes integer. Raw-gene rows per read of `geneExp` when the
+#'   file has no `cellExp`. Default 500.
 #' @return A `cellbinGefInput` object.
 #' @family store constructors
 #' @export
@@ -354,17 +357,25 @@ cellbinGefInput <- function(
     expressed_names <- all_names[cnt > 0]
     feat_ids        <- sort(unique(expressed_names))
 
+    # cellExp is the cell-major copy; its per-cell offsets live in the cell
+    # table. Both must be present to read it.
+    has_cell_exp <- all(c("offset", "geneCount") %in% names(cellDT)) &&
+        .h5_has(gef_path, "cellBin/cellExp")
+
     new("cellbinGefInput",
         path        = normalizePath(gef_path),
-        # Stash the parsed tables + name_to_row + cumulative offsets so
-        # storeRead doesn't re-read them. Cheap (tens of KB each).
+        # Stash the parsed tables + name_to_row + offsets so storeRead
+        # doesn't re-read them.
         params      = list(
             cell_id_map = data.table::setattr(
                 seq_len(n_cells), "names", as.character(cellDT$id)
             ),
             gene_cnt    = cnt,
             name_to_row = match(all_names, feat_ids),
-            cum_offsets = c(0L, as.integer(cumsum(as.numeric(cnt))))
+            cum_offsets = c(0, cumsum(as.numeric(cnt))),
+            has_cell_exp    = has_cell_exp,
+            cell_offset     = if (has_cell_exp) as.numeric(cellDT$offset),
+            cell_gene_count = if (has_cell_exp) as.integer(cellDT$geneCount)
         ),
         cell_ids    = cell_ids,
         feat_ids    = feat_ids,
@@ -384,12 +395,19 @@ cellbinGefInput <- function(
 #' Wraps a Stereo-seq bin `.gef` file (`geneExp/<bin_size>/expression`
 #' compound dataset). Unlike cellbin, the cell identity universe (one per
 #' unique `(x, y)` coord) is not known up-front — `(x, y) -> bin_ID` is
-#' assigned as new coords are encountered during the gene-chunk stream.
-#' [storeRead()]'s iterator publishes the accumulated `cell_ids` /
-#' `n_cells` via its accessors after iteration completes.
+#' assigned as new coords are encountered during the gene-chunk stream, in
+#' the same first-appearance order as Giotto's in-memory reader, so bins are
+#' named `bin_<bin_ID>` on both backends. The file stores expression
+#' gene-major; [storeRead()] reorders it through a temporary spill so the
+#' store is written cell-major, with bins positioned in (y, x) grid order.
+#' The iterator publishes the accumulated `cell_ids` / `n_cells` via its
+#' accessors after iteration completes.
+#'
+#' Batch size follows the chunk-sizing budget; pin it with
+#' `options(giottodisk.gef_batch_rows = <records>)`.
 #'
 #' @slot bin_size character. Bin size key under `geneExp/` (e.g. `"50"`).
-#' @slot batch_genes integer. Approximate raw-gene rows per batch.
+#' @slot batch_genes integer. Raw-gene rows per read of `geneExp`.
 #' @slot gene_column character.
 #' @family store types
 NULL
@@ -414,7 +432,7 @@ setClass("binGefInput",
 #' @param bin_size character or integer. Bin size key under `geneExp/`
 #'   (e.g. `50`, `"50"`, `"100"`).
 #' @param gene_column character. `"geneName"` (default) or `"geneID"`.
-#' @param batch_genes integer. Default 500.
+#' @param batch_genes integer. Raw-gene rows per read of `geneExp`. Default 500.
 #' @return A `binGefInput` object. `cell_ids` / `n_cells` are empty until
 #'   [storeRead()] has been driven to completion.
 #' @family store constructors
@@ -442,12 +460,26 @@ binGefInput <- function(
     expressed_names <- all_names[cnt > 0]
     feat_ids        <- sort(unique(expressed_names))
 
+    # y range of the records, which sets the stripes the reorder spills
+    # into: from the expression dataset's attributes, else from the whole-chip
+    # grid's. NULL when neither has it; storeRead then derives it.
+    .attrs <- function(name) tryCatch(rhdf5::h5readAttributes(gef_path, name),
+        error = function(e) list())
+    ea <- .attrs(paste0("geneExp/", bin_size, "/expression"))
+    wa <- .attrs(paste0("wholeExp/", bin_size))
+    y_range <- if (all(c("minY", "maxY") %in% names(ea))) {
+        as.numeric(c(ea$minY, ea$maxY))
+    } else if (all(c("minY", "lenY") %in% names(wa))) {
+        as.numeric(c(wa$minY, wa$minY + wa$lenY))
+    }
+
     new("binGefInput",
         path        = normalizePath(gef_path),
         params      = list(
             gene_cnt    = cnt,
             name_to_row = match(all_names, feat_ids),
-            cum_offsets = c(0L, as.integer(cumsum(as.numeric(cnt)))),
+            cum_offsets = c(0, cumsum(as.numeric(cnt))),
+            y_range     = y_range,
             # Reference cell for the (x, y) -> bin_ID map the iterator
             # accumulates. An environment because the object is copied on
             # the way into storeWrite(), so a plain slot could not carry a
@@ -706,5 +738,64 @@ tenxZarrInput <- function(
         nnz             = nnz,
         mode            = mode,
         cells_per_block = as.integer(cells_per_block %||% 0L)
+    )
+}
+
+
+
+# cosmxScanInput ####
+
+#' @name cosmxScanInput-class
+#' @title CosMx exprMat Byte-Scanner Input
+#' @description
+#' Wraps a gzipped CosMx `exprMat_file`, read by the `cosmxscan` Rust
+#' scanner. `cell_ids` are only known during the stream -- the matrix's own
+#' `cell_ID` column is FOV-local -- so the iterator composes the global
+#' `c_<slide>_<fov>_<cell_ID>` form as it advances.
+#' @slot slide integer. Slide number, used to compose global cell IDs.
+#' @slot skip_cols integer. Leading non-feature columns (`fov`, `cell_ID`).
+#' @slot batch_rows integer. Cells emitted per batch.
+#' @family store types
+#' @keywords internal
+setClass("cosmxScanInput",
+    contains = "exprInput",
+    slots = list(
+        slide = "integer",
+        skip_cols = "integer",
+        batch_rows = "integer"
+    ),
+    prototype = list(
+        slide = 1L,
+        skip_cols = 2L,
+        batch_rows = 10000L
+    )
+)
+
+# Not exported, unlike the other exprInput constructors: `cosmxscan` is a
+# Suggests, and the CosMx expression closure selects this when it is present.
+.cosmx_scan_input <- function(path,
+                           slide = 1,
+                           skip_cols = 2L,
+                           batch_rows = 10000L,
+                           ...) {
+    checkmate::assert_file_exists(path)
+    GiottoUtils::package_check(
+        pkg_name = "cosmxscan",
+        repository = "github:drieslab/cosmxscan"
+    )
+
+    con <- gzfile(path, "rt")
+    on.exit(close(con), add = TRUE)
+    hdr <- strsplit(readLines(con, n = 1L), ",", fixed = TRUE)[[1L]]
+    feat_ids <- hdr[-seq_len(skip_cols)]
+
+    methods::new("cosmxScanInput",
+        path = path,
+        feat_ids = feat_ids,
+        n_genes = length(feat_ids),
+        slide = as.integer(slide),
+        skip_cols = as.integer(skip_cols),
+        batch_rows = as.integer(batch_rows),
+        ...
     )
 }

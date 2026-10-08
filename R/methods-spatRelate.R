@@ -1,14 +1,16 @@
 #' @include class-parquetStore.R
 NULL
 
-# spatRelate on parquetGeomBase: lazy filter via spatial predicate ####
+# spatRelate on parquetGeomBase: spatial predicate as a checkpoint op ####
 #
 # Queues a "spat_relate" op carrying the query geometry (inline WKT, or a
-# reference to another parquetGeomStore) and the predicate name. Evaluated
-# at storeRead time by the SQL compile in `.pstore_to_sedona`. The arrow
-# backend has no native spatial predicates; storeRead errors loudly on that
-# path and directs callers to `output = "sedona"`. A tile-streaming arrow
-# implementation is possible but not implemented.
+# reference to another parquetGeomStore) and the predicate name.
+#
+# Evaluation is a CHECKPOINT, not a lowering: `.pbase_storeread_processing`
+# (R/methods-storeRead.R) runs `.spat_relate_narrow()` on the engine chosen
+# by `engine` and semi-joins the surviving ids, so the op works under every
+# `output =` and the evaluator is independent of the carrier. See adr/0015
+# and design.Rmd §"Spatial Predicates".
 #
 # Phase 4a scope: filter form only (semi-join semantic -- narrow x by whether
 # any feature of y satisfies the predicate). Store/store + form="join" is
@@ -20,6 +22,16 @@ NULL
 .SPATRELATE_PREDICATES <- c(
     "intersects", "touches", "crosses", "overlaps",
     "within", "contains", "covers", "covered_by", "disjoint"
+)
+
+# Relations for which an AABB pre-cull is safe: matching features must have
+# bboxes that overlap (or contain, for `contains`/`covers`) the query's
+# bbox. `disjoint` is the exception — features whose bbox does *not*
+# overlap the query are exactly the ones we want to KEEP, so AABB pruning
+# would invert the result.
+.AABB_MONOTONE_RELATIONS <- c(
+    "intersects", "touches", "crosses", "overlaps",
+    "within", "covered_by", "contains", "covers"
 )
 
 .validate_spatrelate_relation <- function(relation) {
@@ -38,6 +50,30 @@ NULL
 # terra uses "coveredby" (no underscore); normalize from user-facing name.
 .terra_relation_name <- function(relation) {
     if (identical(relation, "covered_by")) "coveredby" else relation
+}
+
+# Compute the intersection bbox across every monotone spat_relate op in
+# `ops`. Returns a SpatExtent or NULL if no monotone op contributes (or
+# if the intersection is empty). Used by .spat_relate_narrow to pre-cull
+# trim_store via crop() once per call rather than per-op. Store-store
+# form ops (no `y_wkt`) are skipped — bbox extraction from y_store is
+# deferred.
+.combined_spatrelate_aabb <- function(ops) {
+    exts <- list()
+    for (op in ops) {
+        if (!identical(op$type, "spat_relate")) next
+        if (is.null(op$y_wkt)) next
+        if (!op$relation %in% .AABB_MONOTONE_RELATIONS) next
+        y_sv <- terra::vect(op$y_wkt)
+        exts <- c(exts, list(terra::ext(y_sv)))
+    }
+    if (length(exts) == 0L) return(NULL)
+    result <- exts[[1L]]
+    for (e in exts[-1L]) {
+        result <- terra::intersect(result, e)
+        if (is.null(result)) return(NULL)
+    }
+    result
 }
 
 # Choose the SRID literal for `ST_GeomFromText` to match the store's geom
@@ -342,7 +378,28 @@ setMethod(
     # `.pstore_lazy_fields` returns NULL and the underlying SELECT is `*`.
     if (.hasSlot(trim_store, "fields")) trim_store@fields <- NULL
 
-    engine <- .resolve_spat_relate_engine(op$engine)
+    # AABB pre-cull: combine the AABBs of every monotone spat_relate op
+    # in @ops into a single intersection extent and apply via crop().
+    # crop() composes with the store's existing @crop (intersection),
+    # narrows @tile_filter so excluded tiles are never opened, and
+    # injects a half-plane filter when a transform is pending.
+    #
+    # Only applied at the FIRST spat_relate evaluation (no prior
+    # id_filter from an earlier spat_relate cache). Subsequent
+    # spat_relate ops already inherit the AABB-pruned row set via the
+    # prior id_filter on trim_store, so re-applying crop on a tight
+    # live extent can produce a degenerate empty intersection.
+    # `disjoint` ops and the store-store form contribute no bbox.
+    has_prior_idfilter <- any(vapply(prior_ops,
+        function(o) identical(o$type, "id_filter"), logical(1L)))
+    if (!has_prior_idfilter) {
+        combined_ext <- .combined_spatrelate_aabb(store@ops)
+        if (!is.null(combined_ext)) {
+            trim_store <- crop(trim_store, combined_ext)
+        }
+    }
+
+    engine <- .resolve_spatial_engine(op$engine)
     switch(engine,
         "sedona" = .spat_relate_narrow_sedona(trim_store, op, id_cols, store),
         "duckdb" = .spat_relate_narrow_duckdb(trim_store, op, id_cols, store),
@@ -355,20 +412,23 @@ setMethod(
 # Internal indirection so tests can mock the "is this engine installed?"
 # check without touching base::requireNamespace.
 .spat_engine_available <- function(pkg) {
-    requireNamespace(pkg, quietly = TRUE)
+    requireNamespace(pkg, quietly = TRUE) &&
+        (pkg != "sedonadb" || .sedonadb_has_discovery())
 }
 
 
-# Resolve the spatial-query engine to use for spat_relate narrowing.
+# Resolve the spatial engine for a verb: spat_relate narrowing and
+# calculateOverlap share it, so one option sets both.
 # Honors (in precedence order):
-#   1. `op_engine` — per-call engine passed to `spatRelate(..., engine = ...)`
+#   1. `op_engine` — per-call engine (`spatRelate(..., engine = ...)`,
+#      `calculateOverlap(..., engine = ...)`)
 #   2. `giottodisk.spatial_query_engine` option — user / session default
 #   3. "auto" — best available (sedona > duckdb > terra)
 # When "auto" falls through to terra (because no SQL spatial backend is
-# installed) we emit a one-shot `rlang::inform` nudging the user toward a
-# faster engine -- but only when the user hasn't already made a
+# installed) we emit a one-shot `rlang::inform` per verb nudging the user
+# toward a faster engine -- but only when the user hasn't already made a
 # deliberate engine choice via the arg or the option.
-.resolve_spat_relate_engine <- function(op_engine = NULL) {
+.resolve_spatial_engine <- function(op_engine = NULL, verb = "spat_relate") {
     # Per-call engine arg wins over the option.
     eff <- op_engine %||% getOption("giottodisk.spatial_query_engine", "auto")
     if (!identical(eff, "auto")) return(eff)
@@ -376,15 +436,15 @@ setMethod(
     if (.spat_engine_available("duckdb"))   return("duckdb")
     rlang::inform(
         paste0(
-            "spat_relate is using the terra engine (the default fallback ",
-            "when no SQL spatial backend is installed). For ad-hoc ",
-            "spatial queries, sedonadb or duckdb are typically faster. ",
+            verb, " is using the terra engine (the default fallback ",
+            "when no SQL spatial backend is installed). ",
+            "sedonadb or duckdb are typically faster. ",
             "Install one and set ",
             "`options(giottodisk.spatial_query_engine = \"sedona\")` or ",
             "`\"duckdb\"` to silence this message."
         ),
         .frequency = "once",
-        .frequency_id = "giottodisk.spat_relate_terra_nudge"
+        .frequency_id = paste0("giottodisk.", verb, "_terra_nudge")
     )
     "terra"
 }

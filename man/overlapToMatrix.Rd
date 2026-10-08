@@ -3,7 +3,7 @@
 \name{overlapToMatrix}
 \alias{overlapToMatrix}
 \alias{overlapToMatrix,overlapPointDisk-method}
-\alias{overlapToMatrix,parquetStore-method}
+\alias{overlapToMatrix,queryableStore-method}
 \title{Aggregate Overlap Results to Sparse Matrix}
 \usage{
 \S4method{overlapToMatrix}{overlapPointDisk}(
@@ -14,10 +14,11 @@
   store_type = getOption("giotto.gdsrc_sparsematrix_format", "parquetExpr"),
   path = .dump_tempfile(),
   output = c("store", "exprObj"),
+  engine = NULL,
   ...
 )
 
-\S4method{overlapToMatrix}{parquetStore}(
+\S4method{overlapToMatrix}{queryableStore}(
   x,
   path = .dump_tempfile(),
   feat_id_col = "feat_ID",
@@ -32,12 +33,18 @@
 )
 }
 \arguments{
-\item{x}{\code{overlapPointDisk} output from \code{\link[=calculateOverlap]{calculateOverlap()}}}
+\item{x}{\code{overlapPointDisk} output from \code{\link[=calculateOverlap]{calculateOverlap()}}, or a
+\code{queryableStore} of overlap rows}
 
 \item{count_col}{\code{character} (optional) column to sum instead of counting
 rows. Useful when feature detections carry a \code{count} field.}
 
-\item{path}{\code{character} output directory for the Matrix Market files}
+\item{path}{\code{character} output directory for the matrix store}
+
+\item{engine}{(\code{overlapPointDisk} only) \code{character} \code{"duckdb"} or
+\code{"arrow"}, or \code{NULL} (default): duckdb when it is installed and
+\code{store_type = "parquetExpr"}, arrow otherwise. duckdb builds only
+\code{"parquetExpr"}.}
 
 \item{...}{additional params to pass}
 
@@ -46,15 +53,18 @@ rows. Useful when feature detections carry a \code{count} field.}
 \item{poly_id_col}{\code{character} polygon ID column name (default \code{"poly_ID"})}
 }
 \value{
-\code{character} path to the output directory (invisibly)
+the matrix store, or an \code{exprObj} wrapping it when
+\code{output = "exprObj"}
 }
 \description{
 Aggregates the output of \code{\link[=calculateOverlap]{calculateOverlap()}} into a feature x cell sparse
-count matrix, written as a Matrix Market (.mtx) directory. The directory
-layout is 10x-compatible (\code{matrix.mtx}, \code{barcodes.tsv}, \code{features.tsv}) and
-can be loaded directly by \code{\link[BPCells:import_matrix_market]{BPCells::import_matrix_market()}},
-\code{\link[Matrix:readMM]{Matrix::readMM()}}, or Python's \code{scipy.io.mmread}.
+count matrix store. \code{store_type = "parquetExpr"} (the default) writes a
+\code{parquetExprStore}, built in one DuckDB query by default (see \code{engine}).
+\code{"bpcells"} and \code{"h5"} are built in Arrow through a Matrix Market
+intermediate.
 
-To obtain a BPCells on-disk matrix pass the returned path to
-\code{\link[BPCells:import_matrix_market]{BPCells::import_matrix_market()}} followed by \code{\link[BPCells:write_matrix_dir]{BPCells::write_matrix_dir()}}.
+The matrix covers the overlap's feature and cell ID universes
+(\verb{@feat_ids} / \verb{@spat_ids}, or \code{all_feat_ids} / \code{all_cell_ids}): IDs with
+no overlaps get empty rows or columns, and overlap rows outside them are
+dropped.
 }

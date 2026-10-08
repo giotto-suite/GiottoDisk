@@ -54,6 +54,9 @@ the derivation entirely. An escape hatch — for a machine whose free
 memory cannot be read, for a shape the model sizes badly, and for tests
 that need to force several windows. Also the fallback value when the
 derivation cannot run.}
+\item{\code{giottodisk.gef_batch_rows}}{pins the records per batch when a
+Stereo-seq \code{.gef} is written to a store. Derived from the same budget
+otherwise.}
 }
 
 Neither switches streaming on or off, and neither is a performance dial.
