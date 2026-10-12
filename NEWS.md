@@ -26,8 +26,20 @@
 - `calculateOverlap(engine = "sedona")` (sedonadb >= 0.4): one spatial join
   over both stores. On a 624M-point, 170k-cell Atera sample it takes 39 s,
   against about 12 minutes for `engine = "terra"`.
+- AnnData `.h5ad` files are read without python, as building blocks for a
+  hand-assembled object: `h5adInput()` streams `X`, `raw/X` or a layer (CSR
+  or CSC) into a `parquetExprStore`; `h5adCellMeta()`, `h5adFeatMeta()`,
+  `h5adSpatLocs()` and `h5adDimReds()` return the obs, var, spatial and
+  dimension-reduction subobjects; `h5adNetworks()` streams the graphs named in
+  `uns` (scanpy `neighbors`, squidpy `spatial_neighbors`) into
+  `parquetEdgeStore`s via `h5adEdgeInput()`. A kNN keeps the distances as
+  `distance` and the connectivities as `weight`. Needs hdf5r (Suggests).
 
 ## changes
+- `options(giottodisk.gef_batch_rows)` is now
+  `options(giottodisk.ingest_batch_records)`: the same record budget, shared by
+  the Stereo-seq and h5ad inputs. The old name is still honoured, with a
+  deprecation warning.
 - Requires `Giotto (>= 4.3.1)`, up from 4.3.0. The motif enrichment method
   imports `smotifParam`, which a `gsource` install reporting 4.3.0 may predate;
   against one, loading failed with an S4 import error instead of a version

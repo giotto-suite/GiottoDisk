@@ -16,7 +16,7 @@ The iterator publishes the accumulated \code{cell_ids} / \code{n_cells} via its
 accessors after iteration completes.
 
 Batch size follows the chunk-sizing budget; pin it with
-\verb{options(giottodisk.gef_batch_rows = <records>)}.
+\verb{options(giottodisk.ingest_batch_records = <records>)}.
 }
 \section{Slots}{
 
@@ -37,6 +37,8 @@ Other store types:
 \code{\link{edgeInput-class}},
 \code{\link{exprInput-class}},
 \code{\link{fileStore-class}},
+\code{\link{h5adEdgeInput-class}},
+\code{\link{h5adInput-class}},
 \code{\link{mtxInput-class}},
 \code{\link{parquetEdgeStore-class}},
 \code{\link{parquetExprStore-class}},

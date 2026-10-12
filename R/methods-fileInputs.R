@@ -188,7 +188,7 @@ setMethod("storeRead", signature("cellbinGefInput"), function(store, ...) {
     row_id <- col_id <- value <- NULL  # NSE bindings
     gef_path    <- store@path
     name_to_row <- store@params$name_to_row
-    max_rows    <- .gef_batch_rows()
+    max_rows    <- .ingest_batch_records()
 
     if (isTRUE(store@params$has_cell_exp)) {
         off  <- store@params$cell_offset       # double, 0-based
@@ -279,7 +279,7 @@ setMethod("storeRead", signature("binGefInput"), function(store, ...) {
     expr_path   <- paste0("geneExp/", store@bin_size, "/expression")
 
     chunks <- .gef_safe_chunks(name_to_row, store@batch_genes)
-    max_rows <- .gef_batch_rows()
+    max_rows <- .ingest_batch_records()
 
     read_chunk <- function(k) {
         g_lo <- chunks[[k]][1L]; g_hi <- chunks[[k]][2L]

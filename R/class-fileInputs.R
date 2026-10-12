@@ -304,7 +304,7 @@ tenxH5Input <- function(
 #' gene-major `geneExp` and reordered through a temporary spill.
 #'
 #' Batch size follows the chunk-sizing budget; pin it with
-#' `options(giottodisk.gef_batch_rows = <records>)`.
+#' `options(giottodisk.ingest_batch_records = <records>)`.
 #'
 #' @slot batch_genes integer. Raw-gene rows per read of `geneExp`, used only
 #'   when the file has no `cellExp` (default 500).
@@ -404,7 +404,7 @@ cellbinGefInput <- function(
 #' accessors after iteration completes.
 #'
 #' Batch size follows the chunk-sizing budget; pin it with
-#' `options(giottodisk.gef_batch_rows = <records>)`.
+#' `options(giottodisk.ingest_batch_records = <records>)`.
 #'
 #' @slot bin_size character. Bin size key under `geneExp/` (e.g. `"50"`).
 #' @slot batch_genes integer. Raw-gene rows per read of `geneExp`.

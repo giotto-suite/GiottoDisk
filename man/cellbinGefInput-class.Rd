@@ -12,7 +12,7 @@ like every other input. A file without \code{cellExp} is read from the
 gene-major \code{geneExp} and reordered through a temporary spill.
 
 Batch size follows the chunk-sizing budget; pin it with
-\verb{options(giottodisk.gef_batch_rows = <records>)}.
+\verb{options(giottodisk.ingest_batch_records = <records>)}.
 }
 \section{Slots}{
 
@@ -32,6 +32,8 @@ Other store types:
 \code{\link{edgeInput-class}},
 \code{\link{exprInput-class}},
 \code{\link{fileStore-class}},
+\code{\link{h5adEdgeInput-class}},
+\code{\link{h5adInput-class}},
 \code{\link{mtxInput-class}},
 \code{\link{parquetEdgeStore-class}},
 \code{\link{parquetExprStore-class}},
