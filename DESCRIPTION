@@ -97,6 +97,7 @@ Collate:
     'methods-combine.R'
     'methods-expanse.R'
     'methods-fileInputs.R'
+    'h5ad.R'
     'methods-fingerprint.R'
     'methods-giotto.R'
     'methods-ops.R'
