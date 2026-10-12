@@ -24,8 +24,9 @@ NULL
 #   giottodisk.chunk_ram_frac   fraction of free RAM to budget (default 0.25)
 #   giottodisk.chunk_size       pin an absolute window; also the fallback
 #                               when the derivation cannot run
-#   giottodisk.gef_batch_rows   pin the records per Stereo-seq GEF ingest
-#                               batch (`.gef_batch_rows()`)
+#   giottodisk.ingest_batch_records
+#                               pin the records per file-ingest batch (GEF,
+#                               h5ad; `.ingest_batch_records()`)
 
 # Recommend a streaming chunk size from free RAM.
 #
@@ -160,9 +161,11 @@ NULL
 #'     memory cannot be read, for a shape the model sizes badly, and for tests
 #'     that need to force several windows. Also the fallback value when the
 #'     derivation cannot run.}
-#'   \item{`giottodisk.gef_batch_rows`}{pins the records per batch when a
-#'     Stereo-seq `.gef` is written to a store. Derived from the same budget
-#'     otherwise.}
+#'   \item{`giottodisk.ingest_batch_records`}{pins the records per batch when
+#'     a file input that reads by record count (Stereo-seq `.gef`, AnnData
+#'     `.h5ad`) is written to a store. Derived from the same budget otherwise.
+#'     Replaces `giottodisk.gef_batch_rows`, which is still honoured with a
+#'     deprecation warning.}
 #' }
 #'
 #' Neither switches streaming on or off, and neither is a performance dial.

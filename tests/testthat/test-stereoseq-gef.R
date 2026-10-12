@@ -213,7 +213,7 @@ test_that("cellbinGefInput writes cell-major parts and needs no cellExp to", {
         rand.x = function(n) as.double(rpois(n, 3) + 1))
     names_v <- paste0("g", 1:8)
     names_v[c(2L, 7L)] <- "dup"
-    withr::local_options(list(giottodisk.gef_batch_rows = 30L))
+    withr::local_options(list(giottodisk.ingest_batch_records = 30L))
 
     got <- list()
     for (ce in c(TRUE, FALSE)) {
@@ -462,7 +462,7 @@ test_that("binGefInput writes several cell-major parts on a small budget", {
     out <- file.path(tempdir(), "bin_chunk_out")
     on.exit(unlink(c(fx$path, out), recursive = TRUE), add = TRUE)
 
-    withr::local_options(list(giottodisk.gef_batch_rows = 25L))
+    withr::local_options(list(giottodisk.ingest_batch_records = 25L))
     inp <- binGefInput(fx$path, bin_size = "bin100", batch_genes = 1L)
     pe  <- storeWrite(parquetExprStore(path = out), inp)
 
@@ -490,7 +490,7 @@ test_that("binGefInput derives the y range when the file does not record it", {
     out <- file.path(tempdir(), "bin_noattr_out")
     on.exit(unlink(c(fx$path, out), recursive = TRUE), add = TRUE)
 
-    withr::local_options(list(giottodisk.gef_batch_rows = 20L))
+    withr::local_options(list(giottodisk.ingest_batch_records = 20L))
     inp <- binGefInput(fx$path, bin_size = "bin100", batch_genes = 1L)
     expect_null(inp@params$y_range)
     pe <- storeWrite(parquetExprStore(path = out), inp)

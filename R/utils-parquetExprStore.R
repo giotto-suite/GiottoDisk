@@ -227,17 +227,32 @@ NULL
 }
 
 # Records per ingest batch, from the same free-RAM model the streaming passes
-# use. A GEF batch holds the compound read, the triplet frame and the
-# aggregate's copy at once, about 96 B per record -- twice the collected
-# triplet frame alone. `options(giottodisk.gef_batch_rows =)` pins it; when free
-# RAM cannot be read, `.gef_batch_rows_fallback` records are used.
-.gef_batch_rows_fallback <- 5e6
+# use. Shared by the file inputs that cut their reads by record count (GEF,
+# h5ad). A batch holds the read, the triplet frame and an aggregate or sorted
+# copy at once, about 96 B per record -- twice the collected triplet frame
+# alone. `options(giottodisk.ingest_batch_records =)` pins it; the earlier,
+# GEF-specific `giottodisk.gef_batch_rows` is still honoured, with a warning.
+# When free RAM cannot be read, `.ingest_batch_records_fallback` records are
+# used.
+.ingest_batch_records_fallback <- 5e6
 
-.gef_batch_rows <- function() {
-    pinned <- getOption("giottodisk.gef_batch_rows")
+.ingest_batch_records <- function() {
+    pinned <- getOption("giottodisk.ingest_batch_records")
+    if (is.null(pinned)) {
+        pinned <- getOption("giottodisk.gef_batch_rows")
+        if (!is.null(pinned)) {
+            rlang::warn(paste0(
+                "`options(giottodisk.gef_batch_rows)` is deprecated; use ",
+                "`options(giottodisk.ingest_batch_records)`."),
+                .frequency = "once",
+                .frequency_id = "giottodisk_gef_batch_rows")
+        }
+    }
     if (!is.null(pinned)) return(max(1, as.numeric(pinned)))
     free <- tryCatch(.sc_free_ram(), error = function(e) NA_real_)
-    if (!isTRUE(is.finite(free)) || free <= 0) return(.gef_batch_rows_fallback)
+    if (!isTRUE(is.finite(free)) || free <= 0) {
+        return(.ingest_batch_records_fallback)
+    }
     ram_frac <- getOption("giottodisk.chunk_ram_frac", 0.25)
     budget <- .chunk_budget(free, ram_frac, n_cells = 0, k = 0, p = 0)
     max(1e6, floor(budget / 96))
