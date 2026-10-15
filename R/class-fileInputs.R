@@ -216,7 +216,7 @@ mtxInput <- function(
 # tenxH5Input ####
 
 #' @name tenxH5Input-class
-#' @title 10x cell_feature_matrix.h5 Input
+#' @title 10x feature-barcode matrix .h5 Input
 #' @description
 #' Wraps a 10x HDF5 sparse-matrix file (CSC layout with `data`,
 #' `indices`, `indptr`, `barcodes`, `features/{id,name}`, `shape`).
@@ -243,13 +243,16 @@ setClass("tenxH5Input",
 )
 
 #' @name tenxH5Input
-#' @title Create a 10x cell_feature_matrix.h5 input
+#' @title Create a 10x feature-barcode matrix .h5 input
 #' @description
 #' Opens the h5 briefly to read `barcodes`, `features/{id,name}`, and
 #' `shape`; closes immediately. The handle is reopened by `storeRead()`
 #' for streaming.
 #'
-#' @param h5_path character. Path to `cell_feature_matrix.h5`.
+#' @param h5_path character. Path to a 10x feature-barcode matrix `.h5`:
+#'   Xenium `cell_feature_matrix.h5`, Visium HD `raw_feature_bc_matrix.h5` /
+#'   `filtered_feature_bc_matrix.h5` (bins) or `raw_feature_cell_matrix.h5` /
+#'   `filtered_feature_cell_matrix.h5` (segmented cells).
 #' @param feature_id_col integer. `1L` = Ensembl ID, `2L` = gene symbol
 #'   (default).
 #' @param batch_cells integer. Cells per batch. Default 250,000.
