@@ -331,6 +331,17 @@ describe("overlapToMatrix with a count column", {
         })
     })
 
+    test_that("feat_count_column = FALSE at calculateOverlap counts rows", {
+        skip_if_not_installed("duckdb")
+        cf <- .ov_cnt_fx()
+        ov <- calculateOverlap(cf$polys, cf$pts, feat_count_column = FALSE)
+        expect_false("count" %in% names(storeRead(ov@data)))
+        for (eng in c("duckdb", "arrow")) {
+            R <- .ov_dense(overlapToMatrix(ov, path = tempfile(), engine = eng))
+            expect_equal(R, cf$rows[rownames(R), colnames(R)])
+        }
+    })
+
     test_that("feat_count_column from GiottoClass is honoured", {
         skip_if_not_installed("duckdb")
         cf <- .ov_cnt_fx()

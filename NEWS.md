@@ -50,7 +50,8 @@
 - `overlapToMatrix()` on a disk overlap sums a `count` column by default, as
   GiottoClass does for in-memory overlaps; `count_col = FALSE` counts rows.
   It also takes `feat_count_column`, the name GiottoClass passes, which was
-  ignored before.
+  ignored before. `calculateOverlap(feat_count_column = FALSE)` leaves `count`
+  out of the overlap, as in memory.
 - `calculateOverlap(engine = "terra", tile_idx = )` on a point tile store
   failed for any `tile_idx`: it widened the outermost tiles' bounds on the
   tile selection, which exposes no bounds, instead of on the plan (#92).

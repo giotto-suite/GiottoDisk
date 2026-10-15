@@ -63,6 +63,8 @@
 #'   `feat_ID` in the result (default = `"feat_ID"`).
 #' @param keep_cols `character` (optional) additional columns from `y` to carry
 #'   into the result. `"count"` is auto-included if present in `y`.
+#' @param feat_count_column `FALSE` leaves `"count"` out of the result, so
+#'   [overlapToMatrix()] counts rows.
 #' @param ... additional params to pass
 NULL
 
@@ -126,9 +128,11 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomStore"),
         poly_id_col = "poly_ID",
         feat_id_col = "feat_ID",
         keep_cols = NULL,
+        feat_count_column = NULL,
         ...
     ) {
     method <- match.arg(method, c("vector", "raster"))
+    y <- .overlap_points_counts(y, feat_count_column)
     engine <- .resolve_overlap_engine(engine,
         tiling = !missing(threshold) || !missing(tiles) || !missing(pad_y))
     if (inherits(x, "unionParquetStore") || inherits(y, "unionParquetStore")) {
@@ -181,9 +185,11 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
         poly_id_col = "poly_ID",
         feat_id_col = "feat_ID",
         keep_cols = NULL,
+        feat_count_column = NULL,
         ...
     ) {
     method <- match.arg(method, c("vector", "raster"))
+    y <- .overlap_points_counts(y, feat_count_column)
     engine <- .resolve_overlap_engine(engine,
         tiling = !missing(poly_buf_factor) || !missing(pad_y) ||
             !missing(tile_idx) || !missing(prune_tiles))
@@ -218,6 +224,14 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
 })
 
 ## internals ####
+
+# `feat_count_column = FALSE` (as GiottoClass passes it) keeps `count` out of
+# the overlap, so its matrix counts rows as an in-memory overlap does. Every
+# engine path takes its columns from `colnames(y)`.
+.overlap_points_counts <- function(y, feat_count_column = NULL) {
+    if (!isFALSE(feat_count_column) || !"count" %in% colnames(y)) return(y)
+    y[, c(setdiff(colnames(y), "count"), specialCols(y))]
+}
 
 # Engine for calculateOverlap: the shared spatial-engine resolver, except that
 # "auto" with a terra tiling param supplied means terra -- the SQL engines
