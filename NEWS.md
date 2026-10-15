@@ -14,6 +14,12 @@
   on load, with a warning; rerun `calculateOverlap()` to rebuild them.
 
 ## new
+- `analyzeData()` for a `dwlsDeconvParam` on a `parquetExprBase`: spatialDWLS
+  deconvolution of a disk-backed store, so `runDWLSDeconv()` works on backed
+  objects. The store is narrowed to the signature features and read one
+  window of cells at a time through `spatialDWLS::dwls_stream()`; results
+  match the in-memory method to ~1e-15. Needs the suggested spatialDWLS
+  package and `Giotto (>= 4.3.2)`.
 - Motif enrichment on a backed spatial network:
   `analyzeData(<parquetEdgeStore>, <smotifParam>)`, reached from
   `cellProximityMotifs()` at the default `method = "auto"`. The edges cross
