@@ -19,6 +19,12 @@
   a `gobject` to add into. `load_bin_mapping = TRUE` records each bin's parent
   bins as cell metadata, from the bin coordinates (SAW writes binN coordinates
   as multiples of N).
+- `analyzeData()` for a `dwlsDeconvParam` on a `parquetExprBase`: spatialDWLS
+  deconvolution of a disk-backed store, so `runDWLSDeconv()` works on backed
+  objects. The store is narrowed to the signature features and read one
+  window of cells at a time through `spatialDWLS::dwls_stream()`; results
+  match the in-memory method to ~1e-15. Needs the suggested spatialDWLS
+  package and `Giotto (>= 4.3.2)`.
 - Motif enrichment on a backed spatial network:
   `analyzeData(<parquetEdgeStore>, <smotifParam>)`, reached from
   `cellProximityMotifs()` at the default `method = "auto"`. The edges cross
@@ -33,6 +39,11 @@
   against about 12 minutes for `engine = "terra"`.
 
 ## changes
+- `tenxH5Input` sizes its batches by stored values from free memory, as the
+  Stereo-seq GEF readers do, instead of a fixed 250,000 cells, so a matrix with
+  many values per cell no longer loads in one oversized batch. In the parallel
+  path the workers share the budget. `batch_cells = <n>` still pins a cell
+  count; `options(giottodisk.h5_batch_rows =)` pins the record count.
 - Requires `Giotto (>= 4.3.1)`, up from 4.3.0. The motif enrichment method
   imports `smotifParam`, which a `gsource` install reporting 4.3.0 may predate;
   against one, loading failed with an S4 import error instead of a version
@@ -52,6 +63,11 @@
   overlap's `@spat_ids` / `@feat_ids` narrows the matrix.
 
 ## bug fixes
+- `overlapToMatrix()` on a disk overlap sums a `count` column by default, as
+  GiottoClass does for in-memory overlaps; `count_col = FALSE` counts rows.
+  It also takes `feat_count_column`, the name GiottoClass passes, which was
+  ignored before. `calculateOverlap(feat_count_column = FALSE)` leaves `count`
+  out of the overlap, as in memory.
 - `calculateOverlap(engine = "terra", tile_idx = )` on a point tile store
   failed for any `tile_idx`: it widened the outermost tiles' bounds on the
   tile selection, which exposes no bounds, instead of on the plan (#92).

@@ -2,7 +2,7 @@
 % Please edit documentation in R/class-fileInputs.R
 \name{tenxH5Input-class}
 \alias{tenxH5Input-class}
-\title{10x cell_feature_matrix.h5 Input}
+\title{10x feature-barcode matrix .h5 Input}
 \description{
 Wraps a 10x HDF5 sparse-matrix file (CSC layout with \code{data},
 \code{indices}, \code{indptr}, \code{barcodes}, \verb{features/\{id,name\}}, \code{shape}).
@@ -13,7 +13,9 @@ long-lived \code{hdf5r::H5File} handle.
 \section{Slots}{
 
 \describe{
-\item{\code{batch_cells}}{integer. Cells per batch. Default 250,000.}
+\item{\code{batch_cells}}{integer. Cells per batch, or \code{NA} (default) to size
+batches by stored values from free memory
+(\code{options(giottodisk.h5_batch_rows =)} pins that record count).}
 
 \item{\code{feature_id_col}}{integer. \code{1L} for Ensembl ID, \code{2L} for gene
 symbol (default).}

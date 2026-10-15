@@ -61,5 +61,5 @@ indexed by `cellBin/cell$offset` / `geneCount`. A bin GEF has none.
 ## References
 
 `R/methods-fileInputs.R` (`storeRead` for `cellbinGefInput` / `binGefInput`),
-`R/utils-parquetExprStore.R` (`.gef_spill_iterator`, `.gef_cell_ranges`,
+`R/utils-parquetExprStore.R` (`.ingest_spill_iterator`, `.ingest_cell_ranges`,
 `.gef_batch_rows`), `tests/testthat/test-stereoseq-gef.R`.

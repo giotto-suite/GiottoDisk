@@ -234,19 +234,27 @@ NULL
 .gef_batch_rows_fallback <- 5e6
 
 .gef_batch_rows <- function() {
-    pinned <- getOption("giottodisk.gef_batch_rows")
+    .ingest_batch_rows(96, pinned = getOption("giottodisk.gef_batch_rows"),
+                       fallback = .gef_batch_rows_fallback)
+}
+
+# Records per ingest batch for an input holding about `bytes_per_record` per
+# record while a batch is in memory: the chunk budget over free RAM, at least
+# 1e6. `pinned` overrides it; `fallback` is used when free RAM cannot be read.
+.ingest_batch_rows <- function(bytes_per_record, pinned = NULL,
+                               fallback = 5e6) {
     if (!is.null(pinned)) return(max(1, as.numeric(pinned)))
     free <- tryCatch(.sc_free_ram(), error = function(e) NA_real_)
-    if (!isTRUE(is.finite(free)) || free <= 0) return(.gef_batch_rows_fallback)
+    if (!isTRUE(is.finite(free)) || free <= 0) return(fallback)
     ram_frac <- getOption("giottodisk.chunk_ram_frac", 0.25)
     budget <- .chunk_budget(free, ram_frac, n_cells = 0, k = 0, p = 0)
-    max(1e6, floor(budget / 96))
+    max(1e6, floor(budget / bytes_per_record))
 }
 
 # Contiguous cell ranges of at most `max_rows` records each, cut greedily; a
 # single cell with more records than that gets a range of its own. Returns a
 # list of c(a, b).
-.gef_cell_ranges <- function(n_per_cell, max_rows) {
+.ingest_cell_ranges <- function(n_per_cell, max_rows) {
     n <- length(n_per_cell)
     if (!n) return(list())
     cs <- c(0, cumsum(as.numeric(n_per_cell)))   # cs[i + 1] = records through cell i
@@ -263,7 +271,7 @@ NULL
 # Fine buckets for a spill of `n_records`: several per budget-sized batch, so
 # that pass 2 can group consecutive buckets under the budget even when records
 # are unevenly spread over the cell axis.
-.gef_n_buckets <- function(n_records, max_rows, per_batch = 8L) {
+.ingest_n_buckets <- function(n_records, max_rows, per_batch = 8L) {
     max(1L, as.integer(per_batch * ceiling(n_records / max_rows)))
 }
 
@@ -277,7 +285,7 @@ NULL
 # `(row_id, col_id, value)`, keyed. Buckets must partition the cell axis in
 # ascending order for the output to be cell-major. The spill is removed on
 # close.
-.gef_spill_iterator <- function(produce, n_chunks, n_buckets, finish, max_rows) {
+.ingest_spill_iterator <- function(produce, n_chunks, n_buckets, finish, max_rows) {
     b <- NULL  # data.table var
     spill <- .dump_tempfile()
     spilled <- FALSE
@@ -338,7 +346,7 @@ NULL
 # Build chunk boundaries that respect duplicate-name groups: never split
 # a run of raw geneDT rows that share the same name_to_row between two
 # chunks. Non-adjacent duplicates are summed later, by the batch aggregate of
-# `.gef_spill_iterator()`. Returns a list of c(g_lo, g_hi) integer pairs
+# `.ingest_spill_iterator()`. Returns a list of c(g_lo, g_hi) integer pairs
 # covering 1..n. `target_size` is the desired chunk size in raw geneDT rows.
 .gef_safe_chunks <- function(name_to_row, target_size) {
     n <- length(name_to_row)

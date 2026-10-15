@@ -63,6 +63,8 @@
 #'   `feat_ID` in the result (default = `"feat_ID"`).
 #' @param keep_cols `character` (optional) additional columns from `y` to carry
 #'   into the result. `"count"` is auto-included if present in `y`.
+#' @param feat_count_column `FALSE` leaves `"count"` out of the result, so
+#'   [overlapToMatrix()] counts rows.
 #' @param ... additional params to pass
 NULL
 
@@ -85,7 +87,9 @@ NULL
 #' @param feat_id_col `character` feature ID column name (default `"feat_ID"`)
 #' @param poly_id_col `character` polygon ID column name (default `"poly_ID"`)
 #' @param count_col `character` (optional) column to sum instead of counting
-#'   rows. Useful when feature detections carry a `count` field.
+#'   rows. Useful when feature detections carry a `count` field. For an
+#'   `overlapPointDisk`, `NULL` sums a `count` column when the overlap has
+#'   one and `FALSE` counts rows; `feat_count_column` is accepted in its place.
 #' @param engine (`overlapPointDisk` only) `character` `"duckdb"` or
 #'   `"arrow"`, or `NULL` (default): duckdb when it is installed and
 #'   `store_type = "parquetExpr"`, arrow otherwise. duckdb builds only
@@ -124,9 +128,11 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomStore"),
         poly_id_col = "poly_ID",
         feat_id_col = "feat_ID",
         keep_cols = NULL,
+        feat_count_column = NULL,
         ...
     ) {
     method <- match.arg(method, c("vector", "raster"))
+    y <- .overlap_points_counts(y, feat_count_column)
     engine <- .resolve_overlap_engine(engine,
         tiling = !missing(threshold) || !missing(tiles) || !missing(pad_y))
     if (inherits(x, "unionParquetStore") || inherits(y, "unionParquetStore")) {
@@ -179,9 +185,11 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
         poly_id_col = "poly_ID",
         feat_id_col = "feat_ID",
         keep_cols = NULL,
+        feat_count_column = NULL,
         ...
     ) {
     method <- match.arg(method, c("vector", "raster"))
+    y <- .overlap_points_counts(y, feat_count_column)
     engine <- .resolve_overlap_engine(engine,
         tiling = !missing(poly_buf_factor) || !missing(pad_y) ||
             !missing(tile_idx) || !missing(prune_tiles))
@@ -216,6 +224,14 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
 })
 
 ## internals ####
+
+# `feat_count_column = FALSE` (as GiottoClass passes it) keeps `count` out of
+# the overlap, so its matrix counts rows as an in-memory overlap does. Every
+# engine path takes its columns from `colnames(y)`.
+.overlap_points_counts <- function(y, feat_count_column = NULL) {
+    if (!isFALSE(feat_count_column) || !"count" %in% colnames(y)) return(y)
+    y[, c(setdiff(colnames(y), "count"), specialCols(y))]
+}
 
 # Engine for calculateOverlap: the shared spatial-engine resolver, except that
 # "auto" with a terra tiling param supplied means terra -- the SQL engines
@@ -614,6 +630,24 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
 
 # overlapToMatrix ####
 
+# Which overlap column holds counts, by GiottoClass's rule for overlapPointDT:
+# a `count` column is carried into an overlap only when the points had counts,
+# so it is summed unless `FALSE` asks for row counts. GiottoClass passes the
+# column as `feat_count_column`, which is taken when `count_col` is unset.
+.overlap_count_col <- function(x, count_col = NULL, feat_count_column = NULL,
+                               verbose = NULL, ...) {
+    count_col <- count_col %||% feat_count_column
+    if (isFALSE(count_col)) return(NULL)
+    if (is.null(count_col) && "count" %in% names(storeRead(x@data))) {
+        GiottoUtils::vmsg(.v = verbose,
+            "[overlap] Found column \"count\" in feature info.
+            - Using as `feat_count_column`
+            [!] Set feat_count_column = FALSE to disable.")
+        count_col <- "count"
+    }
+    count_col
+}
+
 #' @rdname overlapToMatrix
 #' @export
 setMethod("overlapToMatrix", signature("overlapPointDisk"),
@@ -629,6 +663,7 @@ setMethod("overlapToMatrix", signature("overlapPointDisk"),
     ) {
     output <- match.arg(tolower(output), choices = c("store", "exprobj"))
     engine <- .resolve_matrix_engine(engine, store_type)
+    count_col <- .overlap_count_col(x, count_col, ...)
     # The overlap files always carry the fixed `poly_ID` / `feat_ID` schema;
     # @poly_id_col / @feat_id_col name the INPUT stores' columns.
     mat_store <- if (engine == "duckdb") {
