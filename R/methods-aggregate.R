@@ -85,7 +85,9 @@ NULL
 #' @param feat_id_col `character` feature ID column name (default `"feat_ID"`)
 #' @param poly_id_col `character` polygon ID column name (default `"poly_ID"`)
 #' @param count_col `character` (optional) column to sum instead of counting
-#'   rows. Useful when feature detections carry a `count` field.
+#'   rows. Useful when feature detections carry a `count` field. For an
+#'   `overlapPointDisk`, `NULL` sums a `count` column when the overlap has
+#'   one and `FALSE` counts rows; `feat_count_column` is accepted in its place.
 #' @param engine (`overlapPointDisk` only) `character` `"duckdb"` or
 #'   `"arrow"`, or `NULL` (default): duckdb when it is installed and
 #'   `store_type = "parquetExpr"`, arrow otherwise. duckdb builds only
@@ -614,6 +616,24 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
 
 # overlapToMatrix ####
 
+# Which overlap column holds counts, by GiottoClass's rule for overlapPointDT:
+# a `count` column is carried into an overlap only when the points had counts,
+# so it is summed unless `FALSE` asks for row counts. GiottoClass passes the
+# column as `feat_count_column`, which is taken when `count_col` is unset.
+.overlap_count_col <- function(x, count_col = NULL, feat_count_column = NULL,
+                               verbose = NULL, ...) {
+    count_col <- count_col %||% feat_count_column
+    if (isFALSE(count_col)) return(NULL)
+    if (is.null(count_col) && "count" %in% names(storeRead(x@data))) {
+        GiottoUtils::vmsg(.v = verbose,
+            "[overlap] Found column \"count\" in feature info.
+            - Using as `feat_count_column`
+            [!] Set feat_count_column = FALSE to disable.")
+        count_col <- "count"
+    }
+    count_col
+}
+
 #' @rdname overlapToMatrix
 #' @export
 setMethod("overlapToMatrix", signature("overlapPointDisk"),
@@ -629,6 +649,7 @@ setMethod("overlapToMatrix", signature("overlapPointDisk"),
     ) {
     output <- match.arg(tolower(output), choices = c("store", "exprobj"))
     engine <- .resolve_matrix_engine(engine, store_type)
+    count_col <- .overlap_count_col(x, count_col, ...)
     # The overlap files always carry the fixed `poly_ID` / `feat_ID` schema;
     # @poly_id_col / @feat_id_col name the INPUT stores' columns.
     mat_store <- if (engine == "duckdb") {

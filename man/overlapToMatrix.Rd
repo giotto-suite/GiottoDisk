@@ -37,7 +37,9 @@
 \code{queryableStore} of overlap rows}
 
 \item{count_col}{\code{character} (optional) column to sum instead of counting
-rows. Useful when feature detections carry a \code{count} field.}
+rows. Useful when feature detections carry a \code{count} field. For an
+\code{overlapPointDisk}, \code{NULL} sums a \code{count} column when the overlap has
+one and \code{FALSE} counts rows; \code{feat_count_column} is accepted in its place.}
 
 \item{path}{\code{character} output directory for the matrix store}
 
