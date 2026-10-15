@@ -18,6 +18,7 @@
   poly_id_col = "poly_ID",
   feat_id_col = "feat_ID",
   keep_cols = NULL,
+  feat_count_column = NULL,
   ...
 )
 
@@ -34,6 +35,7 @@
   poly_id_col = "poly_ID",
   feat_id_col = "feat_ID",
   keep_cols = NULL,
+  feat_count_column = NULL,
   ...
 )
 }
@@ -83,6 +85,9 @@ params (\code{threshold}, \code{tiles}, \code{pad_y}, \code{poly_buf_factor}, \c
 
 \item{keep_cols}{\code{character} (optional) additional columns from \code{y} to carry
 into the result. \code{"count"} is auto-included if present in \code{y}.}
+
+\item{feat_count_column}{\code{FALSE} leaves \code{"count"} out of the result, so
+\code{\link[=overlapToMatrix]{overlapToMatrix()}} counts rows.}
 
 \item{...}{additional params to pass}
 

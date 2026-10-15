@@ -294,3 +294,60 @@ test_that("the carrier adopts into a project vault and still reads", {
     expect_identical(adopted@uid, ov@data@uid)
     expect_equal(nrow(storeRead(adopted, output = "tibble")), n)
 })
+
+describe("overlapToMatrix with a count column", {
+    # the fixture's points, each carrying a count of 1-3
+    .ov_cnt_fx <- function() {
+        fx <- .ov_fx()
+        g <- as.data.frame(storeRead(fx$pts_flat, output = "terra"), geom = "XY")
+        g$count <- (seq_len(nrow(g)) %% 3) + 1
+        pts <- parquetGeomStore() |>
+            storeWrite(terra::vect(g, geom = c("x", "y"), crs = ""))
+        inb <- lapply(seq_along(fx$cells), function(k) {
+            ctr <- c(10, 20, 30)[c((k - 1) %% 3 + 1, (k - 1) %/% 3 + 1)] + 0.3
+            which(abs(g$x - ctr[1]) < 4 & abs(g$y - ctr[2]) < 4)
+        })
+        sums <- matrix(0, length(fx$feats), length(fx$cells),
+                       dimnames = list(fx$feats, fx$cells))
+        for (k in seq_along(inb)) {
+            s <- tapply(g$count[inb[[k]]], g$feat_ID[inb[[k]]], sum)
+            sums[names(s), k] <- s
+        }
+        list(polys = fx$polys, pts = pts, sums = sums,
+             rows = .ov_counts(fx$truth, fx$feats, fx$cells))
+    }
+
+    for (engine in c("duckdb", "arrow")) local({
+        eng <- engine
+        test_that(sprintf("%s: a count column is summed by default", eng), {
+            skip_if_not_installed("duckdb")
+            cf <- .ov_cnt_fx()
+            ov <- calculateOverlap(cf$polys, cf$pts)
+            M <- .ov_dense(overlapToMatrix(ov, path = tempfile(), engine = eng))
+            expect_equal(M, cf$sums[rownames(M), colnames(M)])
+            R <- .ov_dense(overlapToMatrix(ov, path = tempfile(), engine = eng,
+                                           count_col = FALSE))
+            expect_equal(R, cf$rows[rownames(R), colnames(R)])
+        })
+    })
+
+    test_that("feat_count_column = FALSE at calculateOverlap counts rows", {
+        skip_if_not_installed("duckdb")
+        cf <- .ov_cnt_fx()
+        ov <- calculateOverlap(cf$polys, cf$pts, feat_count_column = FALSE)
+        expect_false("count" %in% names(storeRead(ov@data)))
+        for (eng in c("duckdb", "arrow")) {
+            R <- .ov_dense(overlapToMatrix(ov, path = tempfile(), engine = eng))
+            expect_equal(R, cf$rows[rownames(R), colnames(R)])
+        }
+    })
+
+    test_that("feat_count_column from GiottoClass is honoured", {
+        skip_if_not_installed("duckdb")
+        cf <- .ov_cnt_fx()
+        ov <- calculateOverlap(cf$polys, cf$pts)
+        R <- .ov_dense(overlapToMatrix(ov, path = tempfile(),
+                                       feat_count_column = FALSE))
+        expect_equal(R, cf$rows[rownames(R), colnames(R)])
+    })
+})
