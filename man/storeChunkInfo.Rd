@@ -57,6 +57,9 @@ derivation cannot run.}
 \item{\code{giottodisk.gef_batch_rows}}{pins the records per batch when a
 Stereo-seq \code{.gef} is written to a store. Derived from the same budget
 otherwise.}
+\item{\code{giottodisk.h5_batch_rows}}{pins the records per batch when a 10x
+\code{.h5} matrix is written to a store. Derived from the same budget
+otherwise.}
 }
 
 Neither switches streaming on or off, and neither is a performance dial.

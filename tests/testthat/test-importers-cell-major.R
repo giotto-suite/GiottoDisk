@@ -13,6 +13,23 @@
 }
 
 # store -> genes x cells matrix, columns in store order
+# 10x feature-barcode h5 (CSC by cell) for a genes x cells matrix
+.cm_write_h5 <- function(mat, h5p) {
+    csc <- methods::as(mat, "CsparseMatrix")
+    h5 <- hdf5r::H5File$new(h5p, mode = "w")
+    g <- h5$create_group("matrix")
+    g[["data"]] <- as.integer(csc@x)
+    g[["indices"]] <- as.integer(csc@i)
+    g[["indptr"]] <- as.integer(csc@p)
+    g[["shape"]] <- as.integer(dim(mat))
+    g[["barcodes"]] <- colnames(mat)
+    f <- g$create_group("features")
+    f[["id"]] <- paste0("ENSG", seq_len(nrow(mat)))
+    f[["name"]] <- rownames(mat)
+    f[["feature_type"]] <- rep("Gene Expression", nrow(mat))
+    h5$close_all()
+}
+
 .cm_as_matrix <- function(pe) {
     df <- as.data.frame(dplyr::collect(storeRead(pe)))
     Matrix::sparseMatrix(i = df$col_id, j = df$row_id, x = df$value,
@@ -60,21 +77,31 @@ test_that("tenxH5Input writes cell-major parts", {
     h5p <- tempfile(fileext = ".h5")
     out <- tempfile("cm_h5_")
     on.exit(unlink(c(h5p, out), recursive = TRUE), add = TRUE)
-    csc <- methods::as(mat, "CsparseMatrix")          # genes x cells, CSC by cell
-    h5 <- hdf5r::H5File$new(h5p, mode = "w")
-    g <- h5$create_group("matrix")
-    g[["data"]] <- as.integer(csc@x)
-    g[["indices"]] <- as.integer(csc@i)
-    g[["indptr"]] <- as.integer(csc@p)
-    g[["shape"]] <- as.integer(dim(mat))
-    g[["barcodes"]] <- colnames(mat)
-    f <- g$create_group("features")
-    f[["id"]] <- paste0("ENSG", seq_len(nrow(mat)))
-    f[["name"]] <- rownames(mat)
-    f[["feature_type"]] <- rep("Gene Expression", nrow(mat))
-    h5$close_all()
+    .cm_write_h5(mat, h5p)
 
     pe <- storeWrite(parquetExprStore(path = out), tenxH5Input(h5p, batch_cells = 9L))
+    expect_gt(nrow(.expect_cell_major(out)), 1L)
+    .expect_same_values(pe, mat)
+})
+
+test_that("tenxH5Input batches hold at most the record budget", {
+    skip_if_not_installed("hdf5r")
+    mat <- .cm_mat()
+    h5p <- tempfile(fileext = ".h5")
+    out <- tempfile("cm_h5_budget_")
+    on.exit(unlink(c(h5p, out), recursive = TRUE), add = TRUE)
+    .cm_write_h5(mat, h5p)
+    withr::local_options(list(giottodisk.h5_batch_rows = 20))
+
+    indptr <- c(0, cumsum(Matrix::colSums(mat != 0)))
+    r <- .tenxh5_ranges(indptr)
+    nnz <- vapply(r, function(x) indptr[x[2L] + 1L] - indptr[x[1L]], numeric(1L))
+    expect_true(all(nnz <= 20 | vapply(r, function(x) x[1L] == x[2L], logical(1L))))
+    expect_identical(unlist(lapply(r, function(x) x[1L]:x[2L])), seq_len(ncol(mat)))
+    # concurrent workers share the budget
+    expect_gt(length(.tenxh5_ranges(indptr, n_workers = 4L)), length(r))
+
+    pe <- storeWrite(parquetExprStore(path = out), tenxH5Input(h5p))
     expect_gt(nrow(.expect_cell_major(out)), 1L)
     .expect_same_values(pe, mat)
 })

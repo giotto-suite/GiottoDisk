@@ -13,7 +13,9 @@ long-lived \code{hdf5r::H5File} handle.
 \section{Slots}{
 
 \describe{
-\item{\code{batch_cells}}{integer. Cells per batch. Default 250,000.}
+\item{\code{batch_cells}}{integer. Cells per batch, or \code{NA} (default) to size
+batches by stored values from free memory
+(\code{options(giottodisk.h5_batch_rows =)} pins that record count).}
 
 \item{\code{feature_id_col}}{integer. \code{1L} for Ensembl ID, \code{2L} for gene
 symbol (default).}

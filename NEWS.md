@@ -34,6 +34,11 @@
   against about 12 minutes for `engine = "terra"`.
 
 ## changes
+- `tenxH5Input` sizes its batches by stored values from free memory, as the
+  Stereo-seq GEF readers do, instead of a fixed 250,000 cells, so a matrix with
+  many values per cell no longer loads in one oversized batch. In the parallel
+  path the workers share the budget. `batch_cells = <n>` still pins a cell
+  count; `options(giottodisk.h5_batch_rows =)` pins the record count.
 - Requires `Giotto (>= 4.3.1)`, up from 4.3.0. The motif enrichment method
   imports `smotifParam`, which a `gsource` install reporting 4.3.0 may predate;
   against one, loading failed with an S4 import error instead of a version

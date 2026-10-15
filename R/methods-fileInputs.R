@@ -122,11 +122,10 @@ setMethod("storeRead", signature("tenxH5Input"), function(store, ...) {
     indptr  <- as.numeric(h5[[paste0(root, "/indptr")]][])
     data_ds <- h5[[paste0(root, "/data")]]
     indices_ds <- h5[[paste0(root, "/indices")]]
-    n_cells <- store@n_cells
-    batch   <- store@batch_cells
+    ranges  <- .tenxh5_ranges(indptr, store@batch_cells)
 
     closed <- FALSE
-    c_lo   <- 1L
+    k      <- 0L
 
     close_fn <- function() {
         if (!closed) {
@@ -137,15 +136,15 @@ setMethod("storeRead", signature("tenxH5Input"), function(store, ...) {
     }
 
     next_batch <- function() {
-        if (closed || c_lo > n_cells) { close_fn(); return(NULL) }
-        # Advance past any all-empty cell runs at the start of this batch.
+        # Advance past any range with no stored values.
         repeat {
-            if (c_lo > n_cells) { close_fn(); return(NULL) }
-            c_hi     <- min(c_lo + batch - 1L, n_cells)
+            if (closed || k >= length(ranges)) { close_fn(); return(NULL) }
+            k <<- k + 1L
+            c_lo     <- ranges[[k]][1L]
+            c_hi     <- ranges[[k]][2L]
             slice_lo <- as.numeric(indptr[c_lo]) + 1
             slice_hi <- as.numeric(indptr[c_hi + 1L])
             if (slice_hi >= slice_lo) break
-            c_lo <<- c_hi + 1L
         }
         # `lo:hi`, never `seq.int(lo, hi)` -- adr/0007.
         vals <- as.double(data_ds[slice_lo:slice_hi])
@@ -158,7 +157,6 @@ setMethod("storeRead", signature("tenxH5Input"), function(store, ...) {
             value  = vals
         )
         data.table::setorder(out, row_id, col_id)
-        c_lo <<- c_hi + 1L
         out
     }
 
@@ -595,6 +593,27 @@ setMethod(
     dt
 }
 
+# Contiguous cell ranges for an h5 read. By default each holds at most the
+# ingest budget's records -- stored values, from `indptr` -- shared across
+# `n_workers` concurrent batches, as the cellbin GEF reader cuts its ranges; a
+# fixed cell count gives no bound when values per cell are high. A
+# non-missing `batch_cells` pins a fixed number of cells per range instead.
+# A batch holds the h5 values, the triplet frame and its sort, about 64 B per
+# record.
+.tenxh5_ranges <- function(indptr, batch_cells = NA_integer_, n_workers = 1L) {
+    n_cells <- length(indptr) - 1L
+    if (n_cells < 1L) return(list())
+    if (!is.na(batch_cells)) {
+        starts <- seq.int(1L, n_cells, by = as.integer(batch_cells))
+        return(lapply(starts, function(a) {
+            c(a, min(a + as.integer(batch_cells) - 1L, n_cells))
+        }))
+    }
+    rows <- .ingest_batch_rows(64,
+        pinned = getOption("giottodisk.h5_batch_rows"))
+    .gef_cell_ranges(diff(indptr), max(1, floor(rows / max(1L, n_workers))))
+}
+
 # Parallel h5 → parquet writer.  Fork-based via `parallel::mclapply` on
 # Unix — workers COW-inherit the parent's loaded namespace and the
 # pre-read indptr;
@@ -602,9 +621,6 @@ setMethod(
 # fork-safe across parent+child sharing).  On Windows, mclapply degrades
 # to sequential (no fork available).
 .storewrite_h5_parallel <- function(data, partition_dir) {
-    n_cells <- as.integer(data@n_cells)
-    bc      <- as.integer(data@batch_cells)
-    starts  <- seq.int(1L, n_cells, by = bc)
     h5_path <- data@path
     root    <- data@params$root
     # Read indptr once in the parent (small; n_cells+1 doubles) and pass it
@@ -614,9 +630,10 @@ setMethod(
     h5$close_all()
 
     n_workers <- .par_workers()
-    args <- list(h5_path = h5_path, root = root, starts = starts, bc = bc,
-                 n_cells = n_cells, indptr = indptr,
-                 partition_dir = partition_dir)
+    # every worker holds one batch, so they share the budget
+    ranges <- .tenxh5_ranges(indptr, data@batch_cells, n_workers = n_workers)
+    args <- list(h5_path = h5_path, root = root, ranges = ranges,
+                 indptr = indptr, partition_dir = partition_dir)
 
     # Fork (`mclapply`) where available, socket workers only as the fallback.
     # Measured on Atera (170k cells, 8 workers): fork 9.0 s / +16.1 GB peak
@@ -638,7 +655,7 @@ setMethod(
     # resolve lexically and every cross-package call here is `::`-qualified.
     if (n_workers > 1L && .Platform$OS.type == "unix") {
         res <- do.call(parallel::mclapply, c(
-            list(X = seq_along(starts), FUN = .storewrite_h5_batch,
+            list(X = seq_along(ranges), FUN = .storewrite_h5_batch,
                  mc.cores = n_workers, mc.preschedule = TRUE),
             args))
         errs <- vapply(res, inherits, logical(1L), "try-error")
@@ -649,12 +666,12 @@ setMethod(
         }
     } else if (n_workers > 1L) {
         do.call(GiottoUtils::lapply_flex, c(
-            list(X = seq_along(starts), FUN = .storewrite_h5_batch,
+            list(X = seq_along(ranges), FUN = .storewrite_h5_batch,
                  cores = n_workers, future.seed = NULL),
             args))
     } else {
         do.call(lapply, c(
-            list(X = seq_along(starts), FUN = .storewrite_h5_batch),
+            list(X = seq_along(ranges), FUN = .storewrite_h5_batch),
             args))
     }
     invisible(NULL)
@@ -665,10 +682,10 @@ setMethod(
 
 #' @keywords internal
 #' @noRd
-.storewrite_h5_batch <- function(b, h5_path, root, starts, bc, n_cells,
-                                  indptr, partition_dir) {
-    c_lo <- starts[b]
-    c_hi <- min(c_lo + bc - 1L, n_cells)
+.storewrite_h5_batch <- function(b, h5_path, root, ranges, indptr,
+                                  partition_dir) {
+    c_lo <- ranges[[b]][1L]
+    c_hi <- ranges[[b]][2L]
     dt   <- .tenxh5_read_range(h5_path, root, c_lo, c_hi, indptr)
     if (is.null(dt) || nrow(dt) == 0L) return(invisible(NULL))
     .write_parquet_file(
