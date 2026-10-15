@@ -177,7 +177,7 @@ setMethod("storeRead", signature("tenxH5Input"), function(store, ...) {
 # matrix, `cellBin/cellExp`, whose records for cell i start at
 # `cellBin/cell$offset[i]` and number `geneCount[i]`; contiguous cell ranges
 # are therefore contiguous hyperslabs. Files without `cellExp` fall back to
-# reordering the gene-major `geneExp` through `.gef_spill_iterator()`
+# reordering the gene-major `geneExp` through `.ingest_spill_iterator()`
 # (adr/0017).
 
 #' @rdname storeRead
@@ -191,7 +191,7 @@ setMethod("storeRead", signature("cellbinGefInput"), function(store, ...) {
     if (isTRUE(store@params$has_cell_exp)) {
         off  <- store@params$cell_offset       # double, 0-based
         gcnt <- store@params$cell_gene_count   # integer
-        ranges <- .gef_cell_ranges(gcnt, max_rows)
+        ranges <- .ingest_cell_ranges(gcnt, max_rows)
         i <- 0L
         closed <- FALSE
         close_fn <- function() { closed <<- TRUE; invisible(NULL) }
@@ -219,7 +219,7 @@ setMethod("storeRead", signature("cellbinGefInput"), function(store, ...) {
         cum  <- store@params$cum_offsets
         chunks <- .gef_safe_chunks(name_to_row, store@batch_genes)
         n_cells <- as.integer(store@n_cells)
-        n_buckets <- .gef_n_buckets(cum[length(cum)], max_rows)
+        n_buckets <- .ingest_n_buckets(cum[length(cum)], max_rows)
         per_bucket <- max(1L, as.integer(ceiling(n_cells / n_buckets)))
         n_buckets <- as.integer(ceiling(n_cells / per_bucket))
         produce <- function(k) {
@@ -238,7 +238,7 @@ setMethod("storeRead", signature("cellbinGefInput"), function(store, ...) {
             )[!is.na(row_id) & !is.na(col_id)]
         }
         finish <- function(dt) dt[, .(value = sum(value)), keyby = .(row_id, col_id)]
-        itr <- .gef_spill_iterator(produce, length(chunks), n_buckets, finish, max_rows)
+        itr <- .ingest_spill_iterator(produce, length(chunks), n_buckets, finish, max_rows)
         next_batch <- itr$next_batch
         close_fn <- itr$close
     }
@@ -289,7 +289,7 @@ setMethod("storeRead", signature("binGefInput"), function(store, ...) {
 
     # Horizontal stripes over y, several per budget-sized batch. The y range
     # comes from the file's attributes; without them, from one extra pass.
-    n_buckets <- .gef_n_buckets(cum[length(cum)], max_rows)
+    n_buckets <- .ingest_n_buckets(cum[length(cum)], max_rows)
     yr <- store@params$y_range
     if (n_buckets > 1L && is.null(yr)) {
         yr <- c(Inf, -Inf)
@@ -340,7 +340,7 @@ setMethod("storeRead", signature("binGefInput"), function(store, ...) {
         dt[, .(value = sum(value)), keyby = .(row_id, col_id)]
     }
 
-    itr <- .gef_spill_iterator(produce, length(chunks), n_buckets, finish, max_rows)
+    itr <- .ingest_spill_iterator(produce, length(chunks), n_buckets, finish, max_rows)
 
     # Hand the finished coordinate map back to the input object, which
     # outlives this iterator. Only on a full pass -- a partial map would
@@ -611,7 +611,7 @@ setMethod(
     }
     rows <- .ingest_batch_rows(64,
         pinned = getOption("giottodisk.h5_batch_rows"))
-    .gef_cell_ranges(diff(indptr), max(1, floor(rows / max(1L, n_workers))))
+    .ingest_cell_ranges(diff(indptr), max(1, floor(rows / max(1L, n_workers))))
 }
 
 # Parallel h5 → parquet writer.  Fork-based via `parallel::mclapply` on
