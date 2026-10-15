@@ -329,9 +329,12 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
         tile_sel@indices <- nonempty_I
     }
 
+    # Worker closure: name every imported function with `::`. A bare import
+    # resolves in the imports env, which future then ships to each worker
+    # (~200 MB per task).
     tile_overlap_fn <- function(poly_sv, feat_sv, .I) {
-        if (is.null(poly_sv) || nrow(poly_sv) == 0L) return(NULL)
-        if (is.null(feat_sv) || nrow(feat_sv) == 0L) return(NULL)
+        if (is.null(poly_sv) || base::nrow(poly_sv) == 0L) return(NULL)
+        if (is.null(feat_sv) || base::nrow(feat_sv) == 0L) return(NULL)
 
         extracted <- terra::extract(poly_sv, feat_sv)
         na_mask <- is.na(extracted[[2L]])
@@ -421,12 +424,13 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
     x_sub <- x[, poly_id_col]
     y_sub <- y[, c(feat_id_col, extra_cols, specialCols(y))]
 
+    # Worker closure: `::` on imports (see .calculate_overlap_terra_tiled).
     tile_overlap_fn <- function(poly_sv, .I) {
-        if (is.null(poly_sv) || nrow(poly_sv) == 0L) return(NULL)
+        if (is.null(poly_sv) || base::nrow(poly_sv) == 0L) return(NULL)
         # omit_internals = FALSE: need tile_index + row_index from point values
-        feat_sv <- getBoundedData(y_sub, terra::ext(poly_sv) + pad_y,
+        feat_sv <- tilework::getBoundedData(y_sub, terra::ext(poly_sv) + pad_y,
             output = "terra", omit_internals = FALSE)
-        if (is.null(feat_sv) || nrow(feat_sv) == 0L) return(NULL)
+        if (is.null(feat_sv) || base::nrow(feat_sv) == 0L) return(NULL)
 
         extracted <- terra::extract(poly_sv, feat_sv)
         na_mask <- is.na(extracted[[2L]])

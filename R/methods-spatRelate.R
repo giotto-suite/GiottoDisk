@@ -571,8 +571,9 @@ setMethod(
         # col added by the store-level read path); we inject it after the
         # eval since it's a known constant for the substore.
         tile_id_cols <- setdiff(id_cols, "source_id")
+        # Runs on workers: `::` on imports (see .calculate_overlap_terra_tiled).
         eval_tile <- function(df) {
-            if (is.null(df) || nrow(df) == 0L) return(NULL)
+            if (is.null(df) || base::nrow(df) == 0L) return(NULL)
             if (!"geom" %in% names(df)) {
                 stop("[spat_relate][terra] expected 'geom' col missing from tile",
                     call. = FALSE)
@@ -581,7 +582,7 @@ setMethod(
             y_sv <- terra::vect(y_wkt)
             rel <- terra::relate(x_sv, y_sv, relation = relation)
             keep <- if (is.matrix(rel)) {
-                as.logical(rowSums(rel, na.rm = TRUE) > 0L)
+                as.logical(base::rowSums(rel, na.rm = TRUE) > 0L)
             } else {
                 as.logical(rel)
             }
