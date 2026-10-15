@@ -35,6 +35,10 @@
 - `overlapToMatrix()` to a `parquetExprStore` takes an `engine` argument
   (`"duckdb"` or `"arrow"`) to pick one explicitly; the default `NULL` takes
   duckdb and falls back to arrow.
+- `importVisiumHDDisk()` reads `NNNum_outputs.tar` bin outputs, extracting
+  them next to the tar (or into `outdir`) on first use as the in-memory reader
+  does; `force_untar = TRUE` re-extracts. It required extracted directories
+  before.
 - Requires `GiottoClass (>= 0.7.10)`, so `calculateOverlap(feat_count_column =
   FALSE)` on store-backed points reaches the disk method.
 
