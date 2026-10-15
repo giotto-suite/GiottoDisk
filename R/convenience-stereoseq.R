@@ -111,8 +111,33 @@ setMethod(
             bin1_path       = .def_bin1_path,
             image_path      = .def_image_dir,
             mask_path       = .def_mask_path,
+            load_bin_mapping = FALSE,
+            gobject         = NULL,
             instructions    = NULL,
             verbose         = NULL) {
+
+            # several bin sizes: each is its own spat_unit in one object. The
+            # GEF holds them all, so only bin_size changes; the image, mask
+            # and binpoints are loaded once.
+            if (type == "bin" && length(bin_size) > 1L) {
+                a <- as.list(environment())
+                g <- gobject
+                for (b_i in seq_along(bin_size)) {
+                    ab <- a
+                    ab$bin_size <- bin_size[[b_i]]
+                    ab$gobject <- g
+                    ab$load_bin_mapping <- FALSE
+                    ab$load_image <- load_image && b_i == 1L
+                    ab$load_mask <- load_mask && b_i == 1L
+                    ab$load_binpoints <- load_binpoints && b_i == 1L
+                    g <- do.call(obj@calls$create_gobject, ab)
+                }
+                if (isTRUE(load_bin_mapping) && load_spatlocs) {
+                    g <- .stereoseq_add_parent_bins(g, bin_size,
+                        negative_y = negative_y, verbose = verbose)
+                }
+                return(g)
+            }
 
             spat_unit <- if (type == "bin") bin_size else "cell"
 
@@ -126,10 +151,7 @@ setMethod(
 
             funs <- obj@calls
 
-            g <- GiottoClass::createGiottoObject(
-                backend = gsrc,
-                instructions = instructions
-            )
+            g <- .backed_gobject_init(gobject, gsrc, instructions)
 
             # expression (disk; overridden closure)
             bin_coords <- NULL
@@ -381,6 +403,37 @@ importStereoSeqDisk <- function(
 
     attr(out, "bin_coords") <- bin_coords
     out
+}
+
+
+# Parent-bin columns between the bin units of one object. SAW writes binN
+# coordinates as origin-aligned multiples of N, so a binM bin at (x, y) lies in
+# the binN bin at (x %/% N * N, y %/% N * N) whenever N is a multiple of M.
+# Coordinates come from each unit's raw spatlocs (y un-negated); the columns
+# go through `.add_parent_units`.
+.stereoseq_add_parent_bins <- function(gobject, bin_sizes, negative_y = TRUE,
+                                       verbose = NULL) {
+    n <- as.integer(sub("^bin", "", bin_sizes))
+    xy <- lapply(bin_sizes, function(su) {
+        sl <- GiottoClass::getSpatialLocations(gobject, spat_unit = su,
+            name = "raw", output = "data.table")
+        y <- if (isTRUE(negative_y)) -sl$sdimy else sl$sdimy
+        list(id = sl$cell_ID, x = sl$sdimx, y = y)
+    })
+    for (i in seq_along(bin_sizes)) {
+        parents <- which(n > n[i] & n %% n[i] == 0L)
+        if (!length(parents)) next
+        child <- xy[[i]]
+        mapping <- data.table::data.table(cell_ID = child$id)
+        for (j in parents) {
+            p <- xy[[j]]
+            key <- paste(child$x %/% n[j] * n[j], child$y %/% n[j] * n[j])
+            mapping[[bin_sizes[[j]]]] <- p$id[match(key, paste(p$x, p$y))]
+        }
+        gobject <- .add_parent_units(gobject, spat_unit = bin_sizes[[i]],
+                                     mapping = mapping, verbose = verbose)
+    }
+    gobject
 }
 
 

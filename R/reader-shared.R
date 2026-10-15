@@ -7,6 +7,25 @@
 
 
 
+## object ####
+
+# New backed giotto, or the given one (which must be backed by a source) to
+# add into, so a reader can load several units into one object.
+.backed_gobject_init <- function(gobject, gsource, instructions) {
+    if (is.null(gobject)) {
+        return(GiottoClass::createGiottoObject(
+            backend = gsource, instructions = instructions))
+    }
+    checkmate::assert_class(gobject, "giotto")
+    if (is.null(gobject@source)) {
+        stop("`gobject` must be backed by a source ",
+             "(createGiottoObject(backend = ))", call. = FALSE)
+    }
+    gobject
+}
+
+
+
 ## unit hierarchy ####
 
 # Record which parent unit each unit belongs to, as cell metadata.

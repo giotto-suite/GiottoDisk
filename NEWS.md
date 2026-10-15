@@ -14,6 +14,11 @@
   on load, with a warning; rerun `calculateOverlap()` to rebuild them.
 
 ## new
+- The Stereo-seq disk reader's `create_gobject()` takes several bin sizes
+  (`bin_size = c("bin50", "bin100")`), each its own spat_unit in one object, and
+  a `gobject` to add into. `load_bin_mapping = TRUE` records each bin's parent
+  bins as cell metadata, from the bin coordinates (SAW writes binN coordinates
+  as multiples of N).
 - Motif enrichment on a backed spatial network:
   `analyzeData(<parquetEdgeStore>, <smotifParam>)`, reached from
   `cellProximityMotifs()` at the default `method = "auto"`. The edges cross

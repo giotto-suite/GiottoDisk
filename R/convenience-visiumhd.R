@@ -324,7 +324,7 @@ setMethod(
                 )
             }
 
-            g <- .visiumhd_disk_init(gobject, gsrc, instructions)
+            g <- .backed_gobject_init(gobject, gsrc, instructions)
             if (!is.null(expr_list)) {
                 g <- GiottoClass::setGiotto(g, expr_list, verbose = verbose)
             }
@@ -426,7 +426,7 @@ setMethod(
                 )
             }
 
-            g <- .visiumhd_disk_init(gobject, gsrc, instructions)
+            g <- .backed_gobject_init(gobject, gsrc, instructions)
             for (p in poly_list) {
                 g <- .visiumhd_attach_poly(g, p, centroids_to_spatlocs = TRUE,
                                            verbose = verbose)
@@ -675,19 +675,4 @@ importVisiumHDDisk <- function(
 .visiumhd_attach_poly <- function(g, gpoly, ...) {
     gpoly@spatVectorCentroids <- NULL
     GiottoClass::setGiotto(g, gpoly, ...)
-}
-
-# New backed giotto, or the given one (which must be backed by a source) to
-# add into.
-.visiumhd_disk_init <- function(gobject, gsource, instructions) {
-    if (is.null(gobject)) {
-        return(GiottoClass::createGiottoObject(
-            backend = gsource, instructions = instructions))
-    }
-    checkmate::assert_class(gobject, "giotto")
-    if (is.null(gobject@source)) {
-        stop("[VisiumHDDiskReader] `gobject` must be backed by a source ",
-             "(createGiottoObject(backend = ))", call. = FALSE)
-    }
-    gobject
 }
