@@ -26,6 +26,8 @@ NULL
 #                               when the derivation cannot run
 #   giottodisk.gef_batch_rows   pin the records per Stereo-seq GEF ingest
 #                               batch (`.gef_batch_rows()`)
+#   giottodisk.h5_batch_rows    pin the records per 10x .h5 ingest batch
+#                               (`.tenxh5_ranges()`)
 
 # Recommend a streaming chunk size from free RAM.
 #
@@ -162,6 +164,9 @@ NULL
 #'     derivation cannot run.}
 #'   \item{`giottodisk.gef_batch_rows`}{pins the records per batch when a
 #'     Stereo-seq `.gef` is written to a store. Derived from the same budget
+#'     otherwise.}
+#'   \item{`giottodisk.h5_batch_rows`}{pins the records per batch when a 10x
+#'     `.h5` matrix is written to a store. Derived from the same budget
 #'     otherwise.}
 #' }
 #'

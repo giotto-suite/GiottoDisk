@@ -224,7 +224,9 @@ mtxInput <- function(
 #' streamed in cell-chunks by [storeRead()] via hyperslab reads on a
 #' long-lived `hdf5r::H5File` handle.
 #'
-#' @slot batch_cells integer. Cells per batch. Default 250,000.
+#' @slot batch_cells integer. Cells per batch, or `NA` (default) to size
+#'   batches by stored values from free memory
+#'   (`options(giottodisk.h5_batch_rows =)` pins that record count).
 #' @slot feature_id_col integer. `1L` for Ensembl ID, `2L` for gene
 #'   symbol (default).
 #' @family store types
@@ -237,7 +239,7 @@ setClass("tenxH5Input",
         feature_id_col = "integer"
     ),
     prototype = list(
-        batch_cells    = 250000L,
+        batch_cells    = NA_integer_,
         feature_id_col = 2L
     )
 )
@@ -252,14 +254,15 @@ setClass("tenxH5Input",
 #' @param h5_path character. Path to `cell_feature_matrix.h5`.
 #' @param feature_id_col integer. `1L` = Ensembl ID, `2L` = gene symbol
 #'   (default).
-#' @param batch_cells integer. Cells per batch. Default 250,000.
+#' @param batch_cells integer. Cells per batch, or `NA` (default) to size
+#'   batches by stored values from free memory.
 #' @return A `tenxH5Input` object.
 #' @family store constructors
 #' @export
 tenxH5Input <- function(
     h5_path,
     feature_id_col = 2L,
-    batch_cells    = 250000L
+    batch_cells    = NA_integer_
 ) {
     if (!requireNamespace("hdf5r", quietly = TRUE)) {
         stop("[tenxH5Input] hdf5r is required to read 10x .h5 files. ",

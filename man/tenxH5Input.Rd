@@ -4,7 +4,7 @@
 \alias{tenxH5Input}
 \title{Create a 10x cell_feature_matrix.h5 input}
 \usage{
-tenxH5Input(h5_path, feature_id_col = 2L, batch_cells = 250000L)
+tenxH5Input(h5_path, feature_id_col = 2L, batch_cells = NA_integer_)
 }
 \arguments{
 \item{h5_path}{character. Path to \code{cell_feature_matrix.h5}.}
@@ -12,7 +12,8 @@ tenxH5Input(h5_path, feature_id_col = 2L, batch_cells = 250000L)
 \item{feature_id_col}{integer. \code{1L} = Ensembl ID, \code{2L} = gene symbol
 (default).}
 
-\item{batch_cells}{integer. Cells per batch. Default 250,000.}
+\item{batch_cells}{integer. Cells per batch, or \code{NA} (default) to size
+batches by stored values from free memory.}
 }
 \value{
 A \code{tenxH5Input} object.

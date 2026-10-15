@@ -234,13 +234,21 @@ NULL
 .gef_batch_rows_fallback <- 5e6
 
 .gef_batch_rows <- function() {
-    pinned <- getOption("giottodisk.gef_batch_rows")
+    .ingest_batch_rows(96, pinned = getOption("giottodisk.gef_batch_rows"),
+                       fallback = .gef_batch_rows_fallback)
+}
+
+# Records per ingest batch for an input holding about `bytes_per_record` per
+# record while a batch is in memory: the chunk budget over free RAM, at least
+# 1e6. `pinned` overrides it; `fallback` is used when free RAM cannot be read.
+.ingest_batch_rows <- function(bytes_per_record, pinned = NULL,
+                               fallback = 5e6) {
     if (!is.null(pinned)) return(max(1, as.numeric(pinned)))
     free <- tryCatch(.sc_free_ram(), error = function(e) NA_real_)
-    if (!isTRUE(is.finite(free)) || free <= 0) return(.gef_batch_rows_fallback)
+    if (!isTRUE(is.finite(free)) || free <= 0) return(fallback)
     ram_frac <- getOption("giottodisk.chunk_ram_frac", 0.25)
     budget <- .chunk_budget(free, ram_frac, n_cells = 0, k = 0, p = 0)
-    max(1e6, floor(budget / 96))
+    max(1e6, floor(budget / bytes_per_record))
 }
 
 # Contiguous cell ranges of at most `max_rows` records each, cut greedily; a
