@@ -24,7 +24,7 @@ Imports:
     data.table (>= 1.12.2),
     digest,
     dplyr,
-    Giotto (>= 4.3.1),
+    Giotto (>= 4.3.2),
     GiottoClass (>= 0.7.4),
     GiottoUtils,
     igraph,
@@ -55,6 +55,7 @@ Suggests:
     scran,
     sedonadb (>= 0.4.0),
     smotif (>= 0.2.0),
+    spatialDWLS,
     testthat,
     wk,
     zip,
@@ -63,6 +64,7 @@ VignetteBuilder: knitr
 Remotes:
     drieslab/tilework,
     drieslab/cosmxscan,
+    drieslab/spatialDWLS,
     giotto-suite/GiottoUtils@dev,
     giotto-suite/GiottoClass@gsource,
     giotto-suite/Giotto@gsource
@@ -112,6 +114,7 @@ Collate:
     'methods-store_nostate.R'
     'methods-transforms.R'
     'pca-param.R'
+    'stream-deconv.R'
     'stream-enrich.R'
     'stream-filter.R'
     'stream-labelProportions.R'
