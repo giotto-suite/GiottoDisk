@@ -202,6 +202,29 @@ NULL
     }))[!is.na(w)]
 }
 
+# Build a `multiply` payload for a per-axis vector given in VIEW order.
+#
+# The op registry keys factors by on-disk id per substore uid (see the
+# `multiply` note in utils-pestore-ops.R), and `.pe_axis_pos_map()` is the
+# view-position -> on-disk-key map that every other consumer uses. A single
+# store's map carries no `source_id`, so the payload is keyed by its own uid.
+# On-disk ids outside the view get `fill`.
+.pe_axis_factor_payload <- function(pe, w, axis = c("feat", "cell"), fill = 0) {
+    axis <- match.arg(axis)
+    map <- .pe_axis_pos_map(pe, axis)
+    subs <- .exprbase_substores(pe)
+    if (!"source_id" %in% names(map)) {
+        uid <- as.character(subs[[1L]]$store@uid)
+        map <- data.table::copy(map)[, "source_id" := uid]
+    }
+    split_map <- split(map, map$source_id)
+    lapply(split_map, function(d) {
+        v <- rep(fill, max(d$key_id))
+        v[d$key_id] <- w[d$pos]
+        v
+    })
+}
+
 
 # ---- GEF ingest: cell-major batches ----------------------------------------
 #
