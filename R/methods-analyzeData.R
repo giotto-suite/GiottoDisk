@@ -391,8 +391,9 @@ setMethod("analyzeData",
 # that store nothing they make up `n_zero`, which is what an indicator over
 # this histogram treats as "off".
 #
-# Returns list(counts = data.table(pos, bin, n), max, width, n_zero). `bin`
-# runs 0..n_bins-1 and covers (bin * width, (bin + 1) * width] of feature `pos`.
+# Returns list(counts = data.table(pos, bin, n), max, width, n_zero), counts
+# ordered by `pos` then `bin`. `bin` runs 0..n_bins-1 and covers
+# (bin * width, (bin + 1) * width] of feature `pos`.
 .pe_value_hist <- function(pe, n_bins = 256L) {
     value <- nnz <- pos <- bin <- n <- NULL   # NSE
     n_bins <- as.integer(n_bins)
@@ -409,6 +410,7 @@ setMethod("analyzeData",
     } else {
         counts[, list(pos = as.integer(pos), bin = as.integer(bin), n = nnz)]
     }
+    data.table::setorder(counts, pos, bin)
     binned <- numeric(length(mx))
     tot <- counts[, list(n = sum(n)), by = pos]
     binned[tot$pos] <- tot$n
