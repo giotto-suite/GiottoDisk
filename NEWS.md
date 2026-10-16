@@ -43,6 +43,10 @@
   FALSE)` on store-backed points reaches the disk method.
 
 ## bug fixes
+- `saveGiotto()` / `loadGiotto()` on a backed object holding `giottoBinPoints`
+  (for example from `load_transcripts = TRUE`) failed with "object of type
+  'S4' is not subsettable": the snapshot steps read every points object as a
+  store. Bin points stay in memory and are saved by GiottoClass.
 - The disk Visium HD reader took a binned directory without the 2 um output
   (for example a single `008um_outputs.tar`) for segmented outputs and failed
   loading polygons. It now uses the in-memory reader's own decision.
