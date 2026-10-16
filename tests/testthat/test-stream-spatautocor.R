@@ -72,3 +72,14 @@ test_that("binSpect fast writes binSpect.pval on a backed object", {
     ref <- Giotto::binSpect(o$mem, implementation = "fast")
     expect_equal(fm$binSpect.pval[match(ref$feats, fm$feat_ID)], ref$adj.p.value)
 })
+
+test_that("the covariate null matches the in-memory object", {
+    skip_if_not_installed("Giotto")
+    o <- .sac_objects()
+    p <- Giotto::spatAutoCorParam("moran", null = "covariate", n_groups = 4L)
+    mem <- GiottoClass::analyzeData(o$mem, p)
+    got <- GiottoClass::analyzeData(o$backed, p)
+    got <- got[match(mem$feats, got$feats)]
+    expect_equal(got$statistic, mem$statistic)
+    expect_equal(got$p.value, mem$p.value)
+})

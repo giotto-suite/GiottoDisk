@@ -13,6 +13,11 @@ NULL
 #   edge products      .pe_edge_products
 #
 # Only edges with both ends among the view's cells count, as in the contract.
+#
+# With `groups =`, the "grouped" attribute adds per-group power sums (the same
+# accumulator pass grouped by cell group), neighbour-group sums (a weighted
+# `by_cell` pass, each cell listed under the groups its edges reach) and the
+# group edge tables (.edge_group_tables).
 
 #' @rdname analyzeData
 #' @param network for an `edgeStatsParam`: the spatial network as a
@@ -20,7 +25,7 @@ NULL
 #' @export
 setMethod("analyzeData",
     signature(x = "parquetExprBase", param = "edgeStatsParam"),
-    function(x, param, ..., network) {
+    function(x, param, ..., network, groups = NULL) {
         if (!inherits(network, "parquetEdgeStore")) {
             stop("[analyzeData(parquetExprBase, edgeStatsParam)] `network` ",
                 "must be a parquetEdgeStore.", call. = FALSE)
@@ -48,9 +53,61 @@ setMethod("analyzeData",
             n_cells = n_cells, n_edges = tot$n,
             sum_w = tot$sw, sum_w2 = tot$sw2, sum_deg2 = sum(deg^2)
         ))
+        if (!is.null(groups)) {
+            data.table::setattr(out, "grouped",
+                .pe_edge_stats_grouped(x, network, map, groups, weighted))
+        }
         out
     }
 )
+
+# The "grouped" attribute of the contract on a store.
+.pe_edge_stats_grouped <- function(x, network, map, groups, weighted) {
+    pos <- k <- NULL  # NSE
+    g <- .pe_cell_groups(x, groups)
+    if (anyNA(g)) {
+        stop("[edgeStatsParam] every cell needs a group; ", sum(is.na(g)),
+            " have none.", call. = FALSE)
+    }
+    g <- droplevels(if (is.factor(g)) g else factor(g))
+    lv <- levels(g)
+    code <- as.integer(g)
+    K <- length(lv)
+    G <- as.integer(x@n_genes)
+
+    cells <- data.table::copy(.pe_axis_pos_map(x, "cell"))
+    data.table::setnames(cells, "key_id", "row_id")
+    key <- c(intersect("source_id", names(cells)), "row_id")
+    to_mat <- function(agg, col) {
+        out <- matrix(0, G, K, dimnames = list(x@feat_ids, lv))
+        if (!is.null(agg)) out[cbind(agg$pos, agg$k)] <- agg[[col]]
+        out
+    }
+
+    pw <- c("sum", "sumsq", "sum3", "sum4")
+    by_group <- cells[, c(key, "pos"), with = FALSE][, k := code[pos]][
+        , c(key, "k"), with = FALSE]
+    agg <- .pe_accum_raw(x, axis = "feat", stats = pw, by_cell = by_group)
+
+    gt <- .edge_group_tables(network, map, code, K, weighted)
+    nb <- merge(gt$a, map[, c("int_id", "pos")], by = "int_id")
+    nb <- merge(nb, cells[, c(key, "pos"), with = FALSE], by = "pos")
+    nb_cell <- nb[, c(key, "l", "a"), with = FALSE]
+    data.table::setnames(nb_cell, c("l", "a"), c("k", "w"))
+    nbr <- .pe_accum_raw(x, axis = "feat", stats = "wsum", by_cell = nb_cell)
+
+    dimnames(gt$edges) <- list(lv, lv)
+    dimnames(gt$paths) <- list(lv, lv, lv)
+    list(
+        levels = lv,
+        n_cells = stats::setNames(as.numeric(tabulate(code, K)), lv),
+        sum = to_mat(agg, "sum"), sumsq = to_mat(agg, "sumsq"),
+        sum3 = to_mat(agg, "sum3"), sum4 = to_mat(agg, "sum4"),
+        nbr_sum = to_mat(nbr, "wsum"),
+        edges = gt$edges,
+        paths = gt$paths
+    )
+}
 
 # Count, weight sum and squared-weight sum of a lazy edge query.
 .edge_weight_totals <- function(edges) {

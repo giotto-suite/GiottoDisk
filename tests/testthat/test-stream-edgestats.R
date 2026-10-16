@@ -74,3 +74,27 @@ test_that("the multiply path for many degree classes agrees with the grouped one
     expect_equal(.pe_degree_sums(pe, deg, max_classes = 0L),
                  .pe_degree_sums(pe, deg))
 })
+
+test_that("the grouped attribute reproduces the in-memory one", {
+    f <- .es_fixture()
+    ids <- colnames(f$m)
+    grp <- stats::setNames(rep(c("lo", "mid", "hi"), length.out = length(ids)), ids)
+    u <- unionParquetExprStore(list(.es_pe(f$m[, 1:15]), .es_pe(f$m[, 16:40])))
+    for (wt in c(FALSE, TRUE)) {
+        p <- GiottoClass::edgeStatsParam(weighted = wt)
+        ref <- attr(GiottoClass::analyzeData(f$m, p, network = f$net,
+            groups = grp), "grouped")
+        for (x in list(.es_pe(f$m), u)) {
+            got <- attr(GiottoClass::analyzeData(x, p, network = f$store,
+                groups = rev(grp)), "grouped")
+            expect_equal(got, ref)
+        }
+    }
+    sub_cells <- c(3:30)
+    p <- GiottoClass::edgeStatsParam()
+    expect_equal(
+        attr(GiottoClass::analyzeData(.es_pe(f$m)[, sub_cells], p,
+            network = f$store, groups = grp), "grouped"),
+        attr(GiottoClass::analyzeData(f$m[, sub_cells], p, network = f$net,
+            groups = grp), "grouped"))
+})

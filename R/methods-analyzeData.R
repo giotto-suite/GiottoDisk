@@ -335,6 +335,7 @@ setMethod("analyzeData",
 #                                             max, not sum
 #   sum3     sum(value^3)                     every stored entry
 #   sum4     sum(value^4)                     every stored entry
+#   wsum     sum(value * w)                   needs a `by_cell` with `w`
 #
 # `thr` is a detection predicate: it selects which entries COUNT, and never
 # reduces a magnitude that participates. So `sum` / `sumsq` are unconditional
@@ -342,7 +343,8 @@ setMethod("analyzeData",
 # those two to `>=`, which is what filtering means by a threshold.
 
 # Accumulators `stats` may name; the default is the first four.
-.pe_accum_stats <- c("sum", "sumsq", "nnz", "sum_det", "max", "sum3", "sum4")
+.pe_accum_stats <- c("sum", "sumsq", "nnz", "sum_det", "max", "sum3", "sum4",
+    "wsum")
 
 .stream_expr_accum <- function(pe,
     axis = c("feat", "cell"),
@@ -449,6 +451,10 @@ setMethod("analyzeData",
 # store in full and the cost is linear in batch count, not in genes per batch.
 # Ask for all the features at once and let the window do the bounding.
 #
+# A `by_cell` may list a cell under several codes and carry a weight column
+# `w`; `wsum` then sums value * w, so one pass gives, per (feature, k), a
+# weighted sum over the cells each code reaches.
+#
 # `by_value` adds grouping keys computed from `value` itself: a named list of
 # expressions in `value` (spliced into an arrow `mutate()` and evaluated in a
 # data.table alike), e.g. `list(bin = rlang::expr(floor(value)))` for a
@@ -477,7 +483,7 @@ setMethod("analyzeData",
     stats <- match.arg(stats, .pe_accum_stats, several.ok = TRUE)
     thr   <- as.numeric(thr)
 
-    value <- pos <- NULL   # NSE bindings
+    value <- pos <- w <- NULL   # NSE bindings
 
     key <- if (identical(axis, "feat")) "col_id" else "row_id"
 
@@ -503,8 +509,13 @@ setMethod("analyzeData",
         ),
         max     = rlang::expr(max(value, na.rm = TRUE)),
         sum3    = rlang::expr(sum(value * value * value, na.rm = TRUE)),
-        sum4    = rlang::expr(sum(value * value * value * value, na.rm = TRUE))
+        sum4    = rlang::expr(sum(value * value * value * value, na.rm = TRUE)),
+        wsum    = rlang::expr(sum(value * w, na.rm = TRUE))
     )
+    if ("wsum" %in% stats && !"w" %in% names(by_cell)) {
+        stop("[.pe_accum_raw] `wsum` needs a `by_cell` with a `w` column.",
+            call. = FALSE)
+    }
     aggr_exprs <- all_exprs[stats]
 
     # `source_id` only earns its place in the group key on a union, where
@@ -621,7 +632,7 @@ setMethod("analyzeData",
 # held is O(groups) whatever the window count.
 .pe_accum_acero_windowed <- function(pe, grp, aggr_exprs, by_cell,
     key_exprs = NULL) {
-    by_cols <- setdiff(names(by_cell), "k")
+    by_cols <- setdiff(names(by_cell), c("k", "w"))
     # Built once, not per window: it is the join's build side, one row per
     # grouped cell, and it is the same table for every window.
     bc_tab  <- arrow::as_arrow_table(as.data.frame(by_cell))
@@ -713,7 +724,7 @@ setMethod("analyzeData",
 .pe_accum_chunked_dt <- function(pe, grp, aggr_exprs, by_cell = NULL,
     key_exprs = NULL) {
     dt_call <- as.call(c(quote(list), aggr_exprs))
-    by_cols <- if (!is.null(by_cell)) setdiff(names(by_cell), "k")
+    by_cols <- if (!is.null(by_cell)) setdiff(names(by_cell), c("k", "w"))
 
     acc <- NULL
     for (d in .pe_windows(pe, .pe_accum_chunk_size(pe))) {

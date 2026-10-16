@@ -115,3 +115,16 @@ test_that("third and fourth power sums match the in-memory sums", {
     expect_equal(got$sum3, unname(Matrix::rowSums(mm^3)))
     expect_equal(got$sum4, unname(Matrix::rowSums(mm^4)))
 })
+
+test_that("wsum sums value * w over the codes a weighted by_cell lists", {
+    m <- .acc_mat(n_cells = 12L)
+    pe <- .acc_store(m)
+    # each cell under two codes, with its own weight per code
+    bc <- data.table::data.table(row_id = rep(1:12, each = 2L),
+        k = rep(1:2, 12L), w = seq(0.5, 12, by = 0.5))
+    got <- .pe_accum_raw(pe, stats = "wsum", by_cell = bc)
+    W <- matrix(bc$w, 12L, 2L, byrow = TRUE)
+    ref <- as.matrix(m %*% W)
+    expect_equal(got$wsum, ref[cbind(got$pos, got$k)])
+    expect_error(.pe_accum_raw(pe, stats = "wsum"), "needs a `by_cell`")
+})

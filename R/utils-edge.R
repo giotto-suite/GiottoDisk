@@ -189,3 +189,38 @@ NULL
     out[pos[keep]] <- as.numeric(res$T[keep])
     out
 }
+
+# Group tables of the view's edges for a cell grouping. `code` is an integer
+# group (1..K) per view cell position, `map` is `.edge_to_cell_map(x, pe)`.
+# Returns
+#   a      data.table(int_id, k, l, a): cell int_id of group k has summed edge
+#          weight a to cells of group l
+#   edges  K x K, sum of a over the cells of group k
+#   paths  K x K x K, [k, l, m] = sum over cells of group k of a_l * a_m
+.edge_group_tables <- function(x, map, code, K, weighted = FALSE) {
+    from_id <- int_id <- l <- w <- k <- a <- i.l <- i.a <- v <- m <- NULL  # NSE
+    lk <- list(int_id = map$int_id, value = code[map$pos])
+    tab <- .edge_symmetrise(.edge_view_edges(x, map, weighted), weight = TRUE) |>
+        .edge_join_vertex(lk, by = "to_id", name = "l") |>
+        dplyr::group_by(from_id, l) |>
+        dplyr::summarise(a = sum(w, na.rm = TRUE)) |>
+        dplyr::collect() |>
+        data.table::as.data.table()
+    data.table::setnames(tab, "from_id", "int_id")
+    tab[, k := lk$value[match(int_id, lk$int_id)]]
+
+    edges <- matrix(0, K, K)
+    if (nrow(tab)) {
+        e <- tab[, list(a = sum(a)), by = c("k", "l")]
+        edges[cbind(e$k, e$l)] <- e$a
+    }
+    paths <- array(0, c(K, K, K))
+    if (nrow(tab)) {
+        pp <- tab[tab, on = "int_id", allow.cartesian = TRUE,
+            list(k, l, m = i.l, v = a * i.a)][
+            , list(v = sum(v)), by = c("k", "l", "m")]
+        paths[cbind(pp$k, pp$l, pp$m)] <- pp$v
+    }
+    list(a = tab[, c("int_id", "k", "l", "a"), with = FALSE],
+         edges = edges, paths = paths)
+}
