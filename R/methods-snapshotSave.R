@@ -305,7 +305,8 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
 .ss_gdsrc_detect_uid_spatial_points <- function(gobject) {
     pts_list <- gobject[["feat_info"]]
     is_tracked_class <- vapply(pts_list,
-        function(x) inherits(x[], "dataStore"),
+        # giottoBinPoints stay in memory and hold no store
+        function(x) inherits(x, "giottoPoints") && inherits(x[], "dataStore"),
         FUN.VALUE = logical(1L)
     )
     pts_list <- pts_list[is_tracked_class]
@@ -361,6 +362,8 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
 
     pts_list <- gobject[["feat_info"]]
     for (pts_obj in pts_list) {
+        # giottoBinPoints stay in memory; GiottoClass saves them itself
+        if (!inherits(pts_obj, "giottoPoints")) next
         store <- pts_obj[]
         if (!inherits(store, "dataStore")) next
         if (sourceContains(src, store)) next
