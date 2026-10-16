@@ -104,3 +104,81 @@ test_that(".edge_to_cell_map carries source_id on a union", {
     expect_equal(map$row_id, c(1L, 2L, 1L, 2L))
     expect_equal(length(unique(map$source_id)), 2L)
 })
+
+# .pe_edge_products: ground truth is rowSums(X[, from] * X[, to]) over the
+# undirected edge list, on the in-memory matrix with the same chain applied.
+
+.ep_fixture <- function(n = 30L, G = 8L, seed = 5L, prefix = "c") {
+    set.seed(seed)
+    ids <- paste0(prefix, seq_len(n))
+    m <- Matrix::rsparsematrix(G, n, density = 0.5,
+        rand.x = function(k) as.double(rpois(k, 4L) + 1L))
+    dimnames(m) <- list(paste0("g", seq_len(G)), ids)
+    from <- rep(seq_len(n), each = 3L)
+    to <- ((from - 1L + rep(c(1L, 2L, 5L), n)) %% n) + 1L
+    e <- unique(data.table::data.table(a = pmin(from, to), b = pmax(from, to)))
+    e[, weight := round(runif(.N, 0.5, 2), 2)]
+    dt <- data.table::data.table(from = ids[e$a], to = ids[e$b],
+                                 weight = e$weight)
+    s <- storeWrite(storeCreate(type = "parquetEdgeStore"), dt,
+        type = "sNN", directed = FALSE)
+    list(m = m, e = e, dt = dt, store = s)
+}
+.ep_ref <- function(m, from, to, w = rep(1, length(from))) {
+    unname(Matrix::rowSums(m[, from, drop = FALSE] *
+        Matrix::t(Matrix::t(m[, to, drop = FALSE]) * w)))
+}
+.ep_pe <- function(m) {
+    storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), m)
+}
+
+test_that(".pe_edge_products matches the in-memory edge sum", {
+    f <- .ep_fixture()
+    pe <- .ep_pe(f$m)
+    expect_equal(.pe_edge_products(pe, f$store), .ep_ref(f$m, f$e$a, f$e$b))
+    expect_equal(.pe_edge_products(pe, f$store, weighted = TRUE),
+                 .ep_ref(f$m, f$e$a, f$e$b, f$e$weight))
+    expect_length(pe@ops, 0L)
+})
+
+test_that(".pe_edge_products sees the values the lazy chain produces", {
+    f <- .ep_fixture()
+    pe <- .ep_pe(f$m) |>
+        GiottoClass::processData(Giotto::normParam("library", scalefactor = 100)) |>
+        GiottoClass::processData(Giotto::normParam("log", base = 2, offset = 1))
+    lib <- Matrix::colSums(f$m)
+    x <- f$m %*% Matrix::Diagonal(x = 100 / lib)
+    x@x <- log2(x@x + 1)
+    dimnames(x) <- dimnames(f$m)
+    expect_equal(.pe_edge_products(pe, f$store), .ep_ref(x, f$e$a, f$e$b))
+})
+
+test_that(".pe_edge_products follows a sliced view", {
+    f <- .ep_fixture()
+    pe <- .ep_pe(f$m)
+    cells <- c(3:20, 25L)
+    genes <- c(2L, 5L, 7L)
+    sub <- pe[genes, cells]
+    keep <- f$e$a %in% cells & f$e$b %in% cells
+    expect_equal(.pe_edge_products(sub, f$store),
+                 .ep_ref(f$m[genes, ], f$e$a[keep], f$e$b[keep]))
+})
+
+test_that(".pe_edge_products matches features across a union", {
+    f <- .ep_fixture()
+    m <- f$m
+    u <- unionParquetExprStore(list(.ep_pe(m[, 1:12]), .ep_pe(m[, 13:30])))
+    # edges within and across the two substores
+    expect_true(any(f$e$a <= 12 & f$e$b > 12))
+    expect_equal(.pe_edge_products(u, f$store), .ep_ref(m, f$e$a, f$e$b))
+    # a gene slice narrows each substore's on-disk index
+    expect_equal(.pe_edge_products(u[c(6L, 2L), ], f$store),
+                 .ep_ref(m[c(6L, 2L), ], f$e$a, f$e$b))
+})
+
+test_that(".pe_edge_products refuses a chain with post ops", {
+    f <- .ep_fixture()
+    pe <- .pe_push_op(.ep_pe(f$m), list(type = "log", base = 2),
+                      phase = "post")
+    expect_error(.pe_edge_products(pe, f$store), "post")
+})

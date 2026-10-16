@@ -95,3 +95,82 @@ NULL
     data.table::setorder(out, pos)
     out[]
 }
+
+# Per-feature sum over the stored edges of `w * x_i * x_j`, where x is the
+# value the store's chain produces in the cells at the two ends of an edge and
+# `w` the edge's `weight` (`weighted = TRUE`) or 1. Returns a numeric vector in
+# the store's feature view order. An undirected store keeps each edge once, so
+# this is the sum over undirected edges; an edge with an end outside the view,
+# or at a node with no cell, contributes nothing.
+#
+# The cross-cell term of every edge statistic (Moran's I, Geary's C, join
+# counts) -- the per-cell terms are ordinary accumulators. One arrow plan:
+# edges -> cell keys of both ends -> triplets at `from` -> triplets at `to`
+# with the same feature -> grouped sum. Nothing is collected but the result.
+# The plan's hash joins build on the triplets, so peak memory is of the order
+# of the stored entries in view.
+#
+# On a union a feature's on-disk `col_id` is per substore, so the two ends are
+# matched on the feature's view position instead. A chain with post ops cannot
+# lower into the plan, so it is refused rather than materialized whole.
+.pe_edge_products <- function(pe, x, weighted = FALSE) {
+    from_id <- to_id <- w <- v1 <- v2 <- fkey <- col_id <- NULL  # NSE
+    if (length(pe@post_ops) > 0L) {
+        stop("[.pe_edge_products] the store's op chain has R-side (post) ",
+             "ops, which cannot run inside the edge join. Materialize it ",
+             "with storeWrite() first.", call. = FALSE)
+    }
+    is_union <- inherits(pe, "unionParquetExprStore")
+    cell_key <- c(if (is_union) "source_id", "row_id")
+
+    # node -> cell key, once per end
+    cmap <- .edge_to_cell_map(x, pe)
+    end_tab <- function(end) {
+        d <- as.data.frame(cmap[, c("int_id", cell_key), with = FALSE])
+        names(d) <- c(paste0(end, "_id"), paste0(end, "_", cell_key))
+        arrow::as_arrow_table(d)
+    }
+
+    trip <- storeRead(pe, output = "query")
+    if (is_union) {
+        fmap <- .pe_axis_pos_map(pe, "feat")
+        trip <- trip |>
+            dplyr::inner_join(arrow::as_arrow_table(data.frame(
+                source_id = as.character(fmap$source_id),
+                col_id = as.integer(fmap$key_id),
+                fkey = as.integer(fmap$pos))), by = c("source_id", "col_id"))
+    } else {
+        trip <- dplyr::mutate(trip, fkey = col_id)
+    }
+    trip_end <- function(end, v) {
+        sel <- c(stats::setNames(cell_key, paste0(end, "_", cell_key)),
+                 fkey = "fkey")
+        sel[[v]] <- "value"
+        dplyr::select(trip, !!!rlang::syms(sel))
+    }
+
+    w_expr <- if (isTRUE(weighted)) rlang::sym("weight") else 1.0
+    res <- storeRead(x, output = "arrow") |>
+        dplyr::transmute(from_id = from_id, to_id = to_id, w = !!w_expr) |>
+        dplyr::inner_join(end_tab("from"), by = "from_id") |>
+        dplyr::inner_join(end_tab("to"), by = "to_id") |>
+        dplyr::inner_join(trip_end("from", "v1"),
+            by = paste0("from_", cell_key)) |>
+        dplyr::inner_join(trip_end("to", "v2"),
+            by = c(paste0("to_", cell_key), "fkey")) |>
+        dplyr::group_by(fkey) |>
+        dplyr::summarise(T = sum(w * v1 * v2, na.rm = TRUE)) |>
+        dplyr::collect()
+
+    out <- numeric(as.integer(pe@n_genes))
+    if (nrow(res) == 0L) return(out)
+    pos <- if (is_union) {
+        res$fkey
+    } else {
+        fmap <- .pe_axis_pos_map(pe, "feat")
+        fmap$pos[match(res$fkey, fmap$key_id)]
+    }
+    keep <- !is.na(pos)
+    out[pos[keep]] <- as.numeric(res$T[keep])
+    out
+}
