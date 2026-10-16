@@ -219,8 +219,10 @@ y-stripes (adr/0017). A new input must do the same.
 
 Windows are exact rather than approximate only because the accumulators are
 additive over cells. A statistic that is not — anything needing a global order
-along the gene axis, e.g. a rank or a median — cannot be windowed this way and
-does not have a streaming path today.
+along the gene axis, e.g. a rank or a median — cannot be windowed this way.
+Its streaming path is the per-feature value histogram (`.pe_value_hist()`),
+which is additive; the order statistic is solved on the histogram, exact up to
+the bin width (adr/0020).
 
 **Windowing is not opt-in, and `giottodisk.chunk_size` does not switch it on.**
 There is no chunked mode and no unchunked mode. The window loop always runs; a
@@ -266,6 +268,17 @@ window-count dependent, and HVG selection is a discrete top-N cut **upstream**
 of PCA. That is the one route by which a last-bit difference could become a
 visibly different clustering. If you add such an op, check HVG selection
 stability across window counts before assuming it does not matter.
+
+### Edge statistics: one contract, statistics upstream
+`analyzeData(parquetExprBase, edgeStatsParam, network = <parquetEdgeStore>,
+groups =)` returns GiottoClass's edge-statistics contract; Giotto computes
+Moran's I, Geary's C and binSpect from it (adr/0020). Do not compute a test
+statistic here — add a sum to the contract instead. The pieces are generic:
+`.edge_symmetrise`, `.edge_self_loops`, `.edge_vertex_lookup`,
+`.edge_join_vertex`, `.edge_degree`, `.edge_view_edges`, `.edge_to_cell_map`,
+`.edge_group_tables` (`R/utils-edge.R`) and `.pe_edge_products` (the one
+expression x edge kernel). Network nodes match cells by ID, never by
+`int_id == row_id`. Only edges with both ends in the view count.
 
 ### Lazy ops via @ops slot
 Operations recorded lazily as a list of steps. User-facing op types:

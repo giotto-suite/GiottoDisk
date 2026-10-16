@@ -10,6 +10,16 @@
   per polygon in one DuckDB query; crops, feature selection, subsetting,
   in-situ plots and snapshots work on them. In-memory bin points set on a
   backed object are written to stores. Needs `GiottoClass (>= 0.7.13)`.
+- Spatial autocorrelation on disk-backed objects: `analyzeData()` for
+  GiottoClass's `edgeStatsParam` on a `parquetExprBase` with a
+  `parquetEdgeStore` network, so Giotto's `spatAutoCorParam()` (Moran's I,
+  Geary's C, binSpect, with or without the covariate null) and
+  `binSpect(implementation = "fast")` run on backed objects. Needs the
+  matching GiottoClass and Giotto.
+- `thresholdParam("binarize")` on a `parquetExprBase`: one threshold, one per
+  feature, or a rule (`"kmeans"`, `"rank"`) solved per feature on a streamed
+  value histogram. Lazy, like the other comparisons.
+- `x > v` on an expression store takes one threshold per row.
 - The Stereo-seq disk reader's `create_gobject()` takes several bin sizes
   (`bin_size = c("bin50", "bin100")`), each its own spat_unit in one object, and
   a `gobject` to add into. `load_bin_mapping = TRUE` records each bin's parent
