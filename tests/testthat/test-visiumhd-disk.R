@@ -261,3 +261,18 @@ test_that("[fixture] NNNum_outputs.tar bin outputs are read", {
         create_gobject(load_image = FALSE, force_untar = TRUE, verbose = FALSE))
     expect_identical(m(gf), m(ref))
 })
+
+test_that("[fixture] a binned dir without the 2 um output reads as bins", {
+    # e.g. a single downloaded 008um_outputs.tar: no square_002um, which once
+    # made the disk reader take the directory for segmented outputs
+    bo <- file.path(withr::local_tempdir(), "binned_outputs")
+    dir.create(bo)
+    withr::with_dir(file.path(.vhd_fixture$root, "binned_outputs"),
+        utils::tar(file.path(bo, "008um_outputs.tar"), "square_008um"))
+    rd <- .q(importVisiumHDDisk(bo, backend = withr::local_tempdir(), bin = 8))
+    expect_null(rd@calls$load_polygon)
+    g <- .q(rd$create_gobject(load_image = FALSE, verbose = FALSE))
+    expect_identical(sort(GiottoClass::spatIDs(g, "bin008")),
+                     sort(colnames(.vhd_fixture$m8)))
+})
+

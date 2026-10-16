@@ -43,6 +43,9 @@
   FALSE)` on store-backed points reaches the disk method.
 
 ## bug fixes
+- The disk Visium HD reader took a binned directory without the 2 um output
+  (for example a single `008um_outputs.tar`) for segmented outputs and failed
+  loading polygons. It now uses the in-memory reader's own decision.
 - `overlapToMatrix()` on a disk overlap sums a `count` column by default, as
   GiottoClass does for in-memory overlaps; `count_col = FALSE` counts rows.
   It also takes `feat_count_column`, the name GiottoClass passes, which was

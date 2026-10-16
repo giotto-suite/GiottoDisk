@@ -56,14 +56,15 @@ setMethod(
         if (length(obj@visiumhd_dir) == 0L) return(obj)
 
         list2env(obj@paths, envir = environment())
-        # `binpath2` is only detected for binned (non-segmented) outputs
-        is_seg <- is.null(obj@paths$binpath2)
+        # the parent's own call: it builds polygon loaders only for segmented
+        # outputs. (`binpath2`, the 2 um output, may be absent for either.)
+        is_seg <- !is.null(obj@calls$load_polygon)
 
         # Distinct names for detected paths used as `gobject_fun` defaults;
         # `binpath = binpath` in a formal would be a recursive default
         # (see StereoSeqDiskReader).
         .def_binpath <- binpath
-        .def_binpath2 <- if (is_seg) NULL else binpath2
+        .def_binpath2 <- if (is_seg) NULL else obj@paths$binpath2
         .def_map_path <- if (is_seg) NULL
                          else .visiumhd_mapping_path(obj@visiumhd_dir, binpath)
 
