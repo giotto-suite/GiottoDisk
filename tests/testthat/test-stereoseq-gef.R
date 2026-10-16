@@ -519,3 +519,89 @@ test_that("binGefInput sums duplicate gene names split across chunks", {
     expect_equal(unname(got["shared", first]), 4 + 5)
 })
 
+
+# ---- several bin sizes, parent bins ------------------------------------------
+
+# One GEF holding bin10 and bin20 on an origin-aligned grid, as SAW writes it
+# (binN coordinates are multiples of N); bin20 is the exact aggregate of bin10.
+.write_ss_two_bins <- function(dir) {
+    set.seed(3)
+    g10 <- expand.grid(c = 0:5, r = 0:3)
+    coords10 <- data.frame(x = g10$c * 10L, y = g10$r * 10L + 100L)
+    m10 <- Matrix::rsparsematrix(3L, nrow(coords10), 0.6,
+        rand.x = function(n) sample(1:5, n, replace = TRUE))
+    rownames(m10) <- c("aaa", "bbb", "ccc")
+    key20 <- paste(coords10$x %/% 20L * 20L, coords10$y %/% 20L * 20L)
+    u20 <- unique(key20)
+    coords20 <- data.frame(x = as.integer(sub(" .*", "", u20)),
+                           y = as.integer(sub(".* ", "", u20)))
+    m20 <- methods::as(m10 %*% Matrix::sparseMatrix(
+        i = seq_along(key20), j = match(key20, u20), x = 1,
+        dims = c(length(key20), length(u20))), "CsparseMatrix")
+    dir.create(file.path(dir, "feature_expression"), recursive = TRUE,
+               showWarnings = FALSE)
+    gef <- file.path(dir, "feature_expression", "SAMPLE.tissue.gef")
+    suppressMessages({
+        .write_bin_gef(m10, gef, bin_key = "bin10", coords = coords10)
+        .write_bin_gef(m20, gef, bin_key = "bin20", coords = coords20)
+    })
+    gef
+}
+
+# each child bin's parent column names the parent bin at its floored position
+.expect_parent_bins <- function(g, child, parent, n_parent) {
+    cm <- GiottoClass::pDataDT(g, spat_unit = child)
+    expect_true(parent %in% names(cm))
+    expect_false(anyNA(cm[[parent]]))
+    slc <- GiottoClass::getSpatialLocations(g, spat_unit = child,
+                                            output = "data.table")
+    slp <- GiottoClass::getSpatialLocations(g, spat_unit = parent,
+                                            output = "data.table")
+    c_xy <- slc[match(cm$cell_ID, cell_ID)]
+    p_xy <- slp[match(cm[[parent]], cell_ID)]
+    expect_equal(p_xy$sdimx, c_xy$sdimx %/% n_parent * n_parent)
+    expect_equal(-p_xy$sdimy, (-c_xy$sdimy) %/% n_parent * n_parent)
+}
+
+test_that("several bin sizes load into one object with parent bins", {
+    skip_if_not_installed("Giotto")
+    ss   <- file.path(tempdir(), "ss_two_bins")
+    proj <- file.path(tempdir(), "ss_two_bins_proj")
+    unlink(c(ss, proj), recursive = TRUE)
+    .write_ss_two_bins(ss)
+    on.exit(unlink(c(ss, proj), recursive = TRUE), add = TRUE)
+
+    rd <- Giotto::importStereoSeq(ss, type = "bin", bin_size = "bin10",
+                                  backend = gDirSource(proj))
+    g <- rd$create_gobject(bin_size = c("bin10", "bin20"),
+                           load_bin_mapping = TRUE, load_image = FALSE,
+                           load_mask = FALSE, verbose = FALSE)
+    expect_setequal(names(g@expression), c("bin10", "bin20"))
+    .expect_parent_bins(g, "bin10", "bin20", 20L)
+
+    # a further call adds into the same object
+    g1 <- rd$create_gobject(bin_size = "bin10", load_image = FALSE,
+                            load_mask = FALSE, verbose = FALSE)
+    g2 <- rd$create_gobject(bin_size = "bin20", gobject = g1,
+                            load_image = FALSE, load_mask = FALSE,
+                            verbose = FALSE)
+    expect_setequal(names(g2@expression), c("bin10", "bin20"))
+
+    # one bin size has no parents to record, and says so
+    expect_message(rd$create_gobject(bin_size = "bin10", load_bin_mapping = TRUE,
+                                     load_image = FALSE, load_mask = FALSE,
+                                     verbose = TRUE),
+                   "two or more bin sizes")
+})
+
+test_that("[dataset] SAW bins nest by coordinate", {
+    gef_dir <- Sys.getenv("GIOTTODISK_STEREOSEQ_DATA", "")
+    if (!nzchar(gef_dir)) skip("GIOTTODISK_STEREOSEQ_DATA not set")
+    skip_if_not_installed("Giotto")
+    rd <- Giotto::importStereoSeq(gef_dir, type = "bin", bin_size = "bin100",
+                                  backend = gDirSource(withr::local_tempdir()))
+    g <- rd$create_gobject(bin_size = c("bin100", "bin200"),
+                           load_bin_mapping = TRUE, load_image = FALSE,
+                           load_mask = FALSE, verbose = FALSE)
+    .expect_parent_bins(g, "bin100", "bin200", 200L)
+})

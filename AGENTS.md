@@ -678,7 +678,9 @@ object, since it has no disk representation yet.
 - A multi-unit `create_gobject()` loops per-unit readers into one `gobject`;
   it does not merge objects. The unit hierarchy is cell metadata
   (`.add_parent_units`, `R/reader-shared.R`): one column per parent unit,
-  kept only where the relation is one-to-one.
+  kept only where the relation is one-to-one. Visium HD reads it from
+  `barcode_mappings.parquet`; Stereo-seq derives it from bin coordinates,
+  which SAW writes as multiples of N for binN.
 - The disk `create_gobject()` accepts every argument of the parent's, so the
   Giotto `createGiotto*Object*()` wrappers can call either.
 
