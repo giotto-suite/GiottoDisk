@@ -133,74 +133,100 @@ NULL
 # no cell, contributes nothing.
 #
 # The cross-cell term of every edge statistic (Moran's I, Geary's C, join
-# counts) -- the per-cell terms are ordinary accumulators. One arrow plan:
-# edges -> cell keys of both ends -> triplets at `from` -> triplets at `to`
-# with the same feature -> grouped sum. Nothing is collected but the result.
-# The plan's hash joins build on the triplets, so peak memory is of the order
-# of the stored entries in view.
+# counts) -- the per-cell terms are ordinary accumulators. The pairs are
+# collected once as view positions (~16 B a pair); the values are joined a
+# cell window at a time: the window's triplets at the `from` end, the
+# triplets of the window's neighbours at the `to` end, matched on the
+# feature, summed and folded. The joins build on what they read, so the peak
+# is the window plus its neighbours rather than the whole view. With one
+# window -- the budget covers the view -- the `to` side is the whole view and
+# this is a single plan.
 #
 # On a union a feature's on-disk `col_id` is per substore, so the two ends are
 # matched on the feature's view position instead. A chain with post ops cannot
 # lower into the plan, so it is refused rather than materialized whole.
-.pe_edge_products <- function(pe, x, weighted = FALSE) {
-    from_id <- to_id <- w <- v1 <- v2 <- fkey <- col_id <- weight <- NULL  # NSE
+.pe_edge_products <- function(pe, x, weighted = FALSE,
+    map = .edge_to_cell_map(x, pe)) {
+    from_id <- to_id <- weight <- a <- NULL  # NSE
     if (length(pe@post_ops) > 0L) {
         stop("[.pe_edge_products] the store's op chain has R-side (post) ",
              "ops, which cannot run inside the edge join. Materialize it ",
              "with storeWrite() first.", call. = FALSE)
     }
+    G <- as.integer(pe@n_genes)
+    out <- numeric(G)
+    ev <- data.table::as.data.table(dplyr::collect(
+        .edge_view_edges(x, map, weighted)))
+    if (!nrow(ev)) return(out)
+    pairs <- data.table::data.table(
+        a = map$pos[match(ev$from_id, map$int_id)],
+        b = map$pos[match(ev$to_id, map$int_id)],
+        w = as.numeric(ev$weight))
+
     is_union <- inherits(pe, "unionParquetExprStore")
     cell_key <- c(if (is_union) "source_id", "row_id")
+    keys <- .pe_axis_pos_map(pe, "cell")
+    if (!is_union) keys[, "source_id" := NA_character_]
+    keys <- keys[order(keys$pos)]
+    fmap <- .pe_axis_pos_map(pe, "feat")
+    ftab <- if (is_union) arrow::as_arrow_table(data.frame(
+        source_id = as.character(fmap$source_id),
+        col_id = as.integer(fmap$key_id),
+        fkey = as.integer(fmap$pos)))
 
-    # node -> cell key, once per end
-    cmap <- .edge_to_cell_map(x, pe)
-    end_tab <- function(end) {
-        d <- as.data.frame(cmap[, c("int_id", cell_key), with = FALSE])
-        names(d) <- c(paste0(end, "_id"), paste0(end, "_", cell_key))
-        arrow::as_arrow_table(d)
+    windows <- .pe_windows(pe, .pe_window_cells(pe, bytes_per_nz = 300, k = 0L))
+    single <- length(windows) == 1L
+    for (d in windows) {
+        lo <- d$offset + d$cs
+        hi <- d$offset + d$ce
+        pw <- pairs[a >= lo & a <= hi]
+        if (!nrow(pw)) next
+        nb <- sort(unique(pw$b))
+        to_store <- if (single) pe else pe[, nb]
+        part <- .pe_edge_join(.pe_window_store(d), to_store, pw, keys,
+            cell_key, ftab)
+        if (nrow(part) == 0L) next
+        fpos <- if (is_union) part$fkey else fmap$pos[match(part$fkey, fmap$key_id)]
+        ok <- !is.na(fpos)
+        out[fpos[ok]] <- out[fpos[ok]] + as.numeric(part$T[ok])
     }
+    out
+}
 
-    trip <- storeRead(pe, output = "query")
-    if (is_union) {
-        fmap <- .pe_axis_pos_map(pe, "feat")
-        trip <- trip |>
-            dplyr::inner_join(arrow::as_arrow_table(data.frame(
-                source_id = as.character(fmap$source_id),
-                col_id = as.integer(fmap$key_id),
-                fkey = as.integer(fmap$pos))), by = c("source_id", "col_id"))
-    } else {
-        trip <- dplyr::mutate(trip, fkey = col_id)
+# One window of `.pe_edge_products()`: `pw` (view positions a -> b, weight w)
+# as cell keys, joined to the triplets of `from_store` at `a` and of
+# `to_store` at `b` with the same feature, summed per feature.
+.pe_edge_join <- function(from_store, to_store, pw, keys, cell_key, ftab) {
+    w <- v1 <- v2 <- fkey <- col_id <- NULL  # NSE
+    ek <- function(end, p) {
+        k <- keys[p]
+        d <- data.frame(row_id = as.integer(k$key_id))
+        if ("source_id" %in% cell_key) d$source_id <- as.character(k$source_id)
+        names(d) <- paste0(end, "_", names(d))
+        d
     }
-    trip_end <- function(end, v) {
+    etab <- arrow::as_arrow_table(cbind(ek("from", pw$a), ek("to", pw$b),
+        data.frame(w = pw$w)))
+    trip <- function(store, end, v) {
+        q <- storeRead(store, output = "query")
+        q <- if (is.null(ftab)) {
+            dplyr::mutate(q, fkey = col_id)
+        } else {
+            dplyr::inner_join(q, ftab, by = c("source_id", "col_id"))
+        }
         sel <- c(stats::setNames(cell_key, paste0(end, "_", cell_key)),
                  fkey = "fkey")
         sel[[v]] <- "value"
-        dplyr::select(trip, !!!rlang::syms(sel))
+        dplyr::select(q, !!!rlang::syms(sel))
     }
-
-    res <- .edge_view_edges(x, cmap, weighted) |>
-        dplyr::transmute(from_id = from_id, to_id = to_id, w = weight) |>
-        dplyr::inner_join(end_tab("from"), by = "from_id") |>
-        dplyr::inner_join(end_tab("to"), by = "to_id") |>
-        dplyr::inner_join(trip_end("from", "v1"),
+    etab |>
+        dplyr::inner_join(trip(from_store, "from", "v1"),
             by = paste0("from_", cell_key)) |>
-        dplyr::inner_join(trip_end("to", "v2"),
+        dplyr::inner_join(trip(to_store, "to", "v2"),
             by = c(paste0("to_", cell_key), "fkey")) |>
         dplyr::group_by(fkey) |>
         dplyr::summarise(T = sum(w * v1 * v2, na.rm = TRUE)) |>
         dplyr::collect()
-
-    out <- numeric(as.integer(pe@n_genes))
-    if (nrow(res) == 0L) return(out)
-    pos <- if (is_union) {
-        res$fkey
-    } else {
-        fmap <- .pe_axis_pos_map(pe, "feat")
-        fmap$pos[match(res$fkey, fmap$key_id)]
-    }
-    keep <- !is.na(pos)
-    out[pos[keep]] <- as.numeric(res$T[keep])
-    out
 }
 
 # Group tables of the view's edges for a cell grouping. `code` is an integer

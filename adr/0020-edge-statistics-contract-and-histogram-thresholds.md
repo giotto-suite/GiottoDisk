@@ -47,9 +47,12 @@ per-row `compare`), so it agrees with the binning entry for entry.
 - Streamed binarization is exact when each feature's distinct positive values
   fall in distinct bins (raw counts up to `n_bins`); on continuous values,
   values sharing a bin act as ties and a split or rank cut can move by one bin.
-- `.pe_edge_products` builds its hash joins on the triplets in view, so its
-  peak memory is of the order of the stored entries. Revisit with a DuckDB
-  carrier or a cell-tiled pass when that exceeds RAM.
+- `.pe_edge_products` joins one cell window at a time against the triplets of
+  that window's neighbours, so its peak follows the window budget plus the
+  neighbours' entries. The neighbours are few only when stored cell order is
+  spatially coherent; in random order each window reads close to the whole
+  view and the bound weakens. A spatial sort at write time, or a spilling
+  carrier (DuckDB), is the next step if that becomes the limit.
 - The covariate join-count null assumes an unweighted network.
 
 ## Alternatives considered

@@ -47,7 +47,8 @@ setMethod("analyzeData",
             sum = sums$sum, sumsq = sums$sumsq,
             sum3 = sums$sum3, sum4 = sums$sum4,
             deg_sum = sums$deg_sum, deg_sumsq = sums$deg_sumsq,
-            edge_prod = .pe_edge_products(x, network, weighted = weighted)
+            edge_prod = .pe_edge_products(x, network, weighted = weighted,
+                map = map)
         )
         data.table::setattr(out, "graph", list(
             n_cells = n_cells, n_edges = tot$n,

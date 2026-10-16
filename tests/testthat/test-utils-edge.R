@@ -182,3 +182,18 @@ test_that(".pe_edge_products refuses a chain with post ops", {
                       phase = "post")
     expect_error(.pe_edge_products(pe, f$store), "post")
 })
+
+test_that(".pe_edge_products is the same in many windows as in one", {
+    f <- .ep_fixture()
+    pe <- .ep_pe(f$m)
+    u <- unionParquetExprStore(list(.ep_pe(f$m[, 1:12]), .ep_pe(f$m[, 13:30])))
+    ref <- .ep_ref(f$m, f$e$a, f$e$b, f$e$weight)
+    withr::with_options(list(giottodisk.chunk_size = 4L), {
+        expect_equal(.pe_edge_products(pe, f$store, weighted = TRUE), ref)
+        expect_equal(.pe_edge_products(u, f$store, weighted = TRUE), ref)
+        cells <- c(3:20, 25L)
+        keep <- f$e$a %in% cells & f$e$b %in% cells
+        expect_equal(.pe_edge_products(pe[c(2L, 5L), cells], f$store),
+                     .ep_ref(f$m[c(2L, 5L), ], f$e$a[keep], f$e$b[keep]))
+    })
+})
