@@ -38,6 +38,7 @@
     f[["name"]] <- genes$name
     f[["feature_type"]] <- genes$type
     f[["genome"]] <- rep("GRCh38", nrow(genes))
+    f[["_all_tag_keys"]] <- "genome"
     h5$close_all()
 
     mdir <- file.path(dir, stem)

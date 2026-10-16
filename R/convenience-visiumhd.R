@@ -58,12 +58,6 @@ setMethod(
         list2env(obj@paths, envir = environment())
         # `binpath2` is only detected for binned (non-segmented) outputs
         is_seg <- is.null(obj@paths$binpath2)
-        if (!dir.exists(binpath)) {
-            stop("[VisiumHDDiskReader] expects extracted output directories; ",
-                 "found ", binpath, ". Extract it (or load it once with ",
-                 "Giotto::importVisiumHD(), which unpacks it) first.",
-                 call. = FALSE)
-        }
 
         # Distinct names for detected paths used as `gobject_fun` defaults;
         # `binpath = binpath` in a formal would be a recursive default
@@ -85,6 +79,9 @@ setMethod(
             expression_source = obj@expression_source,
             bin = obj@bin,
             barcodes = obj@barcodes,
+            outdir = obj@outdir,
+            force_untar = FALSE,
+            untar_params = list(),
             output = c("exprObj", "store"),
             verbose = NULL,
             ...
@@ -98,6 +95,9 @@ setMethod(
                 expression_source = expression_source,
                 bin = bin,
                 barcodes = barcodes,
+                outdir = outdir,
+                force_untar = force_untar,
+                untar_params = untar_params,
                 output = output,
                 verbose = verbose,
                 ...
@@ -162,12 +162,6 @@ setMethod(
             instructions = NULL,
             verbose = NULL
         ) {
-            # untar arguments are accepted so a call written for the parent
-            # runs unchanged; only extracted directories are read
-            if (isTRUE(force_untar)) {
-                stop("[VisiumHDDiskReader] force_untar: only extracted ",
-                     "output directories are read", call. = FALSE)
-            }
             a <- as.list(environment())
 
             # several units: one reader per bin, each adding into the same
@@ -199,6 +193,12 @@ setMethod(
             }
             su <- sprintf("bin%03d", as.integer(bin))
             funs <- obj@calls
+            # a forced re-extract happens once, before anything is read
+            if (isTRUE(force_untar)) {
+                .visiumhd_untar(expression_path, bin = bin, outdir = outdir,
+                    force = TRUE, untar_params = untar_params,
+                    verbose = verbose)
+            }
 
             spat_filter <- list(
                 array_subset_row = array_subset_row,
@@ -234,6 +234,8 @@ setMethod(
                     remove_zero_rows = expression_remove_zero_rows,
                     split_by_type = expression_split_by_type,
                     expression_source = expression_source,
+                    outdir = outdir,
+                    untar_params = untar_params,
                     verbose = verbose
                 )
                 barcodes <- GiottoClass::spatIDs(expr_list[[1L]]) %||%
@@ -461,8 +463,8 @@ setMethod(
 #' coordinates and filters match the in-memory reader. `create_gobject()` additionally takes
 #' `bin` as a vector (e.g. `c(2, 8, 16)`), a `gobject` to add into, and
 #' `load_bin_mapping = TRUE` to record each unit's parent units (from
-#' `barcode_mappings.parquet`) as cell metadata. Only extracted output
-#' directories are read; `.tar` outputs must be unpacked first.
+#' `barcode_mappings.parquet`) as cell metadata. `NNNum_outputs.tar` bin
+#' outputs are extracted next to the tar (or into `outdir`) on first use.
 #' @param visiumhd_dir Visium HD output directory: the `outs` directory, a
 #'   `binned_outputs` / `square_XXXum` directory, or `segmented_outputs`.
 #' @param backend a `gsource` (typically `gDirSource`) project backend, or a
@@ -535,6 +537,9 @@ importVisiumHDDisk <- function(
     expression_source = c("raw", "filtered"),
     bin = 8L,
     barcodes = NULL,
+    outdir = NULL,
+    force_untar = FALSE,
+    untar_params = list(),
     output = c("exprObj", "store"),
     verbose = NULL,
     ...
@@ -548,6 +553,8 @@ importVisiumHDDisk <- function(
     output <- match.arg(output)
     checkmate::assert_character(barcodes, null.ok = TRUE)
 
+    path <- .visiumhd_untar(path, bin = bin, outdir = outdir,
+        force = force_untar, untar_params = untar_params, verbose = verbose)
     mat <- .visiumhd_matrix_path(path, expression_source)
     spat_unit <- if (grepl("_feature_cell_matrix", basename(mat))) {
         "cell"
@@ -605,6 +612,20 @@ importVisiumHDDisk <- function(
              " feature matrix under ", path, call. = FALSE)
     }
     hit[[1L]]
+}
+
+
+## tar outputs ####
+
+# A `NNNum_outputs.tar` path becomes its extracted `square_NNNum` directory,
+# extracted by the in-memory reader's own helper (next to the tar, or into
+# `outdir`); any other path is returned as is. The single call site of the
+# internal `Giotto:::.visiumhd_untar_bin`.
+.visiumhd_untar <- function(path, bin, outdir = NULL, force = FALSE,
+                            untar_params = list(), verbose = NULL) {
+    if (!any(GiottoUtils::file_extension(path) %in% "tar")) return(path)
+    do.call(Giotto:::.visiumhd_untar_bin, c(list(path, outdir = outdir,
+        bin = bin, force = force, verbose = verbose), untar_params))
 }
 
 

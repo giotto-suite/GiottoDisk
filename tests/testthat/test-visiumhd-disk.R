@@ -223,3 +223,41 @@ for (src in names(.vhd_sources)) local({
                         "giottoBinPoints")
     })
 })
+
+test_that("[fixture] NNNum_outputs.tar bin outputs are read", {
+    withr::local_options(list(giottodisk.dgc_max_rows = Inf,
+                              giottodisk.dgc_max_cols = Inf))
+    # a copy of the fixture whose 8 um output exists only as a tar
+    root <- withr::local_tempdir()
+    file.copy(.vhd_fixture$root, root, recursive = TRUE)
+    bo <- file.path(root, basename(.vhd_fixture$root), "binned_outputs")
+    withr::with_dir(bo, utils::tar("008um_outputs.tar", "square_008um"))
+    unlink(file.path(bo, "square_008um"), recursive = TRUE)
+
+    gd <- .q(importVisiumHDDisk(bo, backend = withr::local_tempdir(), bin = 8)$
+        create_gobject(load_image = FALSE, verbose = FALSE))
+    expect_true(file.exists(file.path(bo, "square_008um",
+                                      "raw_feature_bc_matrix.h5")))
+    ref <- .q(importVisiumHDDisk(file.path(.vhd_fixture$root, "binned_outputs"),
+        backend = withr::local_tempdir(), bin = 8)$
+        create_gobject(load_image = FALSE, verbose = FALSE))
+    expect_identical(GiottoClass::spatIDs(gd), GiottoClass::spatIDs(ref))
+    m <- function(g) storeRead(GiottoClass::getExpression(g,
+        output = "exprObj")[], output = "dgcmatrix")
+    expect_identical(m(gd), m(ref))
+
+    # load_expression() alone extracts a tar no other loader has touched
+    bo2 <- file.path(withr::local_tempdir(), "binned_outputs")
+    dir.create(bo2)
+    file.copy(file.path(bo, "008um_outputs.tar"), bo2)
+    ex <- .q(importVisiumHDDisk(bo2, backend = withr::local_tempdir(),
+        bin = 8)$load_expression(verbose = FALSE))
+    expect_identical(storeRead(ex[[1L]][], output = "dgcmatrix"), m(ref))
+
+    # a forced re-extract replaces the extracted files
+    h5 <- file.path(bo, "square_008um", "raw_feature_bc_matrix.h5")
+    writeLines("stale", h5)
+    gf <- .q(importVisiumHDDisk(bo, backend = withr::local_tempdir(), bin = 8)$
+        create_gobject(load_image = FALSE, force_untar = TRUE, verbose = FALSE))
+    expect_identical(m(gf), m(ref))
+})

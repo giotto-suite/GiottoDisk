@@ -52,8 +52,8 @@ inherited \code{VisiumHDReader} loaders, so spat_unit names, barcodes,
 coordinates and filters match the in-memory reader. \code{create_gobject()} additionally takes
 \code{bin} as a vector (e.g. \code{c(2, 8, 16)}), a \code{gobject} to add into, and
 \code{load_bin_mapping = TRUE} to record each unit's parent units (from
-\code{barcode_mappings.parquet}) as cell metadata. Only extracted output
-directories are read; \code{.tar} outputs must be unpacked first.
+\code{barcode_mappings.parquet}) as cell metadata. \code{NNNum_outputs.tar} bin
+outputs are extracted next to the tar (or into \code{outdir}) on first use.
 }
 \seealso{
 \code{\link[Giotto:importVisiumHD]{Giotto::importVisiumHD()}} for the in-memory variant
