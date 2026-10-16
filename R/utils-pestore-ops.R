@@ -528,6 +528,8 @@ NULL
 #                       sub-range of it, as the parallel PCA band workers do.
 #   .pe_windows()       substores x their full cell range, as descriptors.
 #                       For a caller that means "the whole view".
+#   .pe_bands() +       one range per worker, and a forked map over them.
+#   .pe_band_lapply()   Chunks within a band come from .pe_chunk_ranges().
 #
 # Neither owns reduction, and that is deliberate: the four reductions in the
 # package are irreconcilable (eager fold, scatter into a preallocated matrix,
@@ -542,6 +544,25 @@ NULL
     chunk_size <- max(1L, as.integer(chunk_size))
     starts <- seq.int(from, to, by = chunk_size)
     lapply(starts, function(cs) c(cs, min(cs + chunk_size - 1L, to)))
+}
+
+# `[1, n]` split into one band per worker: the chunk primitive, one size up.
+.pe_bands <- function(n, n_workers = .par_workers()) {
+    n_workers <- max(1L, as.integer(n_workers))
+    .pe_chunk_ranges(1L, n, max(1L, as.integer(ceiling(n / n_workers))))
+}
+
+# `f` over bands, forked when there is more than one worker on unix, else
+# serial. Fork rather than mirai: workers need GiottoDisk internals
+# (`.pe_read_chunk_sub`, `storeRead` and its S4 dispatch), which a forked child
+# inherits copy-on-write and a socket daemon only has after loading the package.
+.pe_band_lapply <- function(bands, f, n_workers = .par_workers()) {
+    if (.Platform$OS.type == "unix" && n_workers > 1L) {
+        parallel::mclapply(bands, f,
+            mc.cores = n_workers, mc.preschedule = TRUE)
+    } else {
+        lapply(bands, f)
+    }
 }
 
 # Cell-window descriptors over a whole store or union. Each is
