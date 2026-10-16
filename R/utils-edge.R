@@ -65,18 +65,33 @@ NULL
     dplyr::left_join(edges, do.call(arrow::arrow_table, cols), by = by)
 }
 
-# Degree of every node with at least one edge: data.table(int_id, deg). Each
-# stored edge counts once at both ends -- on a directed store that is in-degree
-# plus out-degree. `weighted = TRUE` sums the stored `weight` instead of
-# counting. Nodes with no edge are absent; the caller decides they are 0.
-.edge_degree <- function(x, weighted = FALSE) {
+# Degree of every node with at least one edge in the lazy edge query `edges`
+# (as `storeRead(x, output = "arrow")` gives, or narrowed from it):
+# data.table(int_id, deg). Each edge counts once at both ends -- on a directed
+# store that is in-degree plus out-degree. `weighted = TRUE` sums the `weight`
+# column instead of counting. Nodes with no edge are absent; the caller decides
+# they are 0.
+.edge_degree <- function(edges, weighted = FALSE) {
     from_id <- w <- NULL  # NSE
-    .edge_symmetrise(storeRead(x, output = "arrow"), weight = weighted) |>
+    .edge_symmetrise(edges, weight = weighted) |>
         dplyr::group_by(from_id) |>
         dplyr::summarise(deg = sum(w, na.rm = TRUE)) |>
         dplyr::collect() |>
         data.table::as.data.table() |>
         data.table::setnames("from_id", "int_id")
+}
+
+# The edges of `x` with both ends at cells of the expression store's view, as a
+# lazy query with `from_id`, `to_id` and `weight` (the stored weight when
+# `weighted = TRUE`, else 1). `map` is `.edge_to_cell_map(x, pe)`.
+.edge_view_edges <- function(x, map, weighted = FALSE) {
+    from_id <- to_id <- NULL  # NSE
+    nodes <- arrow::arrow_table(int_id = as.integer(map$int_id))
+    w <- if (isTRUE(weighted)) rlang::sym("weight") else 1.0
+    storeRead(x, output = "arrow") |>
+        dplyr::transmute(from_id = from_id, to_id = to_id, weight = !!w) |>
+        dplyr::semi_join(nodes, by = c(from_id = "int_id")) |>
+        dplyr::semi_join(nodes, by = c(to_id = "int_id"))
 }
 
 # Network nodes -> cells of an expression store, matched by ID:

@@ -64,9 +64,9 @@ test_that(".edge_degree matches igraph, counted and weighted", {
     nm <- dplyr::collect(storeRead(f$store@nodes))
     name_of <- function(d) nm$node_id[match(d$int_id, nm$int_id)]
 
-    d <- .edge_degree(f$store)
+    d <- .edge_degree(storeRead(f$store, output = "arrow"))
     expect_equal(d$deg, unname(igraph::degree(g)[name_of(d)]))
-    dw <- .edge_degree(f$store, weighted = TRUE)
+    dw <- .edge_degree(storeRead(f$store, output = "arrow"), weighted = TRUE)
     expect_equal(dw$deg, unname(igraph::strength(g)[name_of(dw)]))
 })
 
