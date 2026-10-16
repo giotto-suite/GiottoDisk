@@ -64,3 +64,34 @@ NULL
     names(cols) <- c(by, name)
     dplyr::left_join(edges, do.call(arrow::arrow_table, cols), by = by)
 }
+
+# Degree of every node with at least one edge: data.table(int_id, deg). Each
+# stored edge counts once at both ends -- on a directed store that is in-degree
+# plus out-degree. `weighted = TRUE` sums the stored `weight` instead of
+# counting. Nodes with no edge are absent; the caller decides they are 0.
+.edge_degree <- function(x, weighted = FALSE) {
+    from_id <- w <- NULL  # NSE
+    .edge_symmetrise(storeRead(x, output = "arrow"), weight = weighted) |>
+        dplyr::group_by(from_id) |>
+        dplyr::summarise(deg = sum(w, na.rm = TRUE)) |>
+        dplyr::collect() |>
+        data.table::as.data.table() |>
+        data.table::setnames("from_id", "int_id")
+}
+
+# Network nodes -> cells of an expression store, matched by ID:
+# data.table(int_id, pos, row_id[, source_id]). `pos` is the cell's position in
+# the store's current view and `row_id` its ON-DISK id (ADR 0003), so a caller
+# can key a payload or join edges onto the triplets. A node with no cell in the
+# view is absent, as is a cell with no node.
+.edge_to_cell_map <- function(x, pe) {
+    pos <- NULL  # NSE
+    lk <- .edge_vertex_lookup(x,
+        stats::setNames(seq_along(pe@cell_ids), pe@cell_ids))
+    nodes <- data.table::data.table(int_id = lk$int_id, pos = lk$value)
+    out <- merge(nodes, .pe_axis_pos_map(pe, "cell"), by = "pos")
+    data.table::setnames(out, "key_id", "row_id")
+    data.table::setcolorder(out, c("int_id", "pos", "row_id"))
+    data.table::setorder(out, pos)
+    out[]
+}

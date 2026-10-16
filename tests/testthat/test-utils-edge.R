@@ -57,3 +57,50 @@ test_that(".edge_join_vertex attaches the value of the chosen endpoint", {
     got <- .edge_collect_named(q, f$store)
     expect_equal(got$v, unname(vals[got$to]))  # NA where `to` is c
 })
+
+test_that(".edge_degree matches igraph, counted and weighted", {
+    f <- .edge_fixture()
+    g <- igraph::graph_from_data_frame(f$dt, directed = FALSE)
+    nm <- dplyr::collect(storeRead(f$store@nodes))
+    name_of <- function(d) nm$node_id[match(d$int_id, nm$int_id)]
+
+    d <- .edge_degree(f$store)
+    expect_equal(d$deg, unname(igraph::degree(g)[name_of(d)]))
+    dw <- .edge_degree(f$store, weighted = TRUE)
+    expect_equal(dw$deg, unname(igraph::strength(g)[name_of(dw)]))
+})
+
+test_that(".edge_to_cell_map matches nodes to cells by ID, in view order", {
+    f <- .edge_fixture()
+    m <- Matrix::sparseMatrix(i = c(1, 2, 1), j = c(1, 3, 5), x = 1,
+        dims = c(2, 5), dimnames = list(c("g1", "g2"),
+                                        c("e", "d", "c", "b", "a")))
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), m)
+    nm <- dplyr::collect(storeRead(f$store@nodes))
+
+    map <- .edge_to_cell_map(f$store, pe)
+    # e has no node; every node has a cell
+    expect_equal(nrow(map), 4L)
+    expect_equal(pe@cell_ids[map$pos], nm$node_id[match(map$int_id, nm$int_id)])
+    expect_equal(map$row_id, map$pos)  # an unsliced store: on-disk = view
+
+    # after a slice, `pos` follows the view and `row_id` stays on disk
+    sub <- pe[, c(5L, 3L)]
+    ms <- .edge_to_cell_map(f$store, sub)
+    expect_equal(sub@cell_ids[ms$pos], c("a", "c"))
+    expect_equal(ms$row_id, c(5L, 3L))
+})
+
+test_that(".edge_to_cell_map carries source_id on a union", {
+    f <- .edge_fixture()
+    mk <- function(ids) {
+        m <- Matrix::sparseMatrix(i = rep(1, length(ids)), j = seq_along(ids),
+            x = 1, dims = c(1, length(ids)), dimnames = list("g1", ids))
+        storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), m)
+    }
+    u <- unionParquetExprStore(list(mk(c("a", "b")), mk(c("c", "d"))))
+    map <- .edge_to_cell_map(f$store, u)
+    expect_equal(u@cell_ids[map$pos], c("a", "b", "c", "d"))
+    expect_equal(map$row_id, c(1L, 2L, 1L, 2L))
+    expect_equal(length(unique(map$source_id)), 2L)
+})
