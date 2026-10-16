@@ -403,6 +403,24 @@ NULL
 }
 
 
+# Append a record at the end of the chain, wherever that end currently is.
+#
+# ADR 0002: "once `@post_ops` is non-empty, subsequent pushes go to `@post_ops`
+# regardless of the op's natural phase". `.pe_push_op()` enforces that by
+# erroring on a lazy push rather than rerouting, so the choice is the caller's
+# to make -- and pushing `"lazy"` unconditionally means every store carrying a
+# post op fails before the accumulator is ever reached.
+#
+# This is placement for ORDER, not for capability. The record has to run after
+# whatever is already queued, and when `@post_ops` is non-empty that means post.
+# Reading the slot to decide what an op *can* do would be invariant 3 of ADR
+# 0004; reading it to decide where the end of the chain is, is not. Only use it
+# for a record with an executor on both carriers.
+.pe_push_op_last <- function(pe, op) {
+    .pe_push_op(pe, op,
+        phase = if (length(pe@post_ops) > 0L) "post" else "lazy")
+}
+
 # Read the store as it stands with NOTHING queued -- the values on disk,
 # ignoring every op in either phase.
 #

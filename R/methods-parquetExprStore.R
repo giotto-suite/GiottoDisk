@@ -1291,9 +1291,7 @@ setMethod("Compare", signature("parquetExprBase", "parquetExprBase"),
     }
     # Lowerable on either carrier, so it goes wherever the chain currently
     # ends -- after a post op it has to run R-side too (monotonic rule).
-    phase <- if (length(x@post_ops) > 0L) "post" else "lazy"
-    .pe_push_op(x, list(type = "compare", op = op, axis = axis, e2 = e2),
-        phase = phase)
+    .pe_push_op_last(x, list(type = "compare", op = op, axis = axis, e2 = e2))
 }
 
 
