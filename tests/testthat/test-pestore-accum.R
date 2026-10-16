@@ -105,3 +105,13 @@ test_that("the value histogram is the same over windows, unions and post ops", {
     expect_equal(.sorted(.pe_value_hist(logged, n_bins = 6L)$counts),
                  .ref_hist(lm, 6L))
 })
+
+test_that("third and fourth power sums match the in-memory sums", {
+    m1 <- .acc_mat(n_cells = 9L, seed = 2L, prefix = "a")
+    m2 <- .acc_mat(n_cells = 6L, seed = 3L, prefix = "b")
+    u <- unionParquetExprStore(list(.acc_store(m1), .acc_store(m2)))
+    mm <- cbind(m1, m2)
+    got <- .stream_expr_accum(u, stats = c("sum3", "sum4"))
+    expect_equal(got$sum3, unname(Matrix::rowSums(mm^3)))
+    expect_equal(got$sum4, unname(Matrix::rowSums(mm^4)))
+})

@@ -333,6 +333,8 @@ setMethod("analyzeData",
 #   sum_det  sum(value where value > thr)     detected entries only
 #   max      max(value)                       stored entries only; folds by
 #                                             max, not sum
+#   sum3     sum(value^3)                     every stored entry
+#   sum4     sum(value^4)                     every stored entry
 #
 # `thr` is a detection predicate: it selects which entries COUNT, and never
 # reduces a magnitude that participates. So `sum` / `sumsq` are unconditional
@@ -340,7 +342,7 @@ setMethod("analyzeData",
 # those two to `>=`, which is what filtering means by a threshold.
 
 # Accumulators `stats` may name; the default is the first four.
-.pe_accum_stats <- c("sum", "sumsq", "nnz", "sum_det", "max")
+.pe_accum_stats <- c("sum", "sumsq", "nnz", "sum_det", "max", "sum3", "sum4")
 
 .stream_expr_accum <- function(pe,
     axis = c("feat", "cell"),
@@ -497,7 +499,9 @@ setMethod("analyzeData",
         sum_det = rlang::expr(
             sum(value * as.integer(!!detected), na.rm = TRUE)
         ),
-        max     = rlang::expr(max(value, na.rm = TRUE))
+        max     = rlang::expr(max(value, na.rm = TRUE)),
+        sum3    = rlang::expr(sum(value * value * value, na.rm = TRUE)),
+        sum4    = rlang::expr(sum(value * value * value * value, na.rm = TRUE))
     )
     aggr_exprs <- all_exprs[stats]
 
