@@ -586,6 +586,12 @@ test_that("several bin sizes load into one object with parent bins", {
                             load_image = FALSE, load_mask = FALSE,
                             verbose = FALSE)
     expect_setequal(names(g2@expression), c("bin10", "bin20"))
+
+    # one bin size has no parents to record, and says so
+    expect_message(rd$create_gobject(bin_size = "bin10", load_bin_mapping = TRUE,
+                                     load_image = FALSE, load_mask = FALSE,
+                                     verbose = TRUE),
+                   "two or more bin sizes")
 })
 
 test_that("[dataset] SAW bins nest by coordinate", {

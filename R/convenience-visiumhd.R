@@ -174,23 +174,16 @@ setMethod(
             # object. Paths are re-detected per bin, and the image, the 2 um
             # bin points and any tessellation are loaded once.
             if (length(bin) > 1L) {
-                bins <- as.integer(bin)
-                g <- gobject
-                for (b_i in seq_along(bins)) {
-                    rb <- obj
-                    rb$bin <- bins[[b_i]]
-                    ab <- a[setdiff(names(a), c(
-                        "tissue_positions_path", "scalefactors_path",
-                        "expression_path", "image_path"))]
-                    ab$bin <- bins[[b_i]]
-                    ab$gobject <- g
-                    ab$load_image <- load_image && b_i == 1L
-                    ab$load_transcripts <- load_transcripts && b_i == 1L
-                    ab$create_tessellated_polys <- create_tessellated_polys &&
-                        b_i == 1L
-                    g <- do.call(rb@calls$create_gobject, ab)
-                }
-                return(g)
+                a <- a[setdiff(names(a), c("tissue_positions_path",
+                    "scalefactors_path", "expression_path", "image_path"))]
+                return(.create_units(a, "bin", as.integer(bin),
+                    once = c("load_image", "load_transcripts",
+                             "create_tessellated_polys"),
+                    create_for = function(b) {
+                        rb <- obj
+                        rb$bin <- b
+                        rb@calls$create_gobject
+                    }))
             }
 
             load_expression <- as.logical(load_expression)

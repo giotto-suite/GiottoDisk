@@ -121,22 +121,20 @@ setMethod(
             # and binpoints are loaded once.
             if (type == "bin" && length(bin_size) > 1L) {
                 a <- as.list(environment())
-                g <- gobject
-                for (b_i in seq_along(bin_size)) {
-                    ab <- a
-                    ab$bin_size <- bin_size[[b_i]]
-                    ab$gobject <- g
-                    ab$load_bin_mapping <- FALSE
-                    ab$load_image <- load_image && b_i == 1L
-                    ab$load_mask <- load_mask && b_i == 1L
-                    ab$load_binpoints <- load_binpoints && b_i == 1L
-                    g <- do.call(obj@calls$create_gobject, ab)
-                }
+                a$load_bin_mapping <- FALSE
+                g <- .create_units(a, "bin_size", bin_size,
+                    once = c("load_image", "load_mask", "load_binpoints"),
+                    create_for = function(b) obj@calls$create_gobject)
                 if (isTRUE(load_bin_mapping) && load_spatlocs) {
                     g <- .stereoseq_add_parent_bins(g, bin_size,
                         negative_y = negative_y, verbose = verbose)
                 }
                 return(g)
+            }
+            if (isTRUE(load_bin_mapping)) {
+                GiottoUtils::vmsg(.v = verbose, "[StereoSeqDiskReader]",
+                    "load_bin_mapping: parent bins need two or more bin",
+                    "sizes in one call; none added")
             }
 
             spat_unit <- if (type == "bin") bin_size else "cell"

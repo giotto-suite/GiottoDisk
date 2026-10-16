@@ -18,7 +18,7 @@
   (`bin_size = c("bin50", "bin100")`), each its own spat_unit in one object, and
   a `gobject` to add into. `load_bin_mapping = TRUE` records each bin's parent
   bins as cell metadata, from the bin coordinates (SAW writes binN coordinates
-  as multiples of N).
+  as multiples of N); with one bin size there are no parents, and it says so.
 - `analyzeData()` for a `dwlsDeconvParam` on a `parquetExprBase`: spatialDWLS
   deconvolution of a disk-backed store, so `runDWLSDeconv()` works on backed
   objects. The store is narrowed to the signature features and read one
