@@ -83,15 +83,29 @@ NULL
 
 # The edges of `x` with both ends at cells of the expression store's view, as a
 # lazy query with `from_id`, `to_id` and `weight` (the stored weight when
-# `weighted = TRUE`, else 1). `map` is `.edge_to_cell_map(x, pe)`.
+# `weighted = TRUE`, else 1), one row per pair of cells. `map` is
+# `.edge_to_cell_map(x, pe)`.
+#
+# A directed store (a kNN network) can hold a mutual pair in both directions;
+# those collapse to one canonical row whose weight is the mean of the two, the
+# symmetric part of the weights. An undirected store is canonical already.
 .edge_view_edges <- function(x, map, weighted = FALSE) {
-    from_id <- to_id <- NULL  # NSE
+    from_id <- to_id <- a <- b <- weight <- NULL  # NSE
     nodes <- arrow::arrow_table(int_id = as.integer(map$int_id))
     w <- if (isTRUE(weighted)) rlang::sym("weight") else 1.0
-    storeRead(x, output = "arrow") |>
+    q <- storeRead(x, output = "arrow") |>
         dplyr::transmute(from_id = from_id, to_id = to_id, weight = !!w) |>
         dplyr::semi_join(nodes, by = c(from_id = "int_id")) |>
         dplyr::semi_join(nodes, by = c(to_id = "int_id"))
+    if (!isTRUE(x@directed)) return(q)
+    q |>
+        dplyr::transmute(
+            a = dplyr::if_else(from_id <= to_id, from_id, to_id),
+            b = dplyr::if_else(from_id <= to_id, to_id, from_id),
+            weight = weight) |>
+        dplyr::group_by(a, b) |>
+        dplyr::summarise(weight = mean(weight), .groups = "drop") |>
+        dplyr::select(from_id = a, to_id = b, weight)
 }
 
 # Network nodes -> cells of an expression store, matched by ID:
@@ -111,12 +125,12 @@ NULL
     out[]
 }
 
-# Per-feature sum over the stored edges of `w * x_i * x_j`, where x is the
-# value the store's chain produces in the cells at the two ends of an edge and
-# `w` the edge's `weight` (`weighted = TRUE`) or 1. Returns a numeric vector in
-# the store's feature view order. An undirected store keeps each edge once, so
-# this is the sum over undirected edges; an edge with an end outside the view,
-# or at a node with no cell, contributes nothing.
+# Per-feature sum over the pairs of cells joined by `x` of `w * x_i * x_j`,
+# where x is the value the store's chain produces in the two cells and `w` the
+# pair's weight (`weighted = TRUE`) or 1 -- each pair once, as
+# `.edge_view_edges()` gives them. Returns a numeric vector in the store's
+# feature view order. An edge with an end outside the view, or at a node with
+# no cell, contributes nothing.
 #
 # The cross-cell term of every edge statistic (Moran's I, Geary's C, join
 # counts) -- the per-cell terms are ordinary accumulators. One arrow plan:
@@ -129,7 +143,7 @@ NULL
 # matched on the feature's view position instead. A chain with post ops cannot
 # lower into the plan, so it is refused rather than materialized whole.
 .pe_edge_products <- function(pe, x, weighted = FALSE) {
-    from_id <- to_id <- w <- v1 <- v2 <- fkey <- col_id <- NULL  # NSE
+    from_id <- to_id <- w <- v1 <- v2 <- fkey <- col_id <- weight <- NULL  # NSE
     if (length(pe@post_ops) > 0L) {
         stop("[.pe_edge_products] the store's op chain has R-side (post) ",
              "ops, which cannot run inside the edge join. Materialize it ",
@@ -164,9 +178,8 @@ NULL
         dplyr::select(trip, !!!rlang::syms(sel))
     }
 
-    w_expr <- if (isTRUE(weighted)) rlang::sym("weight") else 1.0
-    res <- storeRead(x, output = "arrow") |>
-        dplyr::transmute(from_id = from_id, to_id = to_id, w = !!w_expr) |>
+    res <- .edge_view_edges(x, cmap, weighted) |>
+        dplyr::transmute(from_id = from_id, to_id = to_id, w = weight) |>
         dplyr::inner_join(end_tab("from"), by = "from_id") |>
         dplyr::inner_join(end_tab("to"), by = "to_id") |>
         dplyr::inner_join(trip_end("from", "v1"),

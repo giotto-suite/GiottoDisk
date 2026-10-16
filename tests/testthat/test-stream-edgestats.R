@@ -98,3 +98,19 @@ test_that("the grouped attribute reproduces the in-memory one", {
         attr(GiottoClass::analyzeData(f$m[, sub_cells], p, network = f$net,
             groups = grp), "grouped"))
 })
+
+test_that("a directed store's mutual pairs count once, at their mean weight", {
+    f <- .es_fixture()
+    both <- data.table::rbindlist(list(f$net,
+        data.frame(from = f$net$to, to = f$net$from, weight = f$net$weight * 3)))
+    s <- storeWrite(storeCreate(type = "parquetEdgeStore"), both,
+        type = "kNN", directed = TRUE)
+    mean_w <- f$net
+    mean_w$weight <- f$net$weight * 2
+    pe <- .es_pe(f$m)
+    for (wt in c(FALSE, TRUE)) {
+        p <- GiottoClass::edgeStatsParam(weighted = wt)
+        .es_expect_contract(GiottoClass::analyzeData(pe, p, network = s),
+            GiottoClass::analyzeData(f$m, p, network = if (wt) mean_w else f$net))
+    }
+})
