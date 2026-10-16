@@ -1,17 +1,4 @@
-# GiottoDisk 0.0.0.4
-
-## breaking changes
-- `calculateOverlap()` on disk stores picks its engine the way `spatRelate()`
-  does: `engine = NULL` (the new default) reads
-  `options(giottodisk.spatial_query_engine)`, and unset or `"auto"` takes the
-  first installed of sedona, duckdb and terra. It was always terra before. A
-  call that supplies a terra tiling argument (`threshold`, `tiles`, `pad_y`,
-  `poly_buf_factor`, `tile_idx`, `prune_tiles`) still gets terra under auto.
-- `calculateOverlap()` on disk stores returns its overlap in a
-  `queryableStore` instead of a `parquetStore`. The files no longer carry a
-  `row_index` column; a row is keyed by `(pt_tile_index, pt_row_index,
-  poly_ID)`. Projects saved with an older GiottoDisk drop their disk overlaps
-  on load, with a warning; rerun `calculateOverlap()` to rebuild them.
+# GiottoDisk 0.0.0.5
 
 ## new
 - The Stereo-seq disk reader's `create_gobject()` takes several bin sizes
@@ -34,9 +21,6 @@
   its Rust backend is smotif's choice. Labels are expected named by node ID.
   `strata` and `anchored_on` are not supported on a backed network yet and
   error rather than falling back. Needs smotif >= 0.2.0 (Suggests).
-- `calculateOverlap(engine = "sedona")` (sedonadb >= 0.4): one spatial join
-  over both stores. On a 624M-point, 170k-cell Atera sample it takes 39 s,
-  against about 12 minutes for `engine = "terra"`.
 
 ## changes
 - `tenxH5Input` sizes its batches by stored values from free memory, as the
@@ -48,19 +32,11 @@
   imports `smotifParam`, which a `gsource` install reporting 4.3.0 may predate;
   against one, loading failed with an S4 import error instead of a version
   message.
-- `calculateOverlap(engine = "duckdb")` reads both stores through
-  `storeRead()`, so filters pending on either store now apply (it used to
-  read the raw files and count filtered-out cells and features). It no
-  longer numbers the rows in a single pass, which ran the whole join on one
-  thread: about 4 minutes on the Atera sample instead of about 12.
-- `overlapToMatrix()` to a `parquetExprStore` runs as one DuckDB query when
-  duckdb is installed: 17.5 s for the Atera sample's 300M values, against
-  80 s through Arrow, which remains the path without duckdb. A new `engine`
-  argument (`"duckdb"` or `"arrow"`) picks one explicitly; the default
-  `NULL` takes duckdb and falls back to arrow.
-- `overlapToMatrix()` drops overlap rows outside the feature and cell ID
-  universes instead of writing them with missing keys, so narrowing an
-  overlap's `@spat_ids` / `@feat_ids` narrows the matrix.
+- `overlapToMatrix()` to a `parquetExprStore` takes an `engine` argument
+  (`"duckdb"` or `"arrow"`) to pick one explicitly; the default `NULL` takes
+  duckdb and falls back to arrow.
+- Requires `GiottoClass (>= 0.7.10)`, so `calculateOverlap(feat_count_column =
+  FALSE)` on store-backed points reaches the disk method.
 
 ## bug fixes
 - `overlapToMatrix()` on a disk overlap sums a `count` column by default, as
@@ -68,6 +44,41 @@
   It also takes `feat_count_column`, the name GiottoClass passes, which was
   ignored before. `calculateOverlap(feat_count_column = FALSE)` leaves `count`
   out of the overlap, as in memory.
+
+# GiottoDisk 0.0.0.4
+
+## breaking changes
+- `calculateOverlap()` on disk stores picks its engine the way `spatRelate()`
+  does: `engine = NULL` (the new default) reads
+  `options(giottodisk.spatial_query_engine)`, and unset or `"auto"` takes the
+  first installed of sedona, duckdb and terra. It was always terra before. A
+  call that supplies a terra tiling argument (`threshold`, `tiles`, `pad_y`,
+  `poly_buf_factor`, `tile_idx`, `prune_tiles`) still gets terra under auto.
+- `calculateOverlap()` on disk stores returns its overlap in a
+  `queryableStore` instead of a `parquetStore`. The files no longer carry a
+  `row_index` column; a row is keyed by `(pt_tile_index, pt_row_index,
+  poly_ID)`. Projects saved with an older GiottoDisk drop their disk overlaps
+  on load, with a warning; rerun `calculateOverlap()` to rebuild them.
+
+## new
+- `calculateOverlap(engine = "sedona")` (sedonadb >= 0.4): one spatial join
+  over both stores. On a 624M-point, 170k-cell Atera sample it takes 39 s,
+  against about 12 minutes for `engine = "terra"`.
+
+## changes
+- `calculateOverlap(engine = "duckdb")` reads both stores through
+  `storeRead()`, so filters pending on either store now apply (it used to
+  read the raw files and count filtered-out cells and features). It no
+  longer numbers the rows in a single pass, which ran the whole join on one
+  thread: about 4 minutes on the Atera sample instead of about 12.
+- `overlapToMatrix()` to a `parquetExprStore` runs as one DuckDB query when
+  duckdb is installed: 17.5 s for the Atera sample's 300M values, against
+  80 s through Arrow, which remains the path without duckdb.
+- `overlapToMatrix()` drops overlap rows outside the feature and cell ID
+  universes instead of writing them with missing keys, so narrowing an
+  overlap's `@spat_ids` / `@feat_ids` narrows the matrix.
+
+## bug fixes
 - `calculateOverlap(engine = "terra", tile_idx = )` on a point tile store
   failed for any `tile_idx`: it widened the outermost tiles' bounds on the
   tile selection, which exposes no bounds, instead of on the plan (#92).
