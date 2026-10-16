@@ -5,7 +5,7 @@
 \alias{Compare,parquetExprBase,numeric-method}
 \alias{Compare,numeric,parquetExprBase-method}
 \alias{Compare,parquetExprBase,parquetExprBase-method}
-\title{Compare an expression store against a scalar}
+\title{Compare an expression store against a threshold}
 \usage{
 \S4method{Compare}{parquetExprBase,numeric}(e1, e2)
 
@@ -14,14 +14,15 @@
 \S4method{Compare}{parquetExprBase,parquetExprBase}(e1, e2)
 }
 \arguments{
-\item{e1, e2}{a \code{parquetExprBase}-inheriting store and a numeric scalar, in
-either order}
+\item{e1, e2}{a \code{parquetExprBase}-inheriting store and either a numeric
+scalar or one threshold per row (as base R's \code{m >= v}), in either order}
 }
 \value{
 the store, with a \code{compare} record appended to its op chain
 }
 \description{
-\code{>}, \code{>=}, \code{<}, \code{<=}, \code{==} and \code{!=} against a numeric scalar return the
+\code{>}, \code{>=}, \code{<}, \code{<=}, \code{==} and \code{!=} against a numeric scalar, or against
+one threshold per row, return the
 store with a lazy indicator queued on its op chain: stored entries that
 pass keep value 1, entries that fail are dropped. Nothing is read until
 the result is, so \code{rowSums(x >= 1)} counts per feature in one streaming
