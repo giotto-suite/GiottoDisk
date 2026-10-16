@@ -276,3 +276,21 @@ test_that("[fixture] a binned dir without the 2 um output reads as bins", {
                      sort(colnames(.vhd_fixture$m8)))
 })
 
+test_that("[fixture] a backed object holding 2 um bin points saves and reloads", {
+    # loadGiotto() otherwise looks for a python environment to reconnect
+    withr::local_options(giotto.use_conda = FALSE)
+    proj <- withr::local_tempdir()
+    g <- .q(Giotto::createGiottoVisiumHDObjectBin(
+        file.path(.vhd_fixture$root, "binned_outputs"), bin = 2,
+        load_expression = FALSE, load_spatlocs = FALSE, load_metadata = FALSE,
+        load_transcripts = TRUE, load_image = FALSE, backend = proj,
+        verbose = FALSE))
+    expect_s4_class(GiottoClass::getFeatureInfo(g, return_giottoPoints = TRUE),
+                    "giottoBinPoints")
+    g <- .q(GiottoClass::saveGiotto(g, name = "points"))
+    g2 <- .q(GiottoClass::loadGiotto(proj, name = "points"))
+    bp <- GiottoClass::getFeatureInfo(g2, return_giottoPoints = TRUE)
+    expect_s4_class(bp, "giottoBinPoints")
+    expect_equal(sum(bp@counts$x), sum(.vhd_fixture$m2))
+})
+
