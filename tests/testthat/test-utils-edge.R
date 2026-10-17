@@ -204,7 +204,8 @@ test_that("a store in non-local cell order is rewritten, with the same result", 
     shuffled <- f$m[, sample(ncol(f$m))]
     pe <- .ep_pe(shuffled)
     ref <- .ep_ref(f$m, f$e$a, f$e$b, f$e$weight)
-    withr::with_options(list(giottodisk.chunk_size = 8L), {
+    withr::with_options(list(giottodisk.chunk_size = 8L,
+                             giottodisk.edge_rewrite_min_windows = 2L), {
         pairs <- .edge_view_pairs(f$store, .edge_to_cell_map(f$store, pe), TRUE)
         expect_false(.pairs_local(pairs, 8L))
         dump <- withr::local_tempdir()
@@ -238,5 +239,19 @@ test_that(".pe_rewrite_cell_order writes the view's values in the new order", {
             rid <- dplyr::collect(storeRead(out, output = "query"))$row_id
             expect_false(is.unsorted(rid))
         }
+    })
+})
+
+test_that("with few windows a non-local store uses breadth-first windows", {
+    f <- .ep_fixture(n = 60L)
+    set.seed(2)
+    pe <- .ep_pe(f$m[, sample(ncol(f$m))])
+    withr::with_options(list(giottodisk.chunk_size = 8L,
+                             giottodisk.edge_rewrite_min_windows = 100L), {
+        dump <- withr::local_tempdir()
+        withr::local_options(giottodisk.artifact_dump = dump)
+        expect_equal(.pe_edge_products(pe, f$store, weighted = TRUE),
+                     .ep_ref(f$m, f$e$a, f$e$b, f$e$weight))
+        expect_length(list.files(dump, recursive = TRUE), 0L)
     })
 })

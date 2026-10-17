@@ -161,10 +161,12 @@ NULL
 # this is a single plan.
 #
 # Row-range windows need a local stored order, or each window's neighbours
-# span the store. When the order is not local the view is first rewritten,
-# out of core, in breadth-first network order into a temporary store
-# (.pe_rewrite_cell_order; temp disk about the size of the view's values,
-# removed on exit), and the windows run on that.
+# span the store. When the order is not local and the windows are many
+# (`giottodisk.edge_rewrite_min_windows`, default 32), the view is first
+# rewritten, out of core, in breadth-first network order into a temporary
+# store (.pe_rewrite_cell_order; temp disk about the size of the view's
+# values, removed on exit), and the windows run on that. With fewer windows,
+# breadth-first windows read by filtered scans are cheaper than the rewrite.
 #
 # On a union a feature's on-disk `col_id` is per substore, so the two ends are
 # matched on the feature's view position instead. A chain with post ops cannot
@@ -195,7 +197,12 @@ NULL
 
     n_cells <- as.integer(pe@n_cells)
     budget <- .pe_window_cells(pe, bytes_per_nz = 300, k = 0L)
-    if (!rewritten && budget < n_cells && !.pairs_local(pairs, budget)) {
+    # The rewrite is a fixed cost of a few passes; scanning per window costs
+    # two scans a window. It pays only when the windows are many (a small
+    # machine); with a few large windows the scans are cheaper.
+    n_win <- ceiling(n_cells / budget)
+    min_win <- getOption("giottodisk.edge_rewrite_min_windows", 32L)
+    if (!rewritten && n_win > min_win && !.pairs_local(pairs, budget)) {
         # stored order is not local: rewrite the view once in network order,
         # where the windows are contiguous row ranges with a thin rim (and
         # never again -- a window narrower than a BFS layer keeps failing the
@@ -210,7 +217,8 @@ NULL
         moved <- data.table::data.table(a = pmin(a2, b2), b = pmax(a2, b2), w = pairs$w)
         return(.pe_edge_products(sorted, x, pairs = moved, rewritten = TRUE))
     }
-    for (win in .pe_edge_windows(pe, budget, n_cells)) {
+    for (win in .pe_edge_windows(pe, budget, n_cells,
+        if (!rewritten && !.pairs_local(pairs, budget)) pairs)) {
         pw <- pairs[a %in% win$from]
         if (!nrow(pw)) next
         part <- .pe_edge_join(win$store, if (win$single) pe else pe[, sort(unique(pw$b))],
@@ -226,16 +234,24 @@ NULL
 # The cell windows `.pe_edge_products()` walks: list(store, from, single) with
 # `from` the window's view positions and `store` the store narrowed to them.
 # One window when the budget covers the view, otherwise row ranges
-# (`.pe_windows()`, which prune row groups). Only sound for a local stored
-# order (`.pairs_local()`); `.pe_edge_products()` rewrites the view first when
-# it is not.
-.pe_edge_windows <- function(pe, budget, n_cells) {
+# (`.pe_windows()`, which prune row groups). Given `pairs` (stored order not
+# local, too few windows to be worth a rewrite), runs of a breadth-first order
+# of the network instead: compact patches whose cells and neighbours are read
+# by a filtered scan each.
+.pe_edge_windows <- function(pe, budget, n_cells, pairs = NULL) {
     if (budget >= n_cells) {
         return(list(list(store = pe, from = seq_len(n_cells), single = TRUE)))
     }
-    lapply(.pe_windows(pe, budget), function(d) list(
-        store = .pe_window_store(d),
-        from = (d$offset + d$cs):(d$offset + d$ce), single = FALSE))
+    if (is.null(pairs)) {
+        return(lapply(.pe_windows(pe, budget), function(d) list(
+            store = .pe_window_store(d),
+            from = (d$offset + d$cs):(d$offset + d$ce), single = FALSE)))
+    }
+    ord <- .pairs_bfs_order(pairs, n_cells)
+    lapply(split(ord, ceiling(seq_along(ord) / budget)), function(w) {
+        w <- sort(w)
+        list(store = pe[, w], from = w, single = FALSE)
+    })
 }
 
 # Is the stored cell order local enough for row-range windows of `budget`

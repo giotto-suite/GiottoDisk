@@ -387,8 +387,13 @@ NULL
     new_pos[order] <- seq_len(n_cells)
 
     fmap <- .pe_axis_pos_map(pe, "feat")
-    if (!"source_id" %in% names(fmap)) fmap[, "source_id" := NA_character_]
-    windows <- .pe_windows(pe, .pe_accum_chunk_size(pe))
+    is_union <- "source_id" %in% names(fmap)
+    if (!is_union) fmap[, "source_id" := NA_character_]
+    # a window holds its triplets about four times over (arrow table, frame,
+    # bucket frame, the split), so size it for that rather than for the
+    # accumulators' grouped rows
+    windows <- .pe_windows(pe, .pe_window_cells(pe, bytes_per_nz = 200, k = 0L))
+    cols <- c("row_id", "col_id", "value", if (is_union) "source_id")
 
     max_rows <- .ingest_batch_rows(96)
     dens <- tryCatch(.pe_view_density(pe), error = function(e) 1)
@@ -399,8 +404,10 @@ NULL
     produce <- function(i) {
         d <- windows[[i]]
         w <- .pe_window_store(d)
-        dt <- data.table::as.data.table(
-            dplyr::collect(storeRead(w, output = "query")))
+        q <- storeRead(w, output = "query")
+        if (!length(w@post_ops)) q <- dplyr::select(q, dplyr::all_of(cols))
+        dt <- data.table::as.data.table(dplyr::collect(q))
+        rm(q)
         if (!nrow(dt)) return(NULL)
         dt <- .pe_apply_post_ops_df(dt, w@post_ops)
         if (!nrow(dt)) return(NULL)
@@ -409,17 +416,19 @@ NULL
         local <- integer(max(ki))
         local[ki[d$cs:d$ce]] <- d$offset + (d$cs:d$ce)
         pos <- local[dt$row_id]
-        src <- if ("source_id" %in% names(dt)) dt$source_id else NA_character_
-        fk <- if (all(is.na(fmap$source_id))) {
-            fmap$pos[match(dt$col_id, fmap$key_id)]
+        fk <- if (!is_union) {
+            fpos <- integer(max(fmap$key_id, dt$col_id))
+            fpos[fmap$key_id] <- fmap$pos
+            fpos[dt$col_id]
         } else {
-            fmap$pos[match(paste(src, dt$col_id),
+            fmap$pos[match(paste(dt$source_id, dt$col_id),
                            paste(fmap$source_id, fmap$key_id))]
         }
         np <- new_pos[pos]
-        data.table::data.table(row_id = np, col_id = as.integer(fk),
-            value = dt$value, b = (np - 1L) %/% per_bucket + 1L)[
-            !is.na(row_id) & !is.na(col_id)]
+        out <- data.table::data.table(row_id = np, col_id = as.integer(fk),
+            value = dt$value, b = (np - 1L) %/% per_bucket + 1L)
+        rm(dt)
+        out[!is.na(row_id) & col_id > 0L]
     }
     finish <- function(dt) {
         dt <- dt[, list(row_id = as.integer(row_id), col_id = as.integer(col_id),
