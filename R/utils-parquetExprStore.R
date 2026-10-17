@@ -365,6 +365,84 @@ NULL
 }
 
 
+# Rewrite a store's view into a new single store at `path` with its cells in
+# `order` (view positions; the new store's cell k is the view's cell
+# order[k]), out of core: one pass reads the view a pruned cell window at a
+# time and spills each triplet to a bucket of its new position
+# (.ingest_spill_iterator), a second reads the buckets back in order and
+# writes them cell-major (.pestore_write_itr). The chain is applied on the
+# way, so the new store holds the values the view produces and has an empty
+# chain. Features keep the view's order. Memory is bounded by the ingest
+# batch budget, whatever the permutation; `storeWrite(pe[, order])` would
+# instead rescan the source once per window when `order` is scattered.
+.pe_rewrite_cell_order <- function(pe, order, path) {
+    row_id <- col_id <- value <- NULL  # NSE
+    if (isTRUE(pe@transposed)) {
+        stop("[.pe_rewrite_cell_order] transpose the store back first.",
+            call. = FALSE)
+    }
+    n_cells <- as.integer(pe@n_cells)
+    stopifnot(length(order) == n_cells, !anyDuplicated(order))
+    new_pos <- integer(n_cells)
+    new_pos[order] <- seq_len(n_cells)
+
+    fmap <- .pe_axis_pos_map(pe, "feat")
+    if (!"source_id" %in% names(fmap)) fmap[, "source_id" := NA_character_]
+    windows <- .pe_windows(pe, .pe_accum_chunk_size(pe))
+
+    max_rows <- .ingest_batch_rows(96)
+    dens <- tryCatch(.pe_view_density(pe), error = function(e) 1)
+    n_rec <- as.numeric(n_cells) * as.numeric(pe@n_genes) * min(1, dens)
+    n_buckets <- .ingest_n_buckets(n_rec, max_rows)
+    per_bucket <- max(1L, as.integer(ceiling(n_cells / n_buckets)))
+
+    produce <- function(i) {
+        d <- windows[[i]]
+        w <- .pe_window_store(d)
+        dt <- data.table::as.data.table(
+            dplyr::collect(storeRead(w, output = "query")))
+        if (!nrow(dt)) return(NULL)
+        dt <- .pe_apply_post_ops_df(dt, w@post_ops)
+        if (!nrow(dt)) return(NULL)
+        sub <- d$sub
+        ki <- if (length(sub@cell_idx)) sub@cell_idx else seq_len(sub@n_cells)
+        local <- integer(max(ki))
+        local[ki[d$cs:d$ce]] <- d$offset + (d$cs:d$ce)
+        pos <- local[dt$row_id]
+        src <- if ("source_id" %in% names(dt)) dt$source_id else NA_character_
+        fk <- if (all(is.na(fmap$source_id))) {
+            fmap$pos[match(dt$col_id, fmap$key_id)]
+        } else {
+            fmap$pos[match(paste(src, dt$col_id),
+                           paste(fmap$source_id, fmap$key_id))]
+        }
+        np <- new_pos[pos]
+        data.table::data.table(row_id = np, col_id = as.integer(fk),
+            value = dt$value, b = (np - 1L) %/% per_bucket + 1L)[
+            !is.na(row_id) & !is.na(col_id)]
+    }
+    finish <- function(dt) {
+        dt <- dt[, list(row_id = as.integer(row_id), col_id = as.integer(col_id),
+                        value = as.numeric(value))]
+        data.table::setkeyv(dt, c("row_id", "col_id"))
+        dt
+    }
+    itr <- .ingest_spill_iterator(produce, length(windows), n_buckets,
+        finish, max_rows)
+    cell_ids <- pe@cell_ids[order]
+    feat_ids <- pe@feat_ids
+    itr$cell_ids <- function() cell_ids
+    itr$feat_ids <- function() feat_ids
+    itr$n_cells <- function() n_cells
+    itr$n_genes <- function() length(feat_ids)
+
+    out <- parquetExprStore(path = path)
+    partition_dir <- .idpath(path, out@uid)
+    dir.create(partition_dir, recursive = TRUE, showWarnings = FALSE)
+    .pestore_write_itr(out, itr, partition_dir)
+}
+
+
 # Build chunk boundaries that respect duplicate-name groups: never split
 # a run of raw geneDT rows that share the same name_to_row between two
 # chunks. Non-adjacent duplicates are summed later, by the batch aggregate of

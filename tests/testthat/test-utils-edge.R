@@ -198,7 +198,7 @@ test_that(".pe_edge_products is the same in many windows as in one", {
     })
 })
 
-test_that("windows follow the network when stored cell order is not local", {
+test_that("a store in non-local cell order is rewritten, with the same result", {
     f <- .ep_fixture(n = 60L)
     set.seed(1)
     shuffled <- f$m[, sample(ncol(f$m))]
@@ -206,11 +206,37 @@ test_that("windows follow the network when stored cell order is not local", {
     ref <- .ep_ref(f$m, f$e$a, f$e$b, f$e$weight)
     withr::with_options(list(giottodisk.chunk_size = 8L), {
         pairs <- .edge_view_pairs(f$store, .edge_to_cell_map(f$store, pe), TRUE)
-        wins <- .pe_edge_windows(pe, pairs, 8L, ncol(f$m))
-        # network-ordered windows, each covering every cell once
-        expect_false(inherits(wins[[1]]$store, "parquetExprStore") &&
-            length(wins[[1]]$store@cell_idx) == 0L)
-        expect_setequal(unlist(lapply(wins, `[[`, "from")), seq_len(ncol(f$m)))
+        expect_false(.pairs_local(pairs, 8L))
+        dump <- withr::local_tempdir()
+        withr::local_options(giottodisk.artifact_dump = dump)
         expect_equal(.pe_edge_products(pe, f$store, weighted = TRUE), ref)
+        # the rewritten copy and its spill are removed afterwards
+        expect_length(list.files(dump, recursive = TRUE), 0L)
+        u <- unionParquetExprStore(list(.ep_pe(shuffled[, 1:25]),
+                                        .ep_pe(shuffled[, 26:60])))
+        expect_equal(.pe_edge_products(u, f$store, weighted = TRUE), ref)
+    })
+})
+
+test_that(".pe_rewrite_cell_order writes the view's values in the new order", {
+    f <- .ep_fixture(n = 40L)
+    m <- f$m
+    pe <- .ep_pe(m) |>
+        GiottoClass::processData(Giotto::normParam("library", scalefactor = 100))
+    ord <- c(seq(2L, 40L, by = 2L), seq(1L, 39L, by = 2L))
+    withr::with_options(list(giottodisk.chunk_size = 5L), {
+        for (src in list(pe, pe[c(1L, 4L, 6L), ],
+                         unionParquetExprStore(list(.ep_pe(m[, 1:17]), .ep_pe(m[, 18:40]))))) {
+            out <- .pe_rewrite_cell_order(src, ord, tempfile(fileext = ".parquet"))
+            got <- as.matrix(storeRead(out, output = "dgcmatrix",
+                max_rows = Inf, max_cols = Inf))
+            want <- as.matrix(storeRead(src, output = "dgcmatrix",
+                max_rows = Inf, max_cols = Inf))[, ord]
+            expect_equal(got, want, ignore_attr = TRUE)
+            expect_equal(out@cell_ids, src@cell_ids[ord])
+            expect_length(out@ops, 0L)
+            rid <- dplyr::collect(storeRead(out, output = "query"))$row_id
+            expect_false(is.unsorted(rid))
+        }
     })
 })

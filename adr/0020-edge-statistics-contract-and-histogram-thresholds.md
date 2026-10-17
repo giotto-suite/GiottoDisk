@@ -51,10 +51,13 @@ per-row `compare`), so it agrees with the binning entry for entry.
   edge-only quantity is derived from them. `.pe_edge_products` joins one cell
   window at a time against the triplets of that window's neighbours, so its
   peak follows the window budget plus the neighbours' entries. Windows are row
-  ranges when stored cell order is local, and runs of a breadth-first order of
-  the network otherwise, so the neighbours stay a thin rim either way; the
-  latter read by filtered scans, one per window. Memory is then bounded by the
-  free-RAM window budget, at the cost of more passes on small machines.
+  ranges; when the stored cell order is not local (nearly every pair within a
+  window), the view is first rewritten out of core in breadth-first network
+  order into a temporary store, so the neighbours stay a thin rim. Measured
+  source orders differ: CosMx (FOV order) is local, Xenium partly, Visium HD
+  barcode order not. The rewrite costs about three passes and temporary disk
+  the size of the view's values; a reader that writes cells in spatial order
+  avoids it.
 - The covariate join-count null assumes an unweighted network.
 
 ## Alternatives considered
