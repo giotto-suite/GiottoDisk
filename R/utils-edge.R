@@ -81,31 +81,49 @@ NULL
         data.table::setnames("from_id", "int_id")
 }
 
-# The edges of `x` with both ends at cells of the expression store's view, as a
-# lazy query with `from_id`, `to_id` and `weight` (the stored weight when
-# `weighted = TRUE`, else 1), one row per pair of cells. `map` is
-# `.edge_to_cell_map(x, pe)`.
+# The pairs of cells the edges of `x` join within an expression store's view:
+# data.table(a, b, w) of view positions (`a < b`) and weight (the stored
+# `weight` when `weighted = TRUE`, else 1), one row per pair. `map` is
+# `.edge_to_cell_map(x, pe)`. Edges with an end outside the view are dropped.
 #
 # A directed store (a kNN network) can hold a mutual pair in both directions;
-# those collapse to one canonical row whose weight is the mean of the two, the
-# symmetric part of the weights. An undirected store is canonical already.
-.edge_view_edges <- function(x, map, weighted = FALSE) {
-    from_id <- to_id <- a <- b <- weight <- NULL  # NSE
-    nodes <- arrow::arrow_table(int_id = as.integer(map$int_id))
-    w <- if (isTRUE(weighted)) rlang::sym("weight") else 1.0
-    q <- storeRead(x, output = "arrow") |>
-        dplyr::transmute(from_id = from_id, to_id = to_id, weight = !!w) |>
-        dplyr::semi_join(nodes, by = c(from_id = "int_id")) |>
-        dplyr::semi_join(nodes, by = c(to_id = "int_id"))
-    if (!isTRUE(x@directed)) return(q)
-    q |>
-        dplyr::transmute(
-            a = dplyr::if_else(from_id <= to_id, from_id, to_id),
-            b = dplyr::if_else(from_id <= to_id, to_id, from_id),
-            weight = weight) |>
-        dplyr::group_by(a, b) |>
-        dplyr::summarise(weight = mean(weight), .groups = "drop") |>
-        dplyr::select(from_id = a, to_id = b, weight)
+# it becomes one row at the mean of the two weights, the symmetric part. The
+# edges are read once, as three numeric columns, and everything edge-only
+# downstream (degree, weight totals, group tables, the windows of the edge
+# products) is derived from this table in R rather than by another pass.
+.edge_view_pairs <- function(x, map, weighted = FALSE) {
+    a <- b <- w <- NULL  # NSE
+    cols <- c("from_id", "to_id", if (isTRUE(weighted)) "weight")
+    ev <- storeRead(x, output = "arrow") |>
+        dplyr::select(dplyr::all_of(cols)) |>
+        dplyr::collect()
+    pos <- integer(max(c(map$int_id, 0L)))
+    pos[map$int_id] <- map$pos
+    lookup <- function(id) {
+        id <- as.integer(id)
+        out <- rep(NA_integer_, length(id))
+        ok <- !is.na(id) & id >= 1L & id <= length(pos)
+        out[ok] <- pos[id[ok]]
+        out[out == 0L] <- NA_integer_
+        out
+    }
+    pa <- lookup(ev$from_id)
+    pb <- lookup(ev$to_id)
+    pairs <- data.table::data.table(a = pmin(pa, pb), b = pmax(pa, pb),
+        w = if (isTRUE(weighted)) as.numeric(ev$weight) else 1)
+    rm(ev, pa, pb)
+    pairs <- pairs[!is.na(a) & !is.na(b)]
+    if (isTRUE(x@directed)) pairs <- pairs[, list(w = mean(w)), by = c("a", "b")]
+    pairs[]
+}
+
+# Weighted degree of every view cell from `.edge_view_pairs()`, 0 for none.
+.pairs_degree <- function(pairs, n_cells) {
+    deg <- numeric(n_cells)
+    if (!nrow(pairs)) return(deg)
+    d <- rowsum(c(pairs$w, pairs$w), c(pairs$a, pairs$b))
+    deg[as.integer(rownames(d))] <- d[, 1L]
+    deg
 }
 
 # Network nodes -> cells of an expression store, matched by ID:
@@ -128,7 +146,7 @@ NULL
 # Per-feature sum over the pairs of cells joined by `x` of `w * x_i * x_j`,
 # where x is the value the store's chain produces in the two cells and `w` the
 # pair's weight (`weighted = TRUE`) or 1 -- each pair once, as
-# `.edge_view_edges()` gives them. Returns a numeric vector in the store's
+# `.edge_view_pairs()` gives them. Returns a numeric vector in the store's
 # feature view order. An edge with an end outside the view, or at a node with
 # no cell, contributes nothing.
 #
@@ -146,8 +164,8 @@ NULL
 # matched on the feature's view position instead. A chain with post ops cannot
 # lower into the plan, so it is refused rather than materialized whole.
 .pe_edge_products <- function(pe, x, weighted = FALSE,
-    map = .edge_to_cell_map(x, pe)) {
-    from_id <- to_id <- weight <- a <- NULL  # NSE
+    pairs = .edge_view_pairs(x, .edge_to_cell_map(x, pe), weighted)) {
+    a <- NULL  # NSE
     if (length(pe@post_ops) > 0L) {
         stop("[.pe_edge_products] the store's op chain has R-side (post) ",
              "ops, which cannot run inside the edge join. Materialize it ",
@@ -155,13 +173,7 @@ NULL
     }
     G <- as.integer(pe@n_genes)
     out <- numeric(G)
-    ev <- data.table::as.data.table(dplyr::collect(
-        .edge_view_edges(x, map, weighted)))
-    if (!nrow(ev)) return(out)
-    pairs <- data.table::data.table(
-        a = map$pos[match(ev$from_id, map$int_id)],
-        b = map$pos[match(ev$to_id, map$int_id)],
-        w = as.numeric(ev$weight))
+    if (!nrow(pairs)) return(out)
 
     is_union <- inherits(pe, "unionParquetExprStore")
     cell_key <- c(if (is_union) "source_id", "row_id")
@@ -174,23 +186,48 @@ NULL
         col_id = as.integer(fmap$key_id),
         fkey = as.integer(fmap$pos)))
 
-    windows <- .pe_windows(pe, .pe_window_cells(pe, bytes_per_nz = 300, k = 0L))
-    single <- length(windows) == 1L
-    for (d in windows) {
-        lo <- d$offset + d$cs
-        hi <- d$offset + d$ce
-        pw <- pairs[a >= lo & a <= hi]
+    n_cells <- as.integer(pe@n_cells)
+    budget <- .pe_window_cells(pe, bytes_per_nz = 300, k = 0L)
+    for (win in .pe_edge_windows(pe, pairs, budget, n_cells)) {
+        pw <- pairs[a %in% win$from]
         if (!nrow(pw)) next
-        nb <- sort(unique(pw$b))
-        to_store <- if (single) pe else pe[, nb]
-        part <- .pe_edge_join(.pe_window_store(d), to_store, pw, keys,
-            cell_key, ftab)
+        part <- .pe_edge_join(win$store, if (win$single) pe else pe[, sort(unique(pw$b))],
+            pw, keys, cell_key, ftab)
         if (nrow(part) == 0L) next
         fpos <- if (is_union) part$fkey else fmap$pos[match(part$fkey, fmap$key_id)]
         ok <- !is.na(fpos)
         out[fpos[ok]] <- out[fpos[ok]] + as.numeric(part$T[ok])
     }
     out
+}
+
+# The cell windows `.pe_edge_products()` walks: list(store, from, single) with
+# `from` the window's view positions and `store` the store narrowed to them.
+#
+# One window when the budget covers the view. Otherwise the windows are row
+# ranges (`.pe_windows()`, which prune row groups) when stored cell order is
+# local -- most pairs join cells less than a window apart -- and otherwise runs
+# of a breadth-first order of the network, which keeps each window a compact
+# patch so its neighbours are a thin rim rather than the whole store. Those
+# windows read by a filtered scan, so they cost a scan each but stay bounded
+# however the cells were stored.
+.pe_edge_windows <- function(pe, pairs, budget, n_cells) {
+    if (budget >= n_cells) {
+        return(list(list(store = pe, from = seq_len(n_cells), single = TRUE)))
+    }
+    if (mean(abs(pairs$a - pairs$b) < budget) >= 0.9) {
+        return(lapply(.pe_windows(pe, budget), function(d) list(
+            store = .pe_window_store(d),
+            from = (d$offset + d$cs):(d$offset + d$ce), single = FALSE)))
+    }
+    g <- igraph::graph_from_edgelist(cbind(pairs$a, pairs$b), directed = FALSE)
+    g <- igraph::add_vertices(g, max(0L, n_cells - igraph::vcount(g)))
+    ord <- as.integer(igraph::bfs(g, root = 1L, unreachable = TRUE)$order)
+    ord <- c(ord[!is.na(ord)], setdiff(seq_len(n_cells), ord))
+    lapply(split(ord, ceiling(seq_along(ord) / budget)), function(w) {
+        w <- sort(w)
+        list(store = pe[, w], from = w, single = FALSE)
+    })
 }
 
 # One window of `.pe_edge_products()`: `pw` (view positions a -> b, weight w)
@@ -229,37 +266,32 @@ NULL
         dplyr::collect()
 }
 
-# Group tables of the view's edges for a cell grouping. `code` is an integer
-# group (1..K) per view cell position, `map` is `.edge_to_cell_map(x, pe)`.
+# Group tables of the view's pairs for a cell grouping. `code` is an integer
+# group (1..K) per view cell position, `pairs` is `.edge_view_pairs()`.
 # Returns
-#   a      data.table(int_id, k, l, a): cell int_id of group k has summed edge
-#          weight a to cells of group l
+#   a      data.table(pos, k, l, a): the cell at view position `pos`, of group
+#          k, has summed edge weight a to cells of group l
 #   edges  K x K, sum of a over the cells of group k
 #   paths  K x K x K, [k, l, m] = sum over cells of group k of a_l * a_m
-.edge_group_tables <- function(x, map, code, K, weighted = FALSE) {
-    from_id <- int_id <- l <- w <- k <- a <- i.l <- i.a <- v <- m <- NULL  # NSE
-    lk <- list(int_id = map$int_id, value = code[map$pos])
-    tab <- .edge_symmetrise(.edge_view_edges(x, map, weighted), weight = TRUE) |>
-        .edge_join_vertex(lk, by = "to_id", name = "l") |>
-        dplyr::group_by(from_id, l) |>
-        dplyr::summarise(a = sum(w, na.rm = TRUE)) |>
-        dplyr::collect() |>
-        data.table::as.data.table()
-    data.table::setnames(tab, "from_id", "int_id")
-    tab[, k := lk$value[match(int_id, lk$int_id)]]
+.edge_group_tables <- function(pairs, code, K) {
+    pos <- l <- w <- k <- a <- i.l <- i.a <- v <- m <- NULL  # NSE
+    tab <- data.table::data.table(
+        pos = c(pairs$a, pairs$b),
+        l = code[c(pairs$b, pairs$a)],
+        w = c(pairs$w, pairs$w)
+    )[, list(a = sum(w)), by = c("pos", "l")]
+    tab[, k := code[pos]]
 
     edges <- matrix(0, K, K)
+    paths <- array(0, c(K, K, K))
     if (nrow(tab)) {
         e <- tab[, list(a = sum(a)), by = c("k", "l")]
         edges[cbind(e$k, e$l)] <- e$a
-    }
-    paths <- array(0, c(K, K, K))
-    if (nrow(tab)) {
-        pp <- tab[tab, on = "int_id", allow.cartesian = TRUE,
+        pp <- tab[tab, on = "pos", allow.cartesian = TRUE,
             list(k, l, m = i.l, v = a * i.a)][
             , list(v = sum(v)), by = c("k", "l", "m")]
         paths[cbind(pp$k, pp$l, pp$m)] <- pp$v
     }
-    list(a = tab[, c("int_id", "k", "l", "a"), with = FALSE],
+    list(a = tab[, c("pos", "k", "l", "a"), with = FALSE],
          edges = edges, paths = paths)
 }

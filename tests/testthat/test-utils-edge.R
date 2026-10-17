@@ -197,3 +197,20 @@ test_that(".pe_edge_products is the same in many windows as in one", {
                      .ep_ref(f$m[c(2L, 5L), ], f$e$a[keep], f$e$b[keep]))
     })
 })
+
+test_that("windows follow the network when stored cell order is not local", {
+    f <- .ep_fixture(n = 60L)
+    set.seed(1)
+    shuffled <- f$m[, sample(ncol(f$m))]
+    pe <- .ep_pe(shuffled)
+    ref <- .ep_ref(f$m, f$e$a, f$e$b, f$e$weight)
+    withr::with_options(list(giottodisk.chunk_size = 8L), {
+        pairs <- .edge_view_pairs(f$store, .edge_to_cell_map(f$store, pe), TRUE)
+        wins <- .pe_edge_windows(pe, pairs, 8L, ncol(f$m))
+        # network-ordered windows, each covering every cell once
+        expect_false(inherits(wins[[1]]$store, "parquetExprStore") &&
+            length(wins[[1]]$store@cell_idx) == 0L)
+        expect_setequal(unlist(lapply(wins, `[[`, "from")), seq_len(ncol(f$m)))
+        expect_equal(.pe_edge_products(pe, f$store, weighted = TRUE), ref)
+    })
+})

@@ -6,8 +6,8 @@ NULL
 # the contract and the in-memory method; Giotto computes Moran's I, Geary's C
 # and join counts from it). Composed from existing blocks:
 #
-#   edges in view      .edge_to_cell_map + .edge_view_edges
-#   degree, weights    .edge_degree and one aggregate over the view's edges
+#   pairs in view      .edge_to_cell_map + .edge_view_pairs (edges read once)
+#   degree, weights    .pairs_degree and sums over the pairs
 #   power and degree-  .pe_accum_raw: one pass grouped by degree class, or a
 #   weighted sums      multiply pass per weighted sum when degrees are many
 #   edge products      .pe_edge_products
@@ -17,7 +17,7 @@ NULL
 # With `groups =`, the "grouped" attribute adds per-group power sums (the same
 # accumulator pass grouped by cell group), neighbour-group sums (a weighted
 # `by_cell` pass, each cell listed under the groups its edges reach) and the
-# group edge tables (.edge_group_tables).
+# group edge tables (.edge_group_tables), all from the same pairs.
 
 #' @rdname analyzeData
 #' @param network for an `edgeStatsParam`: the spatial network as a
@@ -32,14 +32,11 @@ setMethod("analyzeData",
         }
         weighted <- isTRUE(param$weighted)
         map <- .edge_to_cell_map(network, x)
-        edges <- .edge_view_edges(network, map, weighted)
+        pairs <- .edge_view_pairs(network, map, weighted)
 
         # per view cell degree, 0 where a cell has no edge in view
         n_cells <- as.integer(x@n_cells)
-        dg <- .edge_degree(edges, weighted = TRUE)
-        deg <- numeric(n_cells)
-        deg[map$pos[match(dg$int_id, map$int_id)]] <- dg$deg
-        tot <- .edge_weight_totals(edges)
+        deg <- .pairs_degree(pairs, n_cells)
 
         sums <- .pe_degree_sums(x, deg)
         out <- data.table::data.table(
@@ -47,23 +44,22 @@ setMethod("analyzeData",
             sum = sums$sum, sumsq = sums$sumsq,
             sum3 = sums$sum3, sum4 = sums$sum4,
             deg_sum = sums$deg_sum, deg_sumsq = sums$deg_sumsq,
-            edge_prod = .pe_edge_products(x, network, weighted = weighted,
-                map = map)
+            edge_prod = .pe_edge_products(x, network, pairs = pairs)
         )
         data.table::setattr(out, "graph", list(
-            n_cells = n_cells, n_edges = tot$n,
-            sum_w = tot$sw, sum_w2 = tot$sw2, sum_deg2 = sum(deg^2)
+            n_cells = n_cells, n_edges = nrow(pairs),
+            sum_w = sum(pairs$w), sum_w2 = sum(pairs$w^2), sum_deg2 = sum(deg^2)
         ))
         if (!is.null(groups)) {
             data.table::setattr(out, "grouped",
-                .pe_edge_stats_grouped(x, network, map, groups, weighted))
+                .pe_edge_stats_grouped(x, pairs, groups))
         }
         out
     }
 )
 
 # The "grouped" attribute of the contract on a store.
-.pe_edge_stats_grouped <- function(x, network, map, groups, weighted) {
+.pe_edge_stats_grouped <- function(x, pairs, groups) {
     pos <- k <- NULL  # NSE
     g <- .pe_cell_groups(x, groups)
     if (anyNA(g)) {
@@ -90,9 +86,8 @@ setMethod("analyzeData",
         , c(key, "k"), with = FALSE]
     agg <- .pe_accum_raw(x, axis = "feat", stats = pw, by_cell = by_group)
 
-    gt <- .edge_group_tables(network, map, code, K, weighted)
-    nb <- merge(gt$a, map[, c("int_id", "pos")], by = "int_id")
-    nb <- merge(nb, cells[, c(key, "pos"), with = FALSE], by = "pos")
+    gt <- .edge_group_tables(pairs, code, K)
+    nb <- merge(gt$a, cells[, c(key, "pos"), with = FALSE], by = "pos")
     nb_cell <- nb[, c(key, "l", "a"), with = FALSE]
     data.table::setnames(nb_cell, c("l", "a"), c("k", "w"))
     nbr <- .pe_accum_raw(x, axis = "feat", stats = "wsum", by_cell = nb_cell)
@@ -108,17 +103,6 @@ setMethod("analyzeData",
         edges = gt$edges,
         paths = gt$paths
     )
-}
-
-# Count, weight sum and squared-weight sum of a lazy edge query.
-.edge_weight_totals <- function(edges) {
-    weight <- NULL  # NSE
-    r <- edges |>
-        dplyr::summarise(n = dplyr::n(), sw = sum(weight),
-                         sw2 = sum(weight * weight)) |>
-        dplyr::collect()
-    z <- function(v) if (!length(v) || is.na(v)) 0 else as.numeric(v)
-    list(n = z(r$n), sw = z(r$sw), sw2 = z(r$sw2))
 }
 
 # Per-feature power sums and degree-weighted sums, `deg` given per view cell.
