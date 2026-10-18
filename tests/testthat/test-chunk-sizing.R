@@ -63,7 +63,7 @@ test_that("plan workers are capped by the memory budget, explicit ones are not",
                               giottodisk.chunk_ram_frac = NULL))
 
     # a budget below one worker's share runs serially
-    withr::local_options(list(giotto.memory_frac = 1e-6))
+    withr::local_options(list(giottodisk.chunk_ram_frac = 1e-6))
     expect_identical(.par_workers(), 1L)
     # never more than the plan offers
     expect_lte(.workers_in_budget(4L), 4L)

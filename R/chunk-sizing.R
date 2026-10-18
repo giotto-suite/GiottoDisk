@@ -21,8 +21,8 @@ NULL
 #   storeChunkInfo          exported report over both read shapes
 #
 # Options that steer it:
-#   giottodisk.chunk_ram_frac   fraction of free RAM to budget (default:
-#                               the suite-wide giotto.memory_frac, 0.25)
+#   giottodisk.chunk_ram_frac   fraction of free RAM to budget (default 0.25);
+#                               also sizes the DuckDB memory limit
 #   giottodisk.chunk_size       pin an absolute window; also the fallback
 #                               when the derivation cannot run
 #   giottodisk.gef_batch_rows   pin the records per Stereo-seq GEF ingest
@@ -101,11 +101,8 @@ NULL
 }
 
 
-# Fraction of free RAM to budget: GiottoDisk's own option, else the suite-wide
-# giotto.memory_frac.
-.ram_frac <- function() {
-    getOption("giottodisk.chunk_ram_frac", getOption("giotto.memory_frac", 0.25))
-}
+# Fraction of free RAM to budget
+.ram_frac <- function() getOption("giottodisk.chunk_ram_frac", 0.25)
 
 # detect free RAM — macOS, Linux, Windows
 .sc_free_ram <- function() {
@@ -161,9 +158,8 @@ NULL
 #' @section Steering the window:
 #' \describe{
 #'   \item{`giottodisk.chunk_ram_frac`}{fraction of free RAM to budget per
-#'     window. Defaults to the suite-wide `giotto.memory_frac` (0.25), which
-#'     also sizes the DuckDB memory limit. Lower it on a busy machine; raise it on a
-#'     dedicated one. Scales every pass without knowing any store's shape. This
+#'     window (default 0.25), which also sizes the DuckDB memory limit. Lower
+#'     it on a busy machine; raise it on a dedicated one. Scales every pass without knowing any store's shape. This
 #'     is the one to reach for first.}
 #'   \item{`giottodisk.chunk_size`}{pins an absolute window in cells, overriding
 #'     the derivation entirely. An escape hatch — for a machine whose free
@@ -291,8 +287,7 @@ setMethod("storeChunkInfo", signature("parquetExprBase"), function(
     print(tbl, row.names = FALSE)
     cat(sprintf(
         "\n   ram_frac marked <-- is the configured value%s.\n\n",
-        if (is.null(getOption("giottodisk.chunk_ram_frac")) &&
-            is.null(getOption("giotto.memory_frac"))) " (default)" else ""
+        if (is.null(getOption("giottodisk.chunk_ram_frac"))) " (default)" else ""
     ))
     invisible(NULL)
 }

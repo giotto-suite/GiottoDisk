@@ -23,10 +23,9 @@
   error rather than falling back. Needs smotif >= 0.2.0 (Suggests).
 
 ## changes
-- Memory budget: `giottodisk.chunk_ram_frac` falls back to the suite-wide
-  `giotto.memory_frac` (GiottoUtils, default 0.25), and the DuckDB memory limit
-  follows the same budget when `giottodisk.duckdb_memory_limit` is unset,
-  instead of a fixed 8 GB.
+- The DuckDB memory limit follows the memory budget
+  (`giottodisk.chunk_ram_frac` of free RAM) when `giottodisk.duckdb_memory_limit`
+  is unset, instead of a fixed 8 GB.
 - Parallel workers from a `future::plan()` are capped by the memory budget
   (about three times the session's R heap each), so a small machine runs the
   forked steps (10x `.h5` ingest, PCA bands, zarr conversion) with fewer

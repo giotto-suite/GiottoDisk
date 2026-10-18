@@ -46,9 +46,8 @@ when the op chain cannot be lowered to Acero.}
 
 \describe{
 \item{\code{giottodisk.chunk_ram_frac}}{fraction of free RAM to budget per
-window. Defaults to the suite-wide \code{giotto.memory_frac} (0.25), which
-also sizes the DuckDB memory limit. Lower it on a busy machine; raise it on a
-dedicated one. Scales every pass without knowing any store's shape. This
+window (default 0.25), which also sizes the DuckDB memory limit. Lower
+it on a busy machine; raise it on a dedicated one. Scales every pass without knowing any store's shape. This
 is the one to reach for first.}
 \item{\code{giottodisk.chunk_size}}{pins an absolute window in cells, overriding
 the derivation entirely. An escape hatch — for a machine whose free
