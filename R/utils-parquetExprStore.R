@@ -246,8 +246,7 @@ NULL
     if (!is.null(pinned)) return(max(1, as.numeric(pinned)))
     free <- tryCatch(.sc_free_ram(), error = function(e) NA_real_)
     if (!isTRUE(is.finite(free)) || free <= 0) return(fallback)
-    ram_frac <- getOption("giottodisk.chunk_ram_frac", 0.25)
-    budget <- .chunk_budget(free, ram_frac, n_cells = 0, k = 0, p = 0)
+    budget <- .chunk_budget(free, .ram_frac(), n_cells = 0, k = 0, p = 0)
     max(1e6, floor(budget / bytes_per_record))
 }
 

@@ -23,6 +23,10 @@
   error rather than falling back. Needs smotif >= 0.2.0 (Suggests).
 
 ## changes
+- Memory budget: `giottodisk.chunk_ram_frac` falls back to the suite-wide
+  `giotto.memory_frac` (GiottoUtils, default 0.25), and the DuckDB memory limit
+  follows the same budget when `giottodisk.duckdb_memory_limit` is unset,
+  instead of a fixed 8 GB.
 - `tenxH5Input` sizes its batches by stored values from free memory, as the
   Stereo-seq GEF readers do, instead of a fixed 250,000 cells, so a matrix with
   many values per cell no longer loads in one oversized batch. In the parallel

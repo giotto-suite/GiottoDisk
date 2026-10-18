@@ -21,7 +21,8 @@ NULL
 #   storeChunkInfo          exported report over both read shapes
 #
 # Options that steer it:
-#   giottodisk.chunk_ram_frac   fraction of free RAM to budget (default 0.25)
+#   giottodisk.chunk_ram_frac   fraction of free RAM to budget (default:
+#                               the suite-wide giotto.memory_frac, 0.25)
 #   giottodisk.chunk_size       pin an absolute window; also the fallback
 #                               when the derivation cannot run
 #   giottodisk.gef_batch_rows   pin the records per Stereo-seq GEF ingest
@@ -48,7 +49,7 @@ NULL
 #   bytes_per_nz  in-memory bytes per stored value; 12 for a chunk landing in
 #                 a sparse matrix, ~48 for a collected triplet frame.
 #   ram_frac      fraction of free RAM to budget per chunk. Defaults to
-#                 getOption("giottodisk.chunk_ram_frac", 0.25).
+#                 `.ram_frac()`.
 #
 # The model is rows x payload-per-row, so nothing here is matrix-specific --
 # a tabular store can use it by supplying its own shape and bytes_per_nz.
@@ -60,7 +61,7 @@ NULL
     density,
     k        = 50L,
     bytes_per_nz = 12,
-    ram_frac = getOption("giottodisk.chunk_ram_frac", 0.25)
+    ram_frac = .ram_frac()
 ) {
     n_cells <- as.numeric(n_cells)
     n_genes <- as.numeric(n_genes)
@@ -99,6 +100,12 @@ NULL
     max(free_bytes * ram_frac - sketch, free_bytes * 0.05)
 }
 
+
+# Fraction of free RAM to budget: GiottoDisk's own option, else the suite-wide
+# giotto.memory_frac.
+.ram_frac <- function() {
+    getOption("giottodisk.chunk_ram_frac", getOption("giotto.memory_frac", 0.25))
+}
 
 # detect free RAM — macOS, Linux, Windows
 .sc_free_ram <- function() {
@@ -154,7 +161,8 @@ NULL
 #' @section Steering the window:
 #' \describe{
 #'   \item{`giottodisk.chunk_ram_frac`}{fraction of free RAM to budget per
-#'     window (default 0.25). Lower it on a busy machine; raise it on a
+#'     window. Defaults to the suite-wide `giotto.memory_frac` (0.25), which
+#'     also sizes the DuckDB memory limit. Lower it on a busy machine; raise it on a
 #'     dedicated one. Scales every pass without knowing any store's shape. This
 #'     is the one to reach for first.}
 #'   \item{`giottodisk.chunk_size`}{pins an absolute window in cells, overriding
@@ -231,7 +239,7 @@ setMethod("storeChunkInfo", signature("parquetExprBase"), function(
         list(pass = "sparse matrix", bytes_per_nz = 12, k = 50L),
         list(pass = "triplet frame", bytes_per_nz = 48, k = 0L)
     )
-    cfg_frac <- getOption("giottodisk.chunk_ram_frac", 0.25)
+    cfg_frac <- .ram_frac()
     fracs    <- sort(unique(c(as.numeric(ram_frac), cfg_frac)))
 
     out <- data.table::rbindlist(lapply(shapes, function(sh) {
@@ -283,7 +291,8 @@ setMethod("storeChunkInfo", signature("parquetExprBase"), function(
     print(tbl, row.names = FALSE)
     cat(sprintf(
         "\n   ram_frac marked <-- is the configured value%s.\n\n",
-        if (is.null(getOption("giottodisk.chunk_ram_frac"))) " (default)" else ""
+        if (is.null(getOption("giottodisk.chunk_ram_frac")) &&
+            is.null(getOption("giotto.memory_frac"))) " (default)" else ""
     ))
     invisible(NULL)
 }
