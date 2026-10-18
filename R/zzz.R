@@ -30,8 +30,8 @@
     # -- dump management
     init_option("giottodisk.artifact_dump", file.path(tempdir(), "gdisk_dump"))
     init_option("giottodisk.adopt_external", FALSE)
-    # -- duckdb
-    init_option("giottodisk.duckdb_memory_limit", "8GB")
+    # -- duckdb: giottodisk.duckdb_memory_limit is left unset, so the limit
+    #    follows the memory budget (see .duckdb_connect())
     # Above this many ids, an axis membership predicate is registered and
     # joined rather than inlined by dbplyr as a literal IN list. Distinct from
     # the sedona threshold below: same number, different engine, and a

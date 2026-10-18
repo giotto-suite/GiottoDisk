@@ -546,9 +546,10 @@ setMethod(
 
 # Number of workers this package should use for band-parallel steps.
 # Priority order:
-#   1. Explicit `options("giottodisk.par_workers")` (int).
+#   1. Explicit `options("giottodisk.par_workers")` (int), used as given.
 #   2. `future::nbrOfWorkers()` if future is installed AND a non-uniprocess
-#      plan is set (backwards-compatible with users who set only a plan).
+#      plan is set (backwards-compatible with users who set only a plan),
+#      capped by what fits the memory budget.
 #   3. Otherwise 1 (serial).
 # On Windows, `parallel::mclapply(mc.cores = n)` silently degrades to
 # sequential, so callers must guard their own fork-path branches.
@@ -557,9 +558,20 @@ setMethod(
     if (!is.null(n)) return(max(1L, as.integer(n)))
     if (requireNamespace("future", quietly = TRUE) &&
         !inherits(future::plan(), "uniprocess")) {
-        return(max(1L, as.integer(future::nbrOfWorkers())))
+        return(.workers_in_budget(future::nbrOfWorkers()))
     }
     1L
+}
+
+# At most `n` workers, as many as fit the memory budget. A worker starts as
+# a copy of this session and grows to about three times its R heap.
+.workers_in_budget <- function(n) {
+    n <- max(1L, as.integer(n))
+    free <- tryCatch(.sc_free_ram(), error = function(e) NA_real_)
+    if (!isTRUE(is.finite(free)) || free <= 0) return(n)
+    per_worker <- 3 * sum(gc(full = FALSE)[, 2L]) * 2^20
+    budget <- .chunk_budget(free, .ram_frac(), n_cells = 0, k = 0, p = 0)
+    max(1L, min(n, as.integer(floor(budget / per_worker))))
 }
 
 # Legacy name; still used by `.storewrite_h5_parallel` on the lapply_flex

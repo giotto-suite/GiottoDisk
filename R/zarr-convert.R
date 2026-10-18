@@ -175,7 +175,8 @@
 #'   (default `NULL`: keep everything, matching the 10x-shipped file)
 #' @param overwrite overwrite existing outputs (default `FALSE`)
 #' @param workers parallel workers for the transcripts step (default
-#'   taken from `options("giottodisk.par_workers")` / the future plan)
+#'   taken from `options("giottodisk.par_workers")`, or the future plan capped
+#'   by the memory budget)
 #' @param compression parquet compression codec (falls back to
 #'   `"snappy"` when the arrow build lacks the requested codec)
 #' @param verbose be verbose
