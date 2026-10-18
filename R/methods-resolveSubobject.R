@@ -567,6 +567,29 @@ setMethod("resolveRecipe",
     }
 )
 
+# Store-backed bin points crop by their points store, as giottoPoints do.
+
+#' @rdname parquetCoordinator-class
+#' @export
+setMethod("resolveRecipe",
+    signature(x = "giottoBinPoints", coordinator = "parquetCoordinator"),
+    function(x, coordinator, keep = NULL, space = NULL, view = NULL,
+             spaces = NULL, ...) {
+        if (!.gbp_store_backed(x)) return(callNextMethod())
+        if (!is.null(space)) {
+            stop("[resolve] spaces are not supported for store-backed bin points",
+                call. = FALSE)
+        }
+        for (step in if (is.null(view)) list() else view@steps) {
+            if (!identical(step$type, "crop")) next
+            y <- GiottoClass::project_region(step$region,
+                from_space = .step_frame(step, spaces), to_space = NULL)
+            x@spatial <- spatRelate(x@spatial, y, relation = step$relation)
+        }
+        x
+    }
+)
+
 # The frame a crop step's region was drawn in, or NULL for the native frame.
 #' @keywords internal
 #' @noRd

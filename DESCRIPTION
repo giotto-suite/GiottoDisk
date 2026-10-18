@@ -25,7 +25,7 @@ Imports:
     digest,
     dplyr,
     Giotto (>= 4.3.2),
-    GiottoClass (>= 0.7.10),
+    GiottoClass (>= 0.7.13),
     GiottoUtils,
     igraph,
     jsonlite,
@@ -74,10 +74,11 @@ Collate:
     'utils.R'
     'class-dataStore.R'
     'class-parquetExprStore.R'
+    'class-parquetStore.R'
+    'binpoints-disk.R'
     'chunk-sizing.R'
     'class-fileInputs.R'
     'class-gsource.R'
-    'class-parquetStore.R'
     'class-parquetEdgeStore.R'
     'class-viewCoordinator.R'
     'convenience-xenium.R'

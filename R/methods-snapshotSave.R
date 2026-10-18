@@ -303,15 +303,23 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
 # detect spatial store uids — uses .ss_store_uids so union stores get
 # expanded to their substore uids (a union has no @uid of its own).
 .ss_gdsrc_detect_uid_spatial_points <- function(gobject) {
-    pts_list <- gobject[["feat_info"]]
-    is_tracked_class <- vapply(pts_list,
-        # giottoBinPoints stay in memory and hold no store
-        function(x) inherits(x, "giottoPoints") && inherits(x[], "dataStore"),
-        FUN.VALUE = logical(1L)
-    )
-    pts_list <- pts_list[is_tracked_class]
-    if (length(pts_list) == 0L) return(c())
-    unlist(lapply(pts_list, function(x) .ss_store_uids(x[])))
+    unlist(lapply(gobject[["feat_info"]], function(x) {
+        lapply(.feat_info_stores(x), .ss_store_uids)
+    }))
+}
+
+# The stores a feature info object holds: a giottoPoints' store, both stores
+# of a store-backed giottoBinPoints. In-memory giottoBinPoints hold none;
+# GiottoClass saves them itself.
+.feat_info_stores <- function(x) {
+    if (inherits(x, "giottoBinPoints")) {
+        if (!.gbp_store_backed(x)) return(list())
+        return(list(spatial = x@spatial, counts = x@counts))
+    }
+    if (inherits(x, "giottoPoints") && inherits(x[], "dataStore")) {
+        return(list(x[]))
+    }
+    list()
 }
 .ss_gdsrc_detect_uid_spatial_polygons <- function(gobject) {
     polys_list <- gobject[["spatial_info"]]
@@ -362,6 +370,23 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
 
     pts_list <- gobject[["feat_info"]]
     for (pts_obj in pts_list) {
+        if (inherits(pts_obj, "giottoBinPoints") &&
+            .gbp_store_backed(pts_obj)) {
+            stores <- .feat_info_stores(pts_obj)
+            external <- !vapply(stores, function(st) sourceContains(src, st),
+                logical(1L))
+            if (!any(external)) next
+            vmsg(.v = verbose, sprintf(
+                "[GiottoDisk] adopting external bin points '%s'",
+                pts_obj@feat_type
+            ))
+            for (s_name in names(stores)[external]) {
+                slot(pts_obj, s_name) <- sourceAdopt(src, stores[[s_name]],
+                    giottosave = giottosave)
+            }
+            gobject <- GiottoClass::setGiotto(gobject, pts_obj, verbose = FALSE)
+            next
+        }
         # giottoBinPoints stay in memory; GiottoClass saves them itself
         if (!inherits(pts_obj, "giottoPoints")) next
         store <- pts_obj[]

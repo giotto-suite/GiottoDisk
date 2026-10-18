@@ -605,3 +605,58 @@ test_that("[dataset] SAW bins nest by coordinate", {
                            load_mask = FALSE, verbose = FALSE)
     .expect_parent_bins(g, "bin100", "bin200", 200L)
 })
+
+test_that("load_binpoints() keeps bin1 on disk and sums it per polygon", {
+    skip_if_not_installed("Giotto")
+    skip_if_not_installed("duckdb")
+    withr::local_options(list(giottodisk.dgc_max_rows = Inf,
+                              giottodisk.dgc_max_cols = Inf,
+                              tilework.warn_sequential = FALSE))
+    set.seed(5)
+    g1 <- expand.grid(c = 0:9, r = 0:9)
+    coords <- data.frame(x = g1$c, y = g1$r)
+    m <- Matrix::rsparsematrix(4L, nrow(coords), 0.4,
+        rand.x = function(n) sample(1:5, n, replace = TRUE))
+    rownames(m) <- c("aaa", "bbb", "ccc", "ddd")
+    ss <- withr::local_tempdir()
+    proj <- withr::local_tempdir()
+    dir.create(file.path(ss, "feature_expression"))
+    suppressMessages(.write_bin_gef(m,
+        file.path(ss, "feature_expression", "SAMPLE.tissue.gef"),
+        bin_key = "bin1", coords = coords))
+
+    bp <- suppressMessages(importStereoSeqDisk(ss, backend = proj)$
+        load_binpoints(verbose = FALSE))
+    expect_s4_class(bp, "giottoBinPoints")
+    expect_true(.gbp_store_backed(bp))
+    expect_equal(nrow(bp), sum(Matrix::colSums(m) > 0))
+
+    # y is negated (negative_y = TRUE); edges fall between bin positions
+    rects <- data.frame(xmin = c(-0.5, 2.5), xmax = c(4.5, 9.5),
+                        ymin = c(-9.5, -6.5), ymax = c(-4.5, 0.5))
+    sv <- terra::vect(sprintf(
+        "POLYGON ((%1$s %3$s, %2$s %3$s, %2$s %4$s, %1$s %4$s, %1$s %3$s))",
+        rects$xmin, rects$xmax, rects$ymin, rects$ymax))
+    sv$poly_ID <- c("p1", "p2")
+    pstore <- sourceWrite(gDirSource(proj), sv)
+    got <- storeRead(overlapToMatrix(calculateOverlap(pstore, bp,
+        engine = "duckdb")), output = "dgcmatrix")
+
+    exp <- vapply(seq_len(nrow(rects)), function(k) {
+        inside <- coords$x > rects$xmin[k] & coords$x < rects$xmax[k] &
+            -coords$y > rects$ymin[k] & -coords$y < rects$ymax[k]
+        Matrix::rowSums(m[, inside, drop = FALSE])
+    }, numeric(nrow(m)))
+    dimnames(exp) <- list(rownames(m), sv$poly_ID)
+    expect_identical(colnames(got), sv$poly_ID)
+    expect_equal(as.matrix(got[rownames(exp), ]), exp)
+
+    # another bin size of the same GEF
+    suppressMessages(.write_bin_gef(m,
+        file.path(ss, "feature_expression", "SAMPLE.tissue.gef"),
+        bin_key = "bin10", coords = coords * 10L))
+    bp10 <- suppressMessages(importStereoSeqDisk(ss, backend = proj)$
+        load_binpoints(bin_size = "bin10", verbose = FALSE))
+    expect_equal(nrow(bp10), sum(Matrix::colSums(m) > 0))
+    expect_equal(ext(bp10)$xmax, ext(bp)$xmax * 10)
+})

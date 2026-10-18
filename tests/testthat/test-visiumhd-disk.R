@@ -141,9 +141,13 @@ for (src in names(.vhd_sources)) local({
         gp <- .q(importVisiumHDDisk(file.path(dir, "binned_outputs"),
             backend = proj, bin = 2)$load_transcripts(verbose = FALSE))[[1L]]
         expect_s4_class(gp, "giottoBinPoints")
+        expect_true(.gbp_store_backed(gp))
         raw2 <- .vhd_h5(file.path(dir,
             "binned_outputs/square_002um/raw_feature_bc_matrix.h5"))
-        expect_equal(sum(gp@counts$x), sum(raw2@x))
+        tot <- dplyr::collect(dplyr::summarise(storeRead(gp@counts),
+                                               x = sum(value)))$x
+        expect_equal(tot, sum(raw2@x))
+        expect_equal(nrow(gp), sum(Matrix::colSums(raw2) > 0))
 
         sdir <- file.path(dir, "segmented_outputs")
         gc <- .q(importVisiumHDDisk(sdir, backend = proj)$
@@ -154,7 +158,9 @@ for (src in names(.vhd_sources)) local({
         expect_s4_class(gpoly[], "parquetGeomStore")
         ov <- calculateOverlap(gpoly, gp, return_gpolygon = FALSE,
                                verbose = FALSE)
-        agg <- overlapToMatrix(ov, feat_count_column = "count")
+        withr::local_options(list(giottodisk.dgc_max_rows = Inf,
+                                  giottodisk.dgc_max_cols = Inf))
+        agg <- storeRead(overlapToMatrix(ov), output = "dgcmatrix")
         shipped <- .vhd_h5(file.path(sdir, "raw_feature_cell_matrix.h5"))
 
         rows <- union(rownames(shipped), rownames(agg))
@@ -194,8 +200,8 @@ for (src in names(.vhd_sources)) local({
             backend = withr::local_tempdir(), bin = 8)$
             create_gobject(load_transcripts = TRUE, load_image = FALSE,
                            verbose = FALSE))
-        expect_s4_class(GiottoClass::getFeatureInfo(g, return_giottoPoints = TRUE),
-                        "giottoBinPoints")
+        expect_s4_class(GiottoClass::getFeatureInfo(g, return_giottoPoints = TRUE), "giottoBinPoints")
+        expect_true(.gbp_store_backed(GiottoClass::getFeatureInfo(g, return_giottoPoints = TRUE)))
         expect_identical(GiottoClass::pDataDT(g, spat_unit = "bin008")$cell_ID,
                          GiottoClass::spatIDs(g, "bin008"))
     })
@@ -219,8 +225,8 @@ for (src in names(.vhd_sources)) local({
             backend = withr::local_tempdir()))
         expect_s4_class(GiottoClass::getPolygonInfo(gc, "cell",
             return_giottoPolygon = TRUE)[], "parquetGeomStore")
-        expect_s4_class(GiottoClass::getFeatureInfo(gc, return_giottoPoints = TRUE),
-                        "giottoBinPoints")
+        expect_s4_class(GiottoClass::getFeatureInfo(gc, return_giottoPoints = TRUE), "giottoBinPoints")
+        expect_true(.gbp_store_backed(GiottoClass::getFeatureInfo(gc, return_giottoPoints = TRUE)))
     })
 })
 
@@ -276,21 +282,64 @@ test_that("[fixture] a binned dir without the 2 um output reads as bins", {
                      sort(colnames(.vhd_fixture$m8)))
 })
 
-test_that("[fixture] a backed object holding 2 um bin points saves and reloads", {
+test_that("[fixture] in-memory bin points set on a backed object are written to stores", {
     # loadGiotto() otherwise looks for a python environment to reconnect
-    withr::local_options(giotto.use_conda = FALSE)
+    withr::local_options(list(giotto.use_conda = FALSE,
+                              tilework.warn_sequential = FALSE))
+    proj <- withr::local_tempdir()
+    bdir <- file.path(.vhd_fixture$root, "binned_outputs")
+    g <- .q(importVisiumHDDisk(bdir, backend = proj, bin = 8)$create_gobject(
+        load_image = FALSE, verbose = FALSE))
+    gbp <- .q(Giotto::importVisiumHD(bdir)$load_transcripts(verbose = FALSE))[[1L]]
+    expect_false(.gbp_store_backed(gbp))
+    g <- GiottoClass::setFeatureInfo(g, gbp, feat_type = "rna", verbose = FALSE)
+    bp <- GiottoClass::getFeatureInfo(g, return_giottoPoints = TRUE)
+    expect_s4_class(bp, "giottoBinPoints")
+    expect_true(.gbp_store_backed(bp))
+    expect_equal(nrow(bp), length(unique(gbp@counts$j)))
+
+    key <- function(d) {
+        d <- d[, list(feat_ID, count = as.numeric(count), x, y)]
+        data.table::setorder(d, feat_ID, x, y)[]
+    }
+    expect_equal(key(data.table::as.data.table(bp, geom = "XY")),
+                 key(data.table::as.data.table(gbp, geom = "XY")),
+                 ignore_attr = TRUE)
+
+    g <- .q(GiottoClass::saveGiotto(g, name = "points"))
+    g2 <- .q(GiottoClass::loadGiotto(proj, name = "points"))
+    bp2 <- GiottoClass::getFeatureInfo(g2, return_giottoPoints = TRUE)
+    expect_true(.gbp_store_backed(bp2))
+    tot <- dplyr::collect(dplyr::summarise(storeRead(bp2@counts),
+                                           x = sum(value)))$x
+    expect_equal(tot, sum(gbp@counts$x))
+})
+
+test_that("[fixture] disk bin points are kept by a snapshot and reload", {
+    withr::local_options(list(giotto.use_conda = FALSE,
+                              tilework.warn_sequential = FALSE))
     proj <- withr::local_tempdir()
     g <- .q(Giotto::createGiottoVisiumHDObjectBin(
         file.path(.vhd_fixture$root, "binned_outputs"), bin = 2,
         load_expression = FALSE, load_spatlocs = FALSE, load_metadata = FALSE,
         load_transcripts = TRUE, load_image = FALSE, backend = proj,
         verbose = FALSE))
-    expect_s4_class(GiottoClass::getFeatureInfo(g, return_giottoPoints = TRUE),
-                    "giottoBinPoints")
-    g <- .q(GiottoClass::saveGiotto(g, name = "points"))
-    g2 <- .q(GiottoClass::loadGiotto(proj, name = "points"))
-    bp <- GiottoClass::getFeatureInfo(g2, return_giottoPoints = TRUE)
+    bp <- GiottoClass::getFeatureInfo(g, return_giottoPoints = TRUE)
     expect_s4_class(bp, "giottoBinPoints")
-    expect_equal(sum(bp@counts$x), sum(.vhd_fixture$m2))
-})
+    expect_true(.gbp_store_backed(bp))
+    uids <- c(storeUID(bp@spatial), storeUID(bp@counts))
 
+    g <- .q(GiottoClass::saveGiotto(g, name = "points"))
+    mfst <- .gdsrc_json_read(proj, consolidate = TRUE)$content
+    for (u in uids) expect_true("points" %in% mfst[[u]]$giottosave)
+    .q(sourcePrune(g))
+
+    g2 <- .q(GiottoClass::loadGiotto(proj, name = "points"))
+    bp2 <- GiottoClass::getFeatureInfo(g2, return_giottoPoints = TRUE)
+    expect_s4_class(bp2, "giottoBinPoints")
+    expect_true(.gbp_store_backed(bp2))
+    expect_identical(nrow(bp2), nrow(bp))
+    tot <- dplyr::collect(dplyr::summarise(storeRead(bp2@counts),
+                                           x = sum(value)))$x
+    expect_equal(tot, sum(.vhd_fixture$m2))
+})
