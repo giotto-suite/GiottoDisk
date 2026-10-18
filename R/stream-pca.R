@@ -629,9 +629,7 @@ setMethod("reduceData",
     # Pass 2 walks the same bands whichever way pass 1 ran.
     n_workers <- .par_workers()
     info1 <- sub_infos[[1L]]
-    n_sub1 <- info1$n_sub
-    band_size <- max(1L, as.integer(ceiling(n_sub1 / n_workers)))
-    bands <- .pe_chunk_ranges(1L, n_sub1, band_size)
+    bands <- .pe_bands(info1$n_sub, n_workers)
 
     kern <- .gram_pass_kernel(pe, P_hvg)
     if (!is.null(kern)) {
@@ -656,16 +654,7 @@ setMethod("reduceData",
             }
             list(G = G_local, s = s_local)
         }
-        # PCA passes use mclapply (fork) — workers need GiottoDisk internals
-        # (`.pe_read_chunk_sub`, `storeRead` and its S4 dispatch) which are only
-        # reachable via COW-inherited namespace on fork, not through mirai
-        # socket workers without a proper `library(GiottoDisk)` in the daemon.
-        partials <- if (.Platform$OS.type == "unix" && n_workers > 1L) {
-            parallel::mclapply(bands, gram_band,
-                mc.cores = n_workers, mc.preschedule = TRUE)
-        } else {
-            lapply(bands, gram_band)
-        }
+        partials <- .pe_band_lapply(bands, gram_band, n_workers)
         partials <- Filter(Negate(is.null), partials)
         G_raw <- Reduce("+", lapply(partials, `[[`, "G"), init = G_raw)
         g_sum <- Reduce("+", lapply(partials, `[[`, "s"),
@@ -769,12 +758,7 @@ setMethod("reduceData",
             list(rows = (info1$offset + rng[1L]):(info1$offset + rng[2L]),
                  band = band_coords)
         }
-        coord_partials <- if (.Platform$OS.type == "unix" && n_workers > 1L) {
-            parallel::mclapply(bands, coords_band,
-                mc.cores = n_workers, mc.preschedule = TRUE)
-        } else {
-            lapply(bands, coords_band)
-        }
+        coord_partials <- .pe_band_lapply(bands, coords_band, n_workers)
         for (p in coord_partials) coords[p$rows, ] <- p$band
     }
 

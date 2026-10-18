@@ -73,7 +73,7 @@ test_that("a per-feature multiply payload reaches the right rows", {
     w <- runif(nrow(f$m), 0.5, 2)
     weighted <- .pe_push_op(pe, list(
         type = "multiply", axis = "feat",
-        factors = .pe_feat_factor_payload(pe, w)
+        factors = .pe_axis_factor_payload(pe, w, "feat")
     ))
     got <- .stream_expr_accum(weighted, axis = "cell", stats = "sum")$sum
     expect_equal(unname(got), unname(colSums(f$m * w)))

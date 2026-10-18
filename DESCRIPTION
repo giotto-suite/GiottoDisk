@@ -126,6 +126,7 @@ Collate:
     'utils-spatial.R'
     'tilework.R'
     'utils-arrow.R'
+    'utils-edge.R'
     'utils-parquetExprStore.R'
     'zarr-array.R'
     'zarr-convert.R'

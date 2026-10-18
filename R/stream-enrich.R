@@ -103,28 +103,6 @@ setMethod("analyzeData",
 }
 
 
-# Build a `multiply` payload for a per-feature vector given in VIEW order.
-#
-# The op registry keys factors by on-disk id per substore uid (see the
-# `multiply` note in utils-pestore-ops.R), and `.pe_axis_pos_map()` is the
-# view-position -> on-disk-key map that every other consumer uses. A single
-# store's map carries no `source_id`, so the payload is keyed by its own uid.
-.pe_feat_factor_payload <- function(pe, w) {
-    map <- .pe_axis_pos_map(pe, "feat")
-    subs <- .exprbase_substores(pe)
-    if (!"source_id" %in% names(map)) {
-        uid <- as.character(subs[[1L]]$store@uid)
-        map <- data.table::copy(map)[, "source_id" := uid]
-    }
-    split_map <- split(map, map$source_id)
-    lapply(split_map, function(d) {
-        v <- numeric(max(d$key_id))
-        v[d$key_id] <- w[d$pos]
-        v
-    })
-}
-
-
 .stream_page <- function(pe, sign_matrix, param) {
     if (isTRUE(param$p_value)) {
         stop("[analyzeData(parquetExprBase, pageEnrichParam)] ",
@@ -180,7 +158,7 @@ setMethod("analyzeData",
     # ---- pass 3: per-cell sum weighted by the reference level --------------
     weighted <- .enrich_push_op(pe, list(
         type = "multiply", axis = "feat",
-        factors = .pe_feat_factor_payload(pe, m)
+        factors = .pe_axis_factor_payload(pe, m, "feat")
     ))
     xm <- .stream_expr_accum(weighted, axis = "cell", stats = "sum")$sum
 
