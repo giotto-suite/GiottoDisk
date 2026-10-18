@@ -183,6 +183,8 @@ NULL
     G <- as.integer(pe@n_genes)
     out <- numeric(G)
     if (!nrow(pairs)) return(out)
+    kern <- .pe_edge_products_kernel(pe, pairs)
+    if (!is.null(kern)) return(kern)
 
     is_union <- inherits(pe, "unionParquetExprStore")
     cell_key <- c(if (is_union) "source_id", "row_id")
@@ -227,6 +229,52 @@ NULL
         fpos <- if (is_union) part$fkey else fmap$pos[match(part$fkey, fmap$key_id)]
         ok <- !is.na(fpos)
         out[fpos[ok]] <- out[fpos[ok]] + as.numeric(part$T[ok])
+    }
+    out
+}
+
+# `.pe_edge_products()` through GiottoKernels' edge_products_stream, when it
+# is installed and the store is a single one; NULL means "use the R path".
+# The kernel holds the triplets it is given in memory (about 28 B a stored
+# value at peak) with random access over every cell, so cell order does not
+# matter and nothing is windowed or rewritten. Memory is bounded instead by
+# streaming the features in blocks -- their sums are independent -- each block
+# sized from the stores' per-feature counts to fit the chunk budget, one
+# filtered scan per block.
+.pe_edge_products_kernel <- function(pe, pairs) {
+    if (inherits(pe, "unionParquetExprStore") ||
+        !.gd_kernel("edge_products_stream")) {
+        return(NULL)
+    }
+    cells <- .pe_axis_pos_map(pe, "cell")
+    kid <- integer(as.integer(pe@n_cells))
+    kid[cells$pos] <- cells$key_id
+    feats <- .pe_axis_pos_map(pe, "feat")
+    n_rows <- max(kid)
+    n_features <- max(feats$key_id)
+    w <- if (all(pairs$w == 1)) NULL else pairs$w
+
+    # feature blocks under the budget, in view order
+    nnz <- pe@stats$col_nnz
+    per <- if (length(nnz) >= n_features) as.numeric(nnz[feats$key_id]) else
+        rep(as.numeric(pe@n_cells), nrow(feats))
+    free <- tryCatch(.sc_free_ram(), error = function(e) NA_real_)
+    budget <- if (isTRUE(is.finite(free)) && free > 0) {
+        .chunk_budget(free, .ram_frac(),
+            n_cells = 0, k = 0, p = 0)
+    } else 2e9
+    pinned <- getOption("giottodisk.edge_kernel_block_nnz")
+    cap <- if (!is.null(pinned)) as.numeric(pinned) else max(1, budget / 28)
+    block <- cumsum(per) %/% cap
+    out <- numeric(as.integer(pe@n_genes))
+    for (b in unique(block)) {
+        sel <- which(block == b)
+        tot <- GiottoKernels::edge_products_stream(
+            .gd_kernel_reader(pe[feats$pos[sel], ]),
+            from = kid[pairs$a], to = kid[pairs$b],
+            n_rows = n_rows, n_features = n_features, w = w,
+            n_threads = .gd_kernel_threads())
+        out[feats$pos[sel]] <- tot[feats$key_id[sel]]
     }
     out
 }

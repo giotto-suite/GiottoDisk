@@ -255,3 +255,21 @@ test_that("with few windows a non-local store uses breadth-first windows", {
         expect_length(list.files(dump, recursive = TRUE), 0L)
     })
 })
+
+test_that("the GiottoKernels path matches the R path, in feature blocks", {
+    skip_if_not(.gd_kernel("edge_products_stream"))
+    f <- .ep_fixture(n = 60L)
+    set.seed(3)
+    pe <- .ep_pe(f$m[, sample(ncol(f$m))]) |>
+        GiottoClass::processData(Giotto::normParam("library", scalefactor = 100))
+    r_path <- function(x, ...) withr::with_options(
+        list(giottodisk.use_kernels = FALSE), .pe_edge_products(x, f$store, ...))
+    for (blk in list(NULL, 20, 1)) {
+        withr::with_options(list(giottodisk.edge_kernel_block_nnz = blk), {
+            expect_equal(.pe_edge_products(pe, f$store, weighted = TRUE),
+                         r_path(pe, weighted = TRUE))
+            expect_equal(.pe_edge_products(pe[c(7L, 2L, 5L), ], f$store),
+                         r_path(pe[c(7L, 2L, 5L), ]))
+        })
+    }
+})

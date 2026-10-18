@@ -20,6 +20,11 @@
   feature, or a rule (`"kmeans"`, `"rank"`) solved per feature on a streamed
   value histogram. Lazy, like the other comparisons.
 - `x > v` on an expression store takes one threshold per row.
+- With GiottoKernels (>= 0.3.0) installed, the edge sums behind the spatial
+  autocorrelation statistics run in its `edge_products_stream()` kernel,
+  streaming the features in blocks sized to the memory budget, so the stored
+  cell order no longer matters. Without it, or for a union store, the R path
+  runs.
 - The Stereo-seq disk reader's `create_gobject()` takes several bin sizes
   (`bin_size = c("bin50", "bin100")`), each its own spat_unit in one object, and
   a `gobject` to add into. `load_bin_mapping = TRUE` records each bin's parent

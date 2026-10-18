@@ -57,7 +57,10 @@ per-row `compare`), so it agrees with the binning entry for entry.
   source orders differ: CosMx (FOV order) is local, Xenium partly, Visium HD
   barcode order not. The rewrite costs about three passes and temporary disk
   the size of the view's values; a reader that writes cells in spatial order
-  avoids it.
+  avoids it. With GiottoKernels installed, the edge sums run in its
+  `edge_products_stream()` kernel instead: every cell of a block of features
+  in memory with random access, so neither windows nor rewrite are needed and
+  memory is bounded by the feature block.
 - The covariate join-count null assumes an unweighted network.
 
 ## Alternatives considered
