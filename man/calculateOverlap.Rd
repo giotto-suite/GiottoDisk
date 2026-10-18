@@ -4,6 +4,7 @@
 \alias{calculateOverlap}
 \alias{calculateOverlap,parquetGeomStore,parquetGeomStore-method}
 \alias{calculateOverlap,parquetGeomStore,parquetGeomTileStore-method}
+\alias{calculateOverlap,parquetGeomStore,giottoBinPoints-method}
 \title{Calculate Overlap}
 \usage{
 \S4method{calculateOverlap}{parquetGeomStore,parquetGeomStore}(
@@ -36,6 +37,15 @@
   feat_id_col = "feat_ID",
   keep_cols = NULL,
   feat_count_column = NULL,
+  ...
+)
+
+\S4method{calculateOverlap}{parquetGeomStore,giottoBinPoints}(
+  x,
+  y,
+  engine = NULL,
+  path = .dump_tempfile(),
+  poly_id_col = "poly_ID",
   ...
 )
 }

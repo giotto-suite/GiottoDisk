@@ -29,6 +29,6 @@ information.
 }
 \seealso{
 Other sourceWrite methods:
-\code{\link{sourceWrite-gDirSource}}
+\code{\link{sourceWrite,gDirSource,giottoBinPoints-method}}
 }
 \concept{sourceWrite methods}

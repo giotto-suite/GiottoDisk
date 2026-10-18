@@ -12,6 +12,7 @@
 \alias{resolveRecipe,spatLocsObj,parquetCoordinator-method}
 \alias{resolveRecipe,giottoPolygon,parquetCoordinator-method}
 \alias{resolveRecipe,giottoPoints,parquetCoordinator-method}
+\alias{resolveRecipe,giottoBinPoints,parquetCoordinator-method}
 \alias{resolveRecipe,exprObj,parquetCoordinator-method}
 \title{parquetCoordinator}
 \usage{
@@ -37,6 +38,16 @@ parquetCoordinator()
 \S4method{resolveRecipe}{giottoPolygon,parquetCoordinator}(x, coordinator, keep = NULL, space = NULL, view = NULL, ...)
 
 \S4method{resolveRecipe}{giottoPoints,parquetCoordinator}(
+  x,
+  coordinator,
+  keep = NULL,
+  space = NULL,
+  view = NULL,
+  spaces = NULL,
+  ...
+)
+
+\S4method{resolveRecipe}{giottoBinPoints,parquetCoordinator}(
   x,
   coordinator,
   keep = NULL,

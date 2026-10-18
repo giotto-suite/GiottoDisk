@@ -89,13 +89,36 @@ setMethod(
         }
         obj@calls$load_expression <- ex_fun
 
+        # bin points (disk override): a bin size's counts and one point per
+        # bin as a store-backed giottoBinPoints, bin1 by default as in the
+        # in-memory loader. `spat_unit` is kept for that loader's signature;
+        # bin points have no spatial unit of their own.
+        bp_fun <- function(
+            path        = .def_bin1_path,
+            gene_column = gene_col_,
+            negative_y  = obj@negative_y,
+            spat_unit   = NULL,
+            bin_size    = "bin1",
+            verbose     = NULL
+        ) {
+            .stereoseq_binpoints_disk(
+                path        = path,
+                gsource     = gsrc,
+                gene_column = gene_column,
+                negative_y  = negative_y,
+                bin_size    = bin_size,
+                verbose     = verbose
+            )
+        }
+        obj@calls$load_binpoints <- bp_fun
+
         # create_gobject (disk variant). Mirrors the parent's gobject_fun
         # body but: (a) initializes the giotto via createGiottoObject(
         # backend = gsrc, ...) instead of bare giotto(), and (b) the
         # expression branch goes through funs$load_expression -- the disk
         # override -- so the parquetExprStore lands in the vault.
-        # Spatlocs / image / binpoints / polygons / mask remain inherited
-        # (in-mem) closures and can be ported following the same pattern.
+        # Spatlocs / image / polygons / mask remain inherited (in-mem)
+        # closures and can be ported following the same pattern.
         gobject_fun <- function(
             load_expression = TRUE,
             load_spatlocs   = TRUE,
@@ -195,7 +218,7 @@ setMethod(
                 g <- GiottoClass::setGiotto(g, sl, verbose = verbose)
             }
 
-            # binpoints (inherited; in-mem)
+            # binpoints (disk)
             if (load_binpoints) {
                 if (is.null(bin1_path)) {
                     stop("[StereoSeqDiskReader] no bin GEF for bin1 binpoints. ",
@@ -401,6 +424,29 @@ importStereoSeqDisk <- function(
 
     attr(out, "bin_coords") <- bin_coords
     out
+}
+
+
+# A bin size as a store-backed giottoBinPoints: its counts through the bin
+# GEF ingest, and one point per bin from the (x, y) map that ingest
+# publishes.
+.stereoseq_binpoints_disk <- function(path, gsource, gene_column = "geneName",
+                                      negative_y = TRUE, bin_size = "bin1",
+                                      verbose = NULL) {
+    if (is.null(path) || !file.exists(path)) {
+        stop("[StereoSeqDiskReader] no bin GEF for the binpoints. ",
+             "Provide `path` explicitly or ensure a *.tissue.gef or *.gef ",
+             "is present.", call. = FALSE)
+    }
+    pe <- .stereoseq_expression_disk(path, gsource = gsource, type = "bin",
+        bin_size = bin_size, gene_column = gene_column, spat_unit = bin_size,
+        output = "store", verbose = verbose)
+    # `pos` is a bin's row in the store, so no bin IDs are needed
+    xy <- attr(pe, "bin_coords")
+    attr(pe, "bin_coords") <- NULL
+    xy <- data.table::data.table(row_id = xy$pos, sdimx = as.integer(xy$x),
+        sdimy = if (isTRUE(negative_y)) -as.integer(xy$y) else as.integer(xy$y))
+    .binpoints_disk(pe, xy, gsource, feat_type = "rna", verbose = verbose)
 }
 
 

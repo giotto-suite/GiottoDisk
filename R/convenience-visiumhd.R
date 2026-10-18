@@ -7,14 +7,15 @@ NULL
 # through the shared 10x path (`.tenx_expression_disk`). Everything else is
 # the inherited closures: tissue positions, cell metadata, scalefactors and
 # images read `tissue_positions.parquet` lazily through arrow and apply every
-# spatial filter, micron scaling and the y flip; the 2 um bins load as the
-# in-memory giottoBinPoints, which a backed object keeps in memory; polygons
-# and tessellations are built in memory and written to the vault by the
-# backed object's setter when attached, as in StereoSeqDiskReader.
+# spatial filter, micron scaling and the y flip; the bin points
+# (`load_transcripts`, the 2 um bins by default) load as a giottoBinPoints
+# (points and counts in the vault); polygons and tessellations
+# are built in memory and written to the vault by the backed object's setter
+# when attached, as in StereoSeqDiskReader.
 #
 # The object takes the same shape as the disk Stereo-seq one -- bin
 # spat_units named as in memory (`bin002`/`bin008`/`bin016`, `cell`),
-# `rna`/`raw` expression, `raw` spatlocs, in-memory giottoBinPoints -- and
+# `rna`/`raw` expression, `raw` spatlocs, bin points -- and
 # several units can be loaded into one object: `create_gobject()` takes a
 # vector of bins and an existing `gobject` to add into, and
 # `load_bin_mapping` records each bin's parent units as cell metadata.
@@ -117,6 +118,83 @@ setMethod(
                                   barcodes = barcodes, verbose = verbose)
         }
         if (!is_seg) obj@calls$load_bin_mapping <- map_fun
+
+        ## bin points (disk) ####
+        # The bins as points: their counts as a parquetExprStore and one point
+        # per bin with counts, as a store-backed giottoBinPoints per feature
+        # type. Takes the
+        # arguments and defaults (the 2 um output) of the in-memory
+        # load_transcripts(), which builds giottoBinPoints.
+        tx_fun <- function(
+            expr_path = .def_binpath2,
+            feature_id_type = obj@feature_id_type,
+            remove_zero_rows = TRUE,
+            split_by_type = TRUE,
+            expression_source = obj@expression_source,
+            tissue_positions_path = .def_binpath2,
+            scalefactors_path = .def_binpath2,
+            micron = obj@micron,
+            outdir = obj@outdir,
+            bin = 2L,
+            tissue_only = obj@tissue_only,
+            barcodes = obj@barcodes,
+            array_subset_row = obj@array_subset_row,
+            array_subset_col = obj@array_subset_col,
+            pxl_subset_row = obj@pxl_subset_row,
+            pxl_subset_col = obj@pxl_subset_col,
+            filter = obj@filter,
+            filter_coverage_cutoff = obj@filter_coverage,
+            force_untar = FALSE,
+            untar_params = list(),
+            verbose = NULL,
+            ...
+        ) {
+            if (is.null(expr_path)) {
+                stop("[VisiumHDDiskReader] no binned output found for the ",
+                     "bin points", call. = FALSE)
+            }
+            sl <- parent$load_tissue_position(
+                path = tissue_positions_path,
+                bin = bin,
+                micron = micron,
+                scalefactors_path = scalefactors_path,
+                barcodes = barcodes,
+                tissue_only = tissue_only,
+                array_subset_row = array_subset_row,
+                array_subset_col = array_subset_col,
+                pxl_subset_row = pxl_subset_row,
+                pxl_subset_col = pxl_subset_col,
+                filter = filter,
+                filter_coverage_cutoff = filter_coverage_cutoff,
+                outdir = outdir,
+                force_untar = force_untar,
+                output = "spatLocsObj",
+                verbose = verbose
+            )
+            stores <- .visiumhd_expression_disk(
+                path = expr_path,
+                gsource = gsrc,
+                feature_id_type = feature_id_type,
+                remove_zero_rows = remove_zero_rows,
+                split_by_type = split_by_type,
+                expression_source = expression_source,
+                bin = bin,
+                barcodes = GiottoClass::spatIDs(sl),
+                outdir = outdir,
+                untar_params = untar_params,
+                output = "store",
+                verbose = verbose
+            )
+            # one bin points store, shared by the feature types
+            bins <- NULL
+            lapply(names(stores), function(ft) {
+                bp <- .binpoints_disk(stores[[ft]], sl, gsrc,
+                    feat_type = ft, bins = bins, verbose = verbose)
+                bins <<- bp@spatial
+                bp
+            })
+        }
+        if (!is_seg) obj@calls$load_transcripts <- tx_fun
 
 
         ## create_gobject (binned) ####
@@ -244,11 +322,9 @@ setMethod(
                 if (!is.null(sl)) sl <- sl[barcodes]
             }
 
-            # 2 um bin points: the inherited loader, with the arguments the
-            # parent's gobject_fun gives it. It reads the 2 um data in memory
-            # itself -- giottoBinPoints needs an in-memory matrix, so the disk
-            # expression is not reused. Unlike the parent, `barcodes` is not
-            # replaced by the 2 um barcodes afterwards: for bin != 2 that
+            # bin points on disk, with the arguments the parent's
+            # gobject_fun gives its loader. Unlike the parent, `barcodes` is
+            # not replaced by the 2 um barcodes afterwards: for bin != 2 that
             # filtered the cell metadata to nothing.
             tx_list <- NULL
             if (load_transcripts) {
@@ -456,10 +532,12 @@ setMethod(
 #' * expression (binned or segmented) streams from the 10x `.h5` (or mtx
 #'   directory) into a `parquetExprStore`;
 #' * cell / nucleus polygons (segmented outputs) and tessellations are
-#'   written to the vault as parquet geometry when attached to the object.
+#'   written to the vault as parquet geometry when attached to the object;
+#' * the bin points (`load_transcripts`, the 2 um bins by default) are a
+#'   `giottoBinPoints` backed by two stores: one point per bin with counts,
+#'   and the bins' counts.
 #'
-#' Tissue positions, cell metadata, images and the 2 um bin points
-#' (`load_transcripts`, an in-memory `giottoBinPoints`) come from the
+#' Tissue positions, cell metadata and images come from the
 #' inherited `VisiumHDReader` loaders, so spat_unit names, barcodes,
 #' coordinates and filters match the in-memory reader. `create_gobject()` additionally takes
 #' `bin` as a vector (e.g. `c(2, 8, 16)`), a `gobject` to add into, and

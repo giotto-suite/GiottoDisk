@@ -1,6 +1,15 @@
 # GiottoDisk 0.0.0.5
 
 ## new
+- Bin points on disk: the Visium HD reader's `load_transcripts()` and the
+  Stereo-seq reader's `load_binpoints()` return a `giottoBinPoints` whose
+  slots hold stores -- one point per bin with counts, and the bins' counts as
+  a `parquetExprStore` -- instead of loading the bins into memory. The finest
+  bins stay the default; both take the bin size. `calculateOverlap()` with
+  polygons intersects the bins only and `overlapToMatrix()` sums their counts
+  per polygon in one DuckDB query; crops, feature selection, subsetting,
+  in-situ plots and snapshots work on them. In-memory bin points set on a
+  backed object are written to stores. Needs `GiottoClass (>= 0.7.13)`.
 - The Stereo-seq disk reader's `create_gobject()` takes several bin sizes
   (`bin_size = c("bin50", "bin100")`), each its own spat_unit in one object, and
   a `gobject` to add into. `load_bin_mapping = TRUE` records each bin's parent
@@ -43,6 +52,10 @@
   FALSE)` on store-backed points reaches the disk method.
 
 ## bug fixes
+- `saveGiotto()` / `loadGiotto()` on a backed object holding `giottoBinPoints`
+  (for example from `load_transcripts = TRUE`) failed with "object of type
+  'S4' is not subsettable": the snapshot steps read every points object as a
+  store. Bin points stay in memory and are saved by GiottoClass.
 - The disk Visium HD reader took a binned directory without the 2 um output
   (for example a single `008um_outputs.tar`) for segmented outputs and failed
   loading polygons. It now uses the in-memory reader's own decision.
