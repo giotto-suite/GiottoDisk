@@ -275,7 +275,7 @@ groups =)` returns GiottoClass's edge-statistics contract; Giotto computes
 Moran's I, Geary's C and binSpect from it (adr/0020). Do not compute a test
 statistic here — add a sum to the contract instead. The pieces are generic:
 `.edge_symmetrise`, `.edge_self_loops`, `.edge_vertex_lookup`,
-`.edge_join_vertex`, `.edge_degree`, `.edge_view_edges`, `.edge_to_cell_map`,
+`.edge_join_vertex`, `.edge_degree`, `.edge_view_pairs`, `.edge_to_cell_map`,
 `.edge_group_tables` (`R/utils-edge.R`) and `.pe_edge_products` (the one
 expression x edge kernel). Network nodes match cells by ID, never by
 `int_id == row_id`. Only edges with both ends in the view count.

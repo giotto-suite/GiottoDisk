@@ -47,9 +47,20 @@ per-row `compare`), so it agrees with the binning entry for entry.
 - Streamed binarization is exact when each feature's distinct positive values
   fall in distinct bins (raw counts up to `n_bins`); on continuous values,
   values sharing a bin act as ties and a split or rank cut can move by one bin.
-- `.pe_edge_products` builds its hash joins on the triplets in view, so its
-  peak memory is of the order of the stored entries. Revisit with a DuckDB
-  carrier or a cell-tiled pass when that exceeds RAM.
+- The view's pairs are read once into R (about 16 B a pair) and every
+  edge-only quantity is derived from them. `.pe_edge_products` joins one cell
+  window at a time against the triplets of that window's neighbours, so its
+  peak follows the window budget plus the neighbours' entries. Windows are row
+  ranges; when the stored cell order is not local (nearly every pair within a
+  window), the view is first rewritten out of core in breadth-first network
+  order into a temporary store, so the neighbours stay a thin rim. Measured
+  source orders differ: CosMx (FOV order) is local, Xenium partly, Visium HD
+  barcode order not. The rewrite costs about three passes and temporary disk
+  the size of the view's values; a reader that writes cells in spatial order
+  avoids it. With GiottoKernels installed, the edge sums run in its
+  `edge_products_stream()` kernel instead: every cell of a block of features
+  in memory with random access, so neither windows nor rewrite are needed and
+  memory is bounded by the feature block.
 - The covariate join-count null assumes an unweighted network.
 
 ## Alternatives considered

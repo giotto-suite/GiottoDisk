@@ -182,3 +182,94 @@ test_that(".pe_edge_products refuses a chain with post ops", {
                       phase = "post")
     expect_error(.pe_edge_products(pe, f$store), "post")
 })
+
+test_that(".pe_edge_products is the same in many windows as in one", {
+    f <- .ep_fixture()
+    pe <- .ep_pe(f$m)
+    u <- unionParquetExprStore(list(.ep_pe(f$m[, 1:12]), .ep_pe(f$m[, 13:30])))
+    ref <- .ep_ref(f$m, f$e$a, f$e$b, f$e$weight)
+    withr::with_options(list(giottodisk.chunk_size = 4L), {
+        expect_equal(.pe_edge_products(pe, f$store, weighted = TRUE), ref)
+        expect_equal(.pe_edge_products(u, f$store, weighted = TRUE), ref)
+        cells <- c(3:20, 25L)
+        keep <- f$e$a %in% cells & f$e$b %in% cells
+        expect_equal(.pe_edge_products(pe[c(2L, 5L), cells], f$store),
+                     .ep_ref(f$m[c(2L, 5L), ], f$e$a[keep], f$e$b[keep]))
+    })
+})
+
+test_that("a store in non-local cell order is rewritten, with the same result", {
+    f <- .ep_fixture(n = 60L)
+    set.seed(1)
+    shuffled <- f$m[, sample(ncol(f$m))]
+    pe <- .ep_pe(shuffled)
+    ref <- .ep_ref(f$m, f$e$a, f$e$b, f$e$weight)
+    withr::with_options(list(giottodisk.chunk_size = 8L,
+                             giottodisk.edge_rewrite_min_windows = 2L), {
+        pairs <- .edge_view_pairs(f$store, .edge_to_cell_map(f$store, pe), TRUE)
+        expect_false(.pairs_local(pairs, 8L))
+        dump <- withr::local_tempdir()
+        withr::local_options(giottodisk.artifact_dump = dump)
+        expect_equal(.pe_edge_products(pe, f$store, weighted = TRUE), ref)
+        # the rewritten copy and its spill are removed afterwards
+        expect_length(list.files(dump, recursive = TRUE), 0L)
+        u <- unionParquetExprStore(list(.ep_pe(shuffled[, 1:25]),
+                                        .ep_pe(shuffled[, 26:60])))
+        expect_equal(.pe_edge_products(u, f$store, weighted = TRUE), ref)
+    })
+})
+
+test_that(".pe_rewrite_cell_order writes the view's values in the new order", {
+    f <- .ep_fixture(n = 40L)
+    m <- f$m
+    pe <- .ep_pe(m) |>
+        GiottoClass::processData(Giotto::normParam("library", scalefactor = 100))
+    ord <- c(seq(2L, 40L, by = 2L), seq(1L, 39L, by = 2L))
+    withr::with_options(list(giottodisk.chunk_size = 5L), {
+        for (src in list(pe, pe[c(1L, 4L, 6L), ],
+                         unionParquetExprStore(list(.ep_pe(m[, 1:17]), .ep_pe(m[, 18:40]))))) {
+            out <- .pe_rewrite_cell_order(src, ord, tempfile(fileext = ".parquet"))
+            got <- as.matrix(storeRead(out, output = "dgcmatrix",
+                max_rows = Inf, max_cols = Inf))
+            want <- as.matrix(storeRead(src, output = "dgcmatrix",
+                max_rows = Inf, max_cols = Inf))[, ord]
+            expect_equal(got, want, ignore_attr = TRUE)
+            expect_equal(out@cell_ids, src@cell_ids[ord])
+            expect_length(out@ops, 0L)
+            rid <- dplyr::collect(storeRead(out, output = "query"))$row_id
+            expect_false(is.unsorted(rid))
+        }
+    })
+})
+
+test_that("with few windows a non-local store uses breadth-first windows", {
+    f <- .ep_fixture(n = 60L)
+    set.seed(2)
+    pe <- .ep_pe(f$m[, sample(ncol(f$m))])
+    withr::with_options(list(giottodisk.chunk_size = 8L,
+                             giottodisk.edge_rewrite_min_windows = 100L), {
+        dump <- withr::local_tempdir()
+        withr::local_options(giottodisk.artifact_dump = dump)
+        expect_equal(.pe_edge_products(pe, f$store, weighted = TRUE),
+                     .ep_ref(f$m, f$e$a, f$e$b, f$e$weight))
+        expect_length(list.files(dump, recursive = TRUE), 0L)
+    })
+})
+
+test_that("the GiottoKernels path matches the R path, in feature blocks", {
+    skip_if_not(.gd_kernel("edge_products_stream"))
+    f <- .ep_fixture(n = 60L)
+    set.seed(3)
+    pe <- .ep_pe(f$m[, sample(ncol(f$m))]) |>
+        GiottoClass::processData(Giotto::normParam("library", scalefactor = 100))
+    r_path <- function(x, ...) withr::with_options(
+        list(giottodisk.use_kernels = FALSE), .pe_edge_products(x, f$store, ...))
+    for (blk in list(NULL, 20, 1)) {
+        withr::with_options(list(giottodisk.edge_kernel_block_nnz = blk), {
+            expect_equal(.pe_edge_products(pe, f$store, weighted = TRUE),
+                         r_path(pe, weighted = TRUE))
+            expect_equal(.pe_edge_products(pe[c(7L, 2L, 5L), ], f$store),
+                         r_path(pe[c(7L, 2L, 5L), ]))
+        })
+    }
+})
