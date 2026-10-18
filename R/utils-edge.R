@@ -247,7 +247,7 @@ NULL
 
 # `.pe_edge_products()` through GiottoKernels' edge_products_stream, when it
 # is installed and the store is a single one; NULL means "use the R path".
-# The kernel holds the triplets it is given in memory (about 28 B a stored
+# The kernel holds the triplets it is given in memory (about 16 B a stored
 # value at peak) with random access over every cell, so cell order does not
 # matter and nothing is windowed or rewritten. Memory is bounded instead by
 # streaming the features in blocks -- their sums are independent -- each block
@@ -278,7 +278,9 @@ NULL
             n_cells = 0, k = 0, p = 0)
     } else 2e9
     pinned <- getOption("giottodisk.edge_kernel_block_nnz")
-    cap <- if (!is.null(pinned)) as.numeric(pinned) else max(1, budget / 28)
+    # half the budget for the kernel's table (16 B a value at peak), half for
+    # the arrow scan feeding it, whose buffers do not shrink with the block
+    cap <- if (!is.null(pinned)) as.numeric(pinned) else max(1, budget / 2 / 16)
     block <- cumsum(per) %/% cap
     out <- numeric(as.integer(pe@n_genes))
     for (b in unique(block)) {
