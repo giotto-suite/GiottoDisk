@@ -253,6 +253,8 @@ NULL
     n_rows <- max(kid)
     n_features <- max(feats$key_id)
     w <- if (all(pairs$w == 1)) NULL else pairs$w
+    from <- kid[pairs$a]
+    to <- kid[pairs$b]
 
     # feature blocks under the budget, in view order
     nnz <- pe@stats$col_nnz
@@ -269,12 +271,16 @@ NULL
     out <- numeric(as.integer(pe@n_genes))
     for (b in unique(block)) {
         sel <- which(block == b)
-        tot <- GiottoKernels::edge_products_stream(
-            .gd_kernel_reader(pe[feats$pos[sel], ]),
-            from = kid[pairs$a], to = kid[pairs$b],
+        reader <- .gd_kernel_reader(pe[feats$pos[sel], ])
+        tot <- GiottoKernels::edge_products_stream(reader,
+            from = from, to = to,
             n_rows = n_rows, n_features = n_features, w = w,
             n_threads = .gd_kernel_threads())
         out[feats$pos[sel]] <- tot[feats$key_id[sel]]
+        # a finished reader keeps its scan's buffers until it is collected,
+        # so release it before the next block's scan starts
+        rm(reader)
+        invisible(gc(verbose = FALSE))
     }
     out
 }
