@@ -47,6 +47,10 @@
   error rather than falling back. Needs smotif >= 0.2.0 (Suggests).
 
 ## changes
+- Snapshots use qs2 instead of qs, which is archived on CRAN and no longer
+  builds: `snapshotSave(method = "qs2")` writes `<name>.qs2`. The `"qs"`
+  method is removed and `.qs` snapshots are no longer read. qs2 replaces qs in
+  Suggests.
 - The DuckDB memory limit follows the memory budget
   (`giottodisk.chunk_ram_frac` of free RAM) when `giottodisk.duckdb_memory_limit`
   is unset, instead of a fixed 8 GB.

@@ -452,11 +452,11 @@ NULL
 # file extensions are stripped
 .gdsrc_detect_gsavename <- function(p) {
     fnames <- list.files(p, 
-        pattern = "\\.rds|\\.qs",
+        pattern = "\\.(rds|qs2)$",
         recursive = FALSE,
         full.names = FALSE
     )
-    gsub("\\.rds$|\\.qs$", "", fnames)
+    sub("\\.(rds|qs2)$", "", fnames)
 }
 
 #' @title Coerce gDirSource
