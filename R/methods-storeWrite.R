@@ -318,9 +318,23 @@ setMethod(
             verbose = FALSE
         )
         type <- match.arg(type, choices = c("points", "polygons"))
-        if (type == "polygons") {
-            geom_param$part_col <- part_col
+        if (type == "points") {
+            # the coordinates are columns already, so no SpatVector is built
+            data <- data.table::as.data.table(data)
+            meta <- data[, c(id_col, setdiff(colnames(data),
+                c(id_col, sdimx, sdimy))), with = FALSE]
+            if (id_col != "feat_ID") {
+                data.table::setnames(meta, id_col, "feat_ID")
+            }
+            return(.store_write_points(store,
+                x = as.numeric(data[[sdimx]]),
+                y = as.numeric(data[[sdimy]]),
+                meta = meta,
+                row_offset = row_offset,
+                ...
+            ))
         }
+        geom_param$part_col <- part_col
         fun <- switch(type,
             "points" = .df_to_terra_pts,
             "polygons" = .df_to_terra_poly
@@ -1003,8 +1017,13 @@ setMethod(
     if (!is.matrix(ctrs)) {
         ctrs <- t(as.matrix(ctrs))
     }
+    .geom_parquet_frame(ctrs, wkb, meta, row_offset,
+        ext %||% .ext_to_num_vec(terra::ext(x)))
+}
 
-    gext <- ext %||% .ext_to_num_vec(terra::ext(x))
+# The on-disk frame of a geometry store: row index, centroid, WKB and meta,
+# in Morton order of the centroids over `gext`.
+.geom_parquet_frame <- function(ctrs, wkb, meta, row_offset, gext) {
     data <- data.frame(
         row_index = as.integer(seq_len(nrow(ctrs)) + row_offset),
         x_index = ctrs[, 1],
@@ -1015,6 +1034,32 @@ setMethod(
         data <- cbind(data, meta)
     }
     data[order(.morton_encode(data$x_index, data$y_index, gext)), ]
+}
+
+# Points straight from their coordinates, as the SpatVector method writes
+# them: the same WKB (wk builds it), extent and frame, without terra.
+.store_write_points <- function(store, x, y, meta, row_offset = 0,
+                                tile_idx = 0L, .arrow_meta = NULL,
+                                split_geom = FALSE, split_geom_fmt = NULL,
+                                split_geom_sourcename = NULL, ...) {
+    # split_geom*: polygon options of the SpatVector method, taken here so
+    # they are not passed on
+    gext <- c(min(x), max(x), min(y), max(y))
+    store@params$disk_extent <- gext
+    store@geomtype <- "points"
+    store@params$crs <- ""
+    data <- .geom_parquet_frame(cbind(x, y),
+        unclass(wk::as_wkb(wk::xy(x, y))), meta, row_offset, gext)
+    .arrow_meta <- .arrow_meta_add_geoparquet(store, .arrow_meta)
+    store_write_next <- methods::getMethod(
+        "storeWrite",
+        signature("parquetStore", "data.frame")
+    )
+    store_write_next(store, data,
+        tile_idx = tile_idx,
+        .arrow_meta = .arrow_meta,
+        ...
+    )
 }
 
 # generate the geoparquet metadata for a geom store if needed
