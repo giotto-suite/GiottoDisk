@@ -39,6 +39,10 @@
   (about three times the session's R heap each), so a small machine runs the
   forked steps (10x `.h5` ingest, PCA bands, zarr conversion) with fewer
   workers. `options(giottodisk.par_workers =)` is still used as given.
+- Points are written to a geometry store straight from their coordinate
+  columns: the WKB is built with *wk* instead of through a terra SpatVector,
+  which made up most of the write time (e.g. transcripts, bin points). The
+  files hold the same rows, geometry and metadata.
 - `tenxH5Input` sizes its batches by stored values from free memory, as the
   Stereo-seq GEF readers do, instead of a fixed 250,000 cells, so a matrix with
   many values per cell no longer loads in one oversized batch. In the parallel
