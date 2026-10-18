@@ -370,24 +370,23 @@ NULL
 #   edges  K x K, sum of a over the cells of group k
 #   paths  K x K x K, [k, l, m] = sum over cells of group k of a_l * a_m
 .edge_group_tables <- function(pairs, code, K) {
-    pos <- l <- w <- k <- a <- i.l <- i.a <- v <- m <- NULL  # NSE
-    tab <- data.table::data.table(
-        pos = c(pairs$a, pairs$b),
-        l = code[c(pairs$b, pairs$a)],
-        w = c(pairs$w, pairs$w)
-    )[, list(a = sum(w)), by = c("pos", "l")]
-    tab[, k := code[pos]]
-
-    edges <- matrix(0, K, K)
+    n_cells <- length(code)
+    # a_il as a sparse cells x groups matrix (duplicates sum); every table
+    # below is a sparse product of it, never a join of cells with themselves
+    A <- Matrix::sparseMatrix(
+        i = c(pairs$a, pairs$b), j = code[c(pairs$b, pairs$a)],
+        x = c(pairs$w, pairs$w), dims = c(n_cells, K))
+    Z <- Matrix::sparseMatrix(i = seq_len(n_cells), j = code, x = 1,
+        dims = c(n_cells, K))
+    edges <- as.matrix(Matrix::crossprod(Z, A))
     paths <- array(0, c(K, K, K))
-    if (nrow(tab)) {
-        e <- tab[, list(a = sum(a)), by = c("k", "l")]
-        edges[cbind(e$k, e$l)] <- e$a
-        pp <- tab[tab, on = "pos", allow.cartesian = TRUE,
-            list(k, l, m = i.l, v = a * i.a)][
-            , list(v = sum(v)), by = c("k", "l", "m")]
-        paths[cbind(pp$k, pp$l, pp$m)] <- pp$v
+    for (k in seq_len(K)) {
+        sel <- which(code == k)
+        if (length(sel)) {
+            paths[k, , ] <- as.matrix(Matrix::crossprod(A[sel, , drop = FALSE]))
+        }
     }
-    list(a = tab[, c("pos", "k", "l", "a"), with = FALSE],
-         edges = edges, paths = paths)
+    s <- Matrix::summary(A)
+    tab <- data.table::data.table(pos = s$i, k = code[s$i], l = s$j, a = s$x)
+    list(a = tab, edges = unname(edges), paths = paths)
 }
