@@ -514,32 +514,36 @@ setMethod(
             return(invisible(store))
         }
 
-        itr <- storeRead(data)
-        on.exit(itr$close(), add = TRUE)
-
-        batch_idx <- 0L
-        repeat {
-            dt <- itr$next_batch()
-            if (is.null(dt)) break
-            if (nrow(dt) == 0L) next   # skip empty batches (no on-disk chunk)
-            batch_idx <- batch_idx + 1L
-            .write_parquet_file(
-                dt,
-                file.path(partition_dir,
-                          sprintf("part-%d.parquet", batch_idx - 1L))
-            )
-        }
-
-        # Stamp metadata from the iterator's accessors (single source of
-        # truth — works for both eagerly-known formats and ones that
-        # accumulate cell_ids during iteration, like csvWideInput).
-        store@cell_ids <- itr$cell_ids()
-        store@feat_ids <- itr$feat_ids()
-        store@n_cells  <- as.numeric(itr$n_cells())
-        store@n_genes  <- as.numeric(itr$n_genes())
-        .pestore_finalize_stats(store)
+        .pestore_write_itr(store, storeRead(data), partition_dir)
     }
 )
+
+# Write a batch iterator -- list(next_batch, close, cell_ids, feat_ids,
+# n_cells, n_genes), as every exprInput's storeRead() returns -- into the
+# store's partition, one part file per non-empty batch, and stamp the
+# metadata from the iterator's accessors (single source of truth -- works for
+# both eagerly-known formats and ones that accumulate cell_ids during
+# iteration, like csvWideInput). Batches must arrive cell-major.
+.pestore_write_itr <- function(store, itr, partition_dir) {
+    on.exit(itr$close(), add = TRUE)
+    batch_idx <- 0L
+    repeat {
+        dt <- itr$next_batch()
+        if (is.null(dt)) break
+        if (nrow(dt) == 0L) next   # skip empty batches (no on-disk chunk)
+        batch_idx <- batch_idx + 1L
+        .write_parquet_file(
+            dt,
+            file.path(partition_dir,
+                      sprintf("part-%d.parquet", batch_idx - 1L))
+        )
+    }
+    store@cell_ids <- itr$cell_ids()
+    store@feat_ids <- itr$feat_ids()
+    store@n_cells  <- as.numeric(itr$n_cells())
+    store@n_genes  <- as.numeric(itr$n_genes())
+    .pestore_finalize_stats(store)
+}
 
 
 # ---- tenxH5Input parallel storeWrite ---------------------------------------

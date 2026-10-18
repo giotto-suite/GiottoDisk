@@ -224,7 +224,7 @@ test_that("streaming PAGE works whichever phase the chain is already in", {
     }
 })
 
-test_that(".enrich_push_op appends at the end of the chain", {
+test_that(".pe_push_op_last appends at the end of the chain", {
     skip_if_not_installed("Giotto")
     f <- .enrich_pe_fixture(G = 40L, N = 60L)
     pe <- GiottoClass::getExpression(f$backed, values = "raw",
@@ -232,13 +232,13 @@ test_that(".enrich_push_op appends at the end of the chain", {
     op <- list(type = "expm1", base = 2)
 
     # empty chain -> lazy, so it can still lower to Acero
-    lazy <- .enrich_push_op(pe, op)
+    lazy <- .pe_push_op_last(pe, op)
     expect_length(lazy@ops, 1L)
     expect_length(lazy@post_ops, 0L)
 
     # a post op already queued -> the new record has to run after it
     pe2 <- .pe_push_op(pe, list(type = "log", base = 2), phase = "post")
-    post <- .enrich_push_op(pe2, op)
+    post <- .pe_push_op_last(pe2, op)
     expect_length(post@ops, 0L)
     expect_identical(vapply(post@post_ops, function(o) o$type, ""),
                      c("log", "expm1"))

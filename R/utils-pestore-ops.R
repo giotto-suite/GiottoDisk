@@ -91,14 +91,14 @@ NULL
 #     double column on every carrier.
 #     Params:
 #       op       one of ">", ">=", "<", "<=", "==", "!=", store on the left
-#       axis     "all" only, today. Shaped like `multiply` so a per-axis
-#                threshold can be added without changing the record: base
-#                R's `m >= v` with length(v) == nrow(m) is a per-row
-#                threshold, which here would be `axis = "feat"` (or
-#                "cell" when transposed) with `e2` a payload keyed by
-#                on-disk id. Comparing against another store is a join,
-#                not this record.
-#       e2       numeric scalar (axis "all")
+#       axis     "cell" | "feat" | "all". As base R's `m >= v` with
+#                length(v) == nrow(m) is a per-row threshold, a vector
+#                comparison is `axis = "feat"` (or "cell" when transposed).
+#                Comparing against another store is a join, not this record.
+#       e2       numeric scalar (axis "all"), or a payload shaped like
+#                `multiply`'s `factors`: a named list mapping a substore uid
+#                to thresholds INDEXED BY ON-DISK ID. An entry with no
+#                threshold (NA) is dropped.
 #
 # Records are positional and self-contained: each does its work at the
 # position it occupies, and a verb appends rather than revisiting anything it
@@ -184,27 +184,40 @@ NULL
     dplyr::mutate(x, value = (!!base)^value - 1)
 }
 
-# Indicator of a comparison against a scalar. One predicate call serves every
-# carrier: spliced into `filter()` it lowers to Acero and dbplyr, and evaluated
-# over the column it is the data.table row selector. `which()` drops NA the way
-# `filter()` does, so the two phases agree on a stored NA as well.
+# Indicator of a comparison against a scalar or a per-axis threshold. One
+# predicate call serves every carrier: spliced into `filter()` it lowers to
+# Acero and dbplyr, and evaluated over the columns it is the data.table row
+# selector. `which()` drops NA the way `filter()` does, so the two phases agree
+# on a stored NA, and on an entry whose threshold is missing, as well.
 #
 # Returns a new table rather than mutating in place, since it drops rows --
 # every caller already reassigns `df <- .pe_apply_post_ops_df(df, ...)`.
 .op_compare <- function(x, op) {
-    value <- NULL # NSE
-    if (!identical(op$axis %||% "all", "all")) {
-        stop("[.op_compare] only `axis = \"all\"` (a scalar threshold) is ",
-             "implemented; got axis \"", op$axis, "\".", call. = FALSE)
+    value <- w <- NULL # NSE
+    axis <- op$axis %||% "all"
+    if (identical(axis, "all")) {
+        pred <- call(op$op, quote(value), op$e2)
+        if (data.table::is.data.table(x)) {
+            x <- x[which(eval(pred, x))]
+            return(x[, value := 1])
+        }
+        return(x |>
+            dplyr::filter(!!pred) |>
+            dplyr::mutate(value = 1))
     }
-    pred <- call(op$op, quote(value), op$e2)
+    key <- if (identical(axis, "feat")) "col_id" else "row_id"
+    pred <- call(op$op, quote(value), quote(w))
     if (data.table::is.data.table(x)) {
-        x <- x[which(eval(pred, x))]
+        w <- .pe_payload_rows(x, op$e2, key)
+        x <- x[which(eval(pred, list(value = x$value, w = w)))]
         return(x[, value := 1])
     }
+    by <- c("source_id" = "source_id"); by[key] <- "key_id"
     x |>
+        dplyr::inner_join(.pe_payload_carrier(x, op$e2, key), by = by) |>
         dplyr::filter(!!pred) |>
-        dplyr::mutate(value = 1)
+        dplyr::mutate(value = 1) |>
+        dplyr::select(-w)
 }
 
 # ---- multiply / add ---------------------------------------------------------
@@ -332,26 +345,35 @@ NULL
         return(df)
     }
     key <- if (identical(axis, "feat")) "col_id" else "row_id"
-
-    # Positional index rather than a join: the payload is already a vector
-    # keyed by on-disk id, so `w[id]` is the whole lookup. A union carries one
-    # vector per substore, so split on source_id and index within each.
-    #
-    # `uniqueN` rather than `length(unique(...))`: the single-source branch
-    # only needs the COUNT, and materializing every distinct string first
-    # costs 20x more than counting them (0.061 s vs 0.003 s over 9.6M rows) --
-    # which was two thirds of this executor's runtime.
-    if (data.table::uniqueN(df$source_id) == 1L) {
-        w <- .pe_axis_payload_vec(op$factors, df$source_id[1L], 0L)
-        df[, value := value * w[get(key)]]
-    } else {
-        for (u in unique(df$source_id)) {
-            w <- .pe_axis_payload_vec(op$factors, u, 0L)
-            if (is.null(w)) next
-            df[source_id == u, value := value * w[get(key)]]
-        }
-    }
+    # A substore the payload does not cover keeps its values (factor 1).
+    df[, value := value * .pe_payload_rows(df, op$factors, key, missing = 1)]
     df
+}
+
+# A payload's value for every row of a collected triplet frame, by the row's
+# on-disk `key` within its `source_id`. Positional index rather than a join:
+# the payload is already a vector keyed by on-disk id, so `w[id]` is the whole
+# lookup. A union carries one vector per substore, so split on source_id and
+# index within each. Rows of a substore the payload does not cover get
+# `missing`.
+#
+# `uniqueN` rather than `length(unique(...))`: the single-source branch only
+# needs the COUNT, and materializing every distinct string first costs 20x
+# more than counting them (0.061 s vs 0.003 s over 9.6M rows).
+.pe_payload_rows <- function(df, payload, key, missing = NA_real_) {
+    if (data.table::uniqueN(df$source_id) <= 1L) {
+        w <- .pe_axis_payload_vec(payload, df$source_id[1L], 0L)
+        if (is.null(w)) return(rep(missing, nrow(df)))
+        return(w[df[[key]]])
+    }
+    out <- rep(missing, nrow(df))
+    for (u in unique(df$source_id)) {
+        w <- .pe_axis_payload_vec(payload, u, 0L)
+        if (is.null(w)) next
+        i <- which(df$source_id == u)
+        out[i] <- w[df[[key]][i]]
+    }
+    out
 }
 
 # ---- Chain edit helpers ----------------------------------------------------
@@ -380,6 +402,24 @@ NULL
     pe
 }
 
+
+# Append a record at the end of the chain, wherever that end currently is.
+#
+# ADR 0002: "once `@post_ops` is non-empty, subsequent pushes go to `@post_ops`
+# regardless of the op's natural phase". `.pe_push_op()` enforces that by
+# erroring on a lazy push rather than rerouting, so the choice is the caller's
+# to make -- and pushing `"lazy"` unconditionally means every store carrying a
+# post op fails before the accumulator is ever reached.
+#
+# This is placement for ORDER, not for capability. The record has to run after
+# whatever is already queued, and when `@post_ops` is non-empty that means post.
+# Reading the slot to decide what an op *can* do would be invariant 3 of ADR
+# 0004; reading it to decide where the end of the chain is, is not. Only use it
+# for a record with an executor on both carriers.
+.pe_push_op_last <- function(pe, op) {
+    .pe_push_op(pe, op,
+        phase = if (length(pe@post_ops) > 0L) "post" else "lazy")
+}
 
 # Read the store as it stands with NOTHING queued -- the values on disk,
 # ignoring every op in either phase.

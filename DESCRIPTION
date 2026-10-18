@@ -24,8 +24,8 @@ Imports:
     data.table (>= 1.12.2),
     digest,
     dplyr,
-    Giotto (>= 4.3.2),
-    GiottoClass (>= 0.7.13),
+    Giotto (>= 4.3.3),
+    GiottoClass (>= 0.7.14),
     GiottoUtils,
     igraph,
     jsonlite,
@@ -43,7 +43,7 @@ Suggests:
     dbplyr,
     duckdb,
     filelock (>= 1.0.2),
-    GiottoKernels,
+    GiottoKernels (>= 0.3.0),
     HDF5Array,
     hdf5r,
     knitr,
@@ -115,7 +115,9 @@ Collate:
     'methods-store_nostate.R'
     'methods-transforms.R'
     'pca-param.R'
+    'stream-binarize.R'
     'stream-deconv.R'
+    'stream-edgestats.R'
     'stream-enrich.R'
     'stream-filter.R'
     'stream-labelProportions.R'
@@ -127,6 +129,7 @@ Collate:
     'tilework.R'
     'utils-arrow.R'
     'utils-edge.R'
+    'utils-kernels.R'
     'utils-parquetExprStore.R'
     'zarr-array.R'
     'zarr-convert.R'

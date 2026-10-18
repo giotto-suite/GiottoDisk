@@ -331,11 +331,20 @@ setMethod("analyzeData",
 #   sumsq    sum(value^2)                     every stored entry
 #   nnz      count(value > thr)               detection count
 #   sum_det  sum(value where value > thr)     detected entries only
+#   max      max(value)                       stored entries only; folds by
+#                                             max, not sum
+#   sum3     sum(value^3)                     every stored entry
+#   sum4     sum(value^4)                     every stored entry
+#   wsum     sum(value * w)                   needs a `by_cell` with `w`
 #
 # `thr` is a detection predicate: it selects which entries COUNT, and never
 # reduces a magnitude that participates. So `sum` / `sumsq` are unconditional
 # and only `nnz` / `sum_det` see it (adr/0009). `inclusive = TRUE` switches
 # those two to `>=`, which is what filtering means by a threshold.
+
+# Accumulators `stats` may name; the default is the first four.
+.pe_accum_stats <- c("sum", "sumsq", "nnz", "sum_det", "max", "sum3", "sum4",
+    "wsum")
 
 .stream_expr_accum <- function(pe,
     axis = c("feat", "cell"),
@@ -344,7 +353,7 @@ setMethod("analyzeData",
     inclusive = FALSE) {
 
     axis  <- match.arg(axis)
-    stats <- match.arg(stats, several.ok = TRUE)
+    stats <- match.arg(stats, .pe_accum_stats, several.ok = TRUE)
 
     n_out <- as.integer(
         if (identical(axis, "feat")) pe@n_genes else pe@n_cells
@@ -370,6 +379,46 @@ setMethod("analyzeData",
     out
 }
 
+
+# Per-feature histogram of the stored values above 0, in `n_bins` equal bins
+# over (0, max]. Counting into bins is additive over cells, so it streams like
+# any accumulator, and order statistics a window cannot fold (a quantile, a
+# 2-means split) are solved on it afterwards. Exact up to the bin width; a
+# feature whose values are few and distinct gets an exact split by choosing
+# `n_bins` at least that many.
+#
+# Built from what exists: the `max` accumulator sets each feature's bin width,
+# a feature-axis `multiply` rescales values onto (0, n_bins], and the count is
+# `nnz` grouped by bin. Values at or below 0 are not binned; with the cells
+# that store nothing they make up `n_zero`, which is what an indicator over
+# this histogram treats as "off".
+#
+# Returns list(counts = data.table(pos, bin, n), max, width, n_zero), counts
+# ordered by `pos` then `bin`. `bin` runs 0..n_bins-1 and covers
+# (bin * width, (bin + 1) * width] of feature `pos`.
+.pe_value_hist <- function(pe, n_bins = 256L) {
+    value <- nnz <- pos <- bin <- n <- NULL   # NSE
+    n_bins <- as.integer(n_bins)
+    mx <- .stream_expr_accum(pe, axis = "feat", stats = "max")$max
+    f <- ifelse(mx > 0, n_bins / mx, 0)
+    scaled <- .pe_push_op_last(pe, list(type = "multiply", axis = "feat",
+        factors = .pe_axis_factor_payload(pe, f, "feat")))
+    # value * n_bins / max can round a hair past n_bins at the maximum itself
+    last <- n_bins - 1L
+    counts <- .pe_accum_raw(scaled, axis = "feat", stats = "nnz", thr = 0,
+        by_value = list(bin = rlang::expr(pmin(ceiling(value) - 1, !!last))))
+    counts <- if (is.null(counts)) {
+        data.table::data.table(pos = integer(), bin = integer(), n = numeric())
+    } else {
+        counts[, list(pos = as.integer(pos), bin = as.integer(bin), n = nnz)]
+    }
+    data.table::setorder(counts, pos, bin)
+    binned <- numeric(length(mx))
+    tot <- counts[, list(n = sum(n)), by = pos]
+    binned[tot$pos] <- tot$n
+    list(counts = counts, max = mx, width = mx / n_bins,
+         n_zero = as.numeric(pe@n_cells) - binned)
+}
 
 # Shared front of the accumulation: build the aggregate, run it on whichever
 # execution shape the chain allows, and resolve on-disk ids to axis positions.
@@ -402,6 +451,16 @@ setMethod("analyzeData",
 # store in full and the cost is linear in batch count, not in genes per batch.
 # Ask for all the features at once and let the window do the bounding.
 #
+# A `by_cell` may list a cell under several codes and carry a weight column
+# `w`; `wsum` then sums value * w, so one pass gives, per (feature, k), a
+# weighted sum over the cells each code reaches.
+#
+# `by_value` adds grouping keys computed from `value` itself: a named list of
+# expressions in `value` (spliced into an arrow `mutate()` and evaluated in a
+# data.table alike), e.g. `list(bin = rlang::expr(floor(value)))` for a
+# histogram. The keys are O(groups) like everything else in the key, so the
+# whole-store plan stays bounded without a window.
+#
 # `k` is an integer code, never a label string. Aggregating or joining strings
 # in Acero at scale leaves dangling `utf8_view` buffers; the caller maps codes
 # back to labels after collect. (`source_id` is already a string in the union
@@ -414,16 +473,17 @@ setMethod("analyzeData",
     stats = c("sum", "sumsq", "nnz", "sum_det"),
     thr = 0,
     inclusive = FALSE,
-    by_cell = NULL) {
+    by_cell = NULL,
+    by_value = NULL) {
 
     if (!inherits(pe, "parquetExprBase")) {
         stop("[.pe_accum_raw] pe must be a parquetExprBase.", call. = FALSE)
     }
     axis  <- match.arg(axis)
-    stats <- match.arg(stats, several.ok = TRUE)
+    stats <- match.arg(stats, .pe_accum_stats, several.ok = TRUE)
     thr   <- as.numeric(thr)
 
-    value <- pos <- NULL   # NSE bindings
+    value <- pos <- w <- NULL   # NSE bindings
 
     key <- if (identical(axis, "feat")) "col_id" else "row_id"
 
@@ -446,8 +506,16 @@ setMethod("analyzeData",
         nnz     = rlang::expr(sum(as.integer(!!detected), na.rm = TRUE)),
         sum_det = rlang::expr(
             sum(value * as.integer(!!detected), na.rm = TRUE)
-        )
+        ),
+        max     = rlang::expr(max(value, na.rm = TRUE)),
+        sum3    = rlang::expr(sum(value * value * value, na.rm = TRUE)),
+        sum4    = rlang::expr(sum(value * value * value * value, na.rm = TRUE)),
+        wsum    = rlang::expr(sum(value * w, na.rm = TRUE))
     )
+    if ("wsum" %in% stats && !"w" %in% names(by_cell)) {
+        stop("[.pe_accum_raw] `wsum` needs a `by_cell` with a `w` column.",
+            call. = FALSE)
+    }
     aggr_exprs <- all_exprs[stats]
 
     # `source_id` only earns its place in the group key on a union, where
@@ -457,7 +525,8 @@ setMethod("analyzeData",
     # aggregate, growing with the scan.
     is_union <- inherits(pe, "unionParquetExprStore")
     has_by   <- !is.null(by_cell)
-    grp      <- c(if (is_union) "source_id", key, if (has_by) "k")
+    grp      <- c(if (is_union) "source_id", key, if (has_by) "k",
+                  names(by_value))
     join_by  <- if (is_union) c("source_id", "key_id") else "key_id"
 
     if (length(pe@post_ops) == 0L) {
@@ -467,15 +536,18 @@ setMethod("analyzeData",
         # materializing, so keep the execution in Acero and window the input.
         agg <- if (has_by) {
             .pe_accum_acero_windowed(pe,
-                grp = grp, aggr_exprs = aggr_exprs, by_cell = by_cell)
+                grp = grp, aggr_exprs = aggr_exprs, by_cell = by_cell,
+                key_exprs = by_value)
         } else {
-            .pe_agg_collect(pe, grp = grp, aggr_exprs = aggr_exprs)
+            .pe_agg_collect(pe, grp = grp, aggr_exprs = aggr_exprs,
+                key_exprs = by_value)
         }
     } else {
         # R path: the chain has to run on materialized rows, so this one is
         # chunked rather than collected whole.
         agg <- .pe_accum_chunked_dt(pe,
-            grp = grp, aggr_exprs = aggr_exprs, by_cell = by_cell
+            grp = grp, aggr_exprs = aggr_exprs, by_cell = by_cell,
+            key_exprs = by_value
         )
     }
     if (is.null(agg) || nrow(agg) == 0L) return(NULL)
@@ -499,8 +571,17 @@ setMethod("analyzeData",
     # substores), a no-op on the cell axis (cell axes are disjoint, so every
     # group is a singleton). `k` joins the fold key when present -- a feature
     # spans substores within a cluster, not across clusters.
-    agg[, lapply(.SD, sum),
-        by = c("pos", if (has_by) "k"), .SDcols = stats]
+    .pe_fold_by(agg, by = c("pos", if (has_by) "k", names(by_value)),
+        cols = stats)
+}
+
+# Combine rows that share `by`, per statistic: `max` by max, every other
+# accumulator by sum. The one place that knows how each statistic folds, so a
+# window boundary or a substore boundary cannot fold one the wrong way.
+.pe_fold_by <- function(dt, by, cols) {
+    fns <- lapply(cols, function(nm) if (identical(nm, "max")) max else sum)
+    names(fns) <- cols
+    dt[, Map(function(f, v) f(v), fns, .SD), by = by, .SDcols = cols]
 }
 
 # Window for the chunked R-side pass. Not `.exprbase_chunk_size()`: this pass
@@ -549,8 +630,9 @@ setMethod("analyzeData",
 # memory would cost memory, which is backwards. Eager folding is the same
 # arithmetic the caller's fold does, so the result is unchanged and what is
 # held is O(groups) whatever the window count.
-.pe_accum_acero_windowed <- function(pe, grp, aggr_exprs, by_cell) {
-    by_cols <- setdiff(names(by_cell), "k")
+.pe_accum_acero_windowed <- function(pe, grp, aggr_exprs, by_cell,
+    key_exprs = NULL) {
+    by_cols <- setdiff(names(by_cell), c("k", "w"))
     # Built once, not per window: it is the join's build side, one row per
     # grouped cell, and it is the same table for every window.
     bc_tab  <- arrow::as_arrow_table(as.data.frame(by_cell))
@@ -560,7 +642,8 @@ setMethod("analyzeData",
         acc <- .pe_fold_partial(acc,
             .pe_agg_collect(.pe_window_store(d),
                 grp = grp, aggr_exprs = aggr_exprs,
-                join_tab = bc_tab, join_cols = by_cols),
+                join_tab = bc_tab, join_cols = by_cols,
+                key_exprs = key_exprs),
             grp = grp, cols = names(aggr_exprs))
     }
     acc
@@ -577,12 +660,13 @@ setMethod("analyzeData",
 # grouped cell), streamed against by the scan. Inner, so a cell absent from it
 # drops, which is how NA-group cells are excluded without a predicate.
 .pe_agg_collect <- function(pe, grp, aggr_exprs,
-    join_tab = NULL, join_cols = NULL) {
+    join_tab = NULL, join_cols = NULL, key_exprs = NULL) {
 
     q <- storeRead(pe, output = "query")
     if (!is.null(join_tab)) {
         q <- dplyr::inner_join(q, join_tab, by = join_cols)
     }
+    if (length(key_exprs)) q <- dplyr::mutate(q, !!!key_exprs)
     q |>
         dplyr::group_by(!!!rlang::syms(grp)) |>
         dplyr::summarise(!!!aggr_exprs) |>
@@ -616,8 +700,7 @@ setMethod("analyzeData",
         data.table::set(part, j = nm, value = as.numeric(part[[nm]]))
     }
     if (is.null(acc)) return(part)
-    data.table::rbindlist(list(acc, part))[
-        , lapply(.SD, sum), by = grp, .SDcols = cols]
+    .pe_fold_by(data.table::rbindlist(list(acc, part)), by = grp, cols = cols)
 }
 
 
@@ -638,9 +721,10 @@ setMethod("analyzeData",
 # Note this path always narrows with `[`, where the Acero path can skip it on a
 # single full-substore window. `.pe_window_store()` handles that, and the
 # post-op slice is what makes taking it here correct rather than merely cheaper.
-.pe_accum_chunked_dt <- function(pe, grp, aggr_exprs, by_cell = NULL) {
+.pe_accum_chunked_dt <- function(pe, grp, aggr_exprs, by_cell = NULL,
+    key_exprs = NULL) {
     dt_call <- as.call(c(quote(list), aggr_exprs))
-    by_cols <- if (!is.null(by_cell)) setdiff(names(by_cell), "k")
+    by_cols <- if (!is.null(by_cell)) setdiff(names(by_cell), c("k", "w"))
 
     acc <- NULL
     for (d in .pe_windows(pe, .pe_accum_chunk_size(pe))) {
@@ -652,6 +736,9 @@ setMethod("analyzeData",
             # Inner, matching the Acero branch's join: a cell absent from
             # `by_cell` is out of the grouping and drops here too.
             if (!is.null(by_cell)) df <- merge(df, by_cell, by = by_cols)
+            for (nm in names(key_exprs)) {
+                data.table::set(df, j = nm, value = eval(key_exprs[[nm]], df))
+            }
         }
         if (nrow(df) == 0L) next
         acc <- .pe_fold_partial(acc, df[, eval(dt_call), by = grp],

@@ -482,40 +482,22 @@ setMethod("reduceData",
 # sequential scan of the materialized store each, into a compiled kernel, with
 # threads inside the call instead of forked R processes -- so PCA also runs
 # where forking is refused (Positron, Windows). NULL means "use the R bands".
-# The store is written cell-major (adr/0018), which the kernels require; they
-# check the layout and error rather than mis-sum on any other.
-# `giottodisk.use_kernels = FALSE` forces the R path.
-.pca_kernel <- function(name) {
-    isTRUE(getOption("giottodisk.use_kernels", TRUE)) &&
-        requireNamespace("GiottoKernels", quietly = TRUE) &&
-        GiottoKernels::has_kernel(name)
-}
-
-.pca_kernel_reader <- function(pe) {
-    row_id <- col_id <- value <- NULL  # NSE
-    arrow::as_record_batch_reader(
-        dplyr::select(storeRead(pe, output = "query"), row_id, col_id, value))
-}
-
-# the fork workers' knob sets the thread count too; left at 1, the kernels'
-# own option (gkernels.n_threads) decides
-.pca_kernel_threads <- function() {
-    n <- .par_workers()
-    if (n > 1L) n else NULL
-}
+# The store is written cell-major (adr/0018), which these kernels require;
+# they check the layout and error rather than mis-sum on any other. The gate,
+# reader and thread count are shared with the other kernels (utils-kernels.R).
 
 # Pass 1: G_raw and the per-gene sums.
 .gram_pass_kernel <- function(pe, P) {
-    if (!.pca_kernel("gram_stream")) return(NULL)
-    GiottoKernels::gram_stream(.pca_kernel_reader(pe), P,
-        n_threads = .pca_kernel_threads())
+    if (!.gd_kernel("gram_stream")) return(NULL)
+    GiottoKernels::gram_stream(.gd_kernel_reader(pe), P,
+        n_threads = .gd_kernel_threads())
 }
 
 # Pass 2: A %*% V_use, uncentered; the caller subtracts the centering term.
 .coords_pass_kernel <- function(pe, V_use, n_cells) {
-    if (!.pca_kernel("project_stream")) return(NULL)
-    GiottoKernels::project_stream(.pca_kernel_reader(pe), V_use, n_cells,
-        n_threads = .pca_kernel_threads())
+    if (!.gd_kernel("project_stream")) return(NULL)
+    GiottoKernels::project_stream(.gd_kernel_reader(pe), V_use, n_cells,
+        n_threads = .gd_kernel_threads())
 }
 
 # Streaming gram-eigen core. Two passes over a materialized store:
