@@ -27,6 +27,10 @@
   `giotto.memory_frac` (GiottoUtils, default 0.25), and the DuckDB memory limit
   follows the same budget when `giottodisk.duckdb_memory_limit` is unset,
   instead of a fixed 8 GB.
+- Parallel workers from a `future::plan()` are capped by the memory budget
+  (about three times the session's R heap each), so a small machine runs the
+  forked steps (10x `.h5` ingest, PCA bands, zarr conversion) with fewer
+  workers. `options(giottodisk.par_workers =)` is still used as given.
 - `tenxH5Input` sizes its batches by stored values from free memory, as the
   Stereo-seq GEF readers do, instead of a fixed 250,000 cells, so a matrix with
   many values per cell no longer loads in one oversized batch. In the parallel
