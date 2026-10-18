@@ -87,12 +87,24 @@ NULL
 # `.edge_to_cell_map(x, pe)`. Edges with an end outside the view are dropped.
 #
 # A directed store (a kNN network) can hold a mutual pair in both directions;
-# it becomes one row at the mean of the two weights, the symmetric part. The
+# it becomes one row at the mean of the two weights, the symmetric part. With
+# GiottoKernels the edges stream into its graph_pairs_stream kernel and only
+# the pairs return to R. Either way the
 # edges are read once, as three numeric columns, and everything edge-only
 # downstream (degree, weight totals, group tables, the windows of the edge
 # products) is derived from this table in R rather than by another pass.
 .edge_view_pairs <- function(x, map, weighted = FALSE) {
     a <- b <- w <- NULL  # NSE
+    if (.gd_kernel("graph_pairs_stream")) {
+        # the edges stream straight into the kernel and only the pairs come
+        # back, so the edge list is never materialised in R
+        node_row <- integer(max(c(map$int_id, 0L)))
+        node_row[map$int_id] <- map$pos
+        p <- GiottoKernels::graph_pairs_stream(
+            storeRead(x, output = "arrowstream"), node_row,
+            weighted = isTRUE(weighted), dedupe = isTRUE(x@directed))
+        return(data.table::data.table(a = p$a, b = p$b, w = p$w))
+    }
     cols <- c("from_id", "to_id", if (isTRUE(weighted)) "weight")
     ev <- storeRead(x, output = "arrow") |>
         dplyr::select(dplyr::all_of(cols)) |>
