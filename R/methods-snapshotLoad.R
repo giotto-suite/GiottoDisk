@@ -38,7 +38,7 @@ setMethod("snapshotLoad", signature("gDirSource"), function(src,
     snaps_dir <- .gdsrc_giottosave_dir(p)
 
     existing_snaps <- list.files(snaps_dir,
-        pattern = "\\.(rds|qs)$",
+        pattern = "\\.(rds|qs2)$",
         full.names = TRUE,
         recursive = FALSE
     )
@@ -127,16 +127,16 @@ setMethod("snapshotLoad", signature("gDirSource"), function(src,
 
 .load_serialized <- function(path, load_params = list()) {
     fext <- tail(file_extension(path), 1L)
-    fext <- match.arg(tolower(fext), choices = c("rds", "qs"))
-  
+    fext <- match.arg(tolower(fext), choices = c("rds", "qs2"))
+
     read_fun <- switch(fext,
         "rds" = readRDS,
-        "qs" = {
-            package_check("qs", repository = "CRAN")
-            read_fun <- get("qread", asNamespace("qs"))
+        "qs2" = {
+            package_check("qs2", repository = "CRAN")
+            get("qs_read", asNamespace("qs2"))
         }
     )
-    
+
     do.call(read_fun, args = c(list(file = path), load_params))
 }
 

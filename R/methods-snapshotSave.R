@@ -5,7 +5,7 @@
 #' @param src `gsource` object. Used to provide default save locations
 #' and save formats for a managed Giotto backend.
 #' @param x `giotto` object to write
-#' @param method `character` (default = "rds").
+#' @param method `character`, `"rds"` (default) or `"qs2"`.
 #' @param method_params `list` (optional) list of additional named params for
 #'   save method.
 #' @param overwrite `logical` (default = FALSE). Whether to overwrite if a
@@ -24,13 +24,13 @@ NULL
 #' @export
 setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     name = format(Sys.time(), "%Y%m%d_giottosave"),
-    method = c("rds", "qs"),
+    method = c("rds", "qs2"),
     method_params = list(),
     overwrite = FALSE,
     export_image = TRUE,
     verbose = NULL,
     ...) {
-    method <- match.arg(tolower(method), choices = c("rds", "qs"))
+    method <- .snapshot_method(method)
     checkmate::assert_list(method_params)
     checkmate::assert_flag(overwrite)
     .adopt_session_reset()
@@ -84,20 +84,8 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
   
     vmsg(.v = verbose, "[GiottoDisk] writing snapshot")
     temp <- .dump_tempfile() # temp location for atomic writes
-    switch(method,
-        "rds" = {
-            fullpath <- file.path(gsdir, paste0(name, ".rds"))
-            a <- c(list(object = x, file = temp), method_params)
-            do.call(saveRDS, a)
-        },
-        "qs" = {
-            package_check(pkg_name = "qs", repository = "CRAN")
-            qsave_fun <- get("qsave", asNamespace("qs"))
-            fullpath <- file.path(gsdir, paste0(name, ".qs"))
-            a <- c(list(x = x, file = temp), method_params)
-            do.call(qsave_fun, a)
-        }
-    )
+    fullpath <- file.path(gsdir, paste0(name, ".", method))
+    .save_serialized(x, temp, method, method_params)
     
     res <- file.rename(from = temp, to = fullpath)
     if (!res) stop("[snapshotSave] save failed\n", call. = FALSE)
@@ -122,13 +110,13 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
 #' @export
 setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, x,
     name = format(Sys.time(), "%Y%m%d_giottosave"),
-    method = c("rds", "qs"),
+    method = c("rds", "qs2"),
     method_params = list(),
     overwrite = FALSE,
     export_image = TRUE,
     verbose = NULL,
     ...) {
-    method <- match.arg(tolower(method), choices = c("rds", "qs"))
+    method <- .snapshot_method(method)
     checkmate::assert_list(method_params)
     checkmate::assert_flag(overwrite)
     .adopt_session_reset()
@@ -186,20 +174,8 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
     # the whole federation without needing a separate manifest.
     vmsg(.v = verbose, "[GiottoDisk] writing multi snapshot")
     temp <- .dump_tempfile()
-    switch(method,
-        "rds" = {
-            fullpath <- file.path(gsdir, paste0(name, ".rds"))
-            a <- c(list(object = x, file = temp), method_params)
-            do.call(saveRDS, a)
-        },
-        "qs" = {
-            package_check(pkg_name = "qs", repository = "CRAN")
-            qsave_fun <- get("qsave", asNamespace("qs"))
-            fullpath <- file.path(gsdir, paste0(name, ".qs"))
-            a <- c(list(x = x, file = temp), method_params)
-            do.call(qsave_fun, a)
-        }
-    )
+    fullpath <- file.path(gsdir, paste0(name, ".", method))
+    .save_serialized(x, temp, method, method_params)
     res <- file.rename(from = temp, to = fullpath)
     if (!res) stop("[snapshotSave] save failed\n", call. = FALSE)
 
@@ -597,4 +573,21 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
         }
     }
     ntest
+}
+
+# Save method, lower-cased. The first element is taken so that a caller's
+# unresolved default vector resolves as match.arg() resolves a default.
+.snapshot_method <- function(method) {
+    match.arg(tolower(method[1L]), choices = c("rds", "qs2"))
+}
+
+.save_serialized <- function(x, file, method, method_params = list()) {
+    switch(method,
+        "rds" = do.call(saveRDS, c(list(object = x, file = file), method_params)),
+        "qs2" = {
+            package_check(pkg_name = "qs2", repository = "CRAN")
+            qs_save_fun <- get("qs_save", asNamespace("qs2"))
+            do.call(qs_save_fun, c(list(object = x, file = file), method_params))
+        }
+    )
 }

@@ -66,3 +66,30 @@ test_that("snapshotLoad: NULL name picks the most recent by mtime", {
     obj <- snapshotLoad(x$src, name = NULL)
     expect_equal(obj$tag, "new")
 })
+
+
+# qs2 ####
+
+test_that("snapshots save and load with qs2", {
+    skip_if_not_installed("qs2")
+    skip_if_not_installed("GiottoData")
+    withr::local_options(giotto.use_conda = FALSE)
+    td <- withr::local_tempdir()
+    g <- GiottoData::loadGiottoMini("visium", verbose = FALSE)
+    g@source <- sourceCreate(td, type = "gDirSource")
+
+    snapshotSave(g@source, g, name = "snap_qs2", method = "qs2",
+                 verbose = FALSE)
+    snaps <- file.path(td, "giottosave")
+    expect_true(file.exists(file.path(snaps, "snap_qs2.qs2")))
+    g2 <- snapshotLoad(g@source, name = "snap_qs2")
+    expect_identical(GiottoClass::spatIDs(g2), GiottoClass::spatIDs(g))
+
+    # an older caller hands on its unresolved default vector; it resolves to
+    # the first element, as match.arg() resolves a default
+    snapshotSave(g@source, g, name = "snap_default",
+                 method = c("RDS", "qs"), verbose = FALSE)
+    expect_true(file.exists(file.path(snaps, "snap_default.rds")))
+    expect_setequal(.gdsrc_detect_gsavename(snaps),
+                    c("snap_qs2", "snap_default"))
+})

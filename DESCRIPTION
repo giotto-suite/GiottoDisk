@@ -47,7 +47,7 @@ Suggests:
     HDF5Array,
     hdf5r,
     knitr,
-    qs,
+    qs2,
     Rarr,
     rhdf5,
     rmarkdown,
