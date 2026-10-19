@@ -475,7 +475,12 @@ as.list.gDirSource <- function(x) {
 #' @exportS3Method base::as.data.frame
 as.data.frame.gDirSource <- function(x, ...) {
     data <- as.list.gDirSource(x)
-    data.table::rbindlist(data, 
+    # one row per giottosave tag; depends stays a single list cell
+    data <- lapply(data, function(art) {
+        if (!is.null(art$depends)) art$depends <- list(art$depends)
+        art
+    })
+    data.table::rbindlist(data,
         fill = TRUE, idcol = "uid"
     )
 }
