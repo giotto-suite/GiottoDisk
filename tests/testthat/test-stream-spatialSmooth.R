@@ -96,3 +96,34 @@ test_that("spatialCoexpression on a backed object equals in memory", {
     expect_equal(sc[match(sm$cell_ID, cell_ID), !"cell_ID"],
         sm[, !"cell_ID"], tolerance = 1e-10)
 })
+
+test_that("correlation of smoothed values without storing them equals memory", {
+    skip_if_not_installed("Giotto")
+    o <- .ss_objects()
+    mem <- .ss_parts(o$mem)
+    dsk <- .ss_parts(o$backed)
+    feats <- rownames(mem$x)[c(1:4, 21:25)]
+    p <- GiottoClass::featCorParam(
+        smooth = GiottoClass::spatialSmoothParam(smoothing = 0.7))
+    ref <- GiottoClass::analyzeData(mem$x[feats, ], p, network = mem$net)
+    for (cs in list(NULL, 12L)) {
+        got <- withr::with_options(list(giottodisk.chunk_size = cs),
+            GiottoClass::analyzeData(dsk$x[feats, ], p, network = dsk$net))
+        expect_equal(got[feats, feats], ref[feats, feats], tolerance = 1e-10)
+    }
+})
+
+test_that("crossprod of a weight matrix with a store equals memory", {
+    skip_if_not_installed("Giotto")
+    o <- .ss_objects()
+    mem <- .ss_parts(o$mem)
+    dsk <- .ss_parts(o$backed)
+    W <- matrix(runif(nrow(mem$x) * 3), ncol = 3,
+        dimnames = list(NULL, c("a", "b", "c")))
+    ref <- as.matrix(Matrix::crossprod(W, mem$x))
+    for (cs in list(NULL, 12L)) {
+        got <- withr::with_options(list(giottodisk.chunk_size = cs),
+            Matrix::crossprod(W, dsk$x))
+        expect_equal(got[, colnames(ref)], ref, tolerance = 1e-12)
+    }
+})

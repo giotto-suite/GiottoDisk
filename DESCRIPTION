@@ -116,6 +116,7 @@ Collate:
     'methods-transforms.R'
     'pca-param.R'
     'stream-binarize.R'
+    'stream-crossprod.R'
     'stream-deconv.R'
     'stream-edgestats.R'
     'stream-enrich.R'
