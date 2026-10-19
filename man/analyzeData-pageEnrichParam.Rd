@@ -3,35 +3,35 @@
 \name{analyzeData-pageEnrichParam}
 \alias{analyzeData-pageEnrichParam}
 \alias{analyzeData,parquetExprBase,pageEnrichParam-method}
-\alias{analyzeData,parquetExprBase,rankEnrichParam-method}
 \alias{analyzeData,parquetExprBase,hyperEnrichParam-method}
-\title{Streaming PAGE enrichment}
+\alias{analyzeData,parquetExprBase,rankEnrichParam-method}
+\title{Streaming PAGE and hypergeometric enrichment}
 \usage{
 \S4method{analyzeData}{parquetExprBase,pageEnrichParam}(x, param, ..., sign_matrix)
 
-\S4method{analyzeData}{parquetExprBase,rankEnrichParam}(x, param, ..., sign_matrix)
-
 \S4method{analyzeData}{parquetExprBase,hyperEnrichParam}(x, param, ..., sign_matrix)
+
+\S4method{analyzeData}{parquetExprBase,rankEnrichParam}(x, param, ..., sign_matrix)
 }
 \arguments{
 \item{x}{a \code{parquetExprBase} store.}
 
-\item{param}{a \link[Giotto:pageEnrichParam-class]{Giotto::pageEnrichParam}.}
+\item{param}{a \link[Giotto:pageEnrichParam-class]{Giotto::pageEnrichParam} or
+\link[Giotto:hyperEnrichParam-class]{Giotto::hyperEnrichParam}.}
 
 \item{...}{additional arguments (none used).}
 
-\item{sign_matrix}{binary sign matrix, genes x cell types.}
+\item{sign_matrix}{sign matrix, features x cell types.}
 }
 \value{
 a \code{data.table} of \code{cell_ID} and one column per cell type, the same
 contract the in-memory method returns.
 }
 \description{
-\code{\link[GiottoClass:analyzeData]{GiottoClass::analyzeData()}} method for a \link[Giotto:pageEnrichParam-class]{Giotto::pageEnrichParam} on
-a disk-backed expression store. Nothing is densified: PAGE's statistic is a
-function of per-gene and per-cell moments, which stream.
-
-\code{p_value = TRUE} is not supported here -- it is a permutation over
-\code{n_times} x cell-types random gene sets, which is thousands of extra passes
-rather than a heavier one. Run it on an in-memory object.
+\code{\link[GiottoClass:analyzeData]{GiottoClass::analyzeData()}} methods for a \link[Giotto:pageEnrichParam-class]{Giotto::pageEnrichParam}
+or \link[Giotto:hyperEnrichParam-class]{Giotto::hyperEnrichParam} on a disk-backed expression store. The
+store is read one window of cells at a time and each window is scored by
+Giotto's in-memory method against the reference level of all cells, so
+memory follows the window, not the number of cells. Rank enrichment is not
+supported: it ranks each feature across all cells at once.
 }
