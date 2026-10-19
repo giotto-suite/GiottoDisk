@@ -26,6 +26,7 @@ setArtifactDumpDir <- function(x, verbose = NULL) {
     dir <- if (missing(x)) {
         file.path(tempdir(), "gdisk_dump")
     } else if (inherits(x, "gDirSource")) {
+        .gdsrc_check_schema(x@path, site = "[setArtifactDumpDir]")
         .gdsrc_vault_dir(x@path)
     } else {
         x

@@ -269,11 +269,12 @@ test_that("snapshotLoad drops overlaps saved with a parquetStore carrier", {
     g <- GiottoClass::setGiotto(GiottoClass::giotto(), gp, verbose = FALSE)
 
     td <- tempfile("ovload_")
-    dir.create(file.path(td, "giottosave"), recursive = TRUE)
+    dir.create(td)
     on.exit(unlink(td, recursive = TRUE), add = TRUE)
-    saveRDS(g, file.path(td, "giottosave", "snap.rds"))
+    src <- gDirSource(td)
+    .write_snapshot_fixture(td, "snap", g)
 
-    expect_warning(loaded <- snapshotLoad(gDirSource(td)),
+    expect_warning(loaded <- snapshotLoad(src),
         "dropped overlaps saved by an older GiottoDisk: cell/rna")
     expect_identical(names(loaded@spatial_info$cell@overlaps), "protein")
 })

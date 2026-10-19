@@ -41,8 +41,9 @@ writes to \code{giottodir.json} for extra concurrency safety
 \item \code{artifacts} - vault directory containing the actual data artifacts
 which are within subdirectories named by their \code{uid}.
 \item \verb{_pending} - directory containing pending edits to the manifest.
-\item \code{giottosave} - directory containing .RDS of giotto projects that
-reference assets controlled by the \code{gDirSource}.
+\item \code{giottosave} - one folder per snapshot, \verb{giottosave/<name>.<id>/},
+holding the serialized giotto object (\code{gobject.RDS} or \code{gobject.qs2})
+that references assets controlled by the \code{gDirSource}.
 }
 }
 

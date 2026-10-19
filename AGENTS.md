@@ -105,6 +105,7 @@ R/
   methods-sourceWrite.R  # sourceWrite (allocate uid → write → register)
   methods-sourceAdopt.R  # sourceContains, sourceAdopt
   methods-sourcePrune.R  # sourcePrune
+  methods-sourceSchema.R # sourceSchema, sourceUpdate, schema check + upgrades
   methods-snapshotSave.R # snapshotSave (giottosave snapshot lifecycle)
   methods-snapshotLoad.R # snapshotLoad
   methods-snapshotDelete.R # snapshotDelete
@@ -565,7 +566,7 @@ rationale (manifest design, dump lifecycle, multi-analysis guarantees).
   giottodir.json       # manifest (consolidated from _pending/ on read)
   artifacts/<uid>/...  # vault
   _pending/            # WAL-style pending manifest edits
-  giottosave/          # .rds/.qs snapshots
+  giottosave/<name>.<id>/gobject.RDS  # one folder per snapshot; folder name = tag
 ```
 
 Manifest access: `src["uid"]`, `src["uid", "field"]`, `src[, "field"]`,
@@ -592,10 +593,18 @@ advisory locking for the consolidation step.
   active, artifacts land in the vault directly. `sourceAdopt` extracts
   uid via `basename(dirname(path))`, checks `src[uid]`, writes the
   manifest entry if missing — no file movement.
-- **`snapshotSave` lifecycle**: session-reset → adopt external images
-  → adopt external expression matrices → atomic snapshot write
-  (temp → rename) → tag artifacts (`name` appended to `giottosave`
-  manifest field; hash-based detection strips lazy `@ops`).
+- **`snapshotSave` lifecycle**: session-reset → mint the tag
+  (`<name>.<id>`, new every save) → adopt external images / matrices /
+  stores, tagging what they adopt → write via a staging folder → tag every
+  referenced vault artifact (uid for stores, hash for BPCells/HDF5, vault
+  path for images) → drop older snapshots of the name. Tags are never
+  removed; a tag whose folder is gone protects nothing. See design.Rmd
+  "Snapshots and tags".
+- **Schema version** (`methods-sourceSchema.R`): manifest writes, vault
+  allocation and the snapshot verbs refuse a project outside
+  `[.GDSRC_SCHEMA_MIN, .GDSRC_SCHEMA_VERSION]`. Only `sourceUpdate()` raises
+  the stamped version. A layout change bumps `.GDSRC_SCHEMA_VERSION` and adds
+  an entry to `.GDSRC_SCHEMA_UPGRADES`.
 - **`sourcePrune`**: removes untagged artifacts; protection transitive
   via BFS over `depends`.
 

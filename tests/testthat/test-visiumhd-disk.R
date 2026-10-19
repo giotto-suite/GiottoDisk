@@ -331,7 +331,8 @@ test_that("[fixture] disk bin points are kept by a snapshot and reload", {
 
     g <- .q(GiottoClass::saveGiotto(g, name = "points"))
     mfst <- .gdsrc_json_read(proj, consolidate = TRUE)$content
-    for (u in uids) expect_true("points" %in% mfst[[u]]$giottosave)
+    tag <- .snap_tag(proj, "points")
+    for (u in uids) expect_true(tag %in% mfst[[u]]$giottosave)
     .q(sourcePrune(g))
 
     g2 <- .q(GiottoClass::loadGiotto(proj, name = "points"))
