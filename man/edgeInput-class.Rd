@@ -23,6 +23,7 @@ column matching the input's vertex IDs.}
 Other store types:
 \code{\link{binGefInput-class}},
 \code{\link{cellbinGefInput-class}},
+\code{\link{cosmxScanInput-class}},
 \code{\link{csvWideInput-class}},
 \code{\link{dataStore-class}},
 \code{\link{exprInput-class}},
@@ -32,6 +33,7 @@ Other store types:
 \code{\link{parquetExprStore-class}},
 \code{\link{parquetStore-class}},
 \code{\link{tenxH5Input-class}},
+\code{\link{tenxZarrInput-class}},
 \code{\link{unionParquetExprStore-class}}
 }
 \concept{store types}

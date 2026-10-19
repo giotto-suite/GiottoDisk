@@ -16,6 +16,7 @@ walkthroughs live in `vignettes/articles/`:
 | `vignettes/articles/gsource.Rmd` | `gDirSource` walkthrough (the directory-backed `gsource` — the only backend currently shipped): source verbs (`sourceWrite`/`sourceContains`/`sourceAdopt`/`sourcePrune`), snapshot lifecycle, deployment patterns. |
 | `vignettes/articles/roadmap.Rmd` | Public-facing direction. Headline items: `parquetMutableStore`, partition hardlink utility, `gSdataSource`. |
 | `vignettes/articles/parquetEdgeStore.Rmd` | Edge-store (graph) specifics. |
+| `vignettes/expression_windows.Rmd` | **Installed vignette** (`vignette("expression_windows")`) — the two options, which passes window and when, what forces a window, and why it has to be the cell axis. The reference for windowing; `?storeChunkInfo` carries the options, adr/0011 the decision and the spill comparison. |
 | `adr/` | Architecture Decision Records: why a choice was made, what was rejected, what it costs. Dated and immutable — read when you are about to change a decision, not to learn current behaviour. |
 | `bench/` | Re-runnable regression benchmark (see *Benchmarks* below). Not part of the package — Rbuildignored, results gitignored. |
 | `NEWS.md` | User-visible changes per version. Add an entry when you change behaviour, an argument, or an export. |
@@ -38,8 +39,8 @@ GiottoDisk builds against **development branches** of the suite. `Remotes:` in
 
 | Package | Branch | Required because | Drop the pin when |
 |---|---|---|---|
-| `GiottoClass` | `gsource` | `analyzeData`, `reduceData`, `filterData` generics (all in `NAMESPACE` imports) and `labelProportionsParam` (`R/stream-labelProportions.R`) are gsource-only. | those four are exported on `dev`. |
-| `Giotto` | `gsource` | The whole param layer dispatched on: `pcaParam` / `autoPcaParam` / `randomPcaParam` / `irlbaPcaParam` / `exactPcaParam`, `varParam`, `covLoessParam`, `covGroupsParam`, `cellStatsParam`, `featStatsParam`, `logNormParam`, `filterParam`. | `suite_dev` exports them. |
+| `GiottoClass` | `gsource` | `analyzeData`, `reduceData`, `filterData` generics (all in `NAMESPACE` imports) and `labelProportionsParam` (`R/stream-labelProportions.R`) are gsource-only, as are `cellStatsParam` / `featStatsParam` (moved down from Giotto in 0.7.4). Floored at `>= 0.7.10`, where `calculateOverlap(feat_count_column = FALSE)` on store-backed points reaches the disk method. | those six are exported on `dev`. |
+| `Giotto` | `gsource` | The whole param layer dispatched on: `pcaParam` / `autoPcaParam` / `randomPcaParam` / `irlbaPcaParam` / `exactPcaParam`, `varParam`, `covLoessParam`, `covGroupsParam`, `scranMarkersParam`, `logNormParam`, `filterParam`, `smotifParam`. Also the `backend =` argument on `importStereoSeq()` / `createGiottoStereoSeqObjectBin()` / `createGiottoStereoSeqObjectCell()`, which `tests/testthat/test-stereoseq-gef.R` calls — its `skip_if_not_installed("Giotto")` skips on an absent Giotto but *errors* on one predating that argument. Floored at `>= 4.3.1` in `Imports:` for `smotifParam`, which `R/stream-motif.R` dispatches on: the motif layer landed after `gsource` reached 4.3.0, so a 4.3.0 install may lack it, and loading then fails with an S4 import error rather than a version message. (The floor also covers the `AteraReader` class `R/convenience-atera.R` subclasses, added in 4.2.4, which fails the same way.) | `suite_dev` exports them. |
 | `GiottoUtils` | `dev` | Suite convention; `dev` carries everything used. | `main` catches up. |
 | `tilework` | default | Hard `Imports:` dependency, `drieslab/tilework`, not on CRAN. | it ships to CRAN. |
 
@@ -93,6 +94,10 @@ R/
   methods-plot.R         # plot methods (parquetGeomBase)
   methods-aggregate.R    # calculateOverlap, overlapToMatrix, overlapPointDisk class
   methods-rasterize.R    # terra::rasterize, terra::centroids for parquetGeomBase
+  methods-resolveSubobject.R  # parquetCoordinator view/space resolution: resolveKeep
+                              # (the surviving set as a lazy arrow plan,
+                              # .surviving_ids_query) + resolveRecipe leaf methods that
+                              # queue it as one id_filter; .find_store_with_cols
   methods-giotto.R       # createGiottoPoints, createGiottoPolygon for parquetGeomBase
   methods-parquetExprStore.R  # subset / union / storeWrite / generic dispatch
                               # for parquetExprStore
@@ -100,18 +105,40 @@ R/
   methods-sourceWrite.R  # sourceWrite (allocate uid → write → register)
   methods-sourceAdopt.R  # sourceContains, sourceAdopt
   methods-sourcePrune.R  # sourcePrune
+  methods-sourceSchema.R # sourceSchema, sourceUpdate, schema check + upgrades
   methods-snapshotSave.R # snapshotSave (giottosave snapshot lifecycle)
   methods-snapshotLoad.R # snapshotLoad
   methods-snapshotDelete.R # snapshotDelete
   stream-filter.R        # filterData(parquetExprStore, ...)
   stream-normalize.R     # processData(parquetExprStore, libraryNormParam/logNormParam)
-  stream-hvf.R           # processData(parquetExprStore, varParam) HVF selection
+  stream-markers.R       # analyzeData(parquetExprBase, markersParam) pairwise markers
   stream-pca.R           # reduceData(parquetExprStore, randomPcaParam)
-  stream-qc.R            # processData(parquetExprStore, cellStatsParam/featStatsParam)
-  stream-recommend.R     # streaming recommender utilities
+  methods-analyzeData.R  # analyzeData: cellStatsParam/featStatsParam (QC, and
+                         #   grouped feature stats), covLoessParam/covGroupsParam,
+                         #   varParam (HVF). Absorbed the old stream-qc.R and
+                         #   stream-hvf.R; both are gone.
+  stream-labelProportions.R # analyzeData(parquetEdgeStore, labelProportionsParam)
   convenience-cosmx.R    # CosMx import convenience
   convenience-stereoseq.R # Stereo-seq import convenience
   convenience-xenium.R   # Xenium import convenience
+  convenience-atera.R    # Atera import convenience (subclasses the
+                         #   Xenium disk reader; layouts are identical
+                         #   today, so it overrides nothing but the
+                         #   platform label)
+  convenience-visiumhd.R # Visium HD import convenience (binned +
+                         #   segmented; several bins into one object)
+  reader-shared.R        # technology-agnostic reader pieces:
+                         #   parent-unit metadata
+  zarr-source.R          # zarr v2 source layer: in-place .zarr.zip reads
+                         #   (seek-based, STORED entries only) + dir trees;
+                         #   .zarr_blosc_decompress() is the SINGLE call
+                         #   site of Rarr:::.decompress_chunk
+  zarr-array.R           # .zarr_array (range reads) + .zarr_chunk_reader
+  zarr-xenium-workers.R  # zarr -> 10x-schema parquet workers
+                         #   (cells / boundaries / transcripts)
+  zarr-detect.R          # detectZarrLayout(): versioned layout detection
+  zarr-convert.R         # xeniumZarrToParquet() + .zarr_ensure_parquet()
+                         #   fingerprint-keyed conversion cache
   utils.R                # .dplyr_nrow, .dump_tempfile, .move_path, etc.
   utils-arrow.R          # .arrow_sample_max_rows, .dplyr_ext, .dplyr_crop, etc.
   utils-spatial.R        # affine half-plane helpers, AABB, etc.
@@ -170,6 +197,89 @@ costs ~16GB. Use `subset()` for value-based filtering, `rowSample()` for downsam
 ### nrow() returns numeric (double)
 Handles counts up to 2^53. Arrow COUNT(*) returns int64 → `as.numeric()` converts cleanly.
 Always queries via COUNT(*) — no caching.
+
+### Bounded passes over expression values window the CELL axis
+Every streaming pass over a `parquetExprBase` — the statistic accumulators, the
+PCA passes, the `storeWrite` bake — takes its windows from `.pe_windows()` /
+`.pe_chunk_ranges()` (`R/utils-pestore-ops.R`). Do not hand-roll the walk.
+
+The axis is not a free choice. Stores are written cell-major
+(`setorder(row_id, col_id)`) — each file sorted, files covering disjoint cell
+ranges, by both parquet → parquet write paths (the lazy one windows and sorts
+per window, adr/0018) — so a contiguous cell range is the gapless case in
+`.pe_axis_pred()` and lowers to a `row_id` range predicate that prunes parquet
+row groups. Windowing the **feature** axis prunes nothing — every batch rescans
+the store in full, and the cost is linear in batch count rather than in features
+per batch. If a new statistic seems to want feature batching, it wants a cell
+window instead.
+
+Every importer writes that layout: each part file covers one ascending range of
+cells. A source stored gene-major is reordered before it is written — the
+cellbin GEF reader reads the cell-major `cellExp`, the bin GEF reader spills to
+y-stripes (adr/0017). A new input must do the same.
+
+Windows are exact rather than approximate only because the accumulators are
+additive over cells. A statistic that is not — anything needing a global order
+along the gene axis, e.g. a rank or a median — cannot be windowed this way.
+Its streaming path is the per-feature value histogram (`.pe_value_hist()`),
+which is additive; the order statistic is solved on the histogram, exact up to
+the bin width (adr/0020).
+
+**Windowing is not opt-in, and `giottodisk.chunk_size` does not switch it on.**
+There is no chunked mode and no unchunked mode. The window loop always runs; a
+budget that covers the view simply yields one window, which is one plan over the
+whole store. The option *pins* the window — an escape hatch for a constrained
+machine and for tests that need to force several — and pinning it large restores
+the single-plan shape but also removes the memory bound. Do not document or
+present it as a performance dial: it changes a bound, not a mode.
+
+The consequence to know: window count is derived from free RAM at call time, so
+it is not part of any output contract. Reassociating an additive fold is exact
+for integer accumulators (`nnz`) but not for float ones — measured 2-3 ULP on
+grouped statistics across window counts (`.pe_fold_partial`). So a windowed
+float statistic is **tolerance-reproducible, not bitwise-reproducible**, even on
+one machine. Never build a bitwise hash or snapshot test on one.
+
+Windowing and folding are **not** the same set, and conflating them is the easy
+mistake. Several passes window — both PCA flavours, both `storeWrite()` paths
+(the bake and the lazy-chain write), and both accumulator paths. Only the two
+accumulator paths *fold*, and only folding reassociates, so only folding is
+exposed to the ULP note above. PCA and the writes put each window into a slice
+nothing else touches, so they have no partials to combine and stay bitwise
+reproducible. With GiottoKernels installed, pass 1 sums per-thread Gram
+partials, so it is bitwise reproducible for a fixed thread count, not across
+counts — the same property the R bands already had across worker counts; pass 2
+builds each cell's row in one thread and is bitwise reproducible at any count.
+
+Of the two that fold, one is `by_cell` (grouped statistics) and the other is any
+statistic whose chain landed on `@post_ops`. In the current pipeline only the
+first arises, because normalization lowers to `@ops` — which is what keeps
+ungrouped statistics, including the variance feature selection ranks on, on the
+single-plan branch. Traced with the window pinned small: 0 windows for
+normalization and for ungrouped statistics on a lowerable chain; windows for
+grouped statistics, for ungrouped-with-`@post_ops`, for both PCA paths and for
+the bake. Grouped statistics are also downstream of clustering, so nothing
+propagates into kNN / Leiden / UMAP.
+
+That line moves if an op ever lands on `@post_ops` (the stubbed `add`, or a
+z-score/scale op). A post-op chain is a different computation anyway, so its
+*values* are expected to differ — the thing to notice is structural: the
+ungrouped accumulator would become windowed, which makes HVG variance
+window-count dependent, and HVG selection is a discrete top-N cut **upstream**
+of PCA. That is the one route by which a last-bit difference could become a
+visibly different clustering. If you add such an op, check HVG selection
+stability across window counts before assuming it does not matter.
+
+### Edge statistics: one contract, statistics upstream
+`analyzeData(parquetExprBase, edgeStatsParam, network = <parquetEdgeStore>,
+groups =)` returns GiottoClass's edge-statistics contract; Giotto computes
+Moran's I, Geary's C and binSpect from it (adr/0020). Do not compute a test
+statistic here — add a sum to the contract instead. The pieces are generic:
+`.edge_symmetrise`, `.edge_self_loops`, `.edge_vertex_lookup`,
+`.edge_join_vertex`, `.edge_degree`, `.edge_view_pairs`, `.edge_to_cell_map`,
+`.edge_group_tables` (`R/utils-edge.R`) and `.pe_edge_products` (the one
+expression x edge kernel). Network nodes match cells by ID, never by
+`int_id == row_id`. Only edges with both ends in the view count.
 
 ### Lazy ops via @ops slot
 Operations recorded lazily as a list of steps. User-facing op types:
@@ -332,19 +442,61 @@ store@ops <- c(store@ops, list(list(type = "filter", expr = my_call)))
 Tiled stores write the top-level extent to each tile file (intentional — files are internal).
 
 ## Output Formats
+
+**`storeRead` holds no engine-side state between calls.** Its job is to derive
+a scan from the store's own state — `@ops`, the subset slots, `fields` — and
+hand back a lazy handle. The engine is a executor, not an orchestrator: any
+view or table `storeRead` creates belongs to that one call, and nothing in the
+signature lets a caller name, address, or carry one across calls. `conn` is the
+sole exception, and only because the caller already owns it.
+
+This is why there is no parameter for the intermediate scan view, and why one
+should not be added. A consumer that wants a prepared table it modifies
+iteratively — a coordinator caching a narrowed scan, say — owns that itself
+against a connection it controls, as a contained optimization inside that
+consumer. Pushing it into `storeRead` would make every reader a participant in
+somebody else's session lifetime.
+
 - `"query"`: Arrow lazy dataset (default)
 - `"tibble"`: collected data.table, arranged by source_id/tile_index/row_index
 - `"duckdb"`: lazy `tbl_dbi` over a duckdb `TEMP VIEW` of the parquet dataset.
-  Native compile path via `.pstore_to_duckdb` — `read_parquet` SQL with
-  per-tile UNION ALL, `@ops` translated to WHERE/SELECT/LIMIT/EXISTS, spatial
+  Native compile path via `.pstore_to_duckdb` — `read_parquet` SQL over hive
+  discovery on each store root (`.pstore_hive_base_sql`), `@ops` translated to
+  WHERE/SELECT/LIMIT/EXISTS, spatial
   extension's `ST_*` for any pending transforms or spat_relate ops. User-
   supplied connection honoured via `duckdb_params$conn`; otherwise an
   ephemeral in-memory connection is created and kept alive by the returned
   `tbl_dbi`.
-- `"sedona"`: lazy `sedonadb_dataframe` (DataFusion via sedonadb) — same
-  shape as duckdb path: per-tile UNION ALL, `@ops` translated, `ST_*` for
+- `"sedona"`: lazy `sedonadb_dataframe` (DataFusion via sedonadb >= 0.4) —
+  same shape as duckdb path: one scan per store root over hive discovery,
+  never a per-tile UNION ALL (it overflows DataFusion's planner stack at a few
+  hundred tiles), `@ops` translated, `ST_*` for
   spatial. Built by `.pstore_to_sedona`. Shares the @ops translation
   builder `.pstore_sql_inner` with the duckdb path.
+
+### `"duckdb"` on expression stores
+`parquetExprStore` / `unionParquetExprStore` compile via `.pestore_to_duckdb`,
+not `.pstore_to_duckdb`, and the two work differently on purpose.
+
+The tabular path emits SQL text because its ops have no form both engines
+accept, which costs it a second implementation of the op registry — that is why
+its SQL side drops `join` / `tail` / `sample` with a warning and flattens op
+order. An expression store's subset predicates and op chain are already dplyr,
+and dplyr lowers to Acero and dbplyr alike, so `.pestore_to_duckdb` only swaps
+the carrier: it builds a `tbl_dbi` over `read_parquet` and then runs the *same*
+`.pe_apply_axis_pred()` / `.pe_apply_ops()` as the arrow path. `"query"` and
+`"duckdb"` therefore return the same values by construction.
+
+Consequences worth knowing:
+- Writing a new op means one dplyr branch in `.pe_apply_op`, serving both
+  carriers. Reach for a carrier test only where an engine cannot accept the
+  other's data (`.pe_payload_carrier` is the sole case).
+- `log1p` is unusable — DuckDB has no such function and dbplyr does not
+  translate it. `.op_transform_log` uses `log(value + 1)`.
+- Axis membership sets above
+  `getOption("giottodisk.duckdb_in_subquery_threshold")` (1000) are registered
+  and semi/anti-joined rather than inlined as a literal `IN` list.
+- `.arrow_to_duckdb` is no longer reachable from the expression stores.
 - `"terra"`: SpatVector (`parquetGeomBase` only)
 - `"sf"`: sf object (`parquetGeomBase` only)
 
@@ -414,7 +566,7 @@ rationale (manifest design, dump lifecycle, multi-analysis guarantees).
   giottodir.json       # manifest (consolidated from _pending/ on read)
   artifacts/<uid>/...  # vault
   _pending/            # WAL-style pending manifest edits
-  giottosave/          # .rds/.qs snapshots
+  giottosave/<name>.<id>/gobject.RDS  # one folder per snapshot; folder name = tag
 ```
 
 Manifest access: `src["uid"]`, `src["uid", "field"]`, `src[, "field"]`,
@@ -441,10 +593,18 @@ advisory locking for the consolidation step.
   active, artifacts land in the vault directly. `sourceAdopt` extracts
   uid via `basename(dirname(path))`, checks `src[uid]`, writes the
   manifest entry if missing — no file movement.
-- **`snapshotSave` lifecycle**: session-reset → adopt external images
-  → adopt external expression matrices → atomic snapshot write
-  (temp → rename) → tag artifacts (`name` appended to `giottosave`
-  manifest field; hash-based detection strips lazy `@ops`).
+- **`snapshotSave` lifecycle**: session-reset → mint the tag
+  (`<name>.<id>`, new every save) → adopt external images / matrices /
+  stores, tagging what they adopt → write via a staging folder → tag every
+  referenced vault artifact (uid for stores, hash for BPCells/HDF5, vault
+  path for images) → drop older snapshots of the name. Tags are never
+  removed; a tag whose folder is gone protects nothing. See design.Rmd
+  "Snapshots and tags".
+- **Schema version** (`methods-sourceSchema.R`): manifest writes, vault
+  allocation and the snapshot verbs refuse a project outside
+  `[.GDSRC_SCHEMA_MIN, .GDSRC_SCHEMA_VERSION]`. Only `sourceUpdate()` raises
+  the stamped version. A layout change bumps `.GDSRC_SCHEMA_VERSION` and adds
+  an entry to `.GDSRC_SCHEMA_UPGRADES`.
 - **`sourcePrune`**: removes untagged artifacts; protection transitive
   via BFS over `depends`.
 
@@ -474,31 +634,115 @@ Inherits `overlapInfo`. Wraps overlap `parquetStore` with metadata:
 - `overlapPointDisk` → `list(poly = ..., feat = ...)` named list of UID vectors
 
 ### Unified overlap result schema
-Both dispatch paths produce a flat `parquetStore`:
-- `poly_ID`, `feat_ID` (character) — polygon and feature IDs
+Every engine produces a `queryableStore` (`.overlap_store()`) over parquet
+files, not a `parquetStore` (adr/0019):
+- `poly_ID`, `feat_ID` (character) — polygon and feature IDs, always these
+  names whatever the input columns were called
 - `keep_cols` (optional) — extra columns from point store
 - `count` (if present in point store)
 - `pt_tile_index`, `pt_row_index` — join keys back to point store
+
+A row is keyed by `(pt_tile_index, pt_row_index, poly_ID)`. There is no
+`row_index`: do not add one (a global `row_number()` serialises the DuckDB
+join). A run with no hits still writes one zero-row file.
 
 ### calculateOverlap dispatches
 - `(parquetGeomStore, parquetGeomTileStore)`: `tileApply` with `pad_y` padding
 - `(parquetGeomStore, parquetGeomStore)`: `quadtreePlan` + `tileApply`
 
-Both paths return `overlapPointDisk`. Internals return plain `parquetStore`.
+Both are the `engine = "terra"` paths. `engine = "duckdb"` / `"sedona"` take
+`.calculate_overlap_sql()` from either signature: one `ST_Intersects` join over
+the two stores' `storeRead()` scans, so pending ops on either store apply.
+All paths return `overlapPointDisk`.
+
+`engine = NULL` resolves through `.resolve_overlap_engine()`, which wraps the
+spat_relate resolver (`.resolve_spatial_engine()`: per-call > option
+`giottodisk.spatial_query_engine` > auto sedona > duckdb > terra). One extra
+rule: under auto, any terra tiling arg supplied picks terra, since the SQL
+engines ignore those args.
 
 ### overlapToMatrix
-Groups by `(feat_ID, poly_ID)`, counts/sums, builds COO on integer keys (string→int LUTs
-joined onto raw batches *before* aggregation — aggregating strings first leaves dangling
-utf8_view buffers at scale). IDs sorted via `GiottoUtils::mixedsort()` before COO
-construction. `all_feat_ids`/`all_cell_ids` params preserve zero-overlap entries.
+The ID universes (`@feat_ids` / `@spat_ids`, or `all_feat_ids` / `all_cell_ids`)
+define the matrix axes, sorted via `GiottoUtils::mixedsort()` when `sort = TRUE`.
+Overlap rows are **inner**-joined onto them, so IDs with no overlaps keep empty
+rows/columns and rows outside them are dropped — narrowing the universes is how
+an overlap is subset.
 
-**Destination branches on `store_type`** (default: `getOption("giotto.gdsrc_matrix_format", "bpcells")`):
+`overlapPointDisk` method, `engine` (`.resolve_matrix_engine()`): `NULL` takes
+duckdb when installed and `store_type = "parquetExpr"`, else arrow; an explicit
+`"duckdb"` with another `store_type` errors. duckdb is
+`.overlap_to_pestore_duckdb()`, one query (integer LUT joins, `GROUP BY`,
+`ORDER BY row_id, col_id`, `COPY` to one file). sedona was measured for this
+step and left out (Atera: 40 s, 32-36 GB vs duckdb 7 s, 10-11 GB). arrow goes
+to the `queryableStore` method below: string→int LUTs joined onto raw batches
+*before* aggregation — aggregating strings first leaves dangling utf8_view
+buffers at scale.
+
+**Destination branches on `store_type`** (default: `getOption("giotto.gdsrc_sparsematrix_format", "parquetExpr")`):
 - `"bpcells"` / `"hdf5"`: COO → `.write_overlap_mtx()` (streamed Matrix Market) →
   `.mtx_to_store()` → BPCells or HDF5Array.
 - `"parquetexpr"`: COO → `.coo_to_parquetexpr()` directly. Transmutes
   `(i, j, n)` → `(col_id, row_id, value)`, arranges by `row_id` for row-group skipping,
   streams record batches to a `parquetExprStore` — **no MTX intermediate, no dgCMatrix
   materialization**.
+
+## Binned-grid readers (Visium HD / Stereo-seq)
+
+Both give one object shape: bin spat_units named as the in-memory readers
+name them (`bin008`, `bin100`, `cell`), `rna`/`raw` expression in a
+`parquetExprStore`, `raw` spatlocs, and the finest bins (2 um / bin1) as the
+in-memory `giottoBinPoints` -- GiottoClass keeps it in memory on a backed
+object, since it has no disk representation yet.
+
+- Readers subclass the Giotto reader and override only what goes to disk.
+  Polygons keep the inherited in-memory loader; drop its terra centroids and
+  attach it to the backed object, whose setter writes it to the vault.
+- A multi-unit `create_gobject()` loops per-unit readers into one `gobject`;
+  it does not merge objects. The unit hierarchy is cell metadata
+  (`.add_parent_units`, `R/reader-shared.R`): one column per parent unit,
+  kept only where the relation is one-to-one. Visium HD reads it from
+  `barcode_mappings.parquet`; Stereo-seq derives it from bin coordinates,
+  which SAW writes as multiples of N for binN.
+- The disk `create_gobject()` accepts every argument of the parent's, so the
+  Giotto `createGiotto*Object*()` wrappers can call either.
+
+## Zarr input (Xenium / Atera)
+
+The disk readers accept zarr-only output directories (Atera ships zarr
+only). Detection lives upstream in Giotto's `.xenium_detect_paths`
+(filetype `"zarr"`, plus automatic fallback when nothing else matches);
+GiottoDisk owns the reading. Invariants:
+
+- **Converter output is unfiltered and unflipped 10x-schema parquet.**
+  qv filtering and the y flip stay lazy in the readers' `read_fun`s, so
+  the conversion cache is parameter-independent and comparable
+  column-for-column against 10x-shipped parquet.
+- **Boundary conversion writes a SINGLE parquet file in cell order.**
+  The polygon ingest locks vertex order via its `row_index` intermediate;
+  a multi-file dataset does not guarantee scan order.
+- **`transcript_id` packs `(2^16 + fov_index)` in the high 32 bits and
+  the within-FOV decode counter in the low 32 bits** (verified against
+  shipped parquet). Feature names and instrument FOV names come from the
+  transcripts root `.zattrs` (`gene_names`, `fov_names`) with
+  gene_panel.json / synthetic `FOV%03d` as fallbacks.
+- **Expression never materializes an intermediate**: `tenxZarrInput`
+  (an `exprInput`) streams cell-ordered `(row_id, col_id, value)` batches
+  into the universal `storeWrite(parquetExprStore, exprInput)` consumer.
+  The zarr matrix is CSC by FEATURE, so the iterator reorders: two-pass
+  cell-major placement when buffers fit the chunk-sizing budget, bounded
+  per-cell-block rescans otherwise (rescans over spill, cf. adr/0011;
+  forced when nnz > int32).
+- **Conversion cache**: `<artifact dump>/zarr_cache/<fingerprint>/` where
+  the fingerprint digests (path, size, mtime, layout version, converter
+  version — `.zarr_fingerprint`). One archive = one fingerprint; the
+  cells archive converts cellmeta + both boundary sets in one pass.
+- **`Rarr:::.decompress_chunk` is an internal API**, wrapped exactly once
+  (`.zarr_blosc_decompress`), existence-checked at `.zarr_open()` time.
+  Rarr and zip live in Suggests.
+- `.zarr.zip` entries must be STORED (zip method 0) — the seek-based
+  reader refuses deflated entries; unzip the archive instead. All layout
+  assumptions sit behind `detectZarrLayout()` (`xenium-zarr-v1`); zarr v3
+  and unknown structures fail loudly there.
 
 ## Metadata
 
@@ -551,5 +795,6 @@ does synthetic only and says so. Reasoning and the full flag list are in
 - Internal helpers: `.` prefix, snake_case
 - `parquetStore` internals: `.pstore_*` / `parquetBase` internals: `.pbase_*`
 - Arrow utilities: `.arrow_*`, `.dplyr_*` / gsource internals: `.gdsrc_*`
+- Zarr layer internals: `.zarr_*` (fixture writers in tests: `.zf_*`)
 - Public store verbs: `storeCreate`, `storeRead`, `storeWrite`, `storeExists`, `storePaths`
 - Public source verbs: `sourceWrite`, `sourceContains`, `sourceAdopt`, `sourcePrune`

@@ -76,6 +76,7 @@ rowSample(ps_1, 4) |> storeRead(output = "tibble")
 Other store types:
 \code{\link{binGefInput-class}},
 \code{\link{cellbinGefInput-class}},
+\code{\link{cosmxScanInput-class}},
 \code{\link{csvWideInput-class}},
 \code{\link{dataStore-class}},
 \code{\link{edgeInput-class}},
@@ -85,6 +86,7 @@ Other store types:
 \code{\link{parquetEdgeStore-class}},
 \code{\link{parquetExprStore-class}},
 \code{\link{tenxH5Input-class}},
+\code{\link{tenxZarrInput-class}},
 \code{\link{unionParquetExprStore-class}}
 }
 \concept{store types}

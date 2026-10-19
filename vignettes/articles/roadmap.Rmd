@@ -28,6 +28,115 @@ High-level direction for GiottoDisk. Specific features land in the
   on the GiottoClass side.
 - **`bpcMatrixStore` as a wrapping store** — see below.
 
+### Lowering peak memory in the pairwise marker tail
+
+`analyzeData(parquetExprBase, scranMarkersParam)` builds one statistic frame
+per ordered pair of groups — three dense vectors of `n_genes` — and hands each
+host's set to `scran::combineMarkers()`. Since the frames are built and
+released per host, the **live** set is `O(genes × G)` rather than
+`O(genes × G²)`; cell count does not enter at all.
+
+That does not translate into lower peak RSS on its own. Measured at 5000 genes
+× 40 groups, one shape per process:
+
+| shape | ΔRSS | time |
+|---|---|---|
+| all-at-once, `G(G−1)` frames live | 1388 MB | 10.5 s |
+| per-host, `G−1` frames live | 1365 MB | 11.4 s |
+| per-host + `gc()` each host | 688 MB | 28.2 s |
+
+R grows its heap to cumulative allocation and does not return freed frames
+without a collection, so bounding the live set is necessary but not sufficient.
+Forcing `gc()` per host halves peak at ~2.7× the runtime — a real trade, and
+the reason it is not the default. **Do not add an unconditional `gc()` to that
+loop**; if it ever becomes worth exposing, it should be an option with these
+numbers attached.
+
+Cheaper first move for anyone actually memory- or time-bound at high cluster
+counts: `comparison = "one_vs_rest"`, which runs `G` pooled two-group tests
+instead of `G(G−1)` pairwise ones.
+
+### A moments seam in scran, to retire our transcription
+
+`R/stream-markers.R` hand-rolls roughly 60 lines of scran's pairwise tail —
+`.pe_welch` (Welch standard error and Satterthwaite d.f.), `.pe_run_t` (two
+one-sided `pt()` calls), `.pe_choose_lr`, `.pe_logBH`, `.pe_full_stats`. Only
+`scran::combineMarkers()` is reused, because it is the one part that never
+touches expression values.
+
+That exists because `scran::findMarkers(test.type = "t")` needs a materialized
+matrix. It makes one C++ pass for per-(feature, group) moments and then does
+every pairwise comparison as arithmetic on a features × groups table — but
+exposes no way to hand it precomputed moments, so a backend that cannot produce
+a matrix has to reimplement that arithmetic.
+
+**The risk is drift, and it is guarded but not enforced.** The transcription is
+pinned two ways: `.pe_welch` / `.pe_run_t` against `stats::t.test`, `.pe_logBH`
+against `stats::p.adjust`, and the whole path elementwise against
+`scran::findMarkers()` at 1e-10. But the parity test sits behind
+`skip_if_not_installed("scran")`, so it only fires where scran is installed. If
+scran changes its statistic and that test has not run, the two backends diverge
+silently.
+
+**The fix belongs upstream.** scran already makes this split internally:
+`.test_block_internal()` computes moments via `.compute_mean_var()`, then hands
+a `STATFUN` closure to `.pairwise_blocked_template()`. Exposing that boundary —
+a `pairwiseTTests`-style entry point taking per-group `n` / `mean` / `var`
+instead of `x` — would delete our transcription outright, and would serve every
+other out-of-core backend facing the same wall: BPCells, DelayedArray,
+dbMatrix, TileDBArray.
+
+Worth recording why this is the ask rather than the obvious one: teaching scran
+a parquet schema would mean a C++ tatami backend, and it would still
+block-realize rather than hash-aggregate — no win on the axis that matters. The
+moments seam is a far smaller change with a far wider payoff.
+
+Until then: keep the parity test green, ensure scran is installed wherever the
+suite runs, and treat any divergence from `scran::findMarkers()` as a bug in
+the transcription rather than a reason to adjust the expectation.
+
+### Per-carrier byte accounting for window sizing
+
+Window sizing asks one question — how many bytes does this pass hold per cell? —
+and answers it with constants calibrated for the most expensive path. Every
+cheaper path is charged the same, so its windows are smaller than the budget
+allows, and each extra window costs a fixed ~37 ms (measured in adr/0013).
+
+Three reservations are wrong for the Acero statistic accumulator:
+
+| term | charged for | actually holds | scales with |
+|---|---|---|---|
+| `bytes_per_nz = 48` | a materialized triplet frame | streams; retains only the aggregate | constant multiplier |
+| `p = 10` sketch, 80 B/cell | oversampling columns | no sketch at all | **`n_cells`** |
+| `k = 50` sketch, 480 B/cell (`.exprbase_chunk_size()`, the bake) | a preallocated `k + p` result | builds and flushes a chunk | **`n_cells`** |
+
+`p` is hardcoded in `.chunk_budget()`, so passing `k = 0L` does not escape it.
+
+The two sketch terms matter most, because they scale with `n_cells` against a
+budget that does not. At 8 GB free the accumulator's 80 B/cell reservation is
+0.04 GB at 500k cells and 4.0 GB at 50M — larger than the entire 25% budget, so
+sizing falls through to the 5% emergency floor and the window lands on its
+10,000-cell minimum. Past roughly 20M cells on that machine the budget is set by
+the floor rather than by the model, which is a correctness point about the bound
+before it is a performance one.
+
+What the fix looks like: let the sizing ask the path what it holds, rather than
+assume the worst across all of them. Each consumer of `.pe_window_cells()`
+already knows its own carrier and what survives a window — the accumulator holds
+an aggregate, PCA holds a sketch, the bake holds one chunk — so the estimate
+belongs with the consumer instead of in a shared constant.
+
+Effect is regime-dependent, and worth stating so nobody expects a win on a
+laptop-sized store: roughly 1% at 500k cells, ~13% at 5M, and ~33% at 50M cells
+on an 8 GB machine. Unlike the per-window setup cost, which stays a fixed
+fraction of runtime whatever the job size, this one compounds — fewer passes is
+directly related to job length.
+
+These are behaviour changes: they move window boundaries, so float accumulators
+shift by a few ULP where the window count changes and no byte-identical gate can
+cover them. Own PR, with a measurement behind each new number — the measurement
+is the work, not the edit.
+
 ### An `add` op for centred display values
 
 `multiply` is implemented; its counterpart `add` is registered as a refused
@@ -239,6 +348,31 @@ current local `gDirSource`:
   artifacts with a remote catalog for metadata.
 - **SpatialData interop** — read-only adapter over a published SpatialData
   Zarr store, exposing sdata elements through the gsource interface.
+
+## Zarr conversion follow-ups
+
+The Xenium/Atera zarr pathway (see AGENTS.md "Zarr input") converts
+transcripts in parallel and everything else serially, scheduled with the
+package's fork/`lapply_flex` convention. Deferred deliberately:
+
+- **A mirai scheduling backend.** mirai does not exist anywhere in the
+  suite yet, and the measured comparison for the shard-writing shape
+  (methods-fileInputs.R, `.storewrite_h5_parallel`) had fork ahead ~2x on
+  wall clock. Revisit as a suite-wide decision — the wins would be
+  Windows parallelism and warm daemons across tile groups.
+- **Parallel boundary decode.** Workers decode cell blocks, a single
+  writer keeps the cell-ordered single-file invariant. Low value since
+  the range-read fix; boundaries are no longer a hot spot.
+- **Parallel cellblock pass for `tenxZarrInput`.** The per-window rescans
+  are independent; the iterator feeds a serial consumer today.
+- **Archive-level overlap.** cells / transcripts / cell_feature_matrix
+  are independent archives and could convert concurrently under a shared
+  worker budget.
+- **Manifest-level dedupe (cache layer 2).** The conversion cache skips
+  re-conversion; re-import still re-tiles into the vault. Passing a
+  `zarr_fingerprint` through `sourceWrite(meta =)` and rehydrating the
+  registered store by uid would skip that too — needs a sanctioned
+  per-uid store rehydration outside `snapshotLoad`.
 
 ## Other items
 

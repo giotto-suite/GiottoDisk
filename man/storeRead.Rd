@@ -8,6 +8,8 @@
 \alias{storeRead,cellbinGefInput-method}
 \alias{storeRead,binGefInput-method}
 \alias{storeRead,csvWideInput-method}
+\alias{storeRead,tenxZarrInput-method}
+\alias{storeRead,cosmxScanInput-method}
 \alias{storeRead,parquetExprStore-method}
 \alias{storeRead,unionParquetExprStore-method}
 \alias{storeRead}
@@ -23,7 +25,12 @@
 \alias{storeRead,bpcMatrixStore-method}
 \title{Read a \code{dataStore}}
 \usage{
-\S4method{storeRead}{parquetEdgeStore}(store, output = c("arrow", "tibble", "igraph"), minimal = TRUE, ...)
+\S4method{storeRead}{parquetEdgeStore}(
+  store,
+  output = c("arrow", "arrowstream", "tibble", "igraph"),
+  minimal = TRUE,
+  ...
+)
 
 \S4method{storeRead}{mtxInput}(store, ...)
 
@@ -34,6 +41,10 @@
 \S4method{storeRead}{binGefInput}(store, ...)
 
 \S4method{storeRead}{csvWideInput}(store, ...)
+
+\S4method{storeRead}{tenxZarrInput}(store, ...)
+
+\S4method{storeRead}{cosmxScanInput}(store, ...)
 
 \S4method{storeRead}{parquetExprStore}(
   store,
@@ -89,7 +100,7 @@
   store,
   extent = NULL,
   fields = NULL,
-  output = c("query", "tibble", "terra", "sf", "duckdb", "sedona"),
+  output = c("query", "tibble", "terra", "sf", "duckdb", "sedona", "vertex_dt"),
   callback = NULL,
   duckdb_params = list(),
   omit_internals = TRUE,
@@ -100,7 +111,7 @@
   store,
   extent = NULL,
   fields = NULL,
-  output = c("query", "tibble", "terra", "sf", "duckdb", "sedona"),
+  output = c("query", "tibble", "terra", "sf", "duckdb", "sedona", "vertex_dt"),
   callback = NULL,
   duckdb_params = list(),
   omit_internals = TRUE,
@@ -112,7 +123,7 @@
   extent = NULL,
   tile_idx = NULL,
   fields = NULL,
-  output = c("query", "tibble", "terra", "sf", "duckdb", "sedona"),
+  output = c("query", "tibble", "terra", "sf", "duckdb", "sedona", "vertex_dt"),
   callback = NULL,
   duckdb_params = list(),
   omit_internals = TRUE,
@@ -131,6 +142,15 @@
 \item{output}{\code{character} (default = "query"). Format to get values in:
 \itemize{
 \item "query" - produces an arrow lazy query
+\item "arrowstream" - (\code{parquetEdgeStore} only) a
+\code{nanoarrow_array_stream} over the same query, with \verb{@ops}
+already applied. Intended for a reader outside R: the batches can
+be pulled across the Arrow C Data Interface, so a consumer that
+never sees the store object still observes its pending subset.
+The stream can be read only once, and further filtering on it
+happens after the rows are read; narrow the store (or use
+\code{"query"}) before asking for it. Respects \code{minimal}, since a
+stream cannot be reshaped once handed over.
 \item "tibble" - materialized dplyr tibble
 \item "terra" - materialized \code{SpatVector}
 \item "sf" - materialized \code{sf} object
@@ -155,7 +175,12 @@ errors. Defaults via \code{getOption("giottodisk.dgc_max_rows", 100L)} /
 "narrow slice" usage (100 × Inf or Inf × 100) is allowed; the
 intent is \code{[}-subset along one axis before materializing. Pass
 \code{Inf} to disable the cap on an axis (\code{Inf}/\code{Inf} disables the
-guard entirely).}
+guard entirely).
+
+These are \strong{not} a chunk size. They guard a single materialization
+against accidentally pulling the whole store into memory; they do not
+size or enable the streaming windows that bounded passes use. For those
+see \code{\link[=storeChunkInfo]{storeChunkInfo()}}.}
 
 \item{fields}{\code{character} (optional) specific fields/columns to read}
 
@@ -166,14 +191,39 @@ applied.
 
 Mostly useful for outputs that require materialization.}
 
-\item{duckdb_params}{named \code{list}. Params to pass
-to \code{\link[duckdb:duckdb_register_arrow]{duckdb::duckdb_register_arrow()}} if \code{output = "duckdb"}.
-Key params:
+\item{duckdb_params}{named \code{list}. Settings for \code{output = "duckdb"}:
 \itemize{
-\item \code{conn} - DBI connection to a duckdb instance.
-\item \code{name} - \code{character} (optional) If not provided, a random ID
-for the registered table will be generated
-}}
+\item \code{conn} - DBI connection to a duckdb instance. Optional for the stores
+that compile a native scan (\code{parquetStore}, \code{parquetGeomBase} and
+\code{parquetExprStore} families) — without one an ephemeral in-memory
+connection is created and kept alive by the returned \code{tbl_dbi}. A
+supplied connection is used as given, with no settings applied to it.
+\item \code{name} - \code{character} (optional) label for the view the returned
+\code{tbl_dbi} points at. A random ID is generated if absent.
+}
+
+\code{name} is a label, not a cache key. Every call compiles a fresh scan and
+installs it with \verb{CREATE OR REPLACE}, so passing a name a second time does
+not attach to the existing view — it \emph{replaces} its definition, and a
+\code{tbl_dbi} already handed out under that name then silently reads the new
+store. Reuse a name only when discarding what the previous call returned.
+
+The intermediate view holding the raw \code{read_parquet} scan is named
+internally and cannot be set. \code{storeRead()} derives a scan from the store's
+own state and keeps nothing on the database side between calls, so there is
+nothing to carry across them and no handle to carry it with. A consumer
+that wants a prepared table it modifies iteratively owns that itself,
+against a connection it controls.
+
+Stores that still bridge an Arrow scan forward the whole list to
+\code{\link[duckdb:duckdb_register_arrow]{duckdb::duckdb_register_arrow()}} and require \code{conn}. The native compile
+paths do not call that function, so they read only the two keys above and
+ignore anything else.
+
+Both keys must go inside this list. Passing \code{conn} or \code{name} directly to
+\code{storeRead()} is an error rather than a silent no-op, since the result
+would otherwise be a valid \code{tbl_dbi} on a connection the caller did not
+choose.}
 
 \item{omit_internals}{\code{logical} (default \code{TRUE}). Whether to drop internal
 special columns (\code{row_index}, \code{source_id}) from materialized output

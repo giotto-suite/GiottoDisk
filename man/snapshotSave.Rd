@@ -3,13 +3,26 @@
 \name{snapshotSave}
 \alias{snapshotSave}
 \alias{snapshotSave,gDirSource,giotto-method}
+\alias{snapshotSave,gDirSource,giottoMulti-method}
 \title{Write Giotto Snapshot}
 \usage{
 \S4method{snapshotSave}{gDirSource,giotto}(
   src,
   x,
   name = format(Sys.time(), "\%Y\%m\%d_giottosave"),
-  method = c("rds", "qs"),
+  method = c("rds", "qs2"),
+  method_params = list(),
+  overwrite = FALSE,
+  export_image = TRUE,
+  verbose = NULL,
+  ...
+)
+
+\S4method{snapshotSave}{gDirSource,giottoMulti}(
+  src,
+  x,
+  name = format(Sys.time(), "\%Y\%m\%d_giottosave"),
+  method = c("rds", "qs2"),
   method_params = list(),
   overwrite = FALSE,
   export_image = TRUE,
@@ -23,7 +36,7 @@ and save formats for a managed Giotto backend.}
 
 \item{x}{\code{giotto} object to write}
 
-\item{method}{\code{character} (default = "rds").}
+\item{method}{\code{character}, \code{"rds"} (default) or \code{"qs2"}.}
 
 \item{method_params}{\code{list} (optional) list of additional named params for
 save method.}

@@ -2,6 +2,6 @@
 ^\.Rproj\.user$
 README_files
 tests
-vignettes
+^vignettes/articles$
 ^adr$
 ^bench$

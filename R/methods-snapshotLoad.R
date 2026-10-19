@@ -35,32 +35,22 @@ setMethod("snapshotLoad", signature("gDirSource"), function(src,
     checkmate::assert_character(name, null.ok = TRUE)
     checkmate::assert_list(load_params)
     p <- src@path
+    .gdsrc_check_schema(p, site = "[snapshotLoad]")
     snaps_dir <- .gdsrc_giottosave_dir(p)
 
-    existing_snaps <- list.files(snaps_dir,
-        pattern = "\\.(rds|qs)$",
-        full.names = TRUE,
-        recursive = FALSE
-    )
-    if (length(existing_snaps) == 0L) {
+    available <- .gdsrc_snapshot_names(snaps_dir)
+    if (length(available) == 0L) {
         stop("[snapshotLoad] no snapshots found in '", snaps_dir, "'",
             call. = FALSE)
     }
-
-    if (is.null(name)) { # find most recent snapshot if name = NULL
-        modtimes <- file.info(existing_snaps)$mtime
-        snap_path <- existing_snaps[which.max(modtimes)]
-    } else {
-        hits <- existing_snaps[grepl(paste0("^", name, "\\."),
-            basename(existing_snaps))]
-        if (length(hits) == 0L) {
-            stop(.snapshot_name_not_found_msg(name, existing_snaps),
-                call. = FALSE)
-        }
-        snap_path <- hits[1L]
+    # NULL name: the most recently written snapshot
+    snap <- .gdsrc_find_snapshot(snaps_dir, name = name)
+    if (is.null(snap)) {
+        stop(.snapshot_name_not_found_msg(name, available), call. = FALSE)
     }
 
-    gobject <- .load_serialized(snap_path, load_params = load_params)
+    gobject <- .load_serialized(snap$file, load_params = load_params)
+    gobject <- .drop_legacy_overlaps(gobject)
     return(gobject)
     
     # to be completed by GiottoClass::loadGiotto
@@ -75,8 +65,7 @@ setMethod("snapshotLoad", signature("gDirSource"), function(src,
 # Build a "no snapshot named X" error message, with fuzzy suggestions when
 # `name` is close to one of the available snapshot names. Uses base::adist
 # (edit distance) so no new dep.
-.snapshot_name_not_found_msg <- function(name, existing_snaps) {
-    available <- tools::file_path_sans_ext(basename(existing_snaps))
+.snapshot_name_not_found_msg <- function(name, available) {
     head_msg <- paste0("[snapshotLoad] no snapshot named '", name, "'.")
     if (length(available) == 0L) return(head_msg)
 
@@ -99,18 +88,43 @@ setMethod("snapshotLoad", signature("gDirSource"), function(src,
         if (length(available) > 10L) ", ..." else "")
 }
 
+# Overlaps saved before 0.0.0.4 hold a parquetStore, which the current
+# overlap code no longer reads. Overlaps are scratch results of
+# calculateOverlap(), so a loaded snapshot drops them rather than converting;
+# rerunning calculateOverlap() rebuilds them.
+.drop_legacy_overlaps <- function(gobject) {
+    if (!methods::is(gobject, "giotto")) return(gobject)
+    dropped <- character()
+    for (su in names(gobject@spatial_info)) {
+        poly <- gobject@spatial_info[[su]]
+        legacy <- vapply(poly@overlaps, function(o) {
+            inherits(o, "overlapPointDisk") && inherits(o@data, "parquetStore")
+        }, logical(1L))
+        if (!any(legacy)) next
+        dropped <- c(dropped, paste0(su, "/", names(poly@overlaps)[legacy]))
+        poly@overlaps <- poly@overlaps[!legacy]
+        gobject@spatial_info[[su]] <- poly
+    }
+    if (length(dropped) > 0L) {
+        warning("[snapshotLoad] dropped overlaps saved by an older GiottoDisk: ",
+            toString(dropped), "\n  rerun calculateOverlap() to rebuild them",
+            call. = FALSE)
+    }
+    gobject
+}
+
 .load_serialized <- function(path, load_params = list()) {
     fext <- tail(file_extension(path), 1L)
-    fext <- match.arg(tolower(fext), choices = c("rds", "qs"))
-  
+    fext <- match.arg(tolower(fext), choices = c("rds", "qs2"))
+
     read_fun <- switch(fext,
         "rds" = readRDS,
-        "qs" = {
-            package_check("qs", repository = "CRAN")
-            read_fun <- get("qread", asNamespace("qs"))
+        "qs2" = {
+            package_check("qs2", repository = "CRAN")
+            get("qs_read", asNamespace("qs2"))
         }
     )
-    
+
     do.call(read_fun, args = c(list(file = path), load_params))
 }
 

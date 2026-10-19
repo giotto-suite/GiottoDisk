@@ -1,6 +1,558 @@
-# GiottoDisk 0.0.0.2
+# GiottoDisk 0.0.0.6
+
+## breaking changes
+- A snapshot is a folder, `giottosave/<name>.<id>/gobject.RDS` (or
+  `gobject.qs2`), instead of `giottosave/<name>.rds`. Artifacts are tagged
+  with the folder name, `<name>.<id>`, which is new on every save: deleting
+  or overwriting a snapshot ends the protection it gave, and saving again
+  under the same name no longer revives tags a deleted snapshot left behind.
+  `snapshotLoad()` and `snapshotDelete()` still take the name.
+- Project directories are versioned (schema v2 with this release). Writing
+  to, pruning, or saving and loading snapshots in a project written by an
+  older GiottoDisk errors until it is upgraded with `sourceUpdate()`.
+  `options(giottodisk.schema_check = FALSE)` proceeds with a warning instead.
+- Snapshot names may not contain a path separator or start with `.`.
+
+## new
+- `sourceSchema()` reports a project directory's schema version and whether
+  this GiottoDisk supports it. `sourceUpdate()` migrates an older project in
+  place: flat snapshot files move into snapshot folders and their artifacts
+  are retagged. `.qs` snapshots, which are no longer read, are moved too, so
+  their artifacts stay protected from `sourcePrune()`.
+
+## bug fixes
+- A second `snapshotSave()` of an object holding images copied every image
+  into the vault again: after adoption the image still read from the
+  original file. It now reads from the vault copy.
+- Images were protected only by the snapshot that first adopted them, so
+  deleting that snapshot and running `sourcePrune()` deleted images a later
+  snapshot still referenced. Every save now tags the vault images it holds.
+
+# GiottoDisk 0.0.0.5
+
+## new
+- Spatial co-expression on disk-backed objects: `processData()` for
+  GiottoClass's `spatialSmoothParam` writes a smoothed store (windowed over
+  cells, in network order when the stored order is not local), and
+  `analyzeData()` for `featCorParam` correlates the features of a store in
+  one pass -- with `smooth =`, window by window over the smoothed values,
+  which are never written. `crossprod(W, store)` gives weighted feature sums
+  per cell in one pass, which `createMetafeats()` uses for module scores.
+  With them Giotto's `spatialCoexpression()` runs on backed objects within a
+  laptop memory budget. Needs `GiottoClass (>= 0.7.16)`.
+- Bin points on disk: the Visium HD reader's `load_transcripts()` and the
+  Stereo-seq reader's `load_binpoints()` return a `giottoBinPoints` whose
+  slots hold stores -- one point per bin with counts, and the bins' counts as
+  a `parquetExprStore` -- instead of loading the bins into memory. The finest
+  bins stay the default; both take the bin size. `calculateOverlap()` with
+  polygons intersects the bins only and `overlapToMatrix()` sums their counts
+  per polygon in one DuckDB query; crops, feature selection, subsetting,
+  in-situ plots and snapshots work on them. In-memory bin points set on a
+  backed object are written to stores. Needs `GiottoClass (>= 0.7.13)`.
+- Spatial autocorrelation on disk-backed objects: `analyzeData()` for
+  GiottoClass's `edgeStatsParam` on a `parquetExprBase` with a
+  `parquetEdgeStore` network, so Giotto's `spatAutoCorParam()` (Moran's I,
+  Geary's C, binSpect, with or without the covariate null) and
+  `binSpect(implementation = "fast")` run on backed objects. Needs the
+  matching GiottoClass and Giotto.
+- `thresholdParam("binarize")` on a `parquetExprBase`: one threshold, one per
+  feature, or a rule (`"kmeans"`, `"rank"`) solved per feature on a streamed
+  value histogram. Lazy, like the other comparisons.
+- `x > v` on an expression store takes one threshold per row.
+- With GiottoKernels (>= 0.3.0) installed, the edge sums behind the spatial
+  autocorrelation statistics run in its `edge_products_stream()` kernel,
+  streaming the features in blocks sized to the memory budget, so the stored
+  cell order no longer matters. Without it, or for a union store, the R path
+  runs.
+- The Stereo-seq disk reader's `create_gobject()` takes several bin sizes
+  (`bin_size = c("bin50", "bin100")`), each its own spat_unit in one object, and
+  a `gobject` to add into. `load_bin_mapping = TRUE` records each bin's parent
+  bins as cell metadata, from the bin coordinates (SAW writes binN coordinates
+  as multiples of N); with one bin size there are no parents, and it says so.
+- `analyzeData()` for a `dwlsDeconvParam` on a `parquetExprBase`: spatialDWLS
+  deconvolution of a disk-backed store, so `runDWLSDeconv()` works on backed
+  objects. The store is narrowed to the signature features and read one
+  window of cells at a time through `spatialDWLS::dwls_stream()`; results
+  match the in-memory method to ~1e-15. Needs the suggested spatialDWLS
+  package and `Giotto (>= 4.3.2)`.
+- Motif enrichment on a backed spatial network:
+  `analyzeData(<parquetEdgeStore>, <smotifParam>)`, reached from
+  `cellProximityMotifs()` at the default `method = "auto"`. The edges cross
+  into smotif's `motif_enrichment_stream()` through
+  `storeRead(output = "arrowstream")`, so a pending subset is honoured and the
+  network is never read into an `igraph`; whether smotif runs that in R or in
+  its Rust backend is smotif's choice. Labels are expected named by node ID.
+  `strata` and `anchored_on` are not supported on a backed network yet and
+  error rather than falling back. Needs smotif >= 0.2.0 (Suggests).
 
 ## changes
+- Snapshots use qs2 instead of qs, which is archived on CRAN and no longer
+  builds: `snapshotSave(method = "qs2")` writes `<name>.qs2`. The `"qs"`
+  method is removed and `.qs` snapshots are no longer read. qs2 replaces qs in
+  Suggests.
+- The DuckDB memory limit follows the memory budget
+  (`giottodisk.chunk_ram_frac` of free RAM) when `giottodisk.duckdb_memory_limit`
+  is unset, instead of a fixed 8 GB.
+- Parallel workers from a `future::plan()` are capped by the memory budget
+  (about three times the session's R heap each), so a small machine runs the
+  forked steps (10x `.h5` ingest, PCA bands, zarr conversion) with fewer
+  workers. `options(giottodisk.par_workers =)` is still used as given.
+- Points are written to a geometry store straight from their coordinate
+  columns: the WKB is built with *wk* instead of through a terra SpatVector,
+  which made up most of the write time (e.g. transcripts, bin points). The
+  files hold the same rows, geometry and metadata.
+- `tenxH5Input` sizes its batches by stored values from free memory, as the
+  Stereo-seq GEF readers do, instead of a fixed 250,000 cells, so a matrix with
+  many values per cell no longer loads in one oversized batch. In the parallel
+  path the workers share the budget. `batch_cells = <n>` still pins a cell
+  count; `options(giottodisk.h5_batch_rows =)` pins the record count.
+- Requires `Giotto (>= 4.3.1)`, up from 4.3.0. The motif enrichment method
+  imports `smotifParam`, which a `gsource` install reporting 4.3.0 may predate;
+  against one, loading failed with an S4 import error instead of a version
+  message.
+- `overlapToMatrix()` to a `parquetExprStore` takes an `engine` argument
+  (`"duckdb"` or `"arrow"`) to pick one explicitly; the default `NULL` takes
+  duckdb and falls back to arrow.
+- `importVisiumHDDisk()` reads `NNNum_outputs.tar` bin outputs, extracting
+  them next to the tar (or into `outdir`) on first use as the in-memory reader
+  does; `force_untar = TRUE` re-extracts. It required extracted directories
+  before.
+- Requires `GiottoClass (>= 0.7.10)`, so `calculateOverlap(feat_count_column =
+  FALSE)` on store-backed points reaches the disk method.
+
+## bug fixes
+- The disk Xenium reader names focus images from Xenium Onboard Analysis
+  2.x (`morphology_focus_0000.ome.tif`, ...) by their channel, read from the
+  OME header: `dapi`, `18s`, `atp1a1_cd45_e-cadherin`, `alphasma_vimentin`,
+  as the files of later versions are named. They were `bound1`-`bound4`,
+  which named the DAPI image `bound1`.
+- `saveGiotto()` no longer fails on a project where an overlap that is in more
+  than one snapshot depends on several stores: `as.data.frame()` of a
+  `gDirSource` keeps `depends` as one list cell per artifact.
+- `saveGiotto()` / `loadGiotto()` on a backed object holding `giottoBinPoints`
+  (for example from `load_transcripts = TRUE`) failed with "object of type
+  'S4' is not subsettable": the snapshot steps read every points object as a
+  store. Bin points stay in memory and are saved by GiottoClass.
+- The disk Visium HD reader took a binned directory without the 2 um output
+  (for example a single `008um_outputs.tar`) for segmented outputs and failed
+  loading polygons. It now uses the in-memory reader's own decision.
+- `overlapToMatrix()` on a disk overlap sums a `count` column by default, as
+  GiottoClass does for in-memory overlaps; `count_col = FALSE` counts rows.
+  It also takes `feat_count_column`, the name GiottoClass passes, which was
+  ignored before. `calculateOverlap(feat_count_column = FALSE)` leaves `count`
+  out of the overlap, as in memory.
+
+# GiottoDisk 0.0.0.4
+
+## breaking changes
+- `calculateOverlap()` on disk stores picks its engine the way `spatRelate()`
+  does: `engine = NULL` (the new default) reads
+  `options(giottodisk.spatial_query_engine)`, and unset or `"auto"` takes the
+  first installed of sedona, duckdb and terra. It was always terra before. A
+  call that supplies a terra tiling argument (`threshold`, `tiles`, `pad_y`,
+  `poly_buf_factor`, `tile_idx`, `prune_tiles`) still gets terra under auto.
+- `calculateOverlap()` on disk stores returns its overlap in a
+  `queryableStore` instead of a `parquetStore`. The files no longer carry a
+  `row_index` column; a row is keyed by `(pt_tile_index, pt_row_index,
+  poly_ID)`. Projects saved with an older GiottoDisk drop their disk overlaps
+  on load, with a warning; rerun `calculateOverlap()` to rebuild them.
+
+## new
+- `calculateOverlap(engine = "sedona")` (sedonadb >= 0.4): one spatial join
+  over both stores. On a 624M-point, 170k-cell Atera sample it takes 39 s,
+  against about 12 minutes for `engine = "terra"`.
+
+## changes
+- `calculateOverlap(engine = "duckdb")` reads both stores through
+  `storeRead()`, so filters pending on either store now apply (it used to
+  read the raw files and count filtered-out cells and features). It no
+  longer numbers the rows in a single pass, which ran the whole join on one
+  thread: about 4 minutes on the Atera sample instead of about 12.
+- `overlapToMatrix()` to a `parquetExprStore` runs as one DuckDB query when
+  duckdb is installed: 17.5 s for the Atera sample's 300M values, against
+  80 s through Arrow, which remains the path without duckdb.
+- `overlapToMatrix()` drops overlap rows outside the feature and cell ID
+  universes instead of writing them with missing keys, so narrowing an
+  overlap's `@spat_ids` / `@feat_ids` narrows the matrix.
+
+## bug fixes
+- `calculateOverlap(engine = "terra", tile_idx = )` on a point tile store
+  failed for any `tile_idx`: it widened the outermost tiles' bounds on the
+  tile selection, which exposes no bounds, instead of on the plan (#92).
+- `overlapToMatrix()` on an `overlapPointDisk` read the overlap with the
+  input stores' ID column names. The overlap files always name them
+  `poly_ID` and `feat_ID`, so non-default `poly_id_col` / `feat_id_col`
+  failed.
+
+# GiottoDisk 0.0.0.3
+
+## new
+- `importVisiumHDDisk()`: disk-backed Visium HD reader (binned and segmented
+  outputs), also reached through `backend =` on `Giotto::importVisiumHD()`
+  and `createGiottoVisiumHDObjectBin()` / `createGiottoVisiumHDObjectCell()`. It
+  gives the same barcodes, features, spatial locations and counts as the
+  in-memory reader; the 2 um bin points stay an in-memory `giottoBinPoints`.
+  `create_gobject()` takes several `bin`s, a `gobject` to add into, and
+  `load_bin_mapping = TRUE` to record each unit's parent units (from
+  `barcode_mappings.parquet`) as cell metadata. Only extracted output
+  directories are read.
+- Gram-eigen PCA (`gramEigenPcaParam`, and `method = "auto"` when it resolves
+  to it) runs both of its passes in the compiled `GiottoKernels` package when
+  that is installed (optional, in `Suggests`): one scan of the HVF store each,
+  with threads inside the call rather than forked R processes, so PCA no
+  longer forks and runs in Positron and on Windows. On a 169,420-cell x
+  2,000-feature store, 50 components, the whole call takes 7.3 s on one
+  thread and 6.2 s on eight, against 16.9 s serial and 8.0 s on eight forked
+  workers before. Threads follow
+  `giottodisk.par_workers` / the future plan when above one, else
+  `options(gkernels.n_threads)`. Without the package, or with
+  `options(giottodisk.use_kernels = FALSE)`, the R path runs as before.
+- `Compare` methods (`>`, `>=`, `<`, `<=`, `==`, `!=`) for `parquetExprBase`
+  against a numeric scalar. `x >= t` queues a lazy indicator on the op chain
+  -- stored entries that pass read back as 1, the rest are dropped -- so
+  `rowSums(x >= 1)` and `colSums(x > 0)` stream through the existing margin
+  methods, and code written for an in-memory matrix (`rowSums_flex(x >= t)`)
+  runs unchanged on a backed one. The comparison sees values after anything
+  already queued. A comparison that is `TRUE` at 0 (`x >= 0`, `x < 1`) would
+  be dense and is an error; so is comparing two stores.
+- `storeRead(<parquetEdgeStore>, output = "arrowstream")` returns a
+  `nanoarrow_array_stream` over the same query `output = "arrow"` builds,
+  with `@ops` already applied. It exists for readers outside R: the batches
+  can be pulled across the Arrow C Data Interface, so a consumer holding
+  only the stream still observes a pending subset. The alternative a caller
+  otherwise reaches for -- taking `@path` and opening the parquet directly --
+  reads the files as they sit on disk, which a pending subset is not, and
+  also assumes one file per subdirectory. Respects `minimal`, because a
+  stream cannot be reshaped once handed over. The stream reads once;
+  narrow the store before asking for it. {nanoarrow} moves to Imports.
+
+## changes
+- `storeRead(output = "duckdb")` and `storeRead(output = "sedona")` read
+  `source_id` and `tile_index` from hive partition discovery on the store
+  root instead of reading each tile directory separately and injecting the
+  values as SQL literals. Tile selection (`tile_idx`, `@tile_filter`) becomes
+  a partition predicate that both engines prune files on. The partition
+  columns keep their types (`source_id` string, `tile_index` int32). The
+  per-tile reads crashed sedona on stores with a few hundred tiles or more.
+- sedonadb >= 0.4.0 is required, for its hive partition discovery. An older
+  install is passed over by `"auto"` spatial engine selection, and
+  `storeRead(output = "sedona")` errors on it.
+
+## bug fixes
+- The Stereo-seq GEF readers now write cell-major stores, like every other
+  input. `cellbinGefInput` reads the cell-major `cellExp` copy; `binGefInput`
+  reorders through a temporary spill and positions bins in grid order, keeping
+  their first-appearance `bin_<id>` names. Before, each part file held one
+  gene batch across all cells, so cell-windowed passes (markers, grouped
+  `featStats`, PCA) rescanned the store once per window. Stores written earlier
+  keep the old layout until re-imported.
+- Parquet writes no longer store data.table's `sorted` / `index` attributes.
+  arrow restores R attributes on read; restored onto a store read back from
+  several files or after a filter they were stale, and keyed or indexed
+  subsets of the collected table could return wrong rows.
+- `storeWrite()` of a `parquetExprStore` or `unionParquetExprStore` into a
+  `parquetExprStore`, the last expression-store writer that was not
+  cell-major, now writes that layout: each file sorted by cell then feature,
+  files covering disjoint cell ranges. The sort
+  was computed and then discarded by the parallel dataset writer, so the
+  layout differed on every run. The write is also windowed by cell, so memory
+  is bounded by the window rather than by the whole output (17.9 GB peak ->
+  10.8 GB writing a 300M-value store). Stores already written keep their
+  layout until rewritten.
+- Tile stores written from a `queryableStore` or `parquetStore` (the disk
+  readers' transcript and polygon paths) no longer nest a second
+  `tile_index=000/` level inside every tile directory. Each tile took the flat
+  geom store's `tile_idx = 0L` default on top of its own `tile_index=<NNN>/`.
+  That broke `storeRead(output = "duckdb")` ("No files found") and, with
+  sedonadb >= 0.4, which discovers hive partitions, `output = "sedona"`
+  (ambiguous `tile_index`). `.write_parquet()` now errors instead of nesting a
+  `tile_index` level. Stores already written keep the nested layout until they
+  are rewritten (#74).
+- `gDirSource()` given a relative path for a directory that did not exist yet
+  kept the relative path, as did every artifact written to it. Reading those
+  artifacts from a different working directory (a knitted document, a
+  parallel worker, after `setwd()`) then pointed at the wrong place. The path
+  is now made absolute once the directory has been created. Objects created
+  before this fix keep the relative paths they were saved with.
+
+## changes
+- `cellStatsParam` and `featStatsParam` are imported from GiottoClass, where
+  they moved from Giotto. Requires GiottoClass >= 0.7.4. No change in behaviour.
+- **View resolution follows GiottoClass 0.7.3's `resolveRecipe()`** (the
+  former `materialize()` / `resolveSubobject()`), which now requires
+  GiottoClass >= 0.7.3. A view is evaluated once per resolve op into the
+  surviving cell set by a `resolveKeep()` method, and each backed subobject
+  queues that set as one `id_filter` without being handed the gobject.
+  - **The set is a lazy arrow plan**, not a collected table: a backed filter
+    owner contributes `subset(owner, pred)` as a query, crops contribute
+    their cell_IDs, and the steps are chained with semi-joins, so nothing is
+    read until a target is collected. Backed getters (`getCellMetadata(g,
+    view = )` and friends) stay lazy this way; previously they took a
+    separate per-target pushdown path, and `resolveRecipe()` collected an ID
+    table up front. The in-memory `vector` form is collected only if an
+    in-memory subobject inside a backed object asks for it.
+  - A filter whose owner is a backed store now works: the old path called
+    `store[, key, drop = FALSE]`, which no store method accepts.
+  - A polygon store's own attributes can be filtered on (`region ==
+    "tumor"`), with `poly_ID` answering for the cell axis, as `spatValues()`
+    allows in memory.
+  - Backed transcript points skip filter steps, as the in-memory leaf does;
+    a crop still clips their own geometry. A crop drawn in a named space now
+    clips in that frame: the region projection dropped translation (it put
+    it in the affine's row 3, which `affine()` ignores), so a shifted space
+    clipped the wrong area. It now uses GiottoClass's `project_region()`.
+  - Feature metadata and dimension reductions inherit the in-memory leaf.
+    Backed feature metadata used to be given a cell_ID `id_filter` it has no
+    column for.
+- Dropped the `prepareIds` import. GiottoClass removed the generic in 0.7.3:
+  it was an exported identity transform with no call sites here or anywhere
+  else, and `parquetCoordinator`'s own methods already promote an ID set to
+  the form each store wants.
+
+# GiottoDisk 0.0.0.2
+
+## new
+- `analyzeData(parquetExprBase, scranMarkersParam)` accepts
+  `comparison = "nodes"`, the streaming half of Giotto's `findNodeMarkers()`.
+  A `sets` list names the clusters on each side of every branch point of a
+  cluster tree; the method takes its **one** grouped moment pass and folds each
+  node out of it with the existing `.pe_pool_moments()`, exactly as
+  `"one_vs_rest"` already does. The accumulators are additive, so every node
+  after the first costs arithmetic rather than another scan -- 35 nodes on
+  169,528 cells in 5.2 s, against ~35 s for one `findMarkers()` call per node,
+  and sub-linear in node count.
+- `parquetCoordinator`: view + space recipe resolution for gobjects whose
+  subobjects are `parquetStore`-backed. Recipe steps are pushed onto each
+  store's lazy-op queue via the existing `subset()` / `crop()` /
+  `spatRelate()` dispatch, so no I/O happens at coordinator time and the
+  engine (arrow / duckdb / sedona) is chosen per call.
+  Inherits `dataTableCoordinator`, so in-memory subobjects inside an
+  otherwise-backed gobject fall through to the in-memory path. Selected
+  automatically for any gobject whose `@source` inherits `gsource`.
+  Cross-storage narrowing is covered: a predicate whose columns live on a
+  different subobject than the target resolves through a lazy `[`-join
+  when the owner is backed, and an eager `id_filter` when it is in memory.
+  Requires GiottoClass >= 0.7.0.
+- `snapshotSave(gDirSource, giottoMulti)` and a `snapshotDelete` cascade
+  to per-child snapshots.
+- `spatIDs()` / `featIDs()` methods for `parquetGeomBase`, so a backed
+  geometry answers the ID question through one dispatch rather than a
+  column-forcing idiom at each call site.
+- `spatRelate()` methods for `parquetGeomBase`, and
+  `as.data.table(parquetGeomBase, geom = c("", "wkb", "XY"))` — the `"XY"`
+  vertex expansion goes through `wk::wk_coords`, with no terra
+  `SpatVector` intermediate.
+- Zarr input for the Xenium/Atera disk readers. `importXeniumDisk()` /
+  `importAteraDisk()` now work on zarr-only output directories (the only
+  format Atera will ship): transcripts, boundaries and cell metadata are
+  converted from the `.zarr.zip` archives to 10x-schema parquet in a
+  fingerprint-keyed cache (convert once, reuse on later imports), and
+  expression streams straight from the zarr into the vault
+  `parquetExprStore` with no intermediate file. Requires `Rarr` and `zip`
+  (Suggests). Unzipped `.zarr` directory trees are also accepted.
+- `tenxZarrInput()`: `exprInput` over `cell_feature_matrix.zarr.zip`.
+  Cell-ordered batch iterator over the feature-major CSC arrays; switches
+  to bounded per-cell-block rescans when the triplet buffers exceed the
+  RAM budget (or nnz exceeds int32, e.g. Atera whole-transcriptome runs).
+- `xeniumZarrToParquet()`: standalone zarr -> parquet converter producing
+  the 10x-shipped schemas (verified column-exact against 10x parquet,
+  including `transcript_id` packing and instrument FOV names), plus the
+  expression triplet layout. Transcripts convert in parallel over tile
+  groups (`giottodisk.par_workers` / future plan).
+- `detectZarrLayout()`: versioned layout detection for zarr output
+  directories; unsupported layouts (zarr v3, unknown structure) fail with
+  an actionable message.
+- `analyzeData(parquetExprBase, pageEnrichParam)` runs PAGE enrichment on a
+  disk-backed store without densifying it, so `Giotto::runPAGEEnrich()` works
+  on a backed project. It used to fail outright.
+
+  PAGE streams because its statistic is a function of moments rather than of
+  the matrix. In memory it builds a dense `geneFold = expr - mean_gene_expr`
+  and then only ever asks it for a per-cell mean, a per-cell sd, and a per-cell
+  mean over each cell type's marker rows -- all three recoverable from per-cell
+  sums of the stored sparse values plus the per-gene reference vector, so the
+  dense matrix never has to exist. Three full passes plus one per cell type,
+  each of the latter reading that type's marker rows only.
+
+  Scores match the in-memory method to ~1e-12 relative. The per-cell sd is the
+  only term not bit-identical: recovering it from raw moments sums in a
+  different order than `stats::sd`.
+
+  `p_value = TRUE` is refused with an explanation -- its permutation branch is
+  `n_times` x cell-types extra marker-set means, thousands of passes rather
+  than one heavier one. `rankEnrichParam` and `hyperEnrichParam` are refused
+  too: rank ranks each gene across every cell, so no cell chunk can be scored
+  in isolation, and the hypergeometric per-cell quantile shares nothing with
+  the accumulators PAGE uses.
+- A `expm1` op, the inverse of the existing `log` transform: `value ->
+  base^value - 1`. Sparsity-preserving, so it lowers to Acero. Written as
+  `base^value - 1` rather than `expm1(value * log(base))` because the
+  in-memory backends compute the former and the two are not bit-identical in
+  general; arrow's `^` agrees with R's elementwise, which is what makes the
+  streamed PAGE reference level exact rather than merely close.
+
+## bug fixes
+- Streaming PAGE works on a store that already carries a `@post_ops` record.
+  It pushed its `expm1` and `multiply` records with `phase = "lazy"`
+  unconditionally, and per adr/0002 a lazy push is refused once `@post_ops` is
+  non-empty, so any such store failed with *cannot queue a lazy op after a post
+  op*. The records are now appended at the end of the chain, wherever that end
+  is; both have executors for the R-side carrier, so either placement computes
+  the same thing.
+- `createGiottoXeniumObject(backend =)` no longer errors on Xenium-format
+  directories that ship no panel json. Feature metadata is generated from the
+  expression matrix when the panel is absent.
+
+## changes
+- A view step now narrows every cell-keyed subobject by the same
+  `cell_ID` set, backed polygon stores included, so a recipe gives the
+  same answer whichever slot you read it through. A crop's `geom` picks
+  what represents a cell and `engine` picks what evaluates it. Backed
+  polygons previously ignored `geom = "poly"`. See `adr/0015`.
+- `storeRead(x, output = "duckdb")` on a `parquetExprStore` /
+  `unionParquetExprStore` now rebuilds the scan from DuckDB's own
+  `read_parquet` rather than registering an Arrow scanner. DuckDB owns the
+  scan, so axis ranges prune parquet row groups in the engine and reads honour
+  `giottodisk.duckdb_memory_limit`, which the Arrow bridge never saw. The
+  subset predicates and the `@ops` chain are applied by the same functions the
+  `"query"` path uses — they are dplyr, which lowers to Acero and DuckDB
+  alike — so the two outputs return the same values by construction.
+  - `storeRead(pe, output = "duckdb")` with no `duckdb_params$conn` now works;
+    it previously errored. An ephemeral connection is created and kept alive by
+    the returned `tbl_dbi`, matching the tabular stores.
+  - `callback` is now applied on this path. A callback written against Arrow
+    rather than plain dplyr will error here instead of being ignored.
+- `duckdb_params$name` is now honoured by the tabular and geometry stores. It
+  was documented but never read by `.pstore_to_duckdb`, which always generated
+  its own view name.
+- `storeRead(output = "duckdb")` errors when `conn` or `name` is passed
+  directly rather than inside `duckdb_params`. Both previously landed in `...`,
+  which no duckdb path reads, so the setting was dropped and the caller got a
+  valid `tbl_dbi` on a connection they had not chosen. Applies to the tabular
+  and geometry stores as well.
+  - New option `giottodisk.duckdb_in_subquery_threshold` (default 1000):
+    membership predicates larger than this are registered and joined rather
+    than inlined by dbplyr as a literal `IN` list.
+- `.op_transform_log` computes `log(value + 1)` rather than `log1p(value)`.
+  DuckDB has no `log1p` and dbplyr does not translate it, so one expression now
+  serves Acero, DuckDB and the data.table executor alike. Values are unchanged
+  to within one ulp.
+- New vignette, *Cell windows* (`vignette("expression_windows")`): the two options that steer the window, which passes window and when, what forces one, and why it has to be the cell axis. The package's first installed vignette, so `DESCRIPTION` gains `VignetteBuilder: knitr`. Decision recorded in adr/0011; `storeChunkInfo()` carries the options.
+- `Giotto (>= 4.2.4)` in `Imports:`, for the `AteraReader` class `R/convenience-atera.R` subclasses. Below that the failure is an S4 inheritance error at load rather than a version message.
+- Grouped expression statistics — `analyzeData(x, featStatsParam, groups =)` and
+  everything riding it, including scran marker detection — now window the scan
+  by cells instead of running one arrow plan over the whole store. The aggregate
+  is O(groups) either way, but a grouping puts a join in front of it whose output
+  is O(nonzeros), and Acero does not spill; at atlas scale that was the failure.
+  Windows are exact rather than approximate because the accumulators are
+  additive, they are folded as they arrive so the retained state does not grow
+  with window count, and a contiguous cell range prunes row groups (the store is
+  sorted cell-major). Sized by `.recommend_chunk_size()` against free RAM, so a
+  store the budget already covers is one window and behaves exactly as before.
+  Ungrouped statistics are unchanged. Callers batching the **feature** axis to
+  work around the old memory cost should stop: gene ids are not the sort key, so
+  every batch rescanned the store in full and the cost was linear in batch
+  count, not in genes per batch.
+- Internal refactor, no user-visible behaviour change: cell-window
+  streaming now has one seam — `.pe_windows()` (substores x their cell
+  ranges), `.pe_chunk_ranges()` (a sub-range of one substore, for the parallel
+  PCA band workers) and `.pe_window_store()`. The walk had been hand-rolled in
+  nine places — both statistic accumulators, the `storeWrite` bake, four PCA
+  passes and the band split — and the copies had drifted. All now route through
+  it, and the seam is recorded in `AGENTS.md` and the `giottodisk-method` seam
+  table so the next windowed verb attaches instead of copying. Verified against
+  the previous implementation at every site: bitwise for PCA (`u`, `d`, `v`,
+  `sdev`, `eigenvalues` and per-column magnitudes — a correlation check cannot
+  see a scale change) and for the `storeWrite` bake, and to within 1 ULP for the
+  float statistic accumulators, where eager folding reassociates the summation
+  (see below). Integer accumulators are exact.
+- One behaviour change comes with it: the R-side accumulator
+  (`.pe_accum_chunked_dt()`, the path taken when `@post_ops` cannot be lowered)
+  now folds each window's partial as it arrives instead of collecting one per
+  window and reducing at the end. Held state drops from `O(groups x windows)` to
+  `O(groups)`, so tightening the window no longer costs memory. The Acero path
+  already did this.
+
+  The one visible consequence: folding on arrival reassociates the summation, so
+  a float accumulator can differ from the old reduce-at-the-end result by ~1 ULP
+  (measured 1.0-1.2 ULP, max relative 2.7e-16). Counts are unaffected. Results
+  are equal to tolerance, not bitwise, and comparisons across different window
+  counts should be written that way.
+- `analyzeData(x, featStatsParam, groups =)` resolves a grouping by `cell_ID`
+  when it is named or factored by one. A per-cell vector is a payload, and
+  adr/0003 keys those by on-disk id: keyed by view position it reads the wrong
+  entries once `[` has narrowed the store. Cells the grouping does not name now
+  drop, matching `.pe_axis_pos_map()`; no overlap at all errors. An unnamed
+  vector stays positional against the current view, with a warning.
+- Stereo-seq is reachable from the public entry points. `Giotto`'s
+  `importStereoSeq()`, `createGiottoStereoSeqObjectBin()` and
+  `createGiottoStereoSeqObjectCell()` gained a `backend =` argument that routes
+  to `importStereoSeqDisk()`, mirroring what `createGiottoXeniumObject()`
+  already did. `StereoSeqDiskReader` and the GEF inputs existed before this but
+  had no caller. Requires `Giotto@gsource` at or past the matching commit.
+- `binGefInput()` addresses `geneExp/<bin_size>/` with the group key **as
+  given** (`bin100`), where it previously stripped the `bin` prefix and looked
+  under `geneExp/100/`. Real GEFs carry the prefix — Giotto's in-memory reader
+  hardcodes `geneExp/bin1/expression` — so the old key found nothing on an
+  actual file. Callers passing a bare `"50"` must now pass `"bin50"`.
+- `importStereoSeqDisk()` defaults now match `Giotto::importStereoSeq()`:
+  `bin_size` is `"bin100"` (was `"bin50"`) and `gef_type` for `type = "cell"`
+  is `"adjusted_cellbin"` (was `"cellbin"`). Adding `backend =` to a working
+  call no longer changes which file is read.
+- `StereoSeqDiskReader`'s `create_gobject()` took `gef_path` and `mask_path`
+  through recursive default argument references (`gef_path = gef_path`), so
+  neither auto-detected path ever reached the loader and ingest failed with
+  "no .gef path provided". Both now resolve.
+- `StereoSeqDiskReader`'s `load_expression()` returns `list(exprObj)`, matching
+  the in-memory `StereoSeqReader`. It previously returned a bare `exprObj`.
+  Both work through `setGiotto()`, so assembled objects were unaffected, but a
+  reader driven piecewise — as the Stereo-seq importer vignette does — has to
+  be substitutable with `backend =` set or unset.
+- upstream (`Giotto@gsource`): cellBorder polygons from
+  `.stereoseq_build_polygons_from_border()` now populate `unique_ID_cache`, as
+  every other polygon constructor does. Left at the prototype `NA_character_`,
+  the IDs get recomputed downstream with `unique(<spatVector>$poly_ID)`, which
+  fails on a backend-managed giotto because `setGiotto()` has by then swapped
+  the `SpatVector` for a `parquetGeomStore`. This is what made
+  `createGiottoStereoSeqObjectCell(load_polygons = TRUE, backend = ...)` — the
+  vignette's recommended default — error with "unique() applies only to
+  vectors".
+- both GEF inputs now sum records for duplicate gene names that sit in
+  different chunks. A gene table is ordered by geneID, so two rows sharing a
+  geneName scatter arbitrarily (a mouse `tissue.gef` has 16 such names, up to
+  25400 rows apart), and `.gef_safe_chunks()` only keeps *consecutive* runs
+  together. Their records were aggregated per chunk and written separately,
+  so the store held two rows for one `(cell, gene)` pair — 753 of them on that
+  file, inflating nnz and every marginal derived from it. Records for
+  duplicated columns are now held back and flushed as one aggregated batch at
+  end of stream, bounded by the duplicated genes rather than the matrix.
+- for `type = "bin"`, spatial locations are built from the `(x, y) -> bin_ID`
+  map accumulated during the expression stream rather than by re-reading the
+  gef. Bin coordinates live inside the expression records, so the inherited
+  in-memory closure had to pull the whole `geneExp/<bin>/expression` dataset
+  into memory — the exact read the disk backend exists to avoid. Cellbin is
+  unchanged; its coordinates come from the small `cellBin/cell` table.
+- `analyzeData(parquetExprBase, varParam)` now evaluates the same Pearson
+  residual as `Giotto`'s in-memory path: negative-binomial denominator
+  `sqrt(mu + mu^2/theta)` with `theta = 100` (was Poisson, `sqrt(mu)`) and
+  clipping to `±sqrt(n)` (was unclipped). Both omissions inflated the
+  variances, so **the features selected by `calculateHVF(method =
+  "var_p_resid")` change**: on a Stereo-seq cellbin sample the streaming and
+  in-memory results now agree exactly, where before they shared 3% of their
+  selections. Verified against an independent dense reference at
+  `theta = 100`, `10` and `1e6` to 6e-15. `theta` is settable through
+  `analyzeParam("var", theta = )`.
+- the result gains a `mean_expr` column, for the mean-versus-variance
+  diagnostic in `calculateHVF()`'s plot. Free: the gene totals are already
+  computed.
+- with a finite `theta` the all-zero block no longer collapses to a per-gene
+  scalar (`sum_j z^2 = g_i` held only for Poisson), so it is summed over cells
+  explicitly. To keep that affordable the cell totals are collapsed to their
+  **unique values with multiplicities**, since the term depends on a cell only
+  through `mu_ij = g_i c_j / T`. Measured on `C04687E314.tissue.gef`: bin1 has
+  60 unique totals across 5,043,144 bins, turning a 1.3e11 product into 1.6e6.
+  The gene axis is chunked so the intermediate stays bounded when a dataset
+  has many distinct totals (cellbin: 2,789 across 7,527 cells).
 - `DESCRIPTION` now carries a `Remotes:` field pinning the upstream development
   branches this package builds against (`GiottoClass@gsource`, `Giotto@gsource`,
   `GiottoUtils@dev`, `drieslab/tilework`), so `remotes::install_github()` and

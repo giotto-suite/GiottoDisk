@@ -202,11 +202,261 @@ NULL
     }))[!is.na(w)]
 }
 
+# Build a `multiply` payload for a per-axis vector given in VIEW order.
+#
+# The op registry keys factors by on-disk id per substore uid (see the
+# `multiply` note in utils-pestore-ops.R), and `.pe_axis_pos_map()` is the
+# view-position -> on-disk-key map that every other consumer uses. A single
+# store's map carries no `source_id`, so the payload is keyed by its own uid.
+# On-disk ids outside the view get `fill`.
+.pe_axis_factor_payload <- function(pe, w, axis = c("feat", "cell"), fill = 0) {
+    axis <- match.arg(axis)
+    map <- .pe_axis_pos_map(pe, axis)
+    subs <- .exprbase_substores(pe)
+    if (!"source_id" %in% names(map)) {
+        uid <- as.character(subs[[1L]]$store@uid)
+        map <- data.table::copy(map)[, "source_id" := uid]
+    }
+    split_map <- split(map, map$source_id)
+    lapply(split_map, function(d) {
+        v <- rep(fill, max(d$key_id))
+        v[d$key_id] <- w[d$pos]
+        v
+    })
+}
+
+
+# ---- GEF ingest: cell-major batches ----------------------------------------
+#
+# Every expression store is written cell-major: each part file covers one
+# ascending range of cells (AGENTS.md, "window the CELL axis"). A GEF stores
+# its expression gene-major, so the readers either read a cell-major copy
+# (cellbin `cellExp`) or reorder out of core through a spill (bin GEF, and
+# cellbin files without `cellExp`). Duplicate gene names are summed by the
+# final `(row_id, col_id)` aggregate: a cell never spans two batches, so no
+# record for it can be left behind in another one.
+
+# TRUE when the HDF5 file has an object at `name` (every level checked, since
+# H5Lexists on a path through a missing group errors).
+.h5_has <- function(path, name) {
+    fid <- rhdf5::H5Fopen(path, flags = "H5F_ACC_RDONLY")
+    on.exit(rhdf5::H5Fclose(fid), add = TRUE)
+    cur <- character(0L)
+    for (p in strsplit(name, "/", fixed = TRUE)[[1L]]) {
+        cur <- paste(c(cur, p), collapse = "/")
+        if (!rhdf5::H5Lexists(fid, cur)) return(FALSE)
+    }
+    TRUE
+}
+
+# Records per ingest batch, from the same free-RAM model the streaming passes
+# use. A GEF batch holds the compound read, the triplet frame and the
+# aggregate's copy at once, about 96 B per record -- twice the collected
+# triplet frame alone. `options(giottodisk.gef_batch_rows =)` pins it; when free
+# RAM cannot be read, `.gef_batch_rows_fallback` records are used.
+.gef_batch_rows_fallback <- 5e6
+
+.gef_batch_rows <- function() {
+    .ingest_batch_rows(96, pinned = getOption("giottodisk.gef_batch_rows"),
+                       fallback = .gef_batch_rows_fallback)
+}
+
+# Records per ingest batch for an input holding about `bytes_per_record` per
+# record while a batch is in memory: the chunk budget over free RAM, at least
+# 1e6. `pinned` overrides it; `fallback` is used when free RAM cannot be read.
+.ingest_batch_rows <- function(bytes_per_record, pinned = NULL,
+                               fallback = 5e6) {
+    if (!is.null(pinned)) return(max(1, as.numeric(pinned)))
+    free <- tryCatch(.sc_free_ram(), error = function(e) NA_real_)
+    if (!isTRUE(is.finite(free)) || free <= 0) return(fallback)
+    budget <- .chunk_budget(free, .ram_frac(), n_cells = 0, k = 0, p = 0)
+    max(1e6, floor(budget / bytes_per_record))
+}
+
+# Contiguous cell ranges of at most `max_rows` records each, cut greedily; a
+# single cell with more records than that gets a range of its own. Returns a
+# list of c(a, b).
+.ingest_cell_ranges <- function(n_per_cell, max_rows) {
+    n <- length(n_per_cell)
+    if (!n) return(list())
+    cs <- c(0, cumsum(as.numeric(n_per_cell)))   # cs[i + 1] = records through cell i
+    out <- list()
+    a <- 1L
+    while (a <= n) {
+        b <- min(n, max(a, findInterval(cs[a] + max_rows, cs) - 1L))
+        out[[length(out) + 1L]] <- c(a, b)
+        a <- b + 1L
+    }
+    out
+}
+
+# Fine buckets for a spill of `n_records`: several per budget-sized batch, so
+# that pass 2 can group consecutive buckets under the budget even when records
+# are unevenly spread over the cell axis.
+.ingest_n_buckets <- function(n_records, max_rows, per_batch = 8L) {
+    max(1L, as.integer(per_batch * ceiling(n_records / max_rows)))
+}
+
+# Two-pass iterator for gene-major records. Pass 1 (on the first
+# `next_batch()`) calls `produce(i)` for i in seq_len(n_chunks); each returns a
+# data.table with an integer bucket column `b` in 1..n_buckets and whatever
+# `finish()` needs, and is spilled to one parquet file per (bucket, chunk)
+# under the artifact dump directory. Pass 2 groups consecutive buckets while
+# their records fit `max_rows` (a bucket larger than that goes alone) and
+# returns `finish(dt)` for each group in ascending order: the batch's
+# `(row_id, col_id, value)`, keyed. Buckets must partition the cell axis in
+# ascending order for the output to be cell-major. The spill is removed on
+# close.
+.ingest_spill_iterator <- function(produce, n_chunks, n_buckets, finish, max_rows) {
+    b <- NULL  # data.table var
+    spill <- .dump_tempfile()
+    spilled <- FALSE
+    groups <- list()
+    g_i <- 0L
+    closed <- FALSE
+
+    run_pass1 <- function() {
+        dir.create(spill, recursive = TRUE, showWarnings = FALSE)
+        rows <- numeric(n_buckets)
+        for (i in seq_len(n_chunks)) {
+            dt <- produce(i)
+            if (is.null(dt) || !nrow(dt)) next
+            rows <- rows + tabulate(dt$b, nbins = n_buckets)
+            parts <- split(dt, by = "b", keep.by = FALSE, sorted = TRUE)
+            for (nm in names(parts)) {
+                d <- file.path(spill, sprintf("b%06d", as.integer(nm)))
+                dir.create(d, showWarnings = FALSE)
+                .write_parquet_file(parts[[nm]], file.path(d, sprintf("c%06d.parquet", i)))
+            }
+        }
+        # consecutive non-empty buckets, grouped under the budget
+        nz <- which(rows > 0)
+        cur <- integer(0L); acc <- 0
+        for (k in nz) {
+            if (length(cur) && acc + rows[k] > max_rows) {
+                groups[[length(groups) + 1L]] <<- cur
+                cur <- integer(0L); acc <- 0
+            }
+            cur <- c(cur, k); acc <- acc + rows[k]
+        }
+        if (length(cur)) groups[[length(groups) + 1L]] <<- cur
+        spilled <<- TRUE
+    }
+
+    close_fn <- function() {
+        closed <<- TRUE
+        unlink(spill, recursive = TRUE)
+        invisible(NULL)
+    }
+
+    next_batch <- function() {
+        if (closed) return(NULL)
+        if (!spilled) run_pass1()
+        if (g_i >= length(groups)) return(NULL)
+        g_i <<- g_i + 1L
+        dirs <- file.path(spill, sprintf("b%06d", groups[[g_i]]))
+        fs <- list.files(dirs, pattern = "[.]parquet$", full.names = TRUE)
+        dt <- data.table::setDT(dplyr::collect(arrow::open_dataset(fs)))
+        unlink(dirs, recursive = TRUE)
+        finish(dt)
+    }
+
+    list(next_batch = next_batch, close = close_fn)
+}
+
+
+# Rewrite a store's view into a new single store at `path` with its cells in
+# `order` (view positions; the new store's cell k is the view's cell
+# order[k]), out of core: one pass reads the view a pruned cell window at a
+# time and spills each triplet to a bucket of its new position
+# (.ingest_spill_iterator), a second reads the buckets back in order and
+# writes them cell-major (.pestore_write_itr). The chain is applied on the
+# way, so the new store holds the values the view produces and has an empty
+# chain. Features keep the view's order. Memory is bounded by the ingest
+# batch budget, whatever the permutation; `storeWrite(pe[, order])` would
+# instead rescan the source once per window when `order` is scattered.
+.pe_rewrite_cell_order <- function(pe, order, path) {
+    row_id <- col_id <- value <- NULL  # NSE
+    if (isTRUE(pe@transposed)) {
+        stop("[.pe_rewrite_cell_order] transpose the store back first.",
+            call. = FALSE)
+    }
+    n_cells <- as.integer(pe@n_cells)
+    stopifnot(length(order) == n_cells, !anyDuplicated(order))
+    new_pos <- integer(n_cells)
+    new_pos[order] <- seq_len(n_cells)
+
+    fmap <- .pe_axis_pos_map(pe, "feat")
+    is_union <- "source_id" %in% names(fmap)
+    if (!is_union) fmap[, "source_id" := NA_character_]
+    # a window holds its triplets about four times over (arrow table, frame,
+    # bucket frame, the split), so size it for that rather than for the
+    # accumulators' grouped rows
+    windows <- .pe_windows(pe, .pe_window_cells(pe, bytes_per_nz = 200, k = 0L))
+    cols <- c("row_id", "col_id", "value", if (is_union) "source_id")
+
+    max_rows <- .ingest_batch_rows(96)
+    dens <- tryCatch(.pe_view_density(pe), error = function(e) 1)
+    n_rec <- as.numeric(n_cells) * as.numeric(pe@n_genes) * min(1, dens)
+    n_buckets <- .ingest_n_buckets(n_rec, max_rows)
+    per_bucket <- max(1L, as.integer(ceiling(n_cells / n_buckets)))
+
+    produce <- function(i) {
+        d <- windows[[i]]
+        w <- .pe_window_store(d)
+        q <- storeRead(w, output = "query")
+        if (!length(w@post_ops)) q <- dplyr::select(q, dplyr::all_of(cols))
+        dt <- data.table::as.data.table(dplyr::collect(q))
+        rm(q)
+        if (!nrow(dt)) return(NULL)
+        dt <- .pe_apply_post_ops_df(dt, w@post_ops)
+        if (!nrow(dt)) return(NULL)
+        sub <- d$sub
+        ki <- if (length(sub@cell_idx)) sub@cell_idx else seq_len(sub@n_cells)
+        local <- integer(max(ki))
+        local[ki[d$cs:d$ce]] <- d$offset + (d$cs:d$ce)
+        pos <- local[dt$row_id]
+        fk <- if (!is_union) {
+            fpos <- integer(max(fmap$key_id, dt$col_id))
+            fpos[fmap$key_id] <- fmap$pos
+            fpos[dt$col_id]
+        } else {
+            fmap$pos[match(paste(dt$source_id, dt$col_id),
+                           paste(fmap$source_id, fmap$key_id))]
+        }
+        np <- new_pos[pos]
+        out <- data.table::data.table(row_id = np, col_id = as.integer(fk),
+            value = dt$value, b = (np - 1L) %/% per_bucket + 1L)
+        rm(dt)
+        out[!is.na(row_id) & col_id > 0L]
+    }
+    finish <- function(dt) {
+        dt <- dt[, list(row_id = as.integer(row_id), col_id = as.integer(col_id),
+                        value = as.numeric(value))]
+        data.table::setkeyv(dt, c("row_id", "col_id"))
+        dt
+    }
+    itr <- .ingest_spill_iterator(produce, length(windows), n_buckets,
+        finish, max_rows)
+    cell_ids <- pe@cell_ids[order]
+    feat_ids <- pe@feat_ids
+    itr$cell_ids <- function() cell_ids
+    itr$feat_ids <- function() feat_ids
+    itr$n_cells <- function() n_cells
+    itr$n_genes <- function() length(feat_ids)
+
+    out <- parquetExprStore(path = path)
+    partition_dir <- .idpath(path, out@uid)
+    dir.create(partition_dir, recursive = TRUE, showWarnings = FALSE)
+    .pestore_write_itr(out, itr, partition_dir)
+}
+
 
 # Build chunk boundaries that respect duplicate-name groups: never split
 # a run of raw geneDT rows that share the same name_to_row between two
-# chunks. Returns a list of c(g_lo, g_hi) integer pairs covering 1..n.
-# `target_size` is the desired chunk size in raw geneDT rows.
+# chunks. Non-adjacent duplicates are summed later, by the batch aggregate of
+# `.ingest_spill_iterator()`. Returns a list of c(g_lo, g_hi) integer pairs
+# covering 1..n. `target_size` is the desired chunk size in raw geneDT rows.
 .gef_safe_chunks <- function(name_to_row, target_size) {
     n <- length(name_to_row)
     if (n == 0L) return(list())

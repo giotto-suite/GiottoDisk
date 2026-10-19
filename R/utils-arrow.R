@@ -23,10 +23,22 @@
     as.integer(lvl)
 }
 
+# arrow keeps a data.frame's R attributes in the parquet metadata and restores
+# them on collect. data.table's `sorted` and `index` describe the object in
+# memory, not the file: restored onto a read that spans several files, or
+# after a filter, they are stale, and data.table then answers keyed and
+# indexed subsets from them silently wrong. Rebuild the table over the same
+# columns (no data copied) so neither is written.
+.drop_dt_state <- function(x) {
+    if (data.table::is.data.table(x)) x <- data.table::setDT(as.list(x))
+    x
+}
+
 # Internal wrapper: arrow::write_parquet that honors the GiottoDisk-global
 # compression options. Direct callers should use this instead of
 # arrow::write_parquet so the codec is consistent across the package.
 .write_parquet_file <- function(x, sink, ...) {
+    x <- .drop_dt_state(x)
     args <- list(...)
     if (is.null(args$compression)) {
         args$compression <- .parquet_compression()
@@ -40,6 +52,7 @@
 
 # Internal wrapper: arrow::write_dataset honoring the global compression.
 .write_dataset <- function(dataset, path, ...) {
+    dataset <- .drop_dt_state(dataset)
     args <- list(...)
     if (is.null(args$compression)) {
         args$compression <- .parquet_compression()
@@ -56,19 +69,26 @@
 
 # Open a GiottoDisk-managed DuckDB connection and apply package-level settings.
 # Option giottodisk.duckdb_memory_limit: character string passed to
-# SET memory_limit (e.g. "8GB", "32GiB"). Defaults to "8GB", raising
-# DuckDB's conservative 2GB default while staying within personal computer
-# RAM budgets. Set to NULL to leave DuckDB's default untouched.
+# SET memory_limit (e.g. "8GB", "32GiB"). Unset, the limit is the same
+# budget the chunked passes use: `.ram_frac()` of free RAM. When free RAM
+# cannot be read, "8GB".
 .duckdb_connect <- function() {
     GiottoUtils::package_check("duckdb")
     GiottoUtils::package_check("DBI")
     conn <- duckdb::dbConnect(duckdb::duckdb())
-    mem <- getOption("giottodisk.duckdb_memory_limit", default = "8GB")
+    mem <- getOption("giottodisk.duckdb_memory_limit") %||% .duckdb_budget()
     if (!is.null(mem)) {
         checkmate::assert_string(mem)
         DBI::dbExecute(conn, sprintf("SET memory_limit = '%s'", mem))
     }
     conn
+}
+
+.duckdb_budget <- function() {
+    free <- tryCatch(.sc_free_ram(), error = function(e) NA_real_)
+    if (!isTRUE(is.finite(free)) || free <= 0) return("8GB")
+    sprintf("%.0fMiB", .chunk_budget(free, .ram_frac(), n_cells = 0, k = 0,
+                                     p = 0) / 2^20)
 }
 
 # Load the DuckDB spatial extension, installing it first if needed.

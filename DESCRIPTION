@@ -1,7 +1,7 @@
 Package: GiottoDisk
 Type: Package
 Title: Disk backed representations for Giotto
-Version: 0.0.0.2
+Version: 0.0.0.6
 Authors@R: c(
     person("Ruben", "Dries", email = "rubendries@gmail.com",
 		 role = c("aut", "cre"), comment = c(ORCID = "0000-0001-7650-7754")),
@@ -24,34 +24,47 @@ Imports:
     data.table (>= 1.12.2),
     digest,
     dplyr,
-    Giotto,
-    GiottoClass,
+    Giotto (>= 4.3.3),
+    GiottoClass (>= 0.7.16),
     GiottoUtils,
     igraph,
     jsonlite,
     Matrix,
     methods,
+    nanoarrow,
     rlang,
     terra,
     tilework
 Suggests:
+    bit64,
+    cosmxscan,
     BPCells,
     DBI,
     dbplyr,
     duckdb,
     filelock (>= 1.0.2),
+    GiottoKernels (>= 0.3.0),
     HDF5Array,
     hdf5r,
-    nanoarrow,
-    qs,
-    RcppHNSW,
+    knitr,
+    qs2,
+    Rarr,
     rhdf5,
-    sedonadb,
+    rmarkdown,
+    S4Vectors,
+    scran,
+    sedonadb (>= 0.4.0),
+    smotif (>= 0.2.0),
+    spatialDWLS,
     testthat,
     wk,
+    zip,
     TileDBArray
+VignetteBuilder: knitr
 Remotes:
     drieslab/tilework,
+    drieslab/cosmxscan,
+    drieslab/spatialDWLS,
     giotto-suite/GiottoUtils@dev,
     giotto-suite/GiottoClass@gsource,
     giotto-suite/Giotto@gsource
@@ -61,14 +74,19 @@ Collate:
     'utils.R'
     'class-dataStore.R'
     'class-parquetExprStore.R'
+    'class-parquetStore.R'
+    'binpoints-disk.R'
     'chunk-sizing.R'
     'class-fileInputs.R'
     'class-gsource.R'
-    'class-parquetStore.R'
     'class-parquetEdgeStore.R'
+    'class-viewCoordinator.R'
+    'convenience-xenium.R'
+    'convenience-atera.R'
     'convenience-cosmx.R'
     'convenience-stereoseq.R'
-    'convenience-xenium.R'
+    'reader-shared.R'
+    'convenience-visiumhd.R'
     'methods-accessors.R'
     'methods-aggregate.R'
     'utils-pestore-ops.R'
@@ -81,6 +99,7 @@ Collate:
     'methods-parquetExprStore.R'
     'methods-plot.R'
     'methods-rasterize.R'
+    'methods-resolveSubobject.R'
     'methods-show.R'
     'methods-snapshotDelete.R'
     'methods-snapshotLoad.R'
@@ -88,6 +107,7 @@ Collate:
     'methods-sourceWrite.R'
     'methods-sourceAdopt.R'
     'methods-sourcePrune.R'
+    'methods-sourceSchema.R'
     'methods-spatRelate.R'
     'methods-specialCols.R'
     'methods-storeInspect.R'
@@ -96,15 +116,30 @@ Collate:
     'methods-store_nostate.R'
     'methods-transforms.R'
     'pca-param.R'
+    'stream-binarize.R'
+    'stream-crossprod.R'
+    'stream-deconv.R'
+    'stream-edgestats.R'
+    'stream-enrich.R'
+    'stream-featCor.R'
     'stream-filter.R'
     'stream-labelProportions.R'
-    'stream-network.R'
+    'stream-markers.R'
+    'stream-motif.R'
     'stream-normalize.R'
     'stream-pca.R'
+    'stream-spatialSmooth.R'
     'utils-spatial.R'
     'tilework.R'
     'utils-arrow.R'
+    'utils-edge.R'
+    'utils-kernels.R'
     'utils-parquetExprStore.R'
+    'zarr-array.R'
+    'zarr-convert.R'
+    'zarr-detect.R'
+    'zarr-source.R'
+    'zarr-xenium-workers.R'
     'zzz.R'
 Roxygen: list(markdown = TRUE)
 Config/roxygen2/version: 8.0.0

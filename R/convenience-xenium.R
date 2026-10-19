@@ -150,6 +150,30 @@ setMethod(
         }
         obj@calls$load_expression <- ex_fun
 
+        # cellmeta / spatlocs (zarr swap). The inherited closures read
+        # csv/parquet only; when path detection resolved cell metadata to
+        # the cells zarr archive, convert first (fingerprint-cached; the
+        # converted cells.parquet matches the 10x cellmeta schema) and
+        # delegate unchanged.
+        if (length(obj@paths$cell_meta_path) &&
+            .is_zarr_path(obj@paths$cell_meta_path[[1L]])) {
+            parent_cellmeta <- obj@calls$load_cellmeta
+            parent_spatlocs <- obj@calls$load_spatlocs
+            zarr_meta_path <- obj@paths$cell_meta_path[[1L]]
+            obj@calls$load_cellmeta <- function(path = zarr_meta_path, ...) {
+                if (.is_zarr_path(path)) {
+                    path <- .zarr_ensure_parquet(path, what = "cells")
+                }
+                parent_cellmeta(path = path, ...)
+            }
+            obj@calls$load_spatlocs <- function(path = zarr_meta_path, ...) {
+                if (.is_zarr_path(path)) {
+                    path <- .zarr_ensure_parquet(path, what = "cells")
+                }
+                parent_spatlocs(path = path, ...)
+            }
+        }
+
         # create_gobject (disk variant). Mirrors parent's gobject_fun
         # signature so `createGiottoXeniumObject(backend = gsrc, ...)` can
         # plumb identical args through. Image / aligned-image attach
@@ -292,12 +316,18 @@ setMethod(
             }
 
             # feat metadata (in-mem; inherited closure)
-            fx <- funs$load_featmeta(
-                path = gene_panel_json_path,
-                gene_ids = "symbols",
-                verbose = verbose
-            )
-            g <- GiottoClass::setGiotto(g, fx, verbose = FALSE)
+            # optional: some Xenium-format exports ship no panel json, and
+            # feature metadata is generated from the expression matrix when
+            # it is absent. Mirrors the guard in Giotto's create path.
+            if (length(gene_panel_json_path) > 0L &&
+                nzchar(gene_panel_json_path[[1L]])) {
+                fx <- funs$load_featmeta(
+                    path = gene_panel_json_path,
+                    gene_ids = "symbols",
+                    verbose = verbose
+                )
+                g <- GiottoClass::setGiotto(g, fx, verbose = FALSE)
+            }
 
             # cell metadata (in-mem; inherited closure)
             if (load_cellmeta) {
@@ -344,6 +374,14 @@ setMethod(
                         marker <- ifelse(grepl("^ch\\d+_.*\\.ome\\.tif$", bn, ignore.case = TRUE),
                                          sub("^ch\\d+_(.*?)\\.ome\\.tif$", "\\1", bn, ignore.case = TRUE),
                                          NA_character_)
+                        # file names without the channel: read it from
+                        # the OME header
+                        ome_nm <- .xenium_focus_channel_names(
+                            focus_files[is.na(marker)])
+                        if (!is.null(ome_nm)) {
+                            na_m <- is.na(marker)
+                            marker[na_m] <- unname(ome_nm[bn[na_m]])
+                        }
                         is_dapi <- grepl("dapi", bn, ignore.case = TRUE) |
                             (!is.na(marker) & grepl("^dapi$", marker, ignore.case = TRUE))
 
@@ -405,7 +443,17 @@ setMethod(
             }
 
             # centroids are attached as spatlocs at setGiotto time
-            # via `centroids_to_spatlocs = TRUE` (see polys block above)
+            # via `centroids_to_spatlocs = TRUE` (see polys block above).
+            # With no polygons loaded there are none, so fall back to the
+            # centroids recorded in the cell metadata file. Coordinates stay
+            # in-memory here, as cellmeta and featmeta already do.
+            if (length(GiottoClass::list_spatial_info_names(g)) == 0L) {
+                sl <- funs$load_spatlocs(verbose = verbose)
+                if (!is.null(sl)) {
+                    g <- GiottoClass::setGiotto(g, sl, verbose = FALSE)
+                }
+            }
+
             GiottoUtils::vmsg(.v = verbose, "done")
 
             return(g)
@@ -428,6 +476,14 @@ setMethod(
 #' write to a `gDirSource`-managed project vault as `parquetGeomTile`
 #' stores. Other modalities (expression, featmeta, cellmeta, images)
 #' remain in-memory via the inherited `XeniumReader` closures.
+#'
+#' Zarr-only output directories are supported (requires `Rarr` and
+#' `zip`): transcripts, boundaries and cell metadata are converted from
+#' the `.zarr.zip` archives to 10x-schema parquet in a conversion cache
+#' under [getArtifactDumpDir()] (first import converts, later imports
+#' reuse), and expression streams from the zarr directly into the vault
+#' [parquetExprStore()]. See [xeniumZarrToParquet()] for the standalone
+#' converter and [detectZarrLayout()] for layout diagnostics.
 #' @param xenium_dir Xenium output directory
 #' @param backend a `gsource` (typically `gDirSource`) project backend.
 #'   Naming matches [GiottoClass::createGiottoObject()]'s `backend` param.
@@ -486,7 +542,18 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
     if (missing(path)) {
         stop("[xenium_transcript_disk] no path provided", call. = FALSE)
     }
-    checkmate::assert_file_exists(path)
+    # zarr source: convert to 10x-schema parquet first (fingerprint-cached;
+    # unfiltered/unflipped -- qv filter and y flip stay lazy in read_fun
+    # below). Conversion may return a directory of parquet shards, which
+    # arrow::open_dataset() consumes like the single file.
+    if (.is_zarr_path(path)) {
+        path <- .zarr_ensure_parquet(path,
+            what = "transcripts", workers = cores, verbose = verbose)
+    }
+    checkmate::assert(
+        checkmate::check_file_exists(path),
+        checkmate::check_directory_exists(path)
+    )
     checkmate::assert_class(gsource, "gsource")
     output <- match.arg(output, choices = c("giottoPoints", "store"))
     GiottoUtils::package_check("arrow")
@@ -580,6 +647,18 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
 ) {
     if (missing(path)) {
         stop("[xenium_poly_disk] no path provided", call. = FALSE)
+    }
+    # zarr source: both boundary sets live in cells.zarr; `name` picks the
+    # polygon set. Conversion output is a SINGLE cell-ordered parquet file
+    # (the row_index lock below needs deterministic source order).
+    if (.is_zarr_path(path)) {
+        path <- .zarr_ensure_parquet(path,
+            what = if (identical(name, "nucleus")) {
+                "nucleus_boundaries"
+            } else {
+                "cell_boundaries"
+            },
+            verbose = verbose)
     }
     checkmate::assert_file_exists(path)
     checkmate::assert_class(gsource, "gsource")
@@ -703,31 +782,36 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
 
 ## expression ####
 
-# Disk-backed Xenium expression ingestion.
+# Disk-backed 10x expression ingestion, shared by the 10x-format readers
+# (Xenium / Atera / VisiumHD).
 #
 # Builds an `exprInput` marker (`mtxInput` for the 10x mtx triple,
-# `tenxH5Input` for cell_feature_matrix.h5) and routes it through
-# `sourceWrite(gsource, inp, store_type = "parquetExpr")` into the
-# project vault. tar.gz inputs are unpacked under `tempdir()` and the
-# resulting cell_feature_matrix/ directory feeds the mtx path.
+# `tenxH5Input` for a 10x feature-barcode matrix .h5 -- Xenium
+# `cell_feature_matrix.h5`, Visium HD `*_feature_bc_matrix.h5` /
+# `*_feature_cell_matrix.h5` -- `tenxZarrInput` for zarr) and
+# routes it through `sourceWrite(gsource, inp, store_type = "parquetExpr")`
+# into the project vault. tar.gz inputs are unpacked under `tempdir()` and
+# the resulting cell_feature_matrix/ directory feeds the mtx path.
 #
-# Xenium-specific post-processing matches Giotto's in-mem
-# `.xenium_expression`: drop zero-detection features (Arrow distinct on
-# col_id), split by feature class (features.tsv column 3, or
-# /features/feature_type on h5), and rename to Giotto feat_type
-# conventions ("Gene Expression" -> "rna", etc).
-.xenium_expression_disk <- function(
+# Post-processing matches Giotto's in-mem 10x readers: drop zero-detection
+# features (Arrow distinct on col_id), split by feature class (features.tsv
+# column 3, or /features/feature_type on h5), and rename to Giotto feat_type
+# conventions ("Gene Expression" -> "rna", etc). `spat_unit` names the
+# unit the barcodes are: "cell" for segmented output, "bin008" etc. for
+# VisiumHD bins.
+.tenx_expression_disk <- function(
     path,
     gsource,
     gene_ids = "symbols",
     remove_zero_rows = TRUE,
     split_by_type = TRUE,
+    spat_unit = "cell",
     output = c("exprObj", "store"),
     verbose = NULL,
     ...
 ) {
     if (missing(path)) {
-        stop("[xenium_expression_disk] no path provided", call. = FALSE)
+        stop("[tenx_expression_disk] no path provided", call. = FALSE)
     }
     checkmate::assert_class(gsource, "gsource")
     output <- match.arg(output, choices = c("exprObj", "store"))
@@ -735,12 +819,15 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
     feature_id_col <- switch(gene_ids,
         "ensembl" = 1L,
         "symbols" = 2L,
-        stop("[xenium_expression_disk] unknown gene_ids: ", gene_ids,
+        stop("[tenx_expression_disk] unknown gene_ids: ", gene_ids,
              call. = FALSE)
     )
 
-    # Detect format
-    if (dir.exists(path)) {
+    # Detect format (zarr first: an unzipped `.zarr` tree is a directory
+    # and would otherwise be misread as an mtx dir)
+    if (.is_zarr_path(path)) {
+        fmt <- "zarr"
+    } else if (dir.exists(path)) {
         fmt <- "mtx"
     } else if (grepl("\\.tar\\.gz$", path, ignore.case = TRUE)) {
         fmt <- "tar.gz"
@@ -750,12 +837,12 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
             "h5"  = "h5",
             "mtx" = "mtx",
             "gz"  = "mtx",   # matrix.mtx.gz inside a 10x dir is handled below
-            stop("[xenium_expression_disk] unsupported expression format: ",
+            stop("[tenx_expression_disk] unsupported expression format: ",
                  path, call. = FALSE)
         )
     }
 
-    GiottoUtils::vmsg("[xenium_expression_disk] format:", fmt, .v = verbose)
+    GiottoUtils::vmsg("[tenx_expression_disk] format:", fmt, .v = verbose)
 
     # tar.gz -> unpack to tempdir, fall through to mtx path
     if (fmt == "tar.gz") {
@@ -770,7 +857,7 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
         candidates <- list.dirs(unpack_root, recursive = FALSE)
         unpacked <- candidates[grepl("cell_feature_matrix$", candidates)][1L]
         if (is.na(unpacked) || !dir.exists(unpacked)) {
-            stop("[xenium_expression_disk] tarball did not contain a ",
+            stop("[tenx_expression_disk] tarball did not contain a ",
                  "cell_feature_matrix/ directory.", call. = FALSE)
         }
         path <- unpacked
@@ -784,6 +871,11 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
     if (fmt == "mtx") {
         inp <- mtxInput(path, feature_id_col = feature_id_col)
         feat_classes_vec <- .tenx_feat_classes_mtx(path)
+    } else if (fmt == "zarr") {
+        # streams zarr triplets straight into the parquetExpr write --
+        # no intermediate parquet, no mtx/h5 unpack
+        inp <- tenxZarrInput(path, feature_id_col = feature_id_col)
+        feat_classes_vec <- .tenx_feat_classes_zarr(inp)
     } else {
         inp <- tenxH5Input(path, feature_id_col = feature_id_col)
         feat_classes_vec <- .tenx_feat_classes_h5(path)
@@ -849,12 +941,14 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
         methods::new("exprObj",
             name       = "raw",
             exprMat    = store_list[[i]],
-            spat_unit  = "cell",
+            spat_unit  = spat_unit,
             feat_type  = names(store_list)[[i]],
-            provenance = "cell"
+            provenance = spat_unit
         )
     })
 }
+
+.xenium_expression_disk <- function(...) .tenx_expression_disk(...)
 
 
 # Feature class extractor: 10x mtx triple. Reads column 3 of features.tsv
@@ -878,6 +972,16 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
 }
 
 
+# Feature class extractor: 10x zarr. The classes were already read from
+# cell_features/.zattrs (and translated to the 10x display strings) at
+# tenxZarrInput construction -- aligned 1:1 with inp@feat_ids -- so this
+# just returns them without reopening the archive. Mirrors
+# .tenx_feat_classes_mtx/_h5 in role.
+.tenx_feat_classes_zarr <- function(inp) {
+    inp@feat_types
+}
+
+
 # Feature class extractor: 10x h5. Reads /<root>/features/feature_type.
 # Opens its own h5 handle (separate from tenxH5Input's read); cheap since
 # feature_type is a small vector. Shared across 10x-format readers
@@ -888,4 +992,23 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
     on.exit(h5$close_all(), add = TRUE)
     root <- names(h5)[1L]
     as.character(h5[[paste0(root, "/features/feature_type")]][])
+}
+
+# Channel names of Xenium focus OME-TIFFs whose file names do not carry them
+# (Xenium Onboard Analysis 2.x writes morphology_focus_0000.ome.tif, ...).
+# Every file's OME-XML lists all channels and the file holding each, so the
+# first file names them all. Returns names keyed by file name, spelled as
+# XOA 3.x file names spell them ("ATP1A1/CD45/E-Cadherin" ->
+# "atp1a1_cd45_e-cadherin"), or NULL when the header cannot be read.
+.xenium_focus_channel_names <- function(files) {
+    ome <- files[grepl("\\.ome\\.tif$", files, ignore.case = TRUE)]
+    if (!length(ome)) return(NULL)
+    tryCatch({
+        ch <- GiottoClass::tif_metadata(ome[[1L]], node = "Channel")
+        td <- GiottoClass::tif_metadata(ome[[1L]], node = "TiffData")
+        fl <- GiottoClass::tif_metadata(ome[[1L]], node = "UUID")
+        nm <- ch$Name[as.integer(td$FirstC) + 1L]
+        if (!length(nm) || length(nm) != length(fl$FileName)) return(NULL)
+        stats::setNames(tolower(gsub("[/[:space:]]+", "_", nm)), fl$FileName)
+    }, error = function(e) NULL)
 }

@@ -8,12 +8,12 @@ NULL
 # Lazy dplyr/arrow pipeline that mirrors the in-mem
 # analyzeData(igraph, labelProportionsParam) method in GiottoClass:
 #
-#   1. Symmetrize edges via dplyr::union_all over the same lazy dataset —
-#      two scans, no materialization of the doubled edge set.
+#   1. Symmetrize edges (`.edge_symmetrise()`, utils-edge.R) — two scans,
+#      no materialization of the doubled edge set.
 #   2. Add self edges from the nodes sidecar (gated by alpha).
-#   3. Translate the labels DT (cell_ID, label) to int-ID space via a
-#      sidecar filter (small).
-#   4. Join + group_by + summarise lazily in arrow.
+#   3. Translate the labels DT (cell_ID, label) to int-ID space via the
+#      sidecar (`.edge_vertex_lookup()`).
+#   4. Join (`.edge_join_vertex()`) + group_by + summarise lazily in arrow.
 #   5. Collect (small: groups × labels), back-translate group integer IDs
 #      to character cell_IDs via sidecar, compute proportions, dcast.
 #
@@ -42,8 +42,8 @@ setMethod("analyzeData",
         weights    <- param$weights
 
         # NSE vars
-        from_id <- to_id <- int_id <- node_id <- weight <- NULL
-        cell_ID_int <- group <- label <- w <- n_LPG <- n_NPG <- NULL
+        from_id <- int_id <- node_id <- NULL
+        group <- label <- w <- n_LPG <- n_NPG <- NULL
 
         edges <- storeRead(x, output = "arrow")
         use_native_weight <- "weight" %in% names(edges) && isTRUE(weights)
@@ -53,53 +53,28 @@ setMethod("analyzeData",
                     "adjacency.", call. = FALSE)
         }
 
-        # Symmetrize edges (lazy union of two scans).
-        if (use_native_weight) {
-            forward  <- edges |>
-                dplyr::transmute(group = from_id, cell_ID_int = to_id, w = weight)
-            backward <- edges |>
-                dplyr::transmute(group = to_id,   cell_ID_int = from_id, w = weight)
-        } else {
-            forward  <- edges |>
-                dplyr::transmute(group = from_id, cell_ID_int = to_id, w = 1.0)
-            backward <- edges |>
-                dplyr::transmute(group = to_id,   cell_ID_int = from_id, w = 1.0)
-        }
-        sym_edges <- dplyr::union_all(forward, backward)
-
-        # Self edges, gated by alpha.
+        # Symmetrize edges (lazy union of two scans), plus self edges gated
+        # by alpha.
+        sym_edges <- .edge_symmetrise(edges, weight = use_native_weight)
         if (alpha != 0) {
-            self_q <- storeRead(x@nodes) |>
-                dplyr::transmute(group = int_id, cell_ID_int = int_id,
-                                  w = as.double(alpha))
-            sym_edges <- dplyr::union_all(sym_edges, self_q)
+            sym_edges <- dplyr::union_all(sym_edges, .edge_self_loops(x, alpha))
         }
 
-        # Translate labels DT to int-ID space via sidecar filter (small).
+        # Translate labels DT to int-ID space via the sidecar (small).
         # labels: cell_ID + labels_col character columns.
         labels_dt <- data.table::as.data.table(labels)
-        used_ids <- unique(labels_dt$cell_ID)
-        name_map <- storeRead(x@nodes) |>
-            dplyr::filter(node_id %in% !!used_ids) |>
-            dplyr::select(int_id, node_id) |>
-            dplyr::collect() |>
-            data.table::as.data.table()
-        labels_int <- merge(labels_dt, name_map,
-            by.x = "cell_ID", by.y = "node_id")
-        if (nrow(labels_int) == 0L) {
+        lookup <- .edge_vertex_lookup(x,
+            stats::setNames(labels_dt[[labels_col]], labels_dt$cell_ID))
+        if (length(lookup$int_id) == 0L) {
             stop("[analyzeData(parquetEdgeStore, labelProportionsParam)] ",
                  "labels DT had zero overlap with the network's node sidecar.",
                  call. = FALSE)
         }
-        labels_arrow <- arrow::arrow_table(
-            cell_ID_int = labels_int$int_id,
-            label       = labels_int[[labels_col]]
-        )
 
         # Join + aggregate, all lazy in arrow.
-        joined <- sym_edges |>
-            dplyr::left_join(labels_arrow, by = "cell_ID_int")
-        counts_q <- joined |>
+        counts_q <- .edge_join_vertex(sym_edges, lookup,
+                                      by = "to_id", name = "label") |>
+            dplyr::rename(group = from_id) |>
             dplyr::group_by(group, label) |>
             dplyr::summarise(n_LPG = sum(w, na.rm = TRUE), .groups = "drop")
 

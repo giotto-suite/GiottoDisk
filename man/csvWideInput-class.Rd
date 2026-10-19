@@ -27,6 +27,7 @@ CosMx \code{cell_ID != 0}).}
 Other store types:
 \code{\link{binGefInput-class}},
 \code{\link{cellbinGefInput-class}},
+\code{\link{cosmxScanInput-class}},
 \code{\link{dataStore-class}},
 \code{\link{edgeInput-class}},
 \code{\link{exprInput-class}},
@@ -36,6 +37,7 @@ Other store types:
 \code{\link{parquetExprStore-class}},
 \code{\link{parquetStore-class}},
 \code{\link{tenxH5Input-class}},
+\code{\link{tenxZarrInput-class}},
 \code{\link{unionParquetExprStore-class}}
 }
 \concept{store types}

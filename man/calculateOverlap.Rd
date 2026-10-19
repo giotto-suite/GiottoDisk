@@ -4,6 +4,7 @@
 \alias{calculateOverlap}
 \alias{calculateOverlap,parquetGeomStore,parquetGeomStore-method}
 \alias{calculateOverlap,parquetGeomStore,parquetGeomTileStore-method}
+\alias{calculateOverlap,parquetGeomStore,giottoBinPoints-method}
 \title{Calculate Overlap}
 \usage{
 \S4method{calculateOverlap}{parquetGeomStore,parquetGeomStore}(
@@ -13,11 +14,12 @@
   threshold = NULL,
   tiles = NULL,
   pad_y = 500,
-  engine = c("terra", "duckdb"),
+  engine = NULL,
   path = .dump_tempfile(),
   poly_id_col = "poly_ID",
   feat_id_col = "feat_ID",
   keep_cols = NULL,
+  feat_count_column = NULL,
   ...
 )
 
@@ -29,11 +31,21 @@
   pad_y = NULL,
   tile_idx = NULL,
   prune_tiles = FALSE,
-  engine = c("terra", "duckdb"),
+  engine = NULL,
   path = .dump_tempfile(),
   poly_id_col = "poly_ID",
   feat_id_col = "feat_ID",
   keep_cols = NULL,
+  feat_count_column = NULL,
+  ...
+)
+
+\S4method{calculateOverlap}{parquetGeomStore,giottoBinPoints}(
+  x,
+  y,
+  engine = NULL,
+  path = .dump_tempfile(),
+  poly_id_col = "poly_ID",
   ...
 )
 }
@@ -61,12 +73,17 @@ around each tile extent when fetching points.
 Supply a value directly when \code{max_poly_radius} was not recorded at write time.
 }}
 
-\item{engine}{\code{character} one of \code{"terra"} or \code{"duckdb"} (default = \code{"terra"}).
-\code{"terra"} iterates over adaptive polygon tiles (or point tiles for
-\code{parquetGeomTileStore} \code{y}). \code{"duckdb"} performs a single full-dataset
-spatial join via DuckDB's spatial extension -- tiling params
-(\code{threshold}, \code{tiles}, \code{pad_y}, \code{poly_buf_factor}) are ignored.
-Requires the DuckDB spatial extension (\verb{INSTALL spatial}).}
+\item{engine}{\code{character} one of \code{"terra"}, \code{"duckdb"} or \code{"sedona"}, or
+\code{NULL} (default) to use \code{getOption("giottodisk.spatial_query_engine")},
+the same option \code{\link[GiottoClass:spatRelate]{spatRelate()}} reads. Unset or \code{"auto"}, that picks the
+first installed of sedona, duckdb and terra, except that supplying any
+tiling param below picks terra. \code{"terra"} iterates over adaptive polygon
+tiles (or point tiles for \code{parquetGeomTileStore} \code{y}). \code{"duckdb"} and
+\code{"sedona"} perform one full-dataset spatial join over the stores'
+\code{\link[=storeRead]{storeRead()}} scans, so filters pending on \code{x} and \code{y} apply; tiling
+params (\code{threshold}, \code{tiles}, \code{pad_y}, \code{poly_buf_factor}, \code{tile_idx},
+\code{prune_tiles}) are ignored. \code{"duckdb"} needs DuckDB's spatial extension
+(\verb{INSTALL spatial}); \code{"sedona"} needs sedonadb >= 0.4.}
 
 \item{path}{\code{character} filepath for the result store}
 
@@ -79,6 +96,9 @@ Requires the DuckDB spatial extension (\verb{INSTALL spatial}).}
 \item{keep_cols}{\code{character} (optional) additional columns from \code{y} to carry
 into the result. \code{"count"} is auto-included if present in \code{y}.}
 
+\item{feat_count_column}{\code{FALSE} leaves \code{"count"} out of the result, so
+\code{\link[=overlapToMatrix]{overlapToMatrix()}} counts rows.}
+
 \item{...}{additional params to pass}
 
 \item{poly_buf_factor}{(optional) \code{numeric}. Fractional buffer beyond
@@ -88,7 +108,7 @@ each point tile extent when fetching points. Default \code{0.15}. Ignored when
 
 \item{tile_idx}{(optional) \code{integerlike}. When \code{y} is a
 \code{parquetGeomTileStore}, restrict processing to these tile indices only.
-\code{NULL} (default) processes all tiles. Ignored for \code{engine = "duckdb"}.}
+\code{NULL} (default) processes all tiles. Ignored unless \code{engine = "terra"}.}
 
 \item{prune_tiles}{\code{logical} (default \code{FALSE}). When \code{y} is a
 \code{parquetGeomTileStore}, run a parallel pre-filter pass to skip point tiles
@@ -101,11 +121,12 @@ Calculate features \code{y} that are overlapped by polygons \code{x}. GiottoDisk
 provides methods for \code{\link[GiottoClass:calculateOverlap]{GiottoClass::calculateOverlap()}} for operating on
 disk backed stores.
 
-Both dispatch paths return an \code{overlapPointDisk} wrapping a flat parquet
-store with a unified schema: \code{poly_ID}, \code{feat_ID}, any \code{keep_cols},
-auto-included \code{count} (if present), \code{pt_tile_index}, \code{pt_row_index},
-\code{row_index}. The result is self-contained for \code{\link[=overlapToMatrix]{overlapToMatrix()}} and
-retains integer join keys for optional joins back to the point store.
+Both dispatch paths return an \code{overlapPointDisk} wrapping a
+\code{queryableStore} over parquet files with a fixed schema: \code{poly_ID},
+\code{feat_ID}, any \code{keep_cols}, auto-included \code{count} (if present),
+\code{pt_tile_index}, \code{pt_row_index}. A row is keyed by \verb{(pt_tile_index, pt_row_index, poly_ID)}: the point, and the polygon it falls in. The
+result is self-contained for \code{\link[=overlapToMatrix]{overlapToMatrix()}} and keeps the point
+keys for joins back to the point store.
 
 When \code{y} is a \code{parquetGeomTileStore}, iteration is driven by the point tiles.
 Each point belongs to exactly one tile (no deduplication needed).

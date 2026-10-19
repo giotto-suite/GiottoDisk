@@ -58,17 +58,7 @@ setMethod("processData",
 
         # Payload: one full-length vector per substore, indexed by ON-DISK
         # row_id. Invariant under `[`, so nothing needs slicing later.
-        factors <- list()
-        for (sub in .exprbase_substores(x)) {
-            store <- sub$store
-            off   <- as.integer(sub$cell_offset)
-            n_sub <- as.integer(store@n_cells)
-            ci    <- if (length(store@cell_idx) > 0L) store@cell_idx
-                     else seq_len(n_sub)
-            v <- rep(NA_real_, max(ci))
-            v[ci] <- scalef[off + seq_len(n_sub)]
-            factors[[as.character(store@uid)]] <- v
-        }
+        factors <- .pe_axis_factor_payload(x, scalef, "cell", fill = NA_real_)
 
         .pe_push_op(x, 
             list(type = "multiply", axis = "cell", factors = factors),

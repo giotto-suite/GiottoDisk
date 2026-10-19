@@ -102,6 +102,36 @@ Supported op types:
 recorded as an op. Applying arrange inside Arrow would break `sample` and
 `COUNT(*)` operations.
 
+### Two ways a store reaches a second engine
+
+Both store families rebuild the scan from store state for every output, so the
+outputs stay translatable. They differ in *how* the rebuild re-expresses the op
+chain, and the difference is the op vocabulary rather than the store's age.
+
+A **tabular or geometry store** compiles to SQL text. `.pstore_sql_inner()`
+walks `@ops` a second time and `.r_expr_to_sql()` walks the R expressions
+`subset()` captured, because those ops have no form both engines accept —
+`spat_relate` needs `ST_*`, `id_filter` needs `EXISTS`, `@crop`/`@window` are
+AABB literals, and `subset()` takes arbitrary R. The cost is a second
+implementation of the registry, which is why the SQL side drops `join`, `tail`
+and `sample` with a warning and flattens a sequential chain into one `WHERE`
+plus a trailing `LIMIT`.
+
+An **expression store** does not compile anything. Its subset predicates
+(`.pe_axis_pred_exprs()`) and its op chain (`.pe_apply_ops()`) are already
+dplyr, and dplyr lowers to Acero and to dbplyr alike, so `.pestore_to_duckdb()`
+only swaps the carrier: it builds a `tbl_dbi` over DuckDB's `read_parquet` and
+then runs the same two functions the Arrow path runs. `output = "query"` and
+`output = "duckdb"` return the same values by construction rather than by test,
+and adding an op means one dplyr branch serving both engines.
+
+The two carrier-specific escapes are narrow and named: `.pe_payload_carrier()`
+(an Arrow `Table` cannot be joined into a `tbl_dbi`) and the membership-set
+branch in `.pe_apply_axis_pred()` (dbplyr inlines `%in%` into the query text, so
+large sets are registered and semi-joined instead). See ADR 0012 for why the
+tabular approach was not copied, and what it costs to keep every op
+dplyr-expressible.
+
 ### Spatial Operations are Not Ops
 
 `@crop` and `@window` on `parquetGeomBase` are not recorded in `@ops`. They are
@@ -178,6 +208,107 @@ intersecting with the existing value.
 parameters with defaults of `"x_index"`/`"y_index"` before forwarding to the
 `queryableStore` method. This prevents a duplicate-argument error when callers (such as
 `storeWrite`) already pass these params via `get_params_x`.
+
+## Expression Statistics (the accumulator)
+
+Every statistic taken over the values in a `parquetExprBase` goes through one
+function, `.pe_accum_raw()` in `R/methods-analyzeData.R`. QC stats, HVF
+selection, filtering, normalization scale factors and marker moments are all
+the same grouped aggregate over the triplet stream, differing only in which
+accumulators they ask for.
+
+**Reach for it whenever a statistic is a sum, a count, or anything derivable
+from them.** Writing a bespoke `storeRead()` + `summarise()`, or materializing
+a matrix to take a mean, duplicates a path that already handles unions,
+chunking, threshold semantics and identifier remapping.
+
+### The accumulators
+
+Four, selected with `stats` (`match.arg(several.ok = TRUE)`), so asking for
+fewer genuinely scans for less:
+
+| accumulator | value |
+|---|---|
+| `sum` | `sum(value)` over every stored entry |
+| `sumsq` | `sum(value^2)`, which with `sum` and a count gives the variance |
+| `nnz` | count of entries passing the detection threshold |
+| `sum_det` | `sum(value)` over the detected entries only |
+
+`axis` picks the margin (`"feat"` or `"cell"`). Absent entries contribute
+nothing, so these plus the *full* population count give exactly the dense
+answer — which is why the population count must come from the caller, never
+from the aggregate.
+
+Per adr/0009 the threshold gates counts, not magnitudes: it reaches `nnz` and
+`sum_det` and never touches `sum` or `sumsq`.
+
+### Grouping
+
+`by_cell` adds a second key: a table of on-disk `row_id` to integer group code
+(plus `source_id` on a union), joined into the plan *before* the aggregate, so
+it narrows the scan as well as grouping it — cells absent from the table never
+reach the hash aggregate, which is how unassigned cells are excluded.
+
+Group codes are integers, never label strings. Aggregating or joining strings
+in Acero at scale leaves dangling `utf8_view` buffers; labels are re-attached
+after collect.
+
+### Three execution shapes
+
+Selected by two independent facts: whether the chain lowers (`@post_ops`), and
+whether a grouping was asked for (`by_cell`).
+
+| chain | grouped | shape |
+|---|---|---|
+| lowers | no | one Acero plan over the whole store, unions included. Only the aggregate crosses into R. |
+| lowers | yes | one Acero plan **per cell window** (`.pe_accum_acero_windowed()`). The join stays in Acero; only its input is bounded. |
+| does not lower | either | rows must materialize, so `.pe_accum_chunked_dt()` collects a cell window at a time, applies `@post_ops`, and aggregates each window with `data.table`. |
+
+Windows for both windowed shapes come from the shared seam — `.pe_windows()` /
+`.pe_chunk_ranges()` in `R/utils-pestore-ops.R`, sized by
+`.pe_window_cells(bytes_per_nz = 48)` against a fraction of free RAM. Partials
+are folded as they arrive (`.pe_fold_partial()`), which is sound because the
+accumulators are additive and each window covers a disjoint cell set.
+
+No shape builds a matrix. The chunked branch collects a triplet `data.table`, so
+the `storeRead()` dgc slice cap is not involved on this path at all.
+
+The shapes are bounded for **different reasons**, which matters when judging a
+new path. Acero bounds the *ungrouped* aggregate by construction: the group key
+is small and the scan is never retained, whatever the store's size. That
+guarantee does **not** extend to the grouped form — the `by_cell` join in front
+of the aggregate emits `O(nonzeros)`, and Acero has no spill path, so the
+whole-store version fails rather than degrading. Both windowed shapes are
+therefore bounded only because the window is sized correctly, and their safety
+is an argument about that arithmetic rather than a guarantee from the engine.
+
+Which passes window, what forces one, and the reproducibility consequence of
+reassociating a float sum: see [Cell windows](expression_windows.html). Why
+windowing rather than handing the join to a spilling engine:
+`adr/0011-cell-windowing-over-spill.md`.
+
+Both guarantees are properties of the framework, not of the data, and both are
+trivially bypassed:
+
+```r
+storeRead(x, output = "query") |> as.data.frame()   # collects everything
+```
+
+`output = "query"` hands back a lazy Arrow query on purpose — for composing
+further, or for feeding an aggregate that streams. Collecting it whole puts the
+entire store in memory with none of the above applying. The same is true of any
+`collect()` on that object. Stay inside a verb that streams, or size the read
+yourself; do not assume a path is safe because it started from a store.
+
+### Identifier folding
+
+The aggregate keys on on-disk ids; results are keyed by position in the current
+view. `.pe_axis_pos_map()` supplies the lookup, and the fold that follows is a
+real summation on the feature axis — a feature spans substores — and a no-op on
+the cell axis, where substore cell axes are disjoint.
+
+`source_id` joins the group key only on a union, where `row_id` restarts per
+substore. On a single store it would just widen the key with a constant.
 
 ## Spatial Predicates (`spat_relate`)
 
@@ -459,7 +590,7 @@ design choices follow from this:
   giottodir.json       # manifest of all tracked artifacts
   artifacts/<uid>/data # vault — artifact subdirs named by uid
   _pending/            # WAL-style pending manifest edits
-  giottosave/          # .rds/.qs snapshots of giotto objects
+  giottosave/<name>.<id>/gobject.RDS   # one folder per snapshot
   dump/                # optional persistent staging area (see setArtifactDumpDir)
 ```
 
@@ -470,6 +601,46 @@ new JSON is written to a temp file then renamed to the final path.
 
 `sourcePrune()` removes artifacts not referenced by any snapshot, using a BFS
 walk over a `depends` graph for transitive protection.
+
+### Snapshots and tags
+
+A snapshot is a folder, `giottosave/<name>.<id>/`, with the object under a
+fixed file name, so that files describing a snapshot can sit beside it under
+fixed names too. The folder name is the snapshot's tag, and the `<id>` is new
+on every save.
+
+That makes protection end with the snapshot. Tags are never removed from
+artifacts: a deleted or overwritten snapshot's tag simply matches no folder.
+Removing tags on delete and overwrite was the alternative, and was rejected
+because it is only as safe as reference detection is complete (an artifact
+the new snapshot references but tagging misses loses its protection), and
+because a bare-name tag left behind by a deleted snapshot would protect again
+whenever a later snapshot reused the name. Stamping an id in a file inside
+the folder would work too, at the cost of more machinery than a name.
+
+Tagging is not adoption. Adoption (`sourceAdopt`) brings something into the
+vault once, and only what may be moved or copied there. Tagging runs on every
+save over everything the object references that is already in the vault, so
+a second snapshot protects what the first adopted. An image is tagged only if
+`sourceContains()` places it in the vault: an image read from the source
+dataset is never an artifact.
+
+### Schema versions
+
+The project directory carries one schema version (`giottodir.json`
+`header$versions$manifest`) describing its whole layout. Only the current
+layout has save/load code, so a stamped version must be true of everything
+on disk:
+
+- every manifest write and every snapshot verb refuses a project outside
+  the supported range, with `options(giottodisk.schema_check = FALSE)` as an
+  escape hatch so nobody is locked out of their data;
+- a write keeps the version already on disk; only `sourceUpdate()` raises
+  it, after migrating the contents.
+
+Versions: 1 had flat snapshot files tagged by bare name; 2 has snapshot
+folders tagged `<name>.<id>`. The 1 → 2 upgrade moves `.qs` snapshots too,
+though qs is no longer read, so their artifacts stay protected.
 
 ### Manifest design
 
@@ -556,7 +727,7 @@ analyses share underlying data (same experiment, different processing pipelines)
 
 - Shared artifacts are stored once in the vault
 - `snapshotSave` for a second gobject sees shared artifacts via `sourceContains`
-  and only appends the new save name to the `giottosave` tag
+  and only appends the new snapshot's tag to the `giottosave` field
 - `sourcePrune` keeps any artifact referenced by at least one save across all
   analyses in the project
 
@@ -592,3 +763,49 @@ each write an independent atomic file creation rather than a shared-file update.
 computation time. Access via `storeUID(overlap)` which returns
 `list(poly = ..., feat = ...)`. These slots are intended for future integration
 with the `depends` BFS walk in `sourcePrune()`.
+
+## Zarr Ingestion (Xenium / Atera)
+
+Xenium exports every analysis product twice — convenient parquet/csv, and
+the `.zarr.zip` archives Xenium Explorer consumes. Atera will ship zarr
+only, so the disk readers accept zarr-only directories. The mechanism has
+three layers (invariants in AGENTS.md "Zarr input"):
+
+**Source layer** (`R/zarr-source.R`, `R/zarr-array.R`). A `zarr_source`
+wraps either a `.zarr.zip` archive read in place — one long-lived
+connection, the zip central directory cached once, per-entry seek +
+local-header parse + raw read, valid because Xenium archives store
+entries uncompressed — or an unzipped directory tree. Chunk bytes go
+through `.zarr_blosc_decompress()`, the single wrapper around Rarr's
+internal decoder, and are reinterpreted per dtype (`uint32` above 2^31
+via a signed-read + 2^32 shift; `uint64` as exact-to-2^53 doubles).
+`.zarr_array(range =)` decodes only the chunks overlapping a requested
+row range — what keeps blockwise boundary reads linear —
+and `.zarr_chunk_reader()` streams 1D arrays one chunk at a time.
+
+**Conversion layer** (`R/zarr-xenium-workers.R`, `R/zarr-convert.R`).
+Workers turn the cells archive into 10x-schema `cells.parquet` plus both
+boundary parquets in one pass, and the transcripts archive into the
+shipped transcripts schema (feature and FOV names from the root
+`.zattrs`), in parallel over tile groups. Output is unfiltered and
+unflipped: the readers' existing lazy `read_fun`s apply the qv filter and
+y flip, so converted parquet is byte-comparable to what 10x ships and the
+cache is parameter-independent. `.zarr_ensure_parquet()` keys converted
+output on a fingerprint of (source path, size, mtime, layout version,
+converter version) under the artifact dump — first import converts,
+every later import reuses. The standalone entry point is
+`xeniumZarrToParquet()`.
+
+**Expression** never touches intermediate files. `tenxZarrInput` is an
+`exprInput` whose `storeRead()` iterator re-orders the feature-major CSC
+arrays into ascending-cell `(row_id, col_id, value)` batches — a two-pass
+cell-major placement when the triplet buffers fit the chunk-sizing
+budget, bounded per-cell-block rescans when they do not (the same
+rescans-over-spill call as adr/0011; forced once nnz exceeds int32).
+The unchanged universal `storeWrite(parquetExprStore, exprInput)`
+consumer streams the batches into the vault store.
+
+All layout assumptions live behind `detectZarrLayout()`, which names the
+detected layout (`xenium-zarr-v1`) and fails actionably on zarr v3 or
+unknown structures — when 10x freezes the final Atera format, detection
+plus at most one parser variant is the intended blast radius.

@@ -72,3 +72,34 @@ test_that("parquetExpr artifact path has the expected layout", {
 
     unlink(proj_dir, recursive = TRUE)
 })
+
+
+test_that("gDirSource stores an absolute path for a new relative directory", {
+    wd <- tempfile("gdsrc_wd_")
+    dir.create(wd)
+    old <- setwd(wd)
+    on.exit(setwd(old), add = TRUE)
+
+    src <- suppressMessages(gDirSource("proj"))
+    expect_identical(src@path, normalizePath(file.path(wd, "proj")))
+
+    # artifact paths stay valid after the working directory moves
+    setwd(tempdir())
+    expect_true(file.exists(.gdsrc_json_path(src@path)))
+})
+
+
+test_that("as.data.frame(gDirSource) keeps depends with several snapshot tags", {
+    proj_dir <- tempfile("gd_depends_")
+    src <- gDirSource(proj_dir)
+    .gdsrc_json_add_artifact(src@path, store_type = "overlap", uid = "ovlp",
+        hash = "h", giottosave = c("first", "second"),
+        depends = c("poly", "bins_a", "bins_b"))
+
+    manifest <- as.data.frame(src)
+    expect_identical(manifest[uid == "ovlp", giottosave], c("first", "second"))
+    expect_identical(manifest[uid == "ovlp", depends][[1L]],
+        c("poly", "bins_a", "bins_b"))
+
+    unlink(proj_dir, recursive = TRUE)
+})

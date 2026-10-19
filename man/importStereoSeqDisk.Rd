@@ -8,7 +8,7 @@ importStereoSeqDisk(
   stereoseq_dir = NULL,
   backend,
   type = c("bin", "cell"),
-  bin_size = "bin50",
+  bin_size = "bin100",
   gene_column = c("geneName", "geneID"),
   negative_y = TRUE,
   gef_type
@@ -30,9 +30,10 @@ the parent \code{StereoSeqReader} initializer.}
 Disk-backed counterpart to \code{\link[Giotto:importStereoSeq]{Giotto::importStereoSeq()}}. Produces a
 \code{StereoSeqDiskReader} whose \code{load_expression()} call streams the
 source \code{.gef} file into a \code{parquetExprStore} written to the
-\code{gDirSource}-managed project vault. Other modalities (spatlocs,
-images, masks, binpoints, polygons) remain in-memory via the
-inherited \code{StereoSeqReader} closures.
+\code{gDirSource}-managed project vault. For \code{type = "bin"}, spatial
+locations are derived from that same streaming pass. The remaining
+modalities (images, masks, binpoints, polygons, and cellbin spatial
+locations) come from the inherited \code{StereoSeqReader} closures.
 }
 \seealso{
 \code{\link[Giotto:importStereoSeq]{Giotto::importStereoSeq()}} for the in-memory variant

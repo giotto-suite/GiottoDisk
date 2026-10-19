@@ -5,7 +5,7 @@
 #' @param src `gsource` object. Used to provide default save locations
 #' and save formats for a managed Giotto backend.
 #' @param x `giotto` object to write
-#' @param method `character` (default = "rds").
+#' @param method `character`, `"rds"` (default) or `"qs2"`.
 #' @param method_params `list` (optional) list of additional named params for
 #'   save method.
 #' @param overwrite `logical` (default = FALSE). Whether to overwrite if a
@@ -24,13 +24,13 @@ NULL
 #' @export
 setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     name = format(Sys.time(), "%Y%m%d_giottosave"),
-    method = c("rds", "qs"),
+    method = c("rds", "qs2"),
     method_params = list(),
     overwrite = FALSE,
     export_image = TRUE,
     verbose = NULL,
     ...) {
-    method <- match.arg(tolower(method), choices = c("rds", "qs"))
+    method <- .snapshot_method(method)
     checkmate::assert_list(method_params)
     checkmate::assert_flag(overwrite)
     .adopt_session_reset()
@@ -41,66 +41,55 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
         backend = sprintf("`%s`", class(src)),
         path = p
     ), pre = "  ")
+    .gdsrc_check_schema(p, site = "[snapshotSave]")
     gsdir <- .gdsrc_giottosave_dir(p)
     if (!dir.exists(gsdir)) dir.create(gsdir, recursive = TRUE)
     if (!methods::hasArg(name)) {
         name <- .ss_gdsrc_find_autoname(gsdir, name)
     }
-    if (name %in% .gdsrc_detect_gsavename(gsdir) && !overwrite) {
+    .gdsrc_assert_snapshot_name(name)
+    if (name %in% .gdsrc_snapshot_names(gsdir) && !overwrite) {
        stop("[snapshotSave] giotto snapshot of this name already exists.\n",
           "Change 'name' or set 'overwrite = TRUE'", call. = FALSE)
     }
+    # the tag is minted before adoption, which records it on what it adopts
+    tag <- .gdsrc_snapshot_tag(name)
   
     vmsg(.v = verbose, "[GiottoDisk] checking images...")
     x <- .ss_gdsrc_register_external_images(x,
-        giottosave = name,
+        giottosave = tag,
         export_image = export_image,
         verbose = verbose
     )
 
     vmsg(.v = verbose, "[GiottoDisk] checking expression values...")
     x <- .ss_gdsrc_register_external_expr(x,
-        giottosave = name,
+        giottosave = tag,
         verbose = verbose
     )
 
     vmsg(.v = verbose, "[GiottoDisk] checking spatial stores...")
     x <- .ss_gdsrc_register_external_geom(x,
-        giottosave = name,
+        giottosave = tag,
         verbose = verbose
     )
 
     vmsg(.v = verbose, "[GiottoDisk] checking overlap stores...")
     x <- .ss_gdsrc_register_external_overlap(x,
-        giottosave = name,
+        giottosave = tag,
         verbose = verbose
     )
 
     vmsg(.v = verbose, "[GiottoDisk] checking network stores...")
     x <- .ss_gdsrc_register_external_network(x,
-        giottosave = name,
+        giottosave = tag,
         verbose = verbose
     )
   
     vmsg(.v = verbose, "[GiottoDisk] writing snapshot")
-    temp <- .dump_tempfile() # temp location for atomic writes
-    switch(method,
-        "rds" = {
-            fullpath <- file.path(gsdir, paste0(name, ".rds"))
-            a <- c(list(object = x, file = temp), method_params)
-            do.call(saveRDS, a)
-        },
-        "qs" = {
-            package_check(pkg_name = "qs", repository = "CRAN")
-            qsave_fun <- get("qsave", asNamespace("qs"))
-            fullpath <- file.path(gsdir, paste0(name, ".qs"))
-            a <- c(list(x = x, file = temp), method_params)
-            do.call(qsave_fun, a)
-        }
+    .ss_gdsrc_write_snapshot(x, gsdir = gsdir, tag = tag,
+        method = method, method_params = method_params
     )
-    
-    res <- file.rename(from = temp, to = fullpath)
-    if (!res) stop("[snapshotSave] save failed\n", call. = FALSE)
   
     # tagging --------------------------------------------------- #
     vmsg(.v = verbose, "[GiottoDisk] tagging snapshot artifacts...")
@@ -109,15 +98,116 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
         manifest <- as.data.frame(src)
         for (uid_to_tag in uids) {
             content <- manifest[uid == uid_to_tag, giottosave]
-            content <- c(content, name)
+            content <- c(content, tag)
             content <- unique(content[!is.na(content)])
             src[uid_to_tag, "giottosave"] <- content
         }
     }
 
+    # an overwrite: older snapshots of this name go once this one is in place
+    .ss_gdsrc_drop_older(gsdir, name = name, keep = tag)
+
     vmsg(.v = verbose, "[GiottoDisk] done")
     invisible(x)
 })
+#' @rdname snapshotSave
+#' @export
+setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, x,
+    name = format(Sys.time(), "%Y%m%d_giottosave"),
+    method = c("rds", "qs2"),
+    method_params = list(),
+    overwrite = FALSE,
+    export_image = TRUE,
+    verbose = NULL,
+    ...) {
+    method <- .snapshot_method(method)
+    checkmate::assert_list(method_params)
+    checkmate::assert_flag(overwrite)
+    .adopt_session_reset()
+
+    p <- x@source@path
+    vmsg(.v = verbose, "[GiottoDisk] Saving giottoMulti...")
+    print_list(list(
+        backend  = sprintf("`%s`", class(src)),
+        path     = p,
+        children = length(x@objects)
+    ), pre = "  ")
+
+    .gdsrc_check_schema(p, site = "[snapshotSave]")
+    gsdir <- .gdsrc_giottosave_dir(p)
+    if (!dir.exists(gsdir)) dir.create(gsdir, recursive = TRUE)
+    if (!methods::hasArg(name)) {
+        name <- .ss_gdsrc_find_autoname(gsdir, name)
+    }
+    .gdsrc_assert_snapshot_name(name)
+    if (name %in% .gdsrc_snapshot_names(gsdir) && !overwrite) {
+        stop("[snapshotSave] giottoMulti snapshot of this name already exists.\n",
+            "Change 'name' or set 'overwrite = TRUE'", call. = FALSE)
+    }
+    # the tag is minted before adoption, which records it on what it adopts
+    tag <- .gdsrc_snapshot_tag(name)
+
+    # Recurse into sourced children. Per-child snapshots in each child's
+    # own vault are what protect that child's artifacts from sourcePrune;
+    # the multi's own .rds re-references those artifacts via embedded
+    # file handles. Naming "<multi_name>_<child_name>" makes the
+    # provenance visible in each child's giottosave/ listing.
+    for (child_name in names(x@objects)) {
+        child <- x@objects[[child_name]]
+        if (is.null(child@source)) next
+        vmsg(.v = verbose, sprintf(
+            "[GiottoDisk] saving child '%s' snapshot...", child_name
+        ))
+        x@objects[[child_name]] <- snapshotSave(child@source, child,
+            name           = paste0(name, "_", child_name),
+            method         = method,
+            method_params  = method_params,
+            overwrite      = overwrite,
+            export_image   = export_image,
+            verbose        = verbose,
+            ...
+        )
+    }
+
+    # Multi-level adoption — shared-domain expression slots may hold
+    # in-memory matrices that need to land in the multi's vault.
+    vmsg(.v = verbose, "[GiottoDisk] checking multi-level expression values...")
+    x <- .ss_gdsrc_register_external_expr(x,
+        giottosave = tag,
+        verbose    = verbose
+    )
+
+    # Write the multi-level .rds. Children are embedded with their
+    # (post-adoption) file handles; loading the multi .rds reconstitutes
+    # the whole federation without needing a separate manifest.
+    vmsg(.v = verbose, "[GiottoDisk] writing multi snapshot")
+    .ss_gdsrc_write_snapshot(x, gsdir = gsdir, tag = tag,
+        method = method, method_params = method_params
+    )
+
+    # Tag multi-level artifacts only — child-level uids were tagged in
+    # their respective child snapshotSave calls above.
+    vmsg(.v = verbose, "[GiottoDisk] tagging multi-level artifacts...")
+    uids <- .ss_gdsrc_detect_uid_matrices(x, as.data.frame(src))
+    if (length(uids) > 0L) {
+        manifest <- as.data.frame(src)
+        for (uid_to_tag in uids) {
+            content <- manifest[uid == uid_to_tag, giottosave]
+            content <- c(content, tag)
+            content <- unique(content[!is.na(content)])
+            src[uid_to_tag, "giottosave"] <- content
+        }
+    }
+
+    # an overwrite: older snapshots of this name go once this one is in place
+    .ss_gdsrc_drop_older(gsdir, name = name, keep = tag)
+
+    vmsg(.v = verbose, "[GiottoDisk] done")
+    invisible(x)
+})
+
+
+
 
 # internals ####
 
@@ -174,6 +264,7 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
         r <- sourceAdopt(src, r, giottosave = giottosave)
 
         img@file_path <- terra::sources(r)
+        img <- GiottoClass::reconnect(img)
         gobject <- GiottoClass::setGiotto(gobject, img, verbose = FALSE)
     }
     gobject
@@ -192,20 +283,48 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     uids <- c(uids, .ss_gdsrc_detect_uid_overlaps(gobject))
     # networks (nn + spatial)
     uids <- c(uids, .ss_gdsrc_detect_uid_networks(gobject))
+    # images
+    uids <- c(uids, .ss_gdsrc_detect_uid_images(gobject))
     uids
+}
+
+# vault images only (sourceContains): one from the source dataset is never an
+# artifact. Vault images are artifacts/<uid>/<file>.
+.ss_gdsrc_detect_uid_images <- function(gobject) {
+    src <- gobject@source
+    prefix <- paste0(normalizePath(.gdsrc_vault_dir(src@path),
+        mustWork = FALSE), "/")
+    uids <- character()
+    for (img in gobject[["images"]]) {
+        if (!inherits(img, "giottoLargeImage")) next
+        r <- img@raster_object
+        if (!inherits(r, "SpatRaster") || !sourceContains(src, r)) next
+        f <- normalizePath(terra::sources(r), mustWork = FALSE)
+        uids <- c(uids, sub("/.*$", "", substring(f, nchar(prefix) + 1L)))
+    }
+    unique(uids)
 }
 
 # detect spatial store uids — uses .ss_store_uids so union stores get
 # expanded to their substore uids (a union has no @uid of its own).
 .ss_gdsrc_detect_uid_spatial_points <- function(gobject) {
-    pts_list <- gobject[["feat_info"]]
-    is_tracked_class <- vapply(pts_list,
-        function(x) inherits(x[], "dataStore"),
-        FUN.VALUE = logical(1L)
-    )
-    pts_list <- pts_list[is_tracked_class]
-    if (length(pts_list) == 0L) return(c())
-    unlist(lapply(pts_list, function(x) .ss_store_uids(x[])))
+    unlist(lapply(gobject[["feat_info"]], function(x) {
+        lapply(.feat_info_stores(x), .ss_store_uids)
+    }))
+}
+
+# The stores a feature info object holds: a giottoPoints' store, both stores
+# of a store-backed giottoBinPoints. In-memory giottoBinPoints hold none;
+# GiottoClass saves them itself.
+.feat_info_stores <- function(x) {
+    if (inherits(x, "giottoBinPoints")) {
+        if (!.gbp_store_backed(x)) return(list())
+        return(list(spatial = x@spatial, counts = x@counts))
+    }
+    if (inherits(x, "giottoPoints") && inherits(x[], "dataStore")) {
+        return(list(x[]))
+    }
+    list()
 }
 .ss_gdsrc_detect_uid_spatial_polygons <- function(gobject) {
     polys_list <- gobject[["spatial_info"]]
@@ -256,6 +375,25 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
 
     pts_list <- gobject[["feat_info"]]
     for (pts_obj in pts_list) {
+        if (inherits(pts_obj, "giottoBinPoints") &&
+            .gbp_store_backed(pts_obj)) {
+            stores <- .feat_info_stores(pts_obj)
+            external <- !vapply(stores, function(st) sourceContains(src, st),
+                logical(1L))
+            if (!any(external)) next
+            vmsg(.v = verbose, sprintf(
+                "[GiottoDisk] adopting external bin points '%s'",
+                pts_obj@feat_type
+            ))
+            for (s_name in names(stores)[external]) {
+                slot(pts_obj, s_name) <- sourceAdopt(src, stores[[s_name]],
+                    giottosave = giottosave)
+            }
+            gobject <- GiottoClass::setGiotto(gobject, pts_obj, verbose = FALSE)
+            next
+        }
+        # giottoBinPoints stay in memory; GiottoClass saves them itself
+        if (!inherits(pts_obj, "giottoPoints")) next
         store <- pts_obj[]
         if (!inherits(store, "dataStore")) next
         if (sourceContains(src, store)) next
@@ -455,7 +593,7 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
 .ss_gdsrc_find_autoname <- function(p, name) {
     ntest <- name
     counter <- 1L
-    existing_names <- .gdsrc_detect_gsavename(p)
+    existing_names <- .gdsrc_snapshot_names(p)
     while (ntest %in% existing_names) {
         ntest <- sprintf("%s_%02d", name, counter)
         counter <- counter + 1L
@@ -464,4 +602,44 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
         }
     }
     ntest
+}
+
+# staged inside giottosave/ so the final rename stays on one filesystem
+.ss_gdsrc_write_snapshot <- function(x, gsdir, tag, method, method_params) {
+    stage <- file.path(gsdir, paste0(".staging_", tag))
+    dir.create(stage)
+    on.exit(unlink(stage, recursive = TRUE, force = TRUE), add = TRUE)
+
+    .save_serialized(x, file.path(stage, .gdsrc_snapshot_objfile(method)),
+        method, method_params
+    )
+    if (!file.rename(stage, file.path(gsdir, tag))) {
+        stop("[snapshotSave] save failed\n", call. = FALSE)
+    }
+    invisible(file.path(gsdir, tag))
+}
+
+# every snapshot of `name` other than `keep`
+.ss_gdsrc_drop_older <- function(gsdir, name, keep) {
+    snaps <- .gdsrc_snapshots(gsdir)
+    old <- snaps$tag[snaps$name == name & snaps$tag != keep]
+    unlink(file.path(gsdir, old), recursive = TRUE, force = TRUE)
+    invisible(old)
+}
+
+# Save method, lower-cased. The first element is taken so that a caller's
+# unresolved default vector resolves as match.arg() resolves a default.
+.snapshot_method <- function(method) {
+    match.arg(tolower(method[1L]), choices = c("rds", "qs2"))
+}
+
+.save_serialized <- function(x, file, method, method_params = list()) {
+    switch(method,
+        "rds" = do.call(saveRDS, c(list(object = x, file = file), method_params)),
+        "qs2" = {
+            package_check(pkg_name = "qs2", repository = "CRAN")
+            qs_save_fun <- get("qs_save", asNamespace("qs2"))
+            do.call(qs_save_fun, c(list(object = x, file = file), method_params))
+        }
+    )
 }

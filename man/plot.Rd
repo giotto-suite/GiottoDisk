@@ -5,16 +5,40 @@
 \alias{plot,sedonadb_dataframe,missing-method}
 \title{Visualize a Store}
 \usage{
-\S4method{plot}{parquetGeomStore,missing}(x, sample_max = getOption("giottodisk.plot_sample_max", 1e+05), ...)
+\S4method{plot}{parquetGeomBase,missing}(
+  x,
+  feats = NULL,
+  raster = TRUE,
+  raster_size = 600L,
+  count = TRUE,
+  sample_max = getOption("giottodisk.plot_sample_max", 1e+05),
+  ...
+)
 
 \S4method{plot}{sedonadb_dataframe,missing}(x, values = NULL, n = getOption("giottodisk.plot_sample_max", 1e+05), ...)
 }
 \arguments{
 \item{x}{A \code{sedonadb_dataframe} from \code{storeRead(output = "sedona")}.}
 
-\item{sample_max}{\code{integer}-like. Maximum number of geometries to plot
-(regularly sampled). If \code{NULL}, no sampling is performed. Defaults to
-\code{getOption("giottodisk.plot_sample_max")}.}
+\item{feats}{\code{character} (optional, points only). Restrict to one or
+more \code{feat_ID}s before binning. Composed as a \code{subset(x, feat_ID \%in\% feats)} filter op (queued, executed lazily at Arrow read time).}
+
+\item{raster}{\code{logical}. Points only. \code{TRUE} (default) bins points to
+a raster and plots that; \code{FALSE} collects points as a \code{SpatVector}
+(subject to \code{sample_max}) and plots that. Ignored for non-points
+geomtypes.}
+
+\item{raster_size}{\code{integer}. Points raster path: major-axis pixel
+count for the raster template. Default \code{600}.}
+
+\item{count}{\code{logical}. Points raster path: \code{TRUE} (default) plots
+per-cell counts; \code{FALSE} plots binary presence.}
+
+\item{sample_max}{\code{integer}-like. Vector path only. Maximum number of
+geometries to plot (regularly sampled). \code{NULL} disables sampling.
+Default \code{getOption("giottodisk.plot_sample_max", 1e5)}.}
+
+\item{...}{forwarded to \code{terra::plot()}.}
 
 \item{values}{\code{character} (optional). Column name(s) to include as
 SpatVector attributes for coloring. Mirrors terra's \code{plot(sv, y)}.}
@@ -25,6 +49,20 @@ stride sampling (\code{row_index \%\% k == 0}) after a \verb{COUNT(*)} pass —
 proportional coverage across write order.}
 }
 \description{
-Plot a store's contents. Currently only for geometry
-stores.
+Plot a parquet-backed geometry store. Routing depends on \code{geomtype(x)}:
+\itemize{
+\item \code{"points"}: default path rasterizes points into a bin matrix via
+\code{\link[=rasterize]{rasterize()}} (one Arrow \verb{GROUP BY} over spatial bins) and plots the
+resulting raster. Mirrors the \code{giottoPoints} plot API.
+\item \code{"polygons"} / \code{"lines"}: always uses the vector path — collects via
+\code{storeRead(., output = "terra")} (with \code{sample_max} regular-stride
+downsample) and plots the resulting \code{SpatVector}. \code{rasterize} is
+points-only at present, and polygon/line plots are usually wanted as
+geometry anyway.
+}
+
+Signature is \code{parquetGeomBase} so the method covers both single-store
+(\code{parquetGeomStore}, \code{parquetGeomTileStore}) and
+\code{unionParquetGeomStore} — both branches inherit \code{parquetGeomBase} and
+both have \code{storeRead(., output = "terra")} methods.
 }

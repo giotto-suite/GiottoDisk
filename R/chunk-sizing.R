@@ -20,10 +20,15 @@ NULL
 #   .sc_free_ram            per-OS free-RAM probe
 #   storeChunkInfo          exported report over both read shapes
 #
-# Two options steer it:
-#   giottodisk.chunk_ram_frac   fraction of free RAM to budget (default 0.25)
+# Options that steer it:
+#   giottodisk.chunk_ram_frac   fraction of free RAM to budget (default 0.25);
+#                               also sizes the DuckDB memory limit
 #   giottodisk.chunk_size       pin an absolute window; also the fallback
 #                               when the derivation cannot run
+#   giottodisk.gef_batch_rows   pin the records per Stereo-seq GEF ingest
+#                               batch (`.gef_batch_rows()`)
+#   giottodisk.h5_batch_rows    pin the records per 10x .h5 ingest batch
+#                               (`.tenxh5_ranges()`)
 
 # Recommend a streaming chunk size from free RAM.
 #
@@ -44,7 +49,7 @@ NULL
 #   bytes_per_nz  in-memory bytes per stored value; 12 for a chunk landing in
 #                 a sparse matrix, ~48 for a collected triplet frame.
 #   ram_frac      fraction of free RAM to budget per chunk. Defaults to
-#                 getOption("giottodisk.chunk_ram_frac", 0.25).
+#                 `.ram_frac()`.
 #
 # The model is rows x payload-per-row, so nothing here is matrix-specific --
 # a tabular store can use it by supplying its own shape and bytes_per_nz.
@@ -56,7 +61,7 @@ NULL
     density,
     k        = 50L,
     bytes_per_nz = 12,
-    ram_frac = getOption("giottodisk.chunk_ram_frac", 0.25)
+    ram_frac = .ram_frac()
 ) {
     n_cells <- as.numeric(n_cells)
     n_genes <- as.numeric(n_genes)
@@ -96,6 +101,9 @@ NULL
 }
 
 
+# Fraction of free RAM to budget
+.ram_frac <- function() getOption("giottodisk.chunk_ram_frac", 0.25)
+
 # detect free RAM — macOS, Linux, Windows
 .sc_free_ram <- function() {
     sysname <- Sys.info()[["sysname"]]
@@ -123,6 +131,8 @@ NULL
 }
 
 
+
+
 # storeChunkInfo ####
 
 #' @name storeChunkInfo
@@ -148,12 +158,45 @@ NULL
 #' @section Steering the window:
 #' \describe{
 #'   \item{`giottodisk.chunk_ram_frac`}{fraction of free RAM to budget per
-#'     chunk (default 0.25). Lower it on a busy machine; raise it on a
-#'     dedicated one. Scales every pass without knowing any store's shape.}
-#'   \item{`giottodisk.chunk_size`}{pins an absolute window in rows,
-#'     overriding the derivation entirely. Also the value used when the
+#'     window (default 0.25), which also sizes the DuckDB memory limit. Lower
+#'     it on a busy machine; raise it on a dedicated one. Scales every pass without knowing any store's shape. This
+#'     is the one to reach for first.}
+#'   \item{`giottodisk.chunk_size`}{pins an absolute window in cells, overriding
+#'     the derivation entirely. An escape hatch — for a machine whose free
+#'     memory cannot be read, for a shape the model sizes badly, and for tests
+#'     that need to force several windows. Also the fallback value when the
 #'     derivation cannot run.}
+#'   \item{`giottodisk.gef_batch_rows`}{pins the records per batch when a
+#'     Stereo-seq `.gef` is written to a store. Derived from the same budget
+#'     otherwise.}
+#'   \item{`giottodisk.h5_batch_rows`}{pins the records per batch when a 10x
+#'     `.h5` matrix is written to a store. Derived from the same budget
+#'     otherwise.}
 #' }
+#'
+#' Neither switches streaming on or off, and neither is a performance dial.
+#' Windowing is not a mode: the loop always runs, and a budget covering the whole
+#' view yields a single window. A smaller window lowers peak memory and adds
+#' per-window overhead; a larger one does the reverse. The derived value is
+#' already the largest window the budget allows, which is the fastest one that
+#' stays bounded — so pinning `giottodisk.chunk_size` large does not make a pass
+#' "unchunked", it removes the bound that keeps it from failing on a large store.
+#'
+#' @section Reproducibility:
+#' The window count is derived from free RAM **at call time**, so it is not a
+#' property of the store and can differ between runs on one machine.
+#'
+#' Combining window parts is exact for counts. For floating-point sums it
+#' reassociates the addition, so a float statistic can differ by a few units in
+#' the last place between runs with different window counts (measured 2-3 ULP).
+#' Results are reproducible to tolerance, not bitwise: compare them with a
+#' tolerance rather than hashing them or snapshotting exact digits.
+#'
+#' @section Further reading:
+#' Which passes window and when, what forces a window, and why it has to be the
+#' cell axis: `vignette("expression_windows", package = "GiottoDisk")`. The
+#' decision, and the comparison against a spilling engine, are recorded in
+#' `adr/0011-cell-windowing-over-spill.md`.
 #'
 #' @param x a `parquetExprStore` or `unionParquetExprStore`.
 #' @param ram_frac numeric. Fractions to tabulate. Defaults to a spread around
@@ -192,7 +235,7 @@ setMethod("storeChunkInfo", signature("parquetExprBase"), function(
         list(pass = "sparse matrix", bytes_per_nz = 12, k = 50L),
         list(pass = "triplet frame", bytes_per_nz = 48, k = 0L)
     )
-    cfg_frac <- getOption("giottodisk.chunk_ram_frac", 0.25)
+    cfg_frac <- .ram_frac()
     fracs    <- sort(unique(c(as.numeric(ram_frac), cfg_frac)))
 
     out <- data.table::rbindlist(lapply(shapes, function(sh) {

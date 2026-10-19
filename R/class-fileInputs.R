@@ -216,7 +216,7 @@ mtxInput <- function(
 # tenxH5Input ####
 
 #' @name tenxH5Input-class
-#' @title 10x cell_feature_matrix.h5 Input
+#' @title 10x feature-barcode matrix .h5 Input
 #' @description
 #' Wraps a 10x HDF5 sparse-matrix file (CSC layout with `data`,
 #' `indices`, `indptr`, `barcodes`, `features/{id,name}`, `shape`).
@@ -224,7 +224,9 @@ mtxInput <- function(
 #' streamed in cell-chunks by [storeRead()] via hyperslab reads on a
 #' long-lived `hdf5r::H5File` handle.
 #'
-#' @slot batch_cells integer. Cells per batch. Default 250,000.
+#' @slot batch_cells integer. Cells per batch, or `NA` (default) to size
+#'   batches by stored values from free memory
+#'   (`options(giottodisk.h5_batch_rows =)` pins that record count).
 #' @slot feature_id_col integer. `1L` for Ensembl ID, `2L` for gene
 #'   symbol (default).
 #' @family store types
@@ -237,29 +239,33 @@ setClass("tenxH5Input",
         feature_id_col = "integer"
     ),
     prototype = list(
-        batch_cells    = 250000L,
+        batch_cells    = NA_integer_,
         feature_id_col = 2L
     )
 )
 
 #' @name tenxH5Input
-#' @title Create a 10x cell_feature_matrix.h5 input
+#' @title Create a 10x feature-barcode matrix .h5 input
 #' @description
 #' Opens the h5 briefly to read `barcodes`, `features/{id,name}`, and
 #' `shape`; closes immediately. The handle is reopened by `storeRead()`
 #' for streaming.
 #'
-#' @param h5_path character. Path to `cell_feature_matrix.h5`.
+#' @param h5_path character. Path to a 10x feature-barcode matrix `.h5`:
+#'   Xenium `cell_feature_matrix.h5`, Visium HD `raw_feature_bc_matrix.h5` /
+#'   `filtered_feature_bc_matrix.h5` (bins) or `raw_feature_cell_matrix.h5` /
+#'   `filtered_feature_cell_matrix.h5` (segmented cells).
 #' @param feature_id_col integer. `1L` = Ensembl ID, `2L` = gene symbol
 #'   (default).
-#' @param batch_cells integer. Cells per batch. Default 250,000.
+#' @param batch_cells integer. Cells per batch, or `NA` (default) to size
+#'   batches by stored values from free memory.
 #' @return A `tenxH5Input` object.
 #' @family store constructors
 #' @export
 tenxH5Input <- function(
     h5_path,
     feature_id_col = 2L,
-    batch_cells    = 250000L
+    batch_cells    = NA_integer_
 ) {
     if (!requireNamespace("hdf5r", quietly = TRUE)) {
         stop("[tenxH5Input] hdf5r is required to read 10x .h5 files. ",
@@ -298,13 +304,16 @@ tenxH5Input <- function(
 #' @description
 #' Wraps a Stereo-seq cellbin `.gef` file (HDF5 compound datasets under
 #' `cellBin/`). The `cell` and `gene` tables are read in full at
-#' construction (small); the compound `geneExp` is streamed gene-chunk-
-#' wise via [storeRead()] using rhdf5 hyperslab reads, respecting the
-#' safe-boundary chunk plan that keeps duplicate-named genes together.
+#' construction (small). [storeRead()] streams the cell-major `cellExp`
+#' dataset in contiguous cell ranges, so the store is written cell-major
+#' like every other input. A file without `cellExp` is read from the
+#' gene-major `geneExp` and reordered through a temporary spill.
 #'
-#' @slot batch_genes integer. Approximate raw-gene rows per batch
-#'   (default 500). Actual boundaries may be expanded to keep duplicate-
-#'   named gene groups intact.
+#' Batch size follows the chunk-sizing budget; pin it with
+#' `options(giottodisk.gef_batch_rows = <records>)`.
+#'
+#' @slot batch_genes integer. Raw-gene rows per read of `geneExp`, used only
+#'   when the file has no `cellExp` (default 500).
 #' @slot gene_column character. `"geneName"` (default) or `"geneID"`.
 #' @family store types
 NULL
@@ -325,8 +334,8 @@ setClass("cellbinGefInput",
 #' @title Create a Stereo-seq cellbin GEF input
 #' @param gef_path character. Path to a Stereo-seq cellbin `.gef` file.
 #' @param gene_column character. `"geneName"` (default) or `"geneID"`.
-#' @param batch_genes integer. Approximate raw-gene rows per batch.
-#'   Default 500.
+#' @param batch_genes integer. Raw-gene rows per read of `geneExp` when the
+#'   file has no `cellExp`. Default 500.
 #' @return A `cellbinGefInput` object.
 #' @family store constructors
 #' @export
@@ -354,17 +363,25 @@ cellbinGefInput <- function(
     expressed_names <- all_names[cnt > 0]
     feat_ids        <- sort(unique(expressed_names))
 
+    # cellExp is the cell-major copy; its per-cell offsets live in the cell
+    # table. Both must be present to read it.
+    has_cell_exp <- all(c("offset", "geneCount") %in% names(cellDT)) &&
+        .h5_has(gef_path, "cellBin/cellExp")
+
     new("cellbinGefInput",
         path        = normalizePath(gef_path),
-        # Stash the parsed tables + name_to_row + cumulative offsets so
-        # storeRead doesn't re-read them. Cheap (tens of KB each).
+        # Stash the parsed tables + name_to_row + offsets so storeRead
+        # doesn't re-read them.
         params      = list(
             cell_id_map = data.table::setattr(
                 seq_len(n_cells), "names", as.character(cellDT$id)
             ),
             gene_cnt    = cnt,
             name_to_row = match(all_names, feat_ids),
-            cum_offsets = c(0L, as.integer(cumsum(as.numeric(cnt))))
+            cum_offsets = c(0, cumsum(as.numeric(cnt))),
+            has_cell_exp    = has_cell_exp,
+            cell_offset     = if (has_cell_exp) as.numeric(cellDT$offset),
+            cell_gene_count = if (has_cell_exp) as.integer(cellDT$geneCount)
         ),
         cell_ids    = cell_ids,
         feat_ids    = feat_ids,
@@ -384,12 +401,19 @@ cellbinGefInput <- function(
 #' Wraps a Stereo-seq bin `.gef` file (`geneExp/<bin_size>/expression`
 #' compound dataset). Unlike cellbin, the cell identity universe (one per
 #' unique `(x, y)` coord) is not known up-front — `(x, y) -> bin_ID` is
-#' assigned as new coords are encountered during the gene-chunk stream.
-#' [storeRead()]'s iterator publishes the accumulated `cell_ids` /
-#' `n_cells` via its accessors after iteration completes.
+#' assigned as new coords are encountered during the gene-chunk stream, in
+#' the same first-appearance order as Giotto's in-memory reader, so bins are
+#' named `bin_<bin_ID>` on both backends. The file stores expression
+#' gene-major; [storeRead()] reorders it through a temporary spill so the
+#' store is written cell-major, with bins positioned in (y, x) grid order.
+#' The iterator publishes the accumulated `cell_ids` / `n_cells` via its
+#' accessors after iteration completes.
+#'
+#' Batch size follows the chunk-sizing budget; pin it with
+#' `options(giottodisk.gef_batch_rows = <records>)`.
 #'
 #' @slot bin_size character. Bin size key under `geneExp/` (e.g. `"50"`).
-#' @slot batch_genes integer. Approximate raw-gene rows per batch.
+#' @slot batch_genes integer. Raw-gene rows per read of `geneExp`.
 #' @slot gene_column character.
 #' @family store types
 NULL
@@ -414,7 +438,7 @@ setClass("binGefInput",
 #' @param bin_size character or integer. Bin size key under `geneExp/`
 #'   (e.g. `50`, `"50"`, `"100"`).
 #' @param gene_column character. `"geneName"` (default) or `"geneID"`.
-#' @param batch_genes integer. Default 500.
+#' @param batch_genes integer. Raw-gene rows per read of `geneExp`. Default 500.
 #' @return A `binGefInput` object. `cell_ids` / `n_cells` are empty until
 #'   [storeRead()] has been driven to completion.
 #' @family store constructors
@@ -442,12 +466,33 @@ binGefInput <- function(
     expressed_names <- all_names[cnt > 0]
     feat_ids        <- sort(unique(expressed_names))
 
+    # y range of the records, which sets the stripes the reorder spills
+    # into: from the expression dataset's attributes, else from the whole-chip
+    # grid's. NULL when neither has it; storeRead then derives it.
+    .attrs <- function(name) tryCatch(rhdf5::h5readAttributes(gef_path, name),
+        error = function(e) list())
+    ea <- .attrs(paste0("geneExp/", bin_size, "/expression"))
+    wa <- .attrs(paste0("wholeExp/", bin_size))
+    y_range <- if (all(c("minY", "maxY") %in% names(ea))) {
+        as.numeric(c(ea$minY, ea$maxY))
+    } else if (all(c("minY", "lenY") %in% names(wa))) {
+        as.numeric(c(wa$minY, wa$minY + wa$lenY))
+    }
+
     new("binGefInput",
         path        = normalizePath(gef_path),
         params      = list(
             gene_cnt    = cnt,
             name_to_row = match(all_names, feat_ids),
-            cum_offsets = c(0L, as.integer(cumsum(as.numeric(cnt))))
+            cum_offsets = c(0, cumsum(as.numeric(cnt))),
+            y_range     = y_range,
+            # Reference cell for the (x, y) -> bin_ID map the iterator
+            # accumulates. An environment because the object is copied on
+            # the way into storeWrite(), so a plain slot could not carry a
+            # value back out. Bin coordinates only exist inside the
+            # expression records, so this is the one chance to capture them
+            # without a second full read of the gef.
+            coord_env   = new.env(parent = emptyenv())
         ),
         cell_ids    = character(0L),
         feat_ids    = feat_ids,
@@ -547,5 +592,216 @@ csvWideInput <- function(
         skip_cols      = as.character(skip_cols),
         row_filter_fun = row_filter_fun,
         batch_rows     = as.integer(batch_rows)
+    )
+}
+
+# tenxZarrInput ####
+
+#' @name tenxZarrInput-class
+#' @title 10x Xenium/Atera Zarr Expression Input
+#' @description
+#' Wraps the `cell_feature_matrix.zarr.zip` archive (or unzipped `.zarr`
+#' tree) shipped by 10x Xenium and Atera. Construction is metadata-only:
+#' the feature catalog (`cell_features/.zattrs`), the encoded cell
+#' barcodes, and the CSC-by-FEATURE `indptr` are read eagerly; the
+#' `indices` / `data` arrays are streamed by [storeRead()].
+#'
+#' Because the on-disk matrix is feature-major and the iterator contract
+#' is cell-ordered, [storeRead()] reorders on the fly: a two-pass
+#' cell-major placement when the triplet buffers fit the RAM budget
+#' (`mode = "full"`), or bounded per-cell-block rescans when they do not
+#' (`mode = "cellblock"`; forced when nnz exceeds int32).
+#'
+#' @slot feat_types character. Feature classes as 10x display strings
+#'   ("Gene Expression", "Negative Control Probe", ...), aligned 1:1
+#'   with `feat_ids`.
+#' @slot mode character. "auto" (default), "full", or "cellblock".
+#' @slot cells_per_block integer. Cells per window in cellblock mode
+#'   (0 = derive from the RAM budget at read time).
+#' @slot nnz numeric. Stored values across kept features (double -- may
+#'   exceed int32 at Atera scale).
+#' @family store types
+NULL
+
+setClass("tenxZarrInput",
+    contains = "exprInput",
+    slots = list(
+        feat_types      = "character",
+        mode            = "character",
+        cells_per_block = "integer",
+        nnz             = "numeric"
+    ),
+    prototype = list(
+        feat_types      = character(0L),
+        mode            = "auto",
+        cells_per_block = 0L,
+        nnz             = 0
+    )
+)
+
+# zarr feature_types are snake_case; translate to the 10x display strings
+# the Xenium/Atera readers key their feat_type split on.
+.zarr_feat_class_display <- function(x) {
+    known <- c(
+        gene = "Gene Expression",
+        protein = "Protein Expression",
+        negative_control_probe = "Negative Control Probe",
+        negative_control_codeword = "Negative Control Codeword",
+        unassigned_codeword = "Unassigned Codeword",
+        deprecated_codeword = "Deprecated Codeword",
+        genomic_control = "Genomic Control",
+        aggregate_gene = "Aggregate Gene"
+    )
+    out <- unname(known[x])
+    miss <- is.na(out)
+    if (any(miss)) {
+        # unseen class: Title Case the snake_case name
+        out[miss] <- vapply(strsplit(x[miss], "_", fixed = TRUE),
+            function(w) {
+                paste(toupper(substring(w, 1L, 1L)),
+                    substring(w, 2L), sep = "", collapse = " ")
+            }, character(1L))
+    }
+    out
+}
+
+#' @name tenxZarrInput
+#' @title Create a 10x Xenium/Atera zarr expression input
+#' @description
+#' Eagerly reads the feature catalog, cell barcodes and `indptr` from a
+#' `cell_feature_matrix.zarr.zip` archive so `cell_ids` / `feat_ids` /
+#' `n_cells` / `n_genes` are known up-front; `indices` / `data` are
+#' streamed by [storeRead()].
+#' @param zarr_path character. Path to `cell_feature_matrix.zarr.zip` or
+#'   an unzipped `cell_feature_matrix.zarr` directory.
+#' @param feature_id_col integer. `1L` = Ensembl ID (zarr `feature_ids`),
+#'   `2L` = gene symbol (zarr `feature_keys`; default). Mirrors
+#'   [mtxInput()]'s features.tsv column semantics.
+#' @param mode character. "auto" (default; pick from the RAM budget),
+#'   "full" (two-pass cell-major placement over full triplet buffers), or
+#'   "cellblock" (bounded per-cell-block rescans).
+#' @param cells_per_block integer. Cells per window in cellblock mode.
+#'   `NULL` (default) derives it from the RAM budget at read time.
+#' @param drop_aggregate logical. Drop `aggregate_gene` summary features
+#'   (the "Total transcripts" row) from the matrix (default `TRUE`).
+#' @return A `tenxZarrInput` object.
+#' @family store constructors
+#' @export
+tenxZarrInput <- function(
+    zarr_path,
+    feature_id_col  = 2L,
+    mode            = c("auto", "full", "cellblock"),
+    cells_per_block = NULL,
+    drop_aggregate  = TRUE
+) {
+    mode <- match.arg(mode)
+    src <- .zarr_open(zarr_path)
+    on.exit(.zarr_close(src), add = TRUE)
+
+    cat_info <- .load_cfm_feature_catalog(src)
+    cid <- .zarr_array(src, "cell_features/cell_id")
+    cell_ids <- .encode_xenium_id(cid[, 1L], cid[, 2L])
+    # indptr may be uint32 today, uint64 at Atera scale -- always doubles
+    indptr <- as.double(.zarr_array(src, "cell_features/indptr"))
+    n_feat_orig <- length(indptr) - 1L
+
+    feat_ids_all <- switch(as.integer(feature_id_col),
+        cat_info$feature_ids,
+        cat_info$feature_keys,
+        stop("[tenxZarrInput] feature_id_col must be 1 (Ensembl) or 2 ",
+            "(symbols)", call. = FALSE)
+    )
+    if (!length(feat_ids_all)) feat_ids_all <- cat_info$feature_ids
+    if (length(feat_ids_all) != n_feat_orig ||
+        length(cat_info$feature_types) != n_feat_orig) {
+        stop("[tenxZarrInput] feature catalog length (",
+            length(feat_ids_all), ") disagrees with indptr (",
+            n_feat_orig, " features)", call. = FALSE)
+    }
+
+    keep <- rep(TRUE, n_feat_orig)
+    if (isTRUE(drop_aggregate)) {
+        keep <- cat_info$feature_types != "aggregate_gene"
+    }
+    col_remap <- integer(n_feat_orig) # 0 marks dropped features
+    col_remap[keep] <- seq_len(sum(keep))
+    # nnz over KEPT features only (what the iterator will emit)
+    nnz <- sum((indptr[-1L] - indptr[-length(indptr)])[keep])
+
+    new("tenxZarrInput",
+        path            = normalizePath(zarr_path),
+        params          = list(
+            indptr = indptr,
+            keep = keep,
+            col_remap = col_remap
+        ),
+        cell_ids        = cell_ids,
+        feat_ids        = .disambiguate_feat_ids(feat_ids_all[keep]),
+        feat_types      = .zarr_feat_class_display(
+            cat_info$feature_types[keep]),
+        n_cells         = length(cell_ids),
+        n_genes         = sum(keep),
+        nnz             = nnz,
+        mode            = mode,
+        cells_per_block = as.integer(cells_per_block %||% 0L)
+    )
+}
+
+
+
+# cosmxScanInput ####
+
+#' @name cosmxScanInput-class
+#' @title CosMx exprMat Byte-Scanner Input
+#' @description
+#' Wraps a gzipped CosMx `exprMat_file`, read by the `cosmxscan` Rust
+#' scanner. `cell_ids` are only known during the stream -- the matrix's own
+#' `cell_ID` column is FOV-local -- so the iterator composes the global
+#' `c_<slide>_<fov>_<cell_ID>` form as it advances.
+#' @slot slide integer. Slide number, used to compose global cell IDs.
+#' @slot skip_cols integer. Leading non-feature columns (`fov`, `cell_ID`).
+#' @slot batch_rows integer. Cells emitted per batch.
+#' @family store types
+#' @keywords internal
+setClass("cosmxScanInput",
+    contains = "exprInput",
+    slots = list(
+        slide = "integer",
+        skip_cols = "integer",
+        batch_rows = "integer"
+    ),
+    prototype = list(
+        slide = 1L,
+        skip_cols = 2L,
+        batch_rows = 10000L
+    )
+)
+
+# Not exported, unlike the other exprInput constructors: `cosmxscan` is a
+# Suggests, and the CosMx expression closure selects this when it is present.
+.cosmx_scan_input <- function(path,
+                           slide = 1,
+                           skip_cols = 2L,
+                           batch_rows = 10000L,
+                           ...) {
+    checkmate::assert_file_exists(path)
+    GiottoUtils::package_check(
+        pkg_name = "cosmxscan",
+        repository = "github:drieslab/cosmxscan"
+    )
+
+    con <- gzfile(path, "rt")
+    on.exit(close(con), add = TRUE)
+    hdr <- strsplit(readLines(con, n = 1L), ",", fixed = TRUE)[[1L]]
+    feat_ids <- hdr[-seq_len(skip_cols)]
+
+    methods::new("cosmxScanInput",
+        path = path,
+        feat_ids = feat_ids,
+        n_genes = length(feat_ids),
+        slide = as.integer(slide),
+        skip_cols = as.integer(skip_cols),
+        batch_rows = as.integer(batch_rows),
+        ...
     )
 }

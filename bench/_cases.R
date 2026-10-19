@@ -15,6 +15,12 @@
 # paths. The 22x featStats regression this harness exists for showed up only in
 # the [norm] case; [raw] was at parity.
 #
+# `[grouped]` is a third axis rather than another chain state: a grouping selects
+# a different accumulator (`.pe_accum_acero_windowed`, which windows the scan by
+# cells) where every other featStats case takes the single-pass one. It runs at
+# [norm] only -- the norm ops land in `@ops`, not `@post_ops`, so a [raw] grouped
+# case would exercise the same accumulator with a shorter op chain.
+#
 # The union cases are skipped on real data -- they measure plan composition
 # across substores, which the synthetic run already covers, and building a
 # second substore from Atera means writing ~150M rows for no extra signal.
@@ -27,6 +33,7 @@ BENCH_CASES <- list(
     list("analyzeData cellStats    [raw]",  quote(CS(pe)),                          NA, TRUE),
     list("analyzeData featStats    [norm]", quote(FS(pn)),                          NA, TRUE),
     list("analyzeData cellStats    [norm]", quote(CS(pn)),                          NA, TRUE),
+    list("analyzeData featStats  [grouped]", quote(FSG(pn)),                        NA, TRUE),
     list("analyzeData cov_loess    [norm]", quote(HVF(pn)),                         NA, TRUE),
     list("filterData               [norm]", quote(FILT(pn)),                        NA, TRUE),
     list("reduceData random PCA    [norm]", quote(PCA(pn)),                         NA, TRUE),

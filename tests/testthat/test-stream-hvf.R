@@ -145,7 +145,7 @@ test_that("cov_groups and var are both supported on the parquet backend", {
     # runs even with a norm recipe present (@post_ops is not applied).
     v <- GiottoClass::analyzeData(pe, Giotto::analyzeParam("var"))
     expect_s3_class(v, "data.table")
-    expect_identical(colnames(v), c("feats", "var"))
+    expect_identical(colnames(v), c("feats", "var", "mean_expr"))
     expect_setequal(v$feats, rownames(mat))
     expect_equal(v$var, sort(v$var, decreasing = TRUE))  # Giotto's convention
     expect_true(all(is.finite(v$var)))
@@ -174,14 +174,47 @@ test_that("varParam matches a dense Pearson-residual reference", {
     mat <- methods::as(cnt, "dgCMatrix")
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
 
-    # dense reference: mu = g_i c_j / T, z = (x - mu)/sqrt(mu), sample var
-    g <- rowSums(cnt); cvec <- colSums(cnt); Tt <- sum(g)
-    MU  <- outer(g, cvec) / Tt
-    ref <- apply((cnt - MU) / sqrt(MU), 1, var)
+    # dense reference, Lause/Kobak: mu = g_i c_j / T,
+    # z = (x - mu)/sqrt(mu + mu^2/theta) clipped to +/- sqrt(n), sample var.
+    # Same formula as Giotto's `.prnorm()`, written out longhand here so the
+    # test is an independent check rather than a restatement of the code.
+    dense_ref <- function(x, theta) {
+        g <- rowSums(x); cvec <- colSums(x); Tt <- sum(g)
+        MU <- outer(g, cvec) / Tt
+        z  <- (x - MU) / sqrt(MU + MU^2 / theta)
+        n  <- ncol(x)
+        z[z >  sqrt(n)] <-  sqrt(n)
+        z[z < -sqrt(n)] <- -sqrt(n)
+        apply(z, 1, var)
+    }
 
-    v <- GiottoClass::analyzeData(pe, Giotto::analyzeParam("var"))
-    got <- v$var[match(names(ref), v$feats)]
-    expect_equal(got, unname(ref), tolerance = 1e-10)
+    for (th in c(100, 10)) {
+        ref <- dense_ref(cnt, th)
+        v <- GiottoClass::analyzeData(pe, Giotto::analyzeParam("var",
+                                                               theta = th))
+        got <- v$var[match(names(ref), v$feats)]
+        expect_equal(got, unname(ref), tolerance = 1e-10)
+    }
+})
+
+test_that("streaming and in-memory varParam agree on the same counts", {
+    skip_if_not_installed("Giotto")
+    set.seed(11)
+    n_g <- 40L; n_c <- 150L
+    cnt <- matrix(rpois(n_g * n_c, lambda = 2), nrow = n_g)
+    rownames(cnt) <- sprintf("g%03d", seq_len(n_g))
+    colnames(cnt) <- sprintf("c%03d", seq_len(n_c))
+    mat <- methods::as(cnt, "dgCMatrix")
+    pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+                      mat)
+
+    mem <- GiottoClass::analyzeData(mat, Giotto::analyzeParam("var"))
+    dsk <- GiottoClass::analyzeData(pe, Giotto::analyzeParam("var"))
+    data.table::setorder(mem, feats)
+    data.table::setorder(dsk, feats)
+    expect_identical(mem$feats, dsk$feats)
+    expect_equal(mem$var, dsk$var, tolerance = 1e-10)
+    expect_equal(mem$mean_expr, dsk$mean_expr, tolerance = 1e-10)
 })
 
 

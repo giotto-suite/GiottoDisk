@@ -2,17 +2,21 @@
 % Please edit documentation in R/class-fileInputs.R
 \name{tenxH5Input}
 \alias{tenxH5Input}
-\title{Create a 10x cell_feature_matrix.h5 input}
+\title{Create a 10x feature-barcode matrix .h5 input}
 \usage{
-tenxH5Input(h5_path, feature_id_col = 2L, batch_cells = 250000L)
+tenxH5Input(h5_path, feature_id_col = 2L, batch_cells = NA_integer_)
 }
 \arguments{
-\item{h5_path}{character. Path to \code{cell_feature_matrix.h5}.}
+\item{h5_path}{character. Path to a 10x feature-barcode matrix \code{.h5}:
+Xenium \code{cell_feature_matrix.h5}, Visium HD \code{raw_feature_bc_matrix.h5} /
+\code{filtered_feature_bc_matrix.h5} (bins) or \code{raw_feature_cell_matrix.h5} /
+\code{filtered_feature_cell_matrix.h5} (segmented cells).}
 
 \item{feature_id_col}{integer. \code{1L} = Ensembl ID, \code{2L} = gene symbol
 (default).}
 
-\item{batch_cells}{integer. Cells per batch. Default 250,000.}
+\item{batch_cells}{integer. Cells per batch, or \code{NA} (default) to size
+batches by stored values from free memory.}
 }
 \value{
 A \code{tenxH5Input} object.
@@ -36,6 +40,7 @@ Other store constructors:
 \code{\link[=parquetExprStore]{parquetExprStore()}},
 \code{\link[=parquetStore]{parquetStore()}},
 \code{\link[=storeCreate]{storeCreate()}},
+\code{\link[=tenxZarrInput]{tenxZarrInput()}},
 \code{\link[=unionParquetExprStore]{unionParquetExprStore()}}
 }
 \concept{store constructors}

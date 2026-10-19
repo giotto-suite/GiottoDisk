@@ -122,11 +122,10 @@ setMethod("storeRead", signature("tenxH5Input"), function(store, ...) {
     indptr  <- as.numeric(h5[[paste0(root, "/indptr")]][])
     data_ds <- h5[[paste0(root, "/data")]]
     indices_ds <- h5[[paste0(root, "/indices")]]
-    n_cells <- store@n_cells
-    batch   <- store@batch_cells
+    ranges  <- .tenxh5_ranges(indptr, store@batch_cells)
 
     closed <- FALSE
-    c_lo   <- 1L
+    k      <- 0L
 
     close_fn <- function() {
         if (!closed) {
@@ -137,15 +136,15 @@ setMethod("storeRead", signature("tenxH5Input"), function(store, ...) {
     }
 
     next_batch <- function() {
-        if (closed || c_lo > n_cells) { close_fn(); return(NULL) }
-        # Advance past any all-empty cell runs at the start of this batch.
+        # Advance past any range with no stored values.
         repeat {
-            if (c_lo > n_cells) { close_fn(); return(NULL) }
-            c_hi     <- min(c_lo + batch - 1L, n_cells)
+            if (closed || k >= length(ranges)) { close_fn(); return(NULL) }
+            k <<- k + 1L
+            c_lo     <- ranges[[k]][1L]
+            c_hi     <- ranges[[k]][2L]
             slice_lo <- as.numeric(indptr[c_lo]) + 1
             slice_hi <- as.numeric(indptr[c_hi + 1L])
             if (slice_hi >= slice_lo) break
-            c_lo <<- c_hi + 1L
         }
         # `lo:hi`, never `seq.int(lo, hi)` -- adr/0007.
         vals <- as.double(data_ds[slice_lo:slice_hi])
@@ -158,7 +157,6 @@ setMethod("storeRead", signature("tenxH5Input"), function(store, ...) {
             value  = vals
         )
         data.table::setorder(out, row_id, col_id)
-        c_lo <<- c_hi + 1L
         out
     }
 
@@ -175,48 +173,74 @@ setMethod("storeRead", signature("tenxH5Input"), function(store, ...) {
 
 # storeRead — cellbinGefInput ####
 
+# Cell-major by construction. A cellbin GEF keeps a cell-major copy of the
+# matrix, `cellBin/cellExp`, whose records for cell i start at
+# `cellBin/cell$offset[i]` and number `geneCount[i]`; contiguous cell ranges
+# are therefore contiguous hyperslabs. Files without `cellExp` fall back to
+# reordering the gene-major `geneExp` through `.ingest_spill_iterator()`
+# (adr/0017).
+
 #' @rdname storeRead
 #' @export
 setMethod("storeRead", signature("cellbinGefInput"), function(store, ...) {
+    row_id <- col_id <- value <- NULL  # NSE bindings
     gef_path    <- store@path
-    cell_id_map <- store@params$cell_id_map
-    cnt         <- store@params$gene_cnt
     name_to_row <- store@params$name_to_row
-    cum         <- store@params$cum_offsets
+    max_rows    <- .gef_batch_rows()
 
-    chunks <- .gef_safe_chunks(name_to_row, store@batch_genes)
-    chunk_i <- 0L
-    closed  <- FALSE
-
-    close_fn <- function() { closed <<- TRUE; invisible(NULL) }
-
-    next_batch <- function() {
-        repeat {
-            if (closed || chunk_i >= length(chunks)) {
-                close_fn(); return(NULL)
+    if (isTRUE(store@params$has_cell_exp)) {
+        off  <- store@params$cell_offset       # double, 0-based
+        gcnt <- store@params$cell_gene_count   # integer
+        ranges <- .ingest_cell_ranges(gcnt, max_rows)
+        i <- 0L
+        closed <- FALSE
+        close_fn <- function() { closed <<- TRUE; invisible(NULL) }
+        next_batch <- function() {
+            repeat {
+                if (closed || i >= length(ranges)) { close_fn(); return(NULL) }
+                i <<- i + 1L
+                a <- ranges[[i]][1L]; b <- ranges[[i]][2L]
+                n_rec <- off[b] + gcnt[b] - off[a]
+                if (n_rec > 0) break
             }
-            chunk_i <<- chunk_i + 1L
-            chunk_def <- chunks[[chunk_i]]
-            g_lo <- chunk_def[1L]; g_hi <- chunk_def[2L]
-            slice_lo <- cum[g_lo] + 1L
-            slice_hi <- cum[g_hi + 1L]
-            if (slice_hi >= slice_lo) break
+            chunk <- data.table::setDT(rhdf5::h5read(
+                gef_path, "cellBin/cellExp", start = off[a] + 1, count = n_rec
+            ))
+            out <- data.table::data.table(
+                row_id = rep.int(seq.int(a, b), gcnt[a:b]),
+                col_id = as.integer(name_to_row[as.integer(chunk$geneID) + 1L]),
+                value  = as.double(chunk$count)
+            )
+            out[!is.na(col_id), .(value = sum(value)), keyby = .(row_id, col_id)]
         }
-        chunk <- data.table::setDT(rhdf5::h5read(
-            gef_path, "cellBin/geneExp",
-            start = slice_lo,
-            count = slice_hi - slice_lo + 1L
-        ))
-        gene_idx_raw <- rep.int(seq.int(g_lo, g_hi), cnt[g_lo:g_hi])
-        out <- data.table::data.table(
-            row_id = as.integer(cell_id_map[as.character(chunk$cellID)]),
-            col_id = as.integer(name_to_row[gene_idx_raw]),
-            value  = as.double(chunk$count)
-        )
-        # Aggregate duplicate-name collapses within the chunk.
-        out <- out[!is.na(row_id) & !is.na(col_id),
-                   .(value = sum(value)), keyby = .(row_id, col_id)]
-        out
+    } else {
+        cell_id_map <- store@params$cell_id_map
+        cnt  <- store@params$gene_cnt
+        cum  <- store@params$cum_offsets
+        chunks <- .gef_safe_chunks(name_to_row, store@batch_genes)
+        n_cells <- as.integer(store@n_cells)
+        n_buckets <- .ingest_n_buckets(cum[length(cum)], max_rows)
+        per_bucket <- max(1L, as.integer(ceiling(n_cells / n_buckets)))
+        n_buckets <- as.integer(ceiling(n_cells / per_bucket))
+        produce <- function(k) {
+            g_lo <- chunks[[k]][1L]; g_hi <- chunks[[k]][2L]
+            lo <- cum[g_lo] + 1; hi <- cum[g_hi + 1L]
+            if (hi < lo) return(NULL)
+            chunk <- data.table::setDT(rhdf5::h5read(
+                gef_path, "cellBin/geneExp", start = lo, count = hi - lo + 1
+            ))
+            rid <- as.integer(cell_id_map[as.character(chunk$cellID)])
+            data.table::data.table(
+                b      = (rid - 1L) %/% per_bucket + 1L,
+                row_id = rid,
+                col_id = as.integer(name_to_row[rep.int(seq.int(g_lo, g_hi), cnt[g_lo:g_hi])]),
+                value  = as.double(chunk$count)
+            )[!is.na(row_id) & !is.na(col_id)]
+        }
+        finish <- function(dt) dt[, .(value = sum(value)), keyby = .(row_id, col_id)]
+        itr <- .ingest_spill_iterator(produce, length(chunks), n_buckets, finish, max_rows)
+        next_batch <- itr$next_batch
+        close_fn <- itr$close
     }
 
     list(
@@ -232,89 +256,128 @@ setMethod("storeRead", signature("cellbinGefInput"), function(store, ...) {
 
 # storeRead — binGefInput ####
 
+# A bin GEF has no cell-major copy, so the expression is reordered out of
+# core. Pass 1 streams gene chunks, labels each new (x, y) with the next
+# bin_ID in first-appearance order -- the numbering Giotto's in-memory reader
+# uses, so `bin_<id>` names agree across backends -- and spills every record
+# to a horizontal stripe of the chip. Pass 2 emits the stripes in ascending y;
+# within a stripe, bins take store positions in (y, x) order. Positions are
+# therefore grid-ordered and cell-major while names keep in-memory parity
+# (adr/0017).
+
 #' @rdname storeRead
 #' @export
 setMethod("storeRead", signature("binGefInput"), function(store, ...) {
+    x <- y <- bin_ID <- row_id <- col_id <- value <- pos <- NULL  # NSE bindings
     gef_path    <- store@path
     cnt         <- store@params$gene_cnt
     name_to_row <- store@params$name_to_row
     cum         <- store@params$cum_offsets
+    coord_env   <- store@params$coord_env
     expr_path   <- paste0("geneExp/", store@bin_size, "/expression")
 
     chunks <- .gef_safe_chunks(name_to_row, store@batch_genes)
-    chunk_i <- 0L
-    closed  <- FALSE
+    max_rows <- .gef_batch_rows()
 
-    # Running (x, y) -> bin_ID lookup. Persists across batches; published
-    # to the iterator's metadata accessors when iteration completes.
-    xy_to_bin <- data.table::data.table(
-        x = integer(0), y = integer(0), bin_ID = integer(0)
-    )
+    read_chunk <- function(k) {
+        g_lo <- chunks[[k]][1L]; g_hi <- chunks[[k]][2L]
+        lo <- cum[g_lo] + 1; hi <- cum[g_hi + 1L]
+        if (hi < lo) return(NULL)
+        data.table::setDT(rhdf5::h5read(gef_path, expr_path,
+            start = lo, count = hi - lo + 1))
+    }
+
+    # Horizontal stripes over y, several per budget-sized batch. The y range
+    # comes from the file's attributes; without them, from one extra pass.
+    n_buckets <- .ingest_n_buckets(cum[length(cum)], max_rows)
+    yr <- store@params$y_range
+    if (n_buckets > 1L && is.null(yr)) {
+        yr <- c(Inf, -Inf)
+        for (k in seq_along(chunks)) {
+            ch <- read_chunk(k)
+            if (!is.null(ch)) yr <- c(min(yr[1L], ch$y), max(yr[2L], ch$y))
+        }
+    }
+    height <- if (n_buckets > 1L) ceiling((yr[2L] - yr[1L] + 1) / n_buckets) else Inf
+    y0 <- if (is.null(yr)) 0 else yr[1L]
+
+    # (x, y) -> first-appearance bin_ID, accumulated over pass 1
+    xy_to_bin <- data.table::data.table(x = integer(0), y = integer(0), bin_ID = integer(0))
     data.table::setkey(xy_to_bin, x, y)
     n_bins <- 0L
+    # store position -> bin_ID, filled in pass 2
+    pos_to_bin <- integer(0L)
+    exhausted <- FALSE
 
-    close_fn <- function() { closed <<- TRUE; invisible(NULL) }
-
-    next_batch <- function() {
-        # NSE bindings
-        x <- y <- bin_ID <- NULL
-        repeat {
-            if (closed || chunk_i >= length(chunks)) {
-                close_fn(); return(NULL)
-            }
-            chunk_i <<- chunk_i + 1L
-            chunk_def <- chunks[[chunk_i]]
-            g_lo <- chunk_def[1L]; g_hi <- chunk_def[2L]
-            slice_lo <- cum[g_lo] + 1L
-            slice_hi <- cum[g_hi + 1L]
-            if (slice_hi >= slice_lo) break
-        }
-        chunk <- data.table::setDT(rhdf5::h5read(
-            gef_path, expr_path,
-            start = slice_lo,
-            count = slice_hi - slice_lo + 1L
-        ))
-        gene_idx_raw <- rep.int(seq.int(g_lo, g_hi), cnt[g_lo:g_hi])
-
-        # Assign bin_IDs for any (x, y) coords not seen before.
-        chunk_xy <- unique(chunk[, .(x, y)])
-        new_xy <- chunk_xy[!xy_to_bin, on = c("x", "y")]
+    produce <- function(k) {
+        chunk <- read_chunk(k)
+        if (is.null(chunk)) return(NULL)
+        g_lo <- chunks[[k]][1L]; g_hi <- chunks[[k]][2L]
+        new_xy <- unique(chunk[, .(x, y)])[!xy_to_bin, on = c("x", "y")]
         if (nrow(new_xy) > 0L) {
             new_xy[, bin_ID := seq.int(n_bins + 1L, n_bins + .N)]
             n_bins <<- n_bins + nrow(new_xy)
-            xy_to_bin <<- rbind(xy_to_bin, new_xy)
-            data.table::setkey(xy_to_bin, x, y)
+            xy_to_bin <<- data.table::setkey(rbind(xy_to_bin, new_xy), x, y)
         }
-        chunk[, bin_ID := xy_to_bin[.SD, on = c("x", "y"), bin_ID]]
-
         out <- data.table::data.table(
-            row_id = as.integer(chunk$bin_ID),
-            col_id = as.integer(name_to_row[gene_idx_raw]),
+            b      = if (is.finite(height)) as.integer((chunk$y - y0) %/% height) + 1L else 1L,
+            x      = chunk$x,
+            y      = chunk$y,
+            col_id = as.integer(name_to_row[rep.int(seq.int(g_lo, g_hi), cnt[g_lo:g_hi])]),
             value  = as.double(chunk$count)
-        )
-        out <- out[!is.na(row_id) & !is.na(col_id),
-                   .(value = sum(value)), keyby = .(row_id, col_id)]
+        )[!is.na(col_id)]
+        out[b < 1L, b := 1L][b > n_buckets, b := n_buckets]
         out
     }
 
-    # Accessors. cell_ids / n_cells reflect accumulated state, so they
-    # change as iteration advances. Callers should query them after the
-    # iterator is exhausted.
+    finish <- function(dt) {
+        bins <- unique(dt[, .(x, y)])
+        data.table::setorder(bins, y, x)
+        bins[, pos := length(pos_to_bin) + seq_len(.N)]
+        bins[xy_to_bin, bin_ID := i.bin_ID, on = c("x", "y")]
+        pos_to_bin <<- c(pos_to_bin, bins$bin_ID)
+        dt[bins, row_id := i.pos, on = c("x", "y")]
+        dt[, .(value = sum(value)), keyby = .(row_id, col_id)]
+    }
+
+    itr <- .ingest_spill_iterator(produce, length(chunks), n_buckets, finish, max_rows)
+
+    # Hand the finished coordinate map back to the input object, which
+    # outlives this iterator. Only on a full pass -- a partial map would
+    # silently produce spatial locations for a subset of the bins. See
+    # binGefInput()'s `coord_env` note. `pos` is the store position.
+    .publish_coords <- function() {
+        if (!exhausted || is.null(coord_env)) return(invisible(NULL))
+        out <- data.table::copy(xy_to_bin)
+        out[, pos := match(bin_ID, pos_to_bin)]
+        data.table::setorder(out, bin_ID)
+        coord_env$bin_coords <- out
+        invisible(NULL)
+    }
+
+    next_batch <- function() {
+        dt <- itr$next_batch()
+        if (is.null(dt)) exhausted <<- TRUE
+        dt
+    }
+    close_fn <- function() {
+        .publish_coords()
+        itr$close()
+    }
+
+    # cell_ids / n_cells reflect accumulated state; the storeWrite driver
+    # reads them after the iterator is exhausted.
     list(
         next_batch = next_batch,
         close      = close_fn,
-        cell_ids   = function() {
-            if (n_bins == 0L) return(character(0L))
-            data.table::setorder(xy_to_bin, bin_ID)
-            paste0("bin_", seq_len(n_bins))
-        },
+        cell_ids   = function() paste0("bin_", pos_to_bin),
         feat_ids   = function() store@feat_ids,
-        n_cells    = function() n_bins,
+        n_cells    = function() length(pos_to_bin),
         n_genes    = function() store@n_genes,
-        # Bonus: expose the (x, y) lookup for downstream spatial use.
         bin_coords = function() {
-            data.table::setorder(xy_to_bin, bin_ID)
-            data.table::copy(xy_to_bin)
+            out <- data.table::copy(xy_to_bin)
+            out[, pos := match(bin_ID, pos_to_bin)]
+            data.table::setorder(out, bin_ID)[]
         }
     )
 })
@@ -451,41 +514,46 @@ setMethod(
             return(invisible(store))
         }
 
-        itr <- storeRead(data)
-        on.exit(itr$close(), add = TRUE)
-
-        batch_idx <- 0L
-        repeat {
-            dt <- itr$next_batch()
-            if (is.null(dt)) break
-            if (nrow(dt) == 0L) next   # skip empty batches (no on-disk chunk)
-            batch_idx <- batch_idx + 1L
-            .write_parquet_file(
-                dt,
-                file.path(partition_dir,
-                          sprintf("part-%d.parquet", batch_idx - 1L))
-            )
-        }
-
-        # Stamp metadata from the iterator's accessors (single source of
-        # truth — works for both eagerly-known formats and ones that
-        # accumulate cell_ids during iteration, like csvWideInput).
-        store@cell_ids <- itr$cell_ids()
-        store@feat_ids <- itr$feat_ids()
-        store@n_cells  <- as.numeric(itr$n_cells())
-        store@n_genes  <- as.numeric(itr$n_genes())
-        .pestore_finalize_stats(store)
+        .pestore_write_itr(store, storeRead(data), partition_dir)
     }
 )
+
+# Write a batch iterator -- list(next_batch, close, cell_ids, feat_ids,
+# n_cells, n_genes), as every exprInput's storeRead() returns -- into the
+# store's partition, one part file per non-empty batch, and stamp the
+# metadata from the iterator's accessors (single source of truth -- works for
+# both eagerly-known formats and ones that accumulate cell_ids during
+# iteration, like csvWideInput). Batches must arrive cell-major.
+.pestore_write_itr <- function(store, itr, partition_dir) {
+    on.exit(itr$close(), add = TRUE)
+    batch_idx <- 0L
+    repeat {
+        dt <- itr$next_batch()
+        if (is.null(dt)) break
+        if (nrow(dt) == 0L) next   # skip empty batches (no on-disk chunk)
+        batch_idx <- batch_idx + 1L
+        .write_parquet_file(
+            dt,
+            file.path(partition_dir,
+                      sprintf("part-%d.parquet", batch_idx - 1L))
+        )
+    }
+    store@cell_ids <- itr$cell_ids()
+    store@feat_ids <- itr$feat_ids()
+    store@n_cells  <- as.numeric(itr$n_cells())
+    store@n_genes  <- as.numeric(itr$n_genes())
+    .pestore_finalize_stats(store)
+}
 
 
 # ---- tenxH5Input parallel storeWrite ---------------------------------------
 
 # Number of workers this package should use for band-parallel steps.
 # Priority order:
-#   1. Explicit `options("giottodisk.par_workers")` (int).
+#   1. Explicit `options("giottodisk.par_workers")` (int), used as given.
 #   2. `future::nbrOfWorkers()` if future is installed AND a non-uniprocess
-#      plan is set (backwards-compatible with users who set only a plan).
+#      plan is set (backwards-compatible with users who set only a plan),
+#      capped by what fits the memory budget.
 #   3. Otherwise 1 (serial).
 # On Windows, `parallel::mclapply(mc.cores = n)` silently degrades to
 # sequential, so callers must guard their own fork-path branches.
@@ -494,9 +562,20 @@ setMethod(
     if (!is.null(n)) return(max(1L, as.integer(n)))
     if (requireNamespace("future", quietly = TRUE) &&
         !inherits(future::plan(), "uniprocess")) {
-        return(max(1L, as.integer(future::nbrOfWorkers())))
+        return(.workers_in_budget(future::nbrOfWorkers()))
     }
     1L
+}
+
+# At most `n` workers, as many as fit the memory budget. A worker starts as
+# a copy of this session and grows to about three times its R heap.
+.workers_in_budget <- function(n) {
+    n <- max(1L, as.integer(n))
+    free <- tryCatch(.sc_free_ram(), error = function(e) NA_real_)
+    if (!isTRUE(is.finite(free)) || free <= 0) return(n)
+    per_worker <- 3 * sum(gc(full = FALSE)[, 2L]) * 2^20
+    budget <- .chunk_budget(free, .ram_frac(), n_cells = 0, k = 0, p = 0)
+    max(1L, min(n, as.integer(floor(budget / per_worker))))
 }
 
 # Legacy name; still used by `.storewrite_h5_parallel` on the lapply_flex
@@ -530,6 +609,27 @@ setMethod(
     dt
 }
 
+# Contiguous cell ranges for an h5 read. By default each holds at most the
+# ingest budget's records -- stored values, from `indptr` -- shared across
+# `n_workers` concurrent batches, as the cellbin GEF reader cuts its ranges; a
+# fixed cell count gives no bound when values per cell are high. A
+# non-missing `batch_cells` pins a fixed number of cells per range instead.
+# A batch holds the h5 values, the triplet frame and its sort, about 64 B per
+# record.
+.tenxh5_ranges <- function(indptr, batch_cells = NA_integer_, n_workers = 1L) {
+    n_cells <- length(indptr) - 1L
+    if (n_cells < 1L) return(list())
+    if (!is.na(batch_cells)) {
+        starts <- seq.int(1L, n_cells, by = as.integer(batch_cells))
+        return(lapply(starts, function(a) {
+            c(a, min(a + as.integer(batch_cells) - 1L, n_cells))
+        }))
+    }
+    rows <- .ingest_batch_rows(64,
+        pinned = getOption("giottodisk.h5_batch_rows"))
+    .ingest_cell_ranges(diff(indptr), max(1, floor(rows / max(1L, n_workers))))
+}
+
 # Parallel h5 → parquet writer.  Fork-based via `parallel::mclapply` on
 # Unix — workers COW-inherit the parent's loaded namespace and the
 # pre-read indptr;
@@ -537,9 +637,6 @@ setMethod(
 # fork-safe across parent+child sharing).  On Windows, mclapply degrades
 # to sequential (no fork available).
 .storewrite_h5_parallel <- function(data, partition_dir) {
-    n_cells <- as.integer(data@n_cells)
-    bc      <- as.integer(data@batch_cells)
-    starts  <- seq.int(1L, n_cells, by = bc)
     h5_path <- data@path
     root    <- data@params$root
     # Read indptr once in the parent (small; n_cells+1 doubles) and pass it
@@ -549,9 +646,10 @@ setMethod(
     h5$close_all()
 
     n_workers <- .par_workers()
-    args <- list(h5_path = h5_path, root = root, starts = starts, bc = bc,
-                 n_cells = n_cells, indptr = indptr,
-                 partition_dir = partition_dir)
+    # every worker holds one batch, so they share the budget
+    ranges <- .tenxh5_ranges(indptr, data@batch_cells, n_workers = n_workers)
+    args <- list(h5_path = h5_path, root = root, ranges = ranges,
+                 indptr = indptr, partition_dir = partition_dir)
 
     # Fork (`mclapply`) where available, socket workers only as the fallback.
     # Measured on Atera (170k cells, 8 workers): fork 9.0 s / +16.1 GB peak
@@ -573,7 +671,7 @@ setMethod(
     # resolve lexically and every cross-package call here is `::`-qualified.
     if (n_workers > 1L && .Platform$OS.type == "unix") {
         res <- do.call(parallel::mclapply, c(
-            list(X = seq_along(starts), FUN = .storewrite_h5_batch,
+            list(X = seq_along(ranges), FUN = .storewrite_h5_batch,
                  mc.cores = n_workers, mc.preschedule = TRUE),
             args))
         errs <- vapply(res, inherits, logical(1L), "try-error")
@@ -584,12 +682,12 @@ setMethod(
         }
     } else if (n_workers > 1L) {
         do.call(GiottoUtils::lapply_flex, c(
-            list(X = seq_along(starts), FUN = .storewrite_h5_batch,
+            list(X = seq_along(ranges), FUN = .storewrite_h5_batch,
                  cores = n_workers, future.seed = NULL),
             args))
     } else {
         do.call(lapply, c(
-            list(X = seq_along(starts), FUN = .storewrite_h5_batch),
+            list(X = seq_along(ranges), FUN = .storewrite_h5_batch),
             args))
     }
     invisible(NULL)
@@ -600,10 +698,10 @@ setMethod(
 
 #' @keywords internal
 #' @noRd
-.storewrite_h5_batch <- function(b, h5_path, root, starts, bc, n_cells,
-                                  indptr, partition_dir) {
-    c_lo <- starts[b]
-    c_hi <- min(c_lo + bc - 1L, n_cells)
+.storewrite_h5_batch <- function(b, h5_path, root, ranges, indptr,
+                                  partition_dir) {
+    c_lo <- ranges[[b]][1L]
+    c_hi <- ranges[[b]][2L]
     dt   <- .tenxh5_read_range(h5_path, root, c_lo, c_hi, indptr)
     if (is.null(dt) || nrow(dt) == 0L) return(invisible(NULL))
     .write_parquet_file(
@@ -611,3 +709,302 @@ setMethod(
         file.path(partition_dir, sprintf("part-%d.parquet", b - 1L)))
     invisible(NULL)
 }
+
+
+# storeRead -- tenxZarrInput ####
+
+# The zarr cell_feature_matrix is CSC by FEATURE (indptr over features,
+# `indices` = cell ids), but the iterator contract is ascending-cell
+# batches. Two strategies, picked at read time:
+#
+# full      two-pass cell-major placement ("B2"): pass 1 streams `indices`
+#           chunks into a per-cell nnz histogram; pass 2 streams
+#           `indices` + `data` in lockstep, placing each triplet at its
+#           cell's cursor in preallocated int buffers. Features are
+#           walked in ascending order, so within-cell col_id is ascending
+#           by construction -- no sort. Peak RAM ~ 12 B x nnz.
+# cellblock bounded windows over the cell axis: each window rescans the
+#           `indices`/`data` chunks, masks entries to the window, and
+#           sorts the bounded result. RAM is bounded by the window
+#           regardless of nnz (rescans over spill, cf. adr/0011); forced
+#           when nnz exceeds int32 (full-mode buffers are impossible).
+#
+# Both modes emit strictly ascending cell ranges; an out-of-order batch
+# is a bug and stops rather than corrupting the sorted-parquet invariant.
+
+#' @rdname storeRead
+#' @export
+setMethod("storeRead", signature("tenxZarrInput"), function(store, ...) {
+    src <- .zarr_open(store@path)
+    indptr <- store@params$indptr # double, 0-based offsets, length n_feat+1
+    keep <- store@params$keep
+    col_remap <- store@params$col_remap
+    n_cells <- as.integer(store@n_cells)
+    n_feat <- length(keep)
+    nnz <- store@nnz
+    batch_rows <- 5000000L
+
+    ind_r <- .zarr_chunk_reader(src, "cell_features/indices",
+        u4_as_integer = TRUE)
+    dat_r <- .zarr_chunk_reader(src, "cell_features/data",
+        u4_as_integer = TRUE)
+    if (ind_r$total != dat_r$total || ind_r$n_chunks != dat_r$n_chunks) {
+        .zarr_close(src)
+        stop("[storeRead] cell_features indices/data disagree in shape ",
+            "or chunking", call. = FALSE)
+    }
+
+    # call body(j, s, e) for every feature j whose nnz range overlaps the
+    # chunk at 0-based offset chunk_off; s:e are 1-based local indices
+    for_features_in_chunk <- function(chunk_off, chunk_len, body) {
+        chunk_end <- chunk_off + chunk_len
+        first_j <- max(1L, findInterval(chunk_off, indptr))
+        last_j <- min(n_feat, findInterval(chunk_end - 1, indptr))
+        if (last_j < first_j) return(invisible(NULL))
+        for (j in first_j:last_j) {
+            s <- max(0, indptr[j] - chunk_off) + 1
+            e <- min(chunk_len, indptr[j + 1L] - chunk_off)
+            if (e < s) next
+            body(j, as.integer(s), as.integer(e))
+        }
+        invisible(NULL)
+    }
+
+    # resolve mode
+    mode <- store@mode
+    block <- as.integer(store@cells_per_block)
+    if (block <= 0L) {
+        density <- if (n_cells > 0L && store@n_genes > 0L) {
+            nnz / (as.double(n_cells) * as.double(store@n_genes))
+        } else {
+            1
+        }
+        block <- .recommend_chunk_size(
+            n_cells = n_cells, n_genes = store@n_genes,
+            density = density, k = 0L, bytes_per_nz = 16
+        )
+    }
+    if (mode == "auto") {
+        mode <- if (nnz > .Machine$integer.max || block < n_cells) {
+            "cellblock"
+        } else {
+            "full"
+        }
+    }
+    if (mode == "full" && nnz > .Machine$integer.max) {
+        .zarr_close(src)
+        stop("[storeRead] nnz (", format(nnz, big.mark = ","),
+            ") exceeds int32; use mode = \"cellblock\"", call. = FALSE)
+    }
+
+    closed <- FALSE
+    close_fn <- function() {
+        if (!closed) {
+            .zarr_close(src)
+            closed <<- TRUE
+        }
+        invisible(NULL)
+    }
+    last_row_emitted <- 0L
+    check_ascending <- function(dt) {
+        if (nrow(dt) && dt$row_id[1L] <= last_row_emitted) {
+            close_fn()
+            stop("[storeRead] internal: batch starts at cell ",
+                dt$row_id[1L], " but cells through ", last_row_emitted,
+                " were already emitted -- ascending-cell invariant broken",
+                call. = FALSE)
+        }
+        if (nrow(dt)) last_row_emitted <<- dt$row_id[nrow(dt)]
+        dt
+    }
+
+    if (mode == "full") {
+        built <- FALSE
+        row_ids <- col_ids <- values <- NULL
+        off <- NULL
+        lo_cell <- 1L
+
+        build <- function() {
+            # pass 1: per-cell nnz over kept features
+            per_cell_nnz <- integer(n_cells)
+            for (k in seq_len(ind_r$n_chunks)) {
+                ic <- ind_r$read_chunk(k - 1L)
+                chunk_off <- (k - 1) * ind_r$chunk_size
+                for_features_in_chunk(chunk_off, length(ic),
+                    function(j, s, e) {
+                        if (!keep[j]) return(invisible(NULL))
+                        cells_1b <- ic[s:e] + 1L
+                        per_cell_nnz[cells_1b] <<-
+                            per_cell_nnz[cells_1b] + 1L
+                    })
+            }
+            off <<- c(0L, cumsum(per_cell_nnz))
+            total <- off[n_cells + 1L]
+            row_ids <<- integer(total)
+            col_ids <<- integer(total)
+            values <<- integer(total)
+            cursor <- integer(n_cells)
+            # pass 2: lockstep placement
+            for (k in seq_len(ind_r$n_chunks)) {
+                ic <- ind_r$read_chunk(k - 1L)
+                dc <- dat_r$read_chunk(k - 1L)
+                chunk_off <- (k - 1) * ind_r$chunk_size
+                for_features_in_chunk(chunk_off, length(ic),
+                    function(j, s, e) {
+                        if (!keep[j]) return(invisible(NULL))
+                        cells_1b <- ic[s:e] + 1L
+                        slots <- off[cells_1b] + cursor[cells_1b] + 1L
+                        row_ids[slots] <<- cells_1b
+                        col_ids[slots] <<- col_remap[j]
+                        values[slots] <<- dc[s:e]
+                        cursor[cells_1b] <<- cursor[cells_1b] + 1L
+                    })
+            }
+            if (!identical(cursor, per_cell_nnz)) {
+                close_fn()
+                stop("[storeRead] internal: cell-major placement drifted ",
+                    "(cursor != per-cell nnz)", call. = FALSE)
+            }
+            built <<- TRUE
+            invisible(NULL)
+        }
+
+        next_batch <- function() {
+            if (closed) return(NULL)
+            if (!built) build()
+            repeat {
+                if (lo_cell > n_cells) {
+                    close_fn()
+                    return(NULL)
+                }
+                # widest hi with off[hi + 1] - off[lo] <= batch_rows,
+                # but at least one cell
+                hi_cell <- findInterval(off[lo_cell] + batch_rows, off) - 1L
+                hi_cell <- max(lo_cell, min(hi_cell, n_cells))
+                s <- off[lo_cell] + 1L
+                e <- off[hi_cell + 1L]
+                lo_cell <<- hi_cell + 1L
+                if (e >= s) {
+                    return(check_ascending(data.table::data.table(
+                        row_id = row_ids[s:e],
+                        col_id = col_ids[s:e],
+                        value = as.double(values[s:e])
+                    )))
+                }
+            }
+        }
+    } else { # cellblock
+        lo_cell <- 1L
+        next_batch <- function() {
+            if (closed) return(NULL)
+            repeat {
+                if (lo_cell > n_cells) {
+                    close_fn()
+                    return(NULL)
+                }
+                hi_cell <- min(lo_cell + block - 1L, n_cells)
+                parts <- list()
+                for (k in seq_len(ind_r$n_chunks)) {
+                    ic <- ind_r$read_chunk(k - 1L)
+                    chunk_len <- length(ic)
+                    # dense col id per entry (0 = dropped feature)
+                    cols <- integer(chunk_len)
+                    chunk_off <- (k - 1) * ind_r$chunk_size
+                    for_features_in_chunk(chunk_off, chunk_len,
+                        function(j, s, e) {
+                            cols[s:e] <<- col_remap[j]
+                        })
+                    cells_1b <- ic + 1L
+                    m <- cols > 0L & cells_1b >= lo_cell &
+                        cells_1b <= hi_cell
+                    if (!any(m)) next
+                    dc <- dat_r$read_chunk(k - 1L)
+                    parts[[length(parts) + 1L]] <- data.table::data.table(
+                        row_id = cells_1b[m],
+                        col_id = cols[m],
+                        value = as.double(dc[m])
+                    )
+                }
+                lo_cell <<- hi_cell + 1L
+                if (length(parts)) {
+                    out <- data.table::rbindlist(parts)
+                    data.table::setorder(out, row_id, col_id)
+                    return(check_ascending(out))
+                }
+            }
+        }
+    }
+
+    list(
+        next_batch = next_batch,
+        close = close_fn,
+        cell_ids = function() store@cell_ids,
+        feat_ids = function() store@feat_ids,
+        n_cells = function() store@n_cells,
+        n_genes = function() store@n_genes
+    )
+})
+
+
+# storeRead - cosmxScanInput ####
+
+#' @rdname storeRead
+#' @export
+setMethod("storeRead", signature("cosmxScanInput"), function(store, ...) {
+    GiottoUtils::package_check(
+        pkg_name = "cosmxscan",
+        repository = "github:drieslab/cosmxscan"
+    )
+    handle <- cosmxscan::CosmxReader$new(store@path, store@skip_cols)
+    slide  <- store@slide
+    batch  <- store@batch_rows
+
+    closed         <- FALSE
+    cell_ids_acc   <- character(0L)
+    n_cells_so_far <- 0L
+
+    close_fn <- function() {
+        if (!closed) {
+            try(handle$close(), silent = TRUE)
+            closed <<- TRUE
+        }
+        invisible(NULL)
+    }
+
+    next_batch <- function() {
+        if (closed) return(NULL)
+        chunk <- handle$next_chunk(batch)
+        if (chunk$n_rows == 0L) {
+            close_fn()
+            return(NULL)
+        }
+        # The matrix's own cell_ID is FOV-local -- it only reaches 3,577 and
+        # cell_ID == 1 occurs in 392 different FOVs -- so the global id the
+        # polygons and metadata use is composed here, from the fov column the
+        # same scan already read.
+        cell_ids_acc <<- c(
+            cell_ids_acc,
+            sprintf("c_%d_%d_%d", slide, chunk$fov, chunk$cell_ID)
+        )
+        n_cells_so_far <<- n_cells_so_far + chunk$n_rows
+        out <- data.table::data.table(
+            row_id = as.integer(chunk$row_id),
+            col_id = as.integer(chunk$col_id),
+            value  = as.double(chunk$value)
+        )
+        data.table::setorder(out, row_id, col_id)
+        if (isTRUE(chunk$eof)) close_fn()
+        out
+    }
+
+    list(
+        next_batch = next_batch,
+        close      = close_fn,
+        # cell identity is only known during the stream; these accessors
+        # report what the iterator has seen so far.
+        cell_ids   = function() cell_ids_acc,
+        feat_ids   = function() store@feat_ids,
+        n_cells    = function() n_cells_so_far,
+        n_genes    = function() store@n_genes
+    )
+})

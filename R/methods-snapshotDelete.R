@@ -26,18 +26,50 @@ setMethod("snapshotDelete", signature("character", "character"), function(src, n
 #' @export
 setMethod("snapshotDelete", signature("gDirSource", "character"), function(src, name, ...) {
     p <- src@path
+    .gdsrc_check_schema(p, site = "[snapshotDelete]")
     gsdir <- .gdsrc_giottosave_dir(p)
-    save_path <- list.files(gsdir,
-        pattern = paste0("^", name, "\\."),
-        full.names = TRUE,
-        recursive = FALSE
+    found <- .gdsrc_find_snapshot(gsdir, name = name)
+    if (is.null(found)) {
+        stop(
+            sprintf("[snapshotDelete] no snapshot found with name '%s'\n", name),
+            call. = FALSE
+        )
+    }
+
+    # Cascade child deletes for giottoMulti snapshots. The multi save
+    # produces a snapshot per child under "<name>_<child_name>" in each
+    # child's own vault — without cascade, deleting the multi here would
+    # orphan all those child .rds files on disk and leave their
+    # protection tags pinning artifacts indefinitely.
+    #
+    # Loading a backed snapshot is cheap (gobjects hold file handles,
+    # not data). Best-effort: a child whose source is unreachable or
+    # whose snapshot was already deleted produces a warning, not a
+    # hard error — the multi delete always proceeds.
+    snap <- tryCatch(
+        .load_serialized(found$file),
+        error = function(e) NULL
     )
-  if (length(save_path) == 0L) {
-      stop(
-          sprintf("[snapshotDelete] no snapshot found with name '%s'\n", name),
-          call. = FALSE
-      )
-  }
-    unlink(save_path, force = TRUE)
+    if (inherits(snap, "giottoMulti")) {
+        for (child_name in names(snap@objects)) {
+            child <- snap@objects[[child_name]]
+            if (is.null(child@source)) next
+            child_snap_name <- paste0(name, "_", child_name)
+            tryCatch(
+                snapshotDelete(child@source, child_snap_name),
+                error = function(e) warning(sprintf(
+                    "[snapshotDelete] child snapshot '%s' delete failed: %s",
+                    child_snap_name, conditionMessage(e)
+                ), call. = FALSE)
+            )
+        }
+    }
+
+    # every folder of this name: its tag then matches nothing, which is what
+    # releases its artifacts to sourcePrune
+    snaps <- .gdsrc_snapshots(gsdir)
+    unlink(file.path(gsdir, snaps$tag[snaps$name == name]),
+        recursive = TRUE, force = TRUE
+    )
     invisible(TRUE)
 })

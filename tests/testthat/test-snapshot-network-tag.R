@@ -47,7 +47,7 @@ test_that("snapshotSave tags parquetEdgeStore (nn_network) with snapshot name", 
     entry <- mfst[[pes_uid]]
     expect_false(is.null(entry))
     expect_identical(entry$store, "parquetEdgeStore")
-    expect_identical(entry$giottosave, "snap_v1")
+    expect_identical(entry$giottosave, .snap_tag(g@source@path, "snap_v1"))
 })
 
 test_that("snapshotSave tags parquetEdgeStore (spatial_network) with snapshot name", {
@@ -70,7 +70,7 @@ test_that("snapshotSave tags parquetEdgeStore (spatial_network) with snapshot na
     entry <- mfst[[pes@uid]]
     expect_false(is.null(entry))
     expect_identical(entry$store, "parquetEdgeStore")
-    expect_identical(entry$giottosave, "snap_v1")
+    expect_identical(entry$giottosave, .snap_tag(g@source@path, "snap_v1"))
 })
 
 test_that("multiple snapshots accumulate in the network manifest entry", {
@@ -88,7 +88,10 @@ test_that("multiple snapshots accumulate in the network manifest entry", {
     mfst <- GiottoDisk:::.gdsrc_json_read(g@source@path,
         consolidate = TRUE)$content
     entry <- mfst[[pes_uid]]
-    expect_setequal(entry$giottosave, c("snap_v1", "snap_v2"))
+    expect_setequal(entry$giottosave, c(
+        .snap_tag(g@source@path, "snap_v1"),
+        .snap_tag(g@source@path, "snap_v2")
+    ))
 })
 
 
