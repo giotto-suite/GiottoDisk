@@ -82,6 +82,9 @@
   FALSE)` on store-backed points reaches the disk method.
 
 ## bug fixes
+- `saveGiotto()` no longer fails on a project where an overlap that is in more
+  than one snapshot depends on several stores: `as.data.frame()` of a
+  `gDirSource` keeps `depends` as one list cell per artifact.
 - `saveGiotto()` / `loadGiotto()` on a backed object holding `giottoBinPoints`
   (for example from `load_transcripts = TRUE`) failed with "object of type
   'S4' is not subsettable": the snapshot steps read every points object as a
