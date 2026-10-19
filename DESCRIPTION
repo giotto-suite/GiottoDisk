@@ -107,6 +107,7 @@ Collate:
     'methods-sourceWrite.R'
     'methods-sourceAdopt.R'
     'methods-sourcePrune.R'
+    'methods-sourceSchema.R'
     'methods-spatRelate.R'
     'methods-specialCols.R'
     'methods-storeInspect.R'

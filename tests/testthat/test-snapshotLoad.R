@@ -4,12 +4,10 @@
 # Helper: gDirSource with optional set of snapshot names on disk.
 .mk_snapshot_src <- function(names = character()) {
     td <- tempfile("snapLoad_"); dir.create(td)
-    snaps_dir <- file.path(td, "giottosave")
-    dir.create(snaps_dir)
-    for (nm in names) {
-        saveRDS(list(name = nm), file.path(snaps_dir, paste0(nm, ".rds")))
-    }
-    list(src = gDirSource(td), td = td)
+    src <- gDirSource(td)
+    dir.create(.snap_gsdir(td))
+    for (nm in names) .write_snapshot_fixture(td, nm, list(name = nm))
+    list(src = src, td = td)
 }
 
 
@@ -56,13 +54,10 @@ test_that("snapshotLoad: valid name returns the serialized object", {
 test_that("snapshotLoad: NULL name picks the most recent by mtime", {
     x <- .mk_snapshot_src()
     on.exit(unlink(x$td, recursive = TRUE), add = TRUE)
-    snaps_dir <- file.path(x$td, "giottosave")
     # Write two snapshots with staggered mtimes -- older, then newer.
-    older <- file.path(snaps_dir, "snap_old.rds")
-    newer <- file.path(snaps_dir, "snap_new.rds")
-    saveRDS(list(tag = "old"), older)
+    older <- .write_snapshot_fixture(x$td, "snap_old", list(tag = "old"))
     Sys.setFileTime(older, Sys.time() - 60L)
-    saveRDS(list(tag = "new"), newer)
+    .write_snapshot_fixture(x$td, "snap_new", list(tag = "new"))
     obj <- snapshotLoad(x$src, name = NULL)
     expect_equal(obj$tag, "new")
 })
@@ -81,7 +76,7 @@ test_that("snapshots save and load with qs2", {
     snapshotSave(g@source, g, name = "snap_qs2", method = "qs2",
                  verbose = FALSE)
     snaps <- file.path(td, "giottosave")
-    expect_true(file.exists(file.path(snaps, "snap_qs2.qs2")))
+    expect_identical(basename(.snap_file(td, "snap_qs2")), "gobject.qs2")
     g2 <- snapshotLoad(g@source, name = "snap_qs2")
     expect_identical(GiottoClass::spatIDs(g2), GiottoClass::spatIDs(g))
 
@@ -89,7 +84,7 @@ test_that("snapshots save and load with qs2", {
     # the first element, as match.arg() resolves a default
     snapshotSave(g@source, g, name = "snap_default",
                  method = c("RDS", "qs"), verbose = FALSE)
-    expect_true(file.exists(file.path(snaps, "snap_default.rds")))
-    expect_setequal(.gdsrc_detect_gsavename(snaps),
+    expect_identical(basename(.snap_file(td, "snap_default")), "gobject.RDS")
+    expect_setequal(.gdsrc_snapshot_names(snaps),
                     c("snap_qs2", "snap_default"))
 })

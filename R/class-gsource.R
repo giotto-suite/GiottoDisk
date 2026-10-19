@@ -52,8 +52,9 @@ setClass("gsource",
 #' * `artifacts` - vault directory containing the actual data artifacts
 #' which are within subdirectories named by their `uid`.
 #' * `_pending` - directory containing pending edits to the manifest.
-#' * `giottosave` - directory containing .RDS of giotto projects that
-#' reference assets controlled by the `gDirSource`.
+#' * `giottosave` - one folder per snapshot, `giottosave/<name>.<id>/`,
+#' holding the serialized giotto object (`gobject.RDS` or `gobject.qs2`)
+#' that references assets controlled by the `gDirSource`.
 #' 
 #' @export
 setClass("gDirSource",
@@ -113,7 +114,7 @@ setMethod("initialize", signature("gDirSource"), function(.Object, ...) {
 setMethod("show", signature("gDirSource"), function(object) {
     cat(sprintf("<%s>\n", class(object)))
 
-    gsave_ids <- .gdsrc_detect_gsavename(
+    gsave_ids <- .gdsrc_snapshot_names(
         .gdsrc_giottosave_dir(object@path)
     )
     cat("giottosaves:", length(gsave_ids), "\n")
@@ -264,32 +265,41 @@ NULL
 #' files from GiottoDisk. Stamps with information for:
 #' 
 #' * GiottoDisk version
-#' * manifest version
-.gdsrc_json_header <- function() {
+#' * schema version of the project directory (see [sourceSchema()])
+.gdsrc_json_header <- function(version = .GDSRC_SCHEMA_VERSION) {
     list(
         "description" = "[GiottoDisk] Artifacts Manifest",
         "versions" = list(
             "package" = as.character(packageVersion("GiottoDisk")),
-            "manifest" = 1L
+            "manifest" = as.integer(version)
         )
     )
 }
 
 #' @describeIn giotto_json Write function for the main
-#' `giottodir.json`.
-.gdsrc_json_write <- function(p, x) { # write a giotto dir json
+#' `giottodir.json`. The schema version already on disk is kept; a new
+#' project is stamped with the current one. Only [sourceUpdate()] passes
+#' `version`, which stamps it without the schema check.
+.gdsrc_json_write <- function(p, x, version = NULL, check = TRUE) {
     checkmate::assert_list(x)
     if (!dir.exists(p)) { # first creation
         message("Setting up Giotto project directory at: \n", p)
         dir.create(path = p)
     }
-  
+
+    if (is.null(version)) {
+        if (check) .gdsrc_check_schema(p)
+        version <- .gdsrc_schema_ondisk(p)
+        if (is.na(version)) version <- .GDSRC_SCHEMA_VERSION
+    }
+
     content <- list(
-        "header" = .gdsrc_json_header(),
+        "header" = .gdsrc_json_header(version),
         "content" = x
     )
-  
+
     .json_atomic_write(x = content, file = .gdsrc_json_path(p))
+    .gdsrc_schema_forget(p)
     invisible(TRUE)
 }
 
@@ -323,6 +333,7 @@ NULL
 .gdsrc_json_edit <- function(p, uid, x) {
     checkmate::assert_character(uid)
     checkmate::assert_list(x)
+    .gdsrc_check_schema(p)
     pending_dir <- .gdsrc_json_pending_dir(p)
     file <- file.path(pending_dir, sprintf("%s.json", uid))
   
@@ -386,7 +397,7 @@ NULL
 #' `giottodir.json` manifest. Scans for pending edits then applies
 #' the changes in a for loop on the manifest content before
 #' writing back out.
-.gdsrc_json_consolidate <- function(p) {
+.gdsrc_json_consolidate <- function(p, check = TRUE) {
     pending_dir <- .gdsrc_json_pending_dir(p)
     scan_pending <- function() {
         list.files(pending_dir, full.names = TRUE, pattern = "\\.json")
@@ -441,6 +452,9 @@ NULL
         "content" = manifest
     )
   
+    if (check) .gdsrc_check_schema(p)
+    data$header <- .gdsrc_json_header(json_data$header$versions$manifest %||%
+        .GDSRC_SCHEMA_VERSION)
     .json_atomic_write(data, .gdsrc_json_path(p))
     for (efile in edits) { # remove known edit files
         unlink(efile, recursive = TRUE, force = TRUE)
@@ -448,15 +462,77 @@ NULL
     invisible(TRUE)
 }
 
-# find existing gsave names (tags)
-# file extensions are stripped
-.gdsrc_detect_gsavename <- function(p) {
-    fnames <- list.files(p, 
-        pattern = "\\.(rds|qs2)$",
-        recursive = FALSE,
-        full.names = FALSE
+## snapshot layout ####
+
+# giottosave/<name>.<id>/gobject.<ext>; the folder name is the tag. See
+# design.Rmd "Snapshots and tags".
+
+.GDSRC_SNAPSHOT_DIR <- "^(.+)\\.([a-z0-9]{8})$"
+.GDSRC_SNAPSHOT_OBJ <- "^gobject\\.(rds|qs|qs2)$"
+
+.gdsrc_snapshot_tag <- function(name) {
+    id <- tolower(.make_uid(n = 8L, include_node = FALSE, include_pid = FALSE))
+    paste0(name, ".", id)
+}
+
+.gdsrc_snapshot_objfile <- function(method) {
+    switch(tolower(method), "rds" = "gobject.RDS", paste0("gobject.", method))
+}
+
+# every snapshot in a giottosave dir: tag, name, object file, and mtime. A
+# folder counts only once its object file is in place, so a half-written save
+# protects nothing; dot-prefixed folders are staging.
+.gdsrc_snapshots <- function(gsdir) {
+    none <- data.frame(tag = character(), name = character(),
+        file = character(), mtime = as.POSIXct(character())
     )
-    sub("\\.(rds|qs2)$", "", fnames)
+    if (!dir.exists(gsdir)) return(none)
+    tags <- list.dirs(gsdir, full.names = FALSE, recursive = FALSE)
+    tags <- tags[!startsWith(tags, ".") & grepl(.GDSRC_SNAPSHOT_DIR, tags)]
+    files <- vapply(tags, function(tg) {
+        f <- list.files(file.path(gsdir, tg), pattern = .GDSRC_SNAPSHOT_OBJ,
+            ignore.case = TRUE, full.names = TRUE
+        )
+        if (length(f) == 0L) NA_character_ else f[[1L]]
+    }, character(1L), USE.NAMES = FALSE)
+    keep <- !is.na(files)
+    if (!any(keep)) return(none)
+    data.frame(
+        tag = tags[keep],
+        name = sub(.GDSRC_SNAPSHOT_DIR, "\\1", tags[keep]),
+        file = files[keep],
+        mtime = file.info(files[keep])$mtime
+    )
+}
+
+# tags that protect artifacts from sourcePrune
+.gdsrc_snapshot_tags <- function(gsdir) .gdsrc_snapshots(gsdir)$tag
+
+# user-facing snapshot names
+.gdsrc_snapshot_names <- function(gsdir) unique(.gdsrc_snapshots(gsdir)$name)
+
+# The snapshot to load for `name`, or the most recently written one if
+# `name` is NULL; NULL if there is none. Recency is the object file's mtime,
+# since a folder's own moves whenever anything inside it changes. More than
+# one folder per name exists only between an overwrite's write and its
+# cleanup, and the newer is the overwrite.
+.gdsrc_find_snapshot <- function(gsdir, name = NULL) {
+    snaps <- .gdsrc_snapshots(gsdir)
+    if (!is.null(name)) snaps <- snaps[snaps$name == name, , drop = FALSE]
+    if (nrow(snaps) == 0L) return(NULL)
+    as.list(snaps[which.max(snaps$mtime), , drop = FALSE])
+}
+
+# A name becomes part of a folder name, so it must stay one path component
+.gdsrc_assert_snapshot_name <- function(name, site = "[snapshotSave]") {
+    checkmate::assert_string(name, min.chars = 1L)
+    if (grepl("[/\\\\]", name) || startsWith(name, ".")) {
+        stop(sprintf(
+            "%s invalid snapshot name '%s': %s", site, name,
+            "it may not contain a path separator or start with '.'"
+        ), call. = FALSE)
+    }
+    invisible(name)
 }
 
 #' @title Coerce gDirSource
@@ -491,8 +567,9 @@ as.data.frame.gDirSource <- function(x, ...) {
 # - giottosave
 # - depends
 .gdsrc_artifact_prune <- function(p) {
+    .gdsrc_check_schema(p, site = "[sourcePrune]")
     gsave_dir <- .gdsrc_giottosave_dir(p)
-    gsave_ids <- .gdsrc_detect_gsavename(gsave_dir)
+    gsave_ids <- .gdsrc_snapshot_tags(gsave_dir)
   
     manifest <- .gdsrc_json_read(p, consolidate = TRUE)$content
     art_ids <- names(manifest)

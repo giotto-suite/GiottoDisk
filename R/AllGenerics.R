@@ -11,6 +11,8 @@ setGeneric("sourceWrite", function(src, data, ...) standardGeneric("sourceWrite"
 setGeneric("sourcePrune", function(src, ...) standardGeneric("sourcePrune"))
 setGeneric("sourceAdopt", function(src, store, ...) standardGeneric("sourceAdopt"))
 setGeneric("sourceContains", function(src, store, ...) standardGeneric("sourceContains"))
+setGeneric("sourceSchema", function(src, ...) standardGeneric("sourceSchema"))
+setGeneric("sourceUpdate", function(src, ...) standardGeneric("sourceUpdate"))
 setGeneric("snapshotSave", function(src, x, ...) standardGeneric("snapshotSave"))
 setGeneric("snapshotLoad", function(src, ...) standardGeneric("snapshotLoad"))
 setGeneric("snapshotDelete", function(src, name, ...) standardGeneric("snapshotDelete"))

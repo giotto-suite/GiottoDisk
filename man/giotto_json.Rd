@@ -21,9 +21,9 @@
 
 .json_read(file)
 
-.gdsrc_json_header()
+.gdsrc_json_header(version = .GDSRC_SCHEMA_VERSION)
 
-.gdsrc_json_write(p, x)
+.gdsrc_json_write(p, x, version = NULL, check = TRUE)
 
 .gdsrc_json_read(p, consolidate = FALSE)
 
@@ -39,7 +39,7 @@
   depends = NULL
 )
 
-.gdsrc_json_consolidate(p)
+.gdsrc_json_consolidate(p, check = TRUE)
 }
 \arguments{
 \item{uid}{character. Unique ID for artifact tracking}
@@ -70,11 +70,13 @@ with GiottoDisk's usecase where values are generally atomic vectors
 files from GiottoDisk. Stamps with information for:
 \itemize{
 \item GiottoDisk version
-\item manifest version
+\item schema version of the project directory (see \code{\link[=sourceSchema]{sourceSchema()}})
 }
 
 \item \code{.gdsrc_json_write()}: Write function for the main
-\code{giottodir.json}.
+\code{giottodir.json}. The schema version already on disk is kept; a new
+project is stamped with the current one. Only \code{\link[=sourceUpdate]{sourceUpdate()}} passes
+\code{version}, which stamps it without the schema check.
 
 \item \code{.gdsrc_json_read()}: Read function for the main
 \code{giottodir.json}. This function does not check or consolidate

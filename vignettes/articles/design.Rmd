@@ -590,7 +590,7 @@ design choices follow from this:
   giottodir.json       # manifest of all tracked artifacts
   artifacts/<uid>/data # vault — artifact subdirs named by uid
   _pending/            # WAL-style pending manifest edits
-  giottosave/          # .rds/.qs snapshots of giotto objects
+  giottosave/<name>.<id>/gobject.RDS   # one folder per snapshot
   dump/                # optional persistent staging area (see setArtifactDumpDir)
 ```
 
@@ -601,6 +601,46 @@ new JSON is written to a temp file then renamed to the final path.
 
 `sourcePrune()` removes artifacts not referenced by any snapshot, using a BFS
 walk over a `depends` graph for transitive protection.
+
+### Snapshots and tags
+
+A snapshot is a folder, `giottosave/<name>.<id>/`, with the object under a
+fixed file name, so that files describing a snapshot can sit beside it under
+fixed names too. The folder name is the snapshot's tag, and the `<id>` is new
+on every save.
+
+That makes protection end with the snapshot. Tags are never removed from
+artifacts: a deleted or overwritten snapshot's tag simply matches no folder.
+Removing tags on delete and overwrite was the alternative, and was rejected
+because it is only as safe as reference detection is complete (an artifact
+the new snapshot references but tagging misses loses its protection), and
+because a bare-name tag left behind by a deleted snapshot would protect again
+whenever a later snapshot reused the name. Stamping an id in a file inside
+the folder would work too, at the cost of more machinery than a name.
+
+Tagging is not adoption. Adoption (`sourceAdopt`) brings something into the
+vault once, and only what may be moved or copied there. Tagging runs on every
+save over everything the object references that is already in the vault, so
+a second snapshot protects what the first adopted. An image is tagged only if
+`sourceContains()` places it in the vault: an image read from the source
+dataset is never an artifact.
+
+### Schema versions
+
+The project directory carries one schema version (`giottodir.json`
+`header$versions$manifest`) describing its whole layout. Only the current
+layout has save/load code, so a stamped version must be true of everything
+on disk:
+
+- every manifest write and every snapshot verb refuses a project outside
+  the supported range, with `options(giottodisk.schema_check = FALSE)` as an
+  escape hatch so nobody is locked out of their data;
+- a write keeps the version already on disk; only `sourceUpdate()` raises
+  it, after migrating the contents.
+
+Versions: 1 had flat snapshot files tagged by bare name; 2 has snapshot
+folders tagged `<name>.<id>`. The 1 → 2 upgrade moves `.qs` snapshots too,
+though qs is no longer read, so their artifacts stay protected.
 
 ### Manifest design
 
@@ -687,7 +727,7 @@ analyses share underlying data (same experiment, different processing pipelines)
 
 - Shared artifacts are stored once in the vault
 - `snapshotSave` for a second gobject sees shared artifacts via `sourceContains`
-  and only appends the new save name to the `giottosave` tag
+  and only appends the new snapshot's tag to the `giottosave` field
 - `sourcePrune` keeps any artifact referenced by at least one save across all
   analyses in the project
 

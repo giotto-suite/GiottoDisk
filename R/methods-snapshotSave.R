@@ -41,54 +41,55 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
         backend = sprintf("`%s`", class(src)),
         path = p
     ), pre = "  ")
+    .gdsrc_check_schema(p, site = "[snapshotSave]")
     gsdir <- .gdsrc_giottosave_dir(p)
     if (!dir.exists(gsdir)) dir.create(gsdir, recursive = TRUE)
     if (!methods::hasArg(name)) {
         name <- .ss_gdsrc_find_autoname(gsdir, name)
     }
-    if (name %in% .gdsrc_detect_gsavename(gsdir) && !overwrite) {
+    .gdsrc_assert_snapshot_name(name)
+    if (name %in% .gdsrc_snapshot_names(gsdir) && !overwrite) {
        stop("[snapshotSave] giotto snapshot of this name already exists.\n",
           "Change 'name' or set 'overwrite = TRUE'", call. = FALSE)
     }
+    # the tag is minted before adoption, which records it on what it adopts
+    tag <- .gdsrc_snapshot_tag(name)
   
     vmsg(.v = verbose, "[GiottoDisk] checking images...")
     x <- .ss_gdsrc_register_external_images(x,
-        giottosave = name,
+        giottosave = tag,
         export_image = export_image,
         verbose = verbose
     )
 
     vmsg(.v = verbose, "[GiottoDisk] checking expression values...")
     x <- .ss_gdsrc_register_external_expr(x,
-        giottosave = name,
+        giottosave = tag,
         verbose = verbose
     )
 
     vmsg(.v = verbose, "[GiottoDisk] checking spatial stores...")
     x <- .ss_gdsrc_register_external_geom(x,
-        giottosave = name,
+        giottosave = tag,
         verbose = verbose
     )
 
     vmsg(.v = verbose, "[GiottoDisk] checking overlap stores...")
     x <- .ss_gdsrc_register_external_overlap(x,
-        giottosave = name,
+        giottosave = tag,
         verbose = verbose
     )
 
     vmsg(.v = verbose, "[GiottoDisk] checking network stores...")
     x <- .ss_gdsrc_register_external_network(x,
-        giottosave = name,
+        giottosave = tag,
         verbose = verbose
     )
   
     vmsg(.v = verbose, "[GiottoDisk] writing snapshot")
-    temp <- .dump_tempfile() # temp location for atomic writes
-    fullpath <- file.path(gsdir, paste0(name, ".", method))
-    .save_serialized(x, temp, method, method_params)
-    
-    res <- file.rename(from = temp, to = fullpath)
-    if (!res) stop("[snapshotSave] save failed\n", call. = FALSE)
+    .ss_gdsrc_write_snapshot(x, gsdir = gsdir, tag = tag,
+        method = method, method_params = method_params
+    )
   
     # tagging --------------------------------------------------- #
     vmsg(.v = verbose, "[GiottoDisk] tagging snapshot artifacts...")
@@ -97,11 +98,14 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
         manifest <- as.data.frame(src)
         for (uid_to_tag in uids) {
             content <- manifest[uid == uid_to_tag, giottosave]
-            content <- c(content, name)
+            content <- c(content, tag)
             content <- unique(content[!is.na(content)])
             src[uid_to_tag, "giottosave"] <- content
         }
     }
+
+    # an overwrite: older snapshots of this name go once this one is in place
+    .ss_gdsrc_drop_older(gsdir, name = name, keep = tag)
 
     vmsg(.v = verbose, "[GiottoDisk] done")
     invisible(x)
@@ -129,15 +133,19 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
         children = length(x@objects)
     ), pre = "  ")
 
+    .gdsrc_check_schema(p, site = "[snapshotSave]")
     gsdir <- .gdsrc_giottosave_dir(p)
     if (!dir.exists(gsdir)) dir.create(gsdir, recursive = TRUE)
     if (!methods::hasArg(name)) {
         name <- .ss_gdsrc_find_autoname(gsdir, name)
     }
-    if (name %in% .gdsrc_detect_gsavename(gsdir) && !overwrite) {
+    .gdsrc_assert_snapshot_name(name)
+    if (name %in% .gdsrc_snapshot_names(gsdir) && !overwrite) {
         stop("[snapshotSave] giottoMulti snapshot of this name already exists.\n",
             "Change 'name' or set 'overwrite = TRUE'", call. = FALSE)
     }
+    # the tag is minted before adoption, which records it on what it adopts
+    tag <- .gdsrc_snapshot_tag(name)
 
     # Recurse into sourced children. Per-child snapshots in each child's
     # own vault are what protect that child's artifacts from sourcePrune;
@@ -165,7 +173,7 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
     # in-memory matrices that need to land in the multi's vault.
     vmsg(.v = verbose, "[GiottoDisk] checking multi-level expression values...")
     x <- .ss_gdsrc_register_external_expr(x,
-        giottosave = name,
+        giottosave = tag,
         verbose    = verbose
     )
 
@@ -173,11 +181,9 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
     # (post-adoption) file handles; loading the multi .rds reconstitutes
     # the whole federation without needing a separate manifest.
     vmsg(.v = verbose, "[GiottoDisk] writing multi snapshot")
-    temp <- .dump_tempfile()
-    fullpath <- file.path(gsdir, paste0(name, ".", method))
-    .save_serialized(x, temp, method, method_params)
-    res <- file.rename(from = temp, to = fullpath)
-    if (!res) stop("[snapshotSave] save failed\n", call. = FALSE)
+    .ss_gdsrc_write_snapshot(x, gsdir = gsdir, tag = tag,
+        method = method, method_params = method_params
+    )
 
     # Tag multi-level artifacts only — child-level uids were tagged in
     # their respective child snapshotSave calls above.
@@ -187,11 +193,14 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
         manifest <- as.data.frame(src)
         for (uid_to_tag in uids) {
             content <- manifest[uid == uid_to_tag, giottosave]
-            content <- c(content, name)
+            content <- c(content, tag)
             content <- unique(content[!is.na(content)])
             src[uid_to_tag, "giottosave"] <- content
         }
     }
+
+    # an overwrite: older snapshots of this name go once this one is in place
+    .ss_gdsrc_drop_older(gsdir, name = name, keep = tag)
 
     vmsg(.v = verbose, "[GiottoDisk] done")
     invisible(x)
@@ -255,6 +264,7 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
         r <- sourceAdopt(src, r, giottosave = giottosave)
 
         img@file_path <- terra::sources(r)
+        img <- GiottoClass::reconnect(img)
         gobject <- GiottoClass::setGiotto(gobject, img, verbose = FALSE)
     }
     gobject
@@ -273,7 +283,26 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
     uids <- c(uids, .ss_gdsrc_detect_uid_overlaps(gobject))
     # networks (nn + spatial)
     uids <- c(uids, .ss_gdsrc_detect_uid_networks(gobject))
+    # images
+    uids <- c(uids, .ss_gdsrc_detect_uid_images(gobject))
     uids
+}
+
+# vault images only (sourceContains): one from the source dataset is never an
+# artifact. Vault images are artifacts/<uid>/<file>.
+.ss_gdsrc_detect_uid_images <- function(gobject) {
+    src <- gobject@source
+    prefix <- paste0(normalizePath(.gdsrc_vault_dir(src@path),
+        mustWork = FALSE), "/")
+    uids <- character()
+    for (img in gobject[["images"]]) {
+        if (!inherits(img, "giottoLargeImage")) next
+        r <- img@raster_object
+        if (!inherits(r, "SpatRaster") || !sourceContains(src, r)) next
+        f <- normalizePath(terra::sources(r), mustWork = FALSE)
+        uids <- c(uids, sub("/.*$", "", substring(f, nchar(prefix) + 1L)))
+    }
+    unique(uids)
 }
 
 # detect spatial store uids — uses .ss_store_uids so union stores get
@@ -564,7 +593,7 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
 .ss_gdsrc_find_autoname <- function(p, name) {
     ntest <- name
     counter <- 1L
-    existing_names <- .gdsrc_detect_gsavename(p)
+    existing_names <- .gdsrc_snapshot_names(p)
     while (ntest %in% existing_names) {
         ntest <- sprintf("%s_%02d", name, counter)
         counter <- counter + 1L
@@ -573,6 +602,29 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
         }
     }
     ntest
+}
+
+# staged inside giottosave/ so the final rename stays on one filesystem
+.ss_gdsrc_write_snapshot <- function(x, gsdir, tag, method, method_params) {
+    stage <- file.path(gsdir, paste0(".staging_", tag))
+    dir.create(stage)
+    on.exit(unlink(stage, recursive = TRUE, force = TRUE), add = TRUE)
+
+    .save_serialized(x, file.path(stage, .gdsrc_snapshot_objfile(method)),
+        method, method_params
+    )
+    if (!file.rename(stage, file.path(gsdir, tag))) {
+        stop("[snapshotSave] save failed\n", call. = FALSE)
+    }
+    invisible(file.path(gsdir, tag))
+}
+
+# every snapshot of `name` other than `keep`
+.ss_gdsrc_drop_older <- function(gsdir, name, keep) {
+    snaps <- .gdsrc_snapshots(gsdir)
+    old <- snaps$tag[snaps$name == name & snaps$tag != keep]
+    unlink(file.path(gsdir, old), recursive = TRUE, force = TRUE)
+    invisible(old)
 }
 
 # Save method, lower-cased. The first element is taken so that a caller's
