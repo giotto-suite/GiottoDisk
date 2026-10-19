@@ -374,6 +374,14 @@ setMethod(
                         marker <- ifelse(grepl("^ch\\d+_.*\\.ome\\.tif$", bn, ignore.case = TRUE),
                                          sub("^ch\\d+_(.*?)\\.ome\\.tif$", "\\1", bn, ignore.case = TRUE),
                                          NA_character_)
+                        # file names without the channel: read it from
+                        # the OME header
+                        ome_nm <- .xenium_focus_channel_names(
+                            focus_files[is.na(marker)])
+                        if (!is.null(ome_nm)) {
+                            na_m <- is.na(marker)
+                            marker[na_m] <- unname(ome_nm[bn[na_m]])
+                        }
                         is_dapi <- grepl("dapi", bn, ignore.case = TRUE) |
                             (!is.na(marker) & grepl("^dapi$", marker, ignore.case = TRUE))
 
@@ -778,7 +786,9 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
 # (Xenium / Atera / VisiumHD).
 #
 # Builds an `exprInput` marker (`mtxInput` for the 10x mtx triple,
-# `tenxH5Input` for a 10x feature-barcode .h5, `tenxZarrInput` for zarr) and
+# `tenxH5Input` for a 10x feature-barcode matrix .h5 -- Xenium
+# `cell_feature_matrix.h5`, Visium HD `*_feature_bc_matrix.h5` /
+# `*_feature_cell_matrix.h5` -- `tenxZarrInput` for zarr) and
 # routes it through `sourceWrite(gsource, inp, store_type = "parquetExpr")`
 # into the project vault. tar.gz inputs are unpacked under `tempdir()` and
 # the resulting cell_feature_matrix/ directory feeds the mtx path.
@@ -982,4 +992,23 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
     on.exit(h5$close_all(), add = TRUE)
     root <- names(h5)[1L]
     as.character(h5[[paste0(root, "/features/feature_type")]][])
+}
+
+# Channel names of Xenium focus OME-TIFFs whose file names do not carry them
+# (Xenium Onboard Analysis 2.x writes morphology_focus_0000.ome.tif, ...).
+# Every file's OME-XML lists all channels and the file holding each, so the
+# first file names them all. Returns names keyed by file name, spelled as
+# XOA 3.x file names spell them ("ATP1A1/CD45/E-Cadherin" ->
+# "atp1a1_cd45_e-cadherin"), or NULL when the header cannot be read.
+.xenium_focus_channel_names <- function(files) {
+    ome <- files[grepl("\\.ome\\.tif$", files, ignore.case = TRUE)]
+    if (!length(ome)) return(NULL)
+    tryCatch({
+        ch <- GiottoClass::tif_metadata(ome[[1L]], node = "Channel")
+        td <- GiottoClass::tif_metadata(ome[[1L]], node = "TiffData")
+        fl <- GiottoClass::tif_metadata(ome[[1L]], node = "UUID")
+        nm <- ch$Name[as.integer(td$FirstC) + 1L]
+        if (!length(nm) || length(nm) != length(fl$FileName)) return(NULL)
+        stats::setNames(tolower(gsub("[/[:space:]]+", "_", nm)), fl$FileName)
+    }, error = function(e) NULL)
 }

@@ -43,17 +43,19 @@ project vault:
 \item expression (binned or segmented) streams from the 10x \code{.h5} (or mtx
 directory) into a \code{parquetExprStore};
 \item cell / nucleus polygons (segmented outputs) and tessellations are
-written to the vault as parquet geometry when attached to the object.
+written to the vault as parquet geometry when attached to the object;
+\item the bin points (\code{load_transcripts}, the 2 um bins by default) are a
+\code{giottoBinPoints} backed by two stores: one point per bin with counts,
+and the bins' counts.
 }
 
-Tissue positions, cell metadata, images and the 2 um bin points
-(\code{load_transcripts}, an in-memory \code{giottoBinPoints}) come from the
+Tissue positions, cell metadata and images come from the
 inherited \code{VisiumHDReader} loaders, so spat_unit names, barcodes,
 coordinates and filters match the in-memory reader. \code{create_gobject()} additionally takes
 \code{bin} as a vector (e.g. \code{c(2, 8, 16)}), a \code{gobject} to add into, and
 \code{load_bin_mapping = TRUE} to record each unit's parent units (from
-\code{barcode_mappings.parquet}) as cell metadata. Only extracted output
-directories are read; \code{.tar} outputs must be unpacked first.
+\code{barcode_mappings.parquet}) as cell metadata. \code{NNNum_outputs.tar} bin
+outputs are extracted next to the tar (or into \code{outdir}) on first use.
 }
 \seealso{
 \code{\link[Giotto:importVisiumHD]{Giotto::importVisiumHD()}} for the in-memory variant

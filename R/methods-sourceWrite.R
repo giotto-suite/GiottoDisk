@@ -241,6 +241,8 @@ setMethod("sourceWrite", signature("gDirSource", "giotto"),
 .gdsrc_allocate_artifact_dir <- function(p, uid = NULL, basename = "data", create = TRUE) {
     checkmate::assert_character(p)
     checkmate::assert_character(uid, null.ok = TRUE)
+    # refuse before anything lands in the vault, not at the manifest write
+    if (create) .gdsrc_check_schema(p)
     # setup save info
     if (is.null(uid)) {
         uid <- .make_uid()

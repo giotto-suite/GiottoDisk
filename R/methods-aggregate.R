@@ -63,6 +63,8 @@
 #'   `feat_ID` in the result (default = `"feat_ID"`).
 #' @param keep_cols `character` (optional) additional columns from `y` to carry
 #'   into the result. `"count"` is auto-included if present in `y`.
+#' @param feat_count_column `FALSE` leaves `"count"` out of the result, so
+#'   [overlapToMatrix()] counts rows.
 #' @param ... additional params to pass
 NULL
 
@@ -85,7 +87,9 @@ NULL
 #' @param feat_id_col `character` feature ID column name (default `"feat_ID"`)
 #' @param poly_id_col `character` polygon ID column name (default `"poly_ID"`)
 #' @param count_col `character` (optional) column to sum instead of counting
-#'   rows. Useful when feature detections carry a `count` field.
+#'   rows. Useful when feature detections carry a `count` field. For an
+#'   `overlapPointDisk`, `NULL` sums a `count` column when the overlap has
+#'   one and `FALSE` counts rows; `feat_count_column` is accepted in its place.
 #' @param engine (`overlapPointDisk` only) `character` `"duckdb"` or
 #'   `"arrow"`, or `NULL` (default): duckdb when it is installed and
 #'   `store_type = "parquetExpr"`, arrow otherwise. duckdb builds only
@@ -109,6 +113,13 @@ setClass("overlapPointDisk",
     )
 )
 
+# A bins x polygons overlap: `feat_ID` is a bin's row_id in `expr`, whose
+# counts overlapToMatrix() sums per polygon. @feat_ids are expr's features.
+setClass("overlapBinsDisk",
+    contains = "overlapPointDisk",
+    slots = list(expr = "parquetExprStore")
+)
+
 # calculateOverlap #####
 
 #' @rdname calculateOverlap
@@ -124,9 +135,11 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomStore"),
         poly_id_col = "poly_ID",
         feat_id_col = "feat_ID",
         keep_cols = NULL,
+        feat_count_column = NULL,
         ...
     ) {
     method <- match.arg(method, c("vector", "raster"))
+    y <- .overlap_points_counts(y, feat_count_column)
     engine <- .resolve_overlap_engine(engine,
         tiling = !missing(threshold) || !missing(tiles) || !missing(pad_y))
     if (inherits(x, "unionParquetStore") || inherits(y, "unionParquetStore")) {
@@ -179,9 +192,11 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
         poly_id_col = "poly_ID",
         feat_id_col = "feat_ID",
         keep_cols = NULL,
+        feat_count_column = NULL,
         ...
     ) {
     method <- match.arg(method, c("vector", "raster"))
+    y <- .overlap_points_counts(y, feat_count_column)
     engine <- .resolve_overlap_engine(engine,
         tiling = !missing(poly_buf_factor) || !missing(pad_y) ||
             !missing(tile_idx) || !missing(prune_tiles))
@@ -215,7 +230,52 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
         poly_uids = storeUID(x), feat_uids = storeUID(y))
 })
 
+# Store-backed bin points: the polygons overlap the bins only, and the
+# overlap keeps the bins' counts store for overlapToMatrix(). GiottoClass's
+# calculateOverlap(giottoPolygon, giottoBinPoints) calls this for them.
+
+#' @rdname calculateOverlap
+#' @export
+setMethod("calculateOverlap", signature("parquetGeomStore", "giottoBinPoints"),
+    function(x, y,
+        engine = NULL,
+        path = .dump_tempfile(),
+        poly_id_col = "poly_ID",
+        ...
+    ) {
+    if (!.gbp_store_backed(y)) {
+        stop("[calculateOverlap] store-backed polygons need store-backed ",
+            "bin points", call. = FALSE)
+    }
+    engine <- .resolve_overlap_engine(engine)
+    result <- if (engine != "terra") {
+        .calculate_overlap_sql(x, y@spatial,
+            engine = engine,
+            dir = path,
+            poly_id_col = poly_id_col
+        )
+    } else {
+        .calculate_overlap_terra_tiled(x, y@spatial,
+            dir = path,
+            poly_id_col = poly_id_col
+        )
+    }
+    ov <- .wrap_overlap(result, poly_id_col, "feat_ID",
+        spat_ids = .collect_ids(x, poly_id_col), feat_ids = y@fid,
+        poly_uids = storeUID(x),
+        feat_uids = c(storeUID(y@spatial), storeUID(y@counts)))
+    new("overlapBinsDisk", ov, expr = y@counts)
+})
+
 ## internals ####
+
+# `feat_count_column = FALSE` (as GiottoClass passes it) keeps `count` out of
+# the overlap, so its matrix counts rows as an in-memory overlap does. Every
+# engine path takes its columns from `colnames(y)`.
+.overlap_points_counts <- function(y, feat_count_column = NULL) {
+    if (!isFALSE(feat_count_column) || !"count" %in% colnames(y)) return(y)
+    y[, c(setdiff(colnames(y), "count"), specialCols(y))]
+}
 
 # Engine for calculateOverlap: the shared spatial-engine resolver, except that
 # "auto" with a terra tiling param supplied means terra -- the SQL engines
@@ -614,6 +674,24 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
 
 # overlapToMatrix ####
 
+# Which overlap column holds counts, by GiottoClass's rule for overlapPointDT:
+# a `count` column is carried into an overlap only when the points had counts,
+# so it is summed unless `FALSE` asks for row counts. GiottoClass passes the
+# column as `feat_count_column`, which is taken when `count_col` is unset.
+.overlap_count_col <- function(x, count_col = NULL, feat_count_column = NULL,
+                               verbose = NULL, ...) {
+    count_col <- count_col %||% feat_count_column
+    if (isFALSE(count_col)) return(NULL)
+    if (is.null(count_col) && "count" %in% names(storeRead(x@data))) {
+        GiottoUtils::vmsg(.v = verbose,
+            "[overlap] Found column \"count\" in feature info.
+            - Using as `feat_count_column`
+            [!] Set feat_count_column = FALSE to disable.")
+        count_col <- "count"
+    }
+    count_col
+}
+
 #' @rdname overlapToMatrix
 #' @export
 setMethod("overlapToMatrix", signature("overlapPointDisk"),
@@ -629,8 +707,15 @@ setMethod("overlapToMatrix", signature("overlapPointDisk"),
     ) {
     output <- match.arg(tolower(output), choices = c("store", "exprobj"))
     engine <- .resolve_matrix_engine(engine, store_type)
+    count_col <- .overlap_count_col(x, count_col, ...)
     # The overlap files always carry the fixed `poly_ID` / `feat_ID` schema;
     # @poly_id_col / @feat_id_col name the INPUT stores' columns.
+    expr <- if (methods::is(x, "overlapBinsDisk")) x@expr
+    if (!is.null(expr) && engine != "duckdb") {
+        stop("[overlapToMatrix] a bin points overlap is built with ",
+            "engine = \"duckdb\" and store_type = \"parquetExpr\"",
+            call. = FALSE)
+    }
     mat_store <- if (engine == "duckdb") {
         feat_ids <- x@feat_ids
         cell_ids <- x@spat_ids
@@ -639,7 +724,7 @@ setMethod("overlapToMatrix", signature("overlapPointDisk"),
             cell_ids <- GiottoUtils::mixedsort(cell_ids)
         }
         .overlap_to_pestore_duckdb(x@data, feat_ids, cell_ids,
-            count_col = count_col, path = path)
+            count_col = count_col, path = path, expr = expr)
     } else {
         overlapToMatrix(x@data,
             path = path,
@@ -790,9 +875,10 @@ setMethod("overlapToMatrix", signature("queryableStore"),
 # and the sort in parallel and spills past its memory limit; Arrow runs both
 # mostly on one thread and holds the whole COO (adr/0019). The inner joins
 # make the universes a filter: a narrowed @spat_ids / @feat_ids drops the
-# rest of the overlap.
+# rest of the overlap. With `expr` (bin points), `feat_ID` is a bin's row_id
+# there, and the bins' counts are summed per polygon.
 .overlap_to_pestore_duckdb <- function(store, feat_ids, cell_ids,
-                                       count_col = NULL, path) {
+                                       count_col = NULL, path, expr = NULL) {
     if (!dir.exists(path)) dir.create(path, recursive = TRUE)
     pe <- parquetExprStore(
         path     = normalizePath(path),
@@ -809,25 +895,40 @@ setMethod("overlapToMatrix", signature("queryableStore"),
     dir.create(spill_dir, showWarnings = FALSE)
     fwd <- function(p) gsub("'", "''", gsub("\\\\", "/", p))
     DBI::dbExecute(conn, sprintf("SET temp_directory = '%s'", fwd(spill_dir)))
-    duckdb::duckdb_register(conn, "gd_feat_lut",
-        data.frame(feat_ID = feat_ids, i = seq_along(feat_ids)))
     duckdb::duckdb_register(conn, "gd_cell_lut",
         data.frame(poly_ID = cell_ids, j = seq_along(cell_ids)))
 
-    value_sql <- if (is.null(count_col)) "count(*)" else
-        sprintf('sum(o."%s")', count_col)
+    if (is.null(expr)) {
+        duckdb::duckdb_register(conn, "gd_feat_lut",
+            data.frame(feat_ID = feat_ids, i = seq_along(feat_ids)))
+        value_sql <- if (is.null(count_col)) "count(*)" else
+            sprintf('sum(o."%s")', count_col)
+        feat_sql <- "JOIN gd_feat_lut AS f ON o.feat_ID = f.feat_ID"
+    } else {
+        # features by their on-disk col_id in `expr`
+        duckdb::duckdb_register(conn, "gd_feat_lut", data.frame(
+            col_id = .pe_orig_col(match(feat_ids, expr@feat_ids), expr),
+            i = seq_along(feat_ids)))
+        expr_sql <- dbplyr::sql_render(storeRead(expr, output = "duckdb",
+            duckdb_params = list(conn = conn)))
+        value_sql <- "sum(e.value)"
+        feat_sql <- sprintf(paste(
+            "JOIN (%s) AS e ON e.row_id = CAST(o.feat_ID AS INTEGER)",
+            "JOIN gd_feat_lut AS f ON e.col_id = f.col_id"), expr_sql)
+    }
     DBI::dbExecute(conn, sprintf(
         "COPY (
             SELECT c.j::INTEGER AS row_id, f.i::INTEGER AS col_id,
                    CAST(%s AS DOUBLE) AS value
             FROM read_parquet('%s') AS o
-            JOIN gd_feat_lut AS f ON o.feat_ID = f.feat_ID
+            %s
             JOIN gd_cell_lut AS c ON o.poly_ID = c.poly_ID
             GROUP BY ALL
             ORDER BY row_id, col_id
         ) TO '%s' (FORMAT PARQUET, COMPRESSION %s, ROW_GROUP_SIZE 1048576)",
         value_sql,
         fwd(file.path(store@path, "**", "*.parquet")),
+        feat_sql,
         fwd(file.path(partition_dir, "part-0.parquet")),
         toupper(.parquet_compression())))
 

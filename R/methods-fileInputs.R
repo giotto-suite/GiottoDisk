@@ -122,11 +122,10 @@ setMethod("storeRead", signature("tenxH5Input"), function(store, ...) {
     indptr  <- as.numeric(h5[[paste0(root, "/indptr")]][])
     data_ds <- h5[[paste0(root, "/data")]]
     indices_ds <- h5[[paste0(root, "/indices")]]
-    n_cells <- store@n_cells
-    batch   <- store@batch_cells
+    ranges  <- .tenxh5_ranges(indptr, store@batch_cells)
 
     closed <- FALSE
-    c_lo   <- 1L
+    k      <- 0L
 
     close_fn <- function() {
         if (!closed) {
@@ -137,15 +136,15 @@ setMethod("storeRead", signature("tenxH5Input"), function(store, ...) {
     }
 
     next_batch <- function() {
-        if (closed || c_lo > n_cells) { close_fn(); return(NULL) }
-        # Advance past any all-empty cell runs at the start of this batch.
+        # Advance past any range with no stored values.
         repeat {
-            if (c_lo > n_cells) { close_fn(); return(NULL) }
-            c_hi     <- min(c_lo + batch - 1L, n_cells)
+            if (closed || k >= length(ranges)) { close_fn(); return(NULL) }
+            k <<- k + 1L
+            c_lo     <- ranges[[k]][1L]
+            c_hi     <- ranges[[k]][2L]
             slice_lo <- as.numeric(indptr[c_lo]) + 1
             slice_hi <- as.numeric(indptr[c_hi + 1L])
             if (slice_hi >= slice_lo) break
-            c_lo <<- c_hi + 1L
         }
         # `lo:hi`, never `seq.int(lo, hi)` -- adr/0007.
         vals <- as.double(data_ds[slice_lo:slice_hi])
@@ -158,7 +157,6 @@ setMethod("storeRead", signature("tenxH5Input"), function(store, ...) {
             value  = vals
         )
         data.table::setorder(out, row_id, col_id)
-        c_lo <<- c_hi + 1L
         out
     }
 
@@ -179,7 +177,7 @@ setMethod("storeRead", signature("tenxH5Input"), function(store, ...) {
 # matrix, `cellBin/cellExp`, whose records for cell i start at
 # `cellBin/cell$offset[i]` and number `geneCount[i]`; contiguous cell ranges
 # are therefore contiguous hyperslabs. Files without `cellExp` fall back to
-# reordering the gene-major `geneExp` through `.gef_spill_iterator()`
+# reordering the gene-major `geneExp` through `.ingest_spill_iterator()`
 # (adr/0017).
 
 #' @rdname storeRead
@@ -193,7 +191,7 @@ setMethod("storeRead", signature("cellbinGefInput"), function(store, ...) {
     if (isTRUE(store@params$has_cell_exp)) {
         off  <- store@params$cell_offset       # double, 0-based
         gcnt <- store@params$cell_gene_count   # integer
-        ranges <- .gef_cell_ranges(gcnt, max_rows)
+        ranges <- .ingest_cell_ranges(gcnt, max_rows)
         i <- 0L
         closed <- FALSE
         close_fn <- function() { closed <<- TRUE; invisible(NULL) }
@@ -221,7 +219,7 @@ setMethod("storeRead", signature("cellbinGefInput"), function(store, ...) {
         cum  <- store@params$cum_offsets
         chunks <- .gef_safe_chunks(name_to_row, store@batch_genes)
         n_cells <- as.integer(store@n_cells)
-        n_buckets <- .gef_n_buckets(cum[length(cum)], max_rows)
+        n_buckets <- .ingest_n_buckets(cum[length(cum)], max_rows)
         per_bucket <- max(1L, as.integer(ceiling(n_cells / n_buckets)))
         n_buckets <- as.integer(ceiling(n_cells / per_bucket))
         produce <- function(k) {
@@ -240,7 +238,7 @@ setMethod("storeRead", signature("cellbinGefInput"), function(store, ...) {
             )[!is.na(row_id) & !is.na(col_id)]
         }
         finish <- function(dt) dt[, .(value = sum(value)), keyby = .(row_id, col_id)]
-        itr <- .gef_spill_iterator(produce, length(chunks), n_buckets, finish, max_rows)
+        itr <- .ingest_spill_iterator(produce, length(chunks), n_buckets, finish, max_rows)
         next_batch <- itr$next_batch
         close_fn <- itr$close
     }
@@ -291,7 +289,7 @@ setMethod("storeRead", signature("binGefInput"), function(store, ...) {
 
     # Horizontal stripes over y, several per budget-sized batch. The y range
     # comes from the file's attributes; without them, from one extra pass.
-    n_buckets <- .gef_n_buckets(cum[length(cum)], max_rows)
+    n_buckets <- .ingest_n_buckets(cum[length(cum)], max_rows)
     yr <- store@params$y_range
     if (n_buckets > 1L && is.null(yr)) {
         yr <- c(Inf, -Inf)
@@ -342,7 +340,7 @@ setMethod("storeRead", signature("binGefInput"), function(store, ...) {
         dt[, .(value = sum(value)), keyby = .(row_id, col_id)]
     }
 
-    itr <- .gef_spill_iterator(produce, length(chunks), n_buckets, finish, max_rows)
+    itr <- .ingest_spill_iterator(produce, length(chunks), n_buckets, finish, max_rows)
 
     # Hand the finished coordinate map back to the input object, which
     # outlives this iterator. Only on a full pass -- a partial map would
@@ -516,41 +514,46 @@ setMethod(
             return(invisible(store))
         }
 
-        itr <- storeRead(data)
-        on.exit(itr$close(), add = TRUE)
-
-        batch_idx <- 0L
-        repeat {
-            dt <- itr$next_batch()
-            if (is.null(dt)) break
-            if (nrow(dt) == 0L) next   # skip empty batches (no on-disk chunk)
-            batch_idx <- batch_idx + 1L
-            .write_parquet_file(
-                dt,
-                file.path(partition_dir,
-                          sprintf("part-%d.parquet", batch_idx - 1L))
-            )
-        }
-
-        # Stamp metadata from the iterator's accessors (single source of
-        # truth — works for both eagerly-known formats and ones that
-        # accumulate cell_ids during iteration, like csvWideInput).
-        store@cell_ids <- itr$cell_ids()
-        store@feat_ids <- itr$feat_ids()
-        store@n_cells  <- as.numeric(itr$n_cells())
-        store@n_genes  <- as.numeric(itr$n_genes())
-        .pestore_finalize_stats(store)
+        .pestore_write_itr(store, storeRead(data), partition_dir)
     }
 )
+
+# Write a batch iterator -- list(next_batch, close, cell_ids, feat_ids,
+# n_cells, n_genes), as every exprInput's storeRead() returns -- into the
+# store's partition, one part file per non-empty batch, and stamp the
+# metadata from the iterator's accessors (single source of truth -- works for
+# both eagerly-known formats and ones that accumulate cell_ids during
+# iteration, like csvWideInput). Batches must arrive cell-major.
+.pestore_write_itr <- function(store, itr, partition_dir) {
+    on.exit(itr$close(), add = TRUE)
+    batch_idx <- 0L
+    repeat {
+        dt <- itr$next_batch()
+        if (is.null(dt)) break
+        if (nrow(dt) == 0L) next   # skip empty batches (no on-disk chunk)
+        batch_idx <- batch_idx + 1L
+        .write_parquet_file(
+            dt,
+            file.path(partition_dir,
+                      sprintf("part-%d.parquet", batch_idx - 1L))
+        )
+    }
+    store@cell_ids <- itr$cell_ids()
+    store@feat_ids <- itr$feat_ids()
+    store@n_cells  <- as.numeric(itr$n_cells())
+    store@n_genes  <- as.numeric(itr$n_genes())
+    .pestore_finalize_stats(store)
+}
 
 
 # ---- tenxH5Input parallel storeWrite ---------------------------------------
 
 # Number of workers this package should use for band-parallel steps.
 # Priority order:
-#   1. Explicit `options("giottodisk.par_workers")` (int).
+#   1. Explicit `options("giottodisk.par_workers")` (int), used as given.
 #   2. `future::nbrOfWorkers()` if future is installed AND a non-uniprocess
-#      plan is set (backwards-compatible with users who set only a plan).
+#      plan is set (backwards-compatible with users who set only a plan),
+#      capped by what fits the memory budget.
 #   3. Otherwise 1 (serial).
 # On Windows, `parallel::mclapply(mc.cores = n)` silently degrades to
 # sequential, so callers must guard their own fork-path branches.
@@ -559,9 +562,20 @@ setMethod(
     if (!is.null(n)) return(max(1L, as.integer(n)))
     if (requireNamespace("future", quietly = TRUE) &&
         !inherits(future::plan(), "uniprocess")) {
-        return(max(1L, as.integer(future::nbrOfWorkers())))
+        return(.workers_in_budget(future::nbrOfWorkers()))
     }
     1L
+}
+
+# At most `n` workers, as many as fit the memory budget. A worker starts as
+# a copy of this session and grows to about three times its R heap.
+.workers_in_budget <- function(n) {
+    n <- max(1L, as.integer(n))
+    free <- tryCatch(.sc_free_ram(), error = function(e) NA_real_)
+    if (!isTRUE(is.finite(free)) || free <= 0) return(n)
+    per_worker <- 3 * sum(gc(full = FALSE)[, 2L]) * 2^20
+    budget <- .chunk_budget(free, .ram_frac(), n_cells = 0, k = 0, p = 0)
+    max(1L, min(n, as.integer(floor(budget / per_worker))))
 }
 
 # Legacy name; still used by `.storewrite_h5_parallel` on the lapply_flex
@@ -595,6 +609,27 @@ setMethod(
     dt
 }
 
+# Contiguous cell ranges for an h5 read. By default each holds at most the
+# ingest budget's records -- stored values, from `indptr` -- shared across
+# `n_workers` concurrent batches, as the cellbin GEF reader cuts its ranges; a
+# fixed cell count gives no bound when values per cell are high. A
+# non-missing `batch_cells` pins a fixed number of cells per range instead.
+# A batch holds the h5 values, the triplet frame and its sort, about 64 B per
+# record.
+.tenxh5_ranges <- function(indptr, batch_cells = NA_integer_, n_workers = 1L) {
+    n_cells <- length(indptr) - 1L
+    if (n_cells < 1L) return(list())
+    if (!is.na(batch_cells)) {
+        starts <- seq.int(1L, n_cells, by = as.integer(batch_cells))
+        return(lapply(starts, function(a) {
+            c(a, min(a + as.integer(batch_cells) - 1L, n_cells))
+        }))
+    }
+    rows <- .ingest_batch_rows(64,
+        pinned = getOption("giottodisk.h5_batch_rows"))
+    .ingest_cell_ranges(diff(indptr), max(1, floor(rows / max(1L, n_workers))))
+}
+
 # Parallel h5 → parquet writer.  Fork-based via `parallel::mclapply` on
 # Unix — workers COW-inherit the parent's loaded namespace and the
 # pre-read indptr;
@@ -602,9 +637,6 @@ setMethod(
 # fork-safe across parent+child sharing).  On Windows, mclapply degrades
 # to sequential (no fork available).
 .storewrite_h5_parallel <- function(data, partition_dir) {
-    n_cells <- as.integer(data@n_cells)
-    bc      <- as.integer(data@batch_cells)
-    starts  <- seq.int(1L, n_cells, by = bc)
     h5_path <- data@path
     root    <- data@params$root
     # Read indptr once in the parent (small; n_cells+1 doubles) and pass it
@@ -614,9 +646,10 @@ setMethod(
     h5$close_all()
 
     n_workers <- .par_workers()
-    args <- list(h5_path = h5_path, root = root, starts = starts, bc = bc,
-                 n_cells = n_cells, indptr = indptr,
-                 partition_dir = partition_dir)
+    # every worker holds one batch, so they share the budget
+    ranges <- .tenxh5_ranges(indptr, data@batch_cells, n_workers = n_workers)
+    args <- list(h5_path = h5_path, root = root, ranges = ranges,
+                 indptr = indptr, partition_dir = partition_dir)
 
     # Fork (`mclapply`) where available, socket workers only as the fallback.
     # Measured on Atera (170k cells, 8 workers): fork 9.0 s / +16.1 GB peak
@@ -638,7 +671,7 @@ setMethod(
     # resolve lexically and every cross-package call here is `::`-qualified.
     if (n_workers > 1L && .Platform$OS.type == "unix") {
         res <- do.call(parallel::mclapply, c(
-            list(X = seq_along(starts), FUN = .storewrite_h5_batch,
+            list(X = seq_along(ranges), FUN = .storewrite_h5_batch,
                  mc.cores = n_workers, mc.preschedule = TRUE),
             args))
         errs <- vapply(res, inherits, logical(1L), "try-error")
@@ -649,12 +682,12 @@ setMethod(
         }
     } else if (n_workers > 1L) {
         do.call(GiottoUtils::lapply_flex, c(
-            list(X = seq_along(starts), FUN = .storewrite_h5_batch,
+            list(X = seq_along(ranges), FUN = .storewrite_h5_batch,
                  cores = n_workers, future.seed = NULL),
             args))
     } else {
         do.call(lapply, c(
-            list(X = seq_along(starts), FUN = .storewrite_h5_batch),
+            list(X = seq_along(ranges), FUN = .storewrite_h5_batch),
             args))
     }
     invisible(NULL)
@@ -665,10 +698,10 @@ setMethod(
 
 #' @keywords internal
 #' @noRd
-.storewrite_h5_batch <- function(b, h5_path, root, starts, bc, n_cells,
-                                  indptr, partition_dir) {
-    c_lo <- starts[b]
-    c_hi <- min(c_lo + bc - 1L, n_cells)
+.storewrite_h5_batch <- function(b, h5_path, root, ranges, indptr,
+                                  partition_dir) {
+    c_lo <- ranges[[b]][1L]
+    c_hi <- ranges[[b]][2L]
     dt   <- .tenxh5_read_range(h5_path, root, c_lo, c_hi, indptr)
     if (is.null(dt) || nrow(dt) == 0L) return(invisible(NULL))
     .write_parquet_file(

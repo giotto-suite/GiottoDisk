@@ -39,7 +39,7 @@ GiottoDisk builds against **development branches** of the suite. `Remotes:` in
 
 | Package | Branch | Required because | Drop the pin when |
 |---|---|---|---|
-| `GiottoClass` | `gsource` | `analyzeData`, `reduceData`, `filterData` generics (all in `NAMESPACE` imports) and `labelProportionsParam` (`R/stream-labelProportions.R`) are gsource-only, as are `cellStatsParam` / `featStatsParam` (floored at `>= 0.7.4`, where they moved down from Giotto). | those six are exported on `dev`. |
+| `GiottoClass` | `gsource` | `analyzeData`, `reduceData`, `filterData` generics (all in `NAMESPACE` imports) and `labelProportionsParam` (`R/stream-labelProportions.R`) are gsource-only, as are `cellStatsParam` / `featStatsParam` (moved down from Giotto in 0.7.4). Floored at `>= 0.7.10`, where `calculateOverlap(feat_count_column = FALSE)` on store-backed points reaches the disk method. | those six are exported on `dev`. |
 | `Giotto` | `gsource` | The whole param layer dispatched on: `pcaParam` / `autoPcaParam` / `randomPcaParam` / `irlbaPcaParam` / `exactPcaParam`, `varParam`, `covLoessParam`, `covGroupsParam`, `scranMarkersParam`, `logNormParam`, `filterParam`, `smotifParam`. Also the `backend =` argument on `importStereoSeq()` / `createGiottoStereoSeqObjectBin()` / `createGiottoStereoSeqObjectCell()`, which `tests/testthat/test-stereoseq-gef.R` calls — its `skip_if_not_installed("Giotto")` skips on an absent Giotto but *errors* on one predating that argument. Floored at `>= 4.3.1` in `Imports:` for `smotifParam`, which `R/stream-motif.R` dispatches on: the motif layer landed after `gsource` reached 4.3.0, so a 4.3.0 install may lack it, and loading then fails with an S4 import error rather than a version message. (The floor also covers the `AteraReader` class `R/convenience-atera.R` subclasses, added in 4.2.4, which fails the same way.) | `suite_dev` exports them. |
 | `GiottoUtils` | `dev` | Suite convention; `dev` carries everything used. | `main` catches up. |
 | `tilework` | default | Hard `Imports:` dependency, `drieslab/tilework`, not on CRAN. | it ships to CRAN. |
@@ -105,6 +105,7 @@ R/
   methods-sourceWrite.R  # sourceWrite (allocate uid → write → register)
   methods-sourceAdopt.R  # sourceContains, sourceAdopt
   methods-sourcePrune.R  # sourcePrune
+  methods-sourceSchema.R # sourceSchema, sourceUpdate, schema check + upgrades
   methods-snapshotSave.R # snapshotSave (giottosave snapshot lifecycle)
   methods-snapshotLoad.R # snapshotLoad
   methods-snapshotDelete.R # snapshotDelete
@@ -220,8 +221,10 @@ y-stripes (adr/0017). A new input must do the same.
 
 Windows are exact rather than approximate only because the accumulators are
 additive over cells. A statistic that is not — anything needing a global order
-along the gene axis, e.g. a rank or a median — cannot be windowed this way and
-does not have a streaming path today.
+along the gene axis, e.g. a rank or a median — cannot be windowed this way.
+Its streaming path is the per-feature value histogram (`.pe_value_hist()`),
+which is additive; the order statistic is solved on the histogram, exact up to
+the bin width (adr/0020).
 
 **Windowing is not opt-in, and `giottodisk.chunk_size` does not switch it on.**
 There is no chunked mode and no unchunked mode. The window loop always runs; a
@@ -267,6 +270,17 @@ window-count dependent, and HVG selection is a discrete top-N cut **upstream**
 of PCA. That is the one route by which a last-bit difference could become a
 visibly different clustering. If you add such an op, check HVG selection
 stability across window counts before assuming it does not matter.
+
+### Edge statistics: one contract, statistics upstream
+`analyzeData(parquetExprBase, edgeStatsParam, network = <parquetEdgeStore>,
+groups =)` returns GiottoClass's edge-statistics contract; Giotto computes
+Moran's I, Geary's C and binSpect from it (adr/0020). Do not compute a test
+statistic here — add a sum to the contract instead. The pieces are generic:
+`.edge_symmetrise`, `.edge_self_loops`, `.edge_vertex_lookup`,
+`.edge_join_vertex`, `.edge_degree`, `.edge_view_pairs`, `.edge_to_cell_map`,
+`.edge_group_tables` (`R/utils-edge.R`) and `.pe_edge_products` (the one
+expression x edge kernel). Network nodes match cells by ID, never by
+`int_id == row_id`. Only edges with both ends in the view count.
 
 ### Lazy ops via @ops slot
 Operations recorded lazily as a list of steps. User-facing op types:
@@ -553,16 +567,11 @@ rationale (manifest design, dump lifecycle, multi-analysis guarantees).
   giottodir.json       # manifest (consolidated from _pending/ on read)
   artifacts/<uid>/...  # vault
   _pending/            # WAL-style pending manifest edits
-  giottosave/          # .rds/.qs snapshots
-    <name>.manifest.json    # what the snapshot holds (GiottoClass::objManifest)
-    <name>.history.ndjson   # why, one operation per line
+  giottosave/<name>.<id>/  # one folder per snapshot; folder name = tag
+    gobject.RDS            # the object (or gobject.qs2)
+    manifest.json          # what it holds (giotto snapshots only)
+    history.ndjson         # how it was produced
 ```
-
-Snapshot sidecars are derived from the gobject and written after the snapshot
-itself lands, so a failed write costs a convenience, never data. They exist so
-a snapshot's contents can be read (`snapshotManifest`, `snapshotHistory`)
-without loading it. `snapshotDelete` removes them with the snapshot, since its
-`^<name>\.` pattern already covers them.
 
 Manifest access: `src["uid"]`, `src["uid", "field"]`, `src[, "field"]`,
 `as.data.frame(src)`. Consolidation uses `.json_atomic_write` (temp →
@@ -588,10 +597,18 @@ advisory locking for the consolidation step.
   active, artifacts land in the vault directly. `sourceAdopt` extracts
   uid via `basename(dirname(path))`, checks `src[uid]`, writes the
   manifest entry if missing — no file movement.
-- **`snapshotSave` lifecycle**: session-reset → adopt external images
-  → adopt external expression matrices → atomic snapshot write
-  (temp → rename) → write sidecars → tag artifacts (`name` appended to
-  `giottosave` manifest field; hash-based detection strips lazy `@ops`).
+- **`snapshotSave` lifecycle**: session-reset → mint the tag
+  (`<name>.<id>`, new every save) → adopt external images / matrices /
+  stores, tagging what they adopt → write via a staging folder → tag every
+  referenced vault artifact (uid for stores, hash for BPCells/HDF5, vault
+  path for images) → drop older snapshots of the name. Tags are never
+  removed; a tag whose folder is gone protects nothing. See design.Rmd
+  "Snapshots and tags".
+- **Schema version** (`methods-sourceSchema.R`): manifest writes, vault
+  allocation and the snapshot verbs refuse a project outside
+  `[.GDSRC_SCHEMA_MIN, .GDSRC_SCHEMA_VERSION]`. Only `sourceUpdate()` raises
+  the stamped version. A layout change bumps `.GDSRC_SCHEMA_VERSION` and adds
+  an entry to `.GDSRC_SCHEMA_UPGRADES`.
 - **`sourcePrune`**: removes untagged artifacts; protection transitive
   via BFS over `depends`.
 
@@ -687,7 +704,9 @@ object, since it has no disk representation yet.
 - A multi-unit `create_gobject()` loops per-unit readers into one `gobject`;
   it does not merge objects. The unit hierarchy is cell metadata
   (`.add_parent_units`, `R/reader-shared.R`): one column per parent unit,
-  kept only where the relation is one-to-one.
+  kept only where the relation is one-to-one. Visium HD reads it from
+  `barcode_mappings.parquet`; Stereo-seq derives it from bin coordinates,
+  which SAW writes as multiples of N for binN.
 - The disk `create_gobject()` accepts every argument of the parent's, so the
   Giotto `createGiotto*Object*()` wrappers can call either.
 

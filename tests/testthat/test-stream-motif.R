@@ -27,18 +27,18 @@
 
 test_that("the label lookup goes through the sidecar, by name", {
     f <- .motif_store()
-    lk <- .edge_label_lookup(f$store, rev(f$lab))
+    lk <- .edge_vertex_lookup(f$store, rev(f$lab))
     nodes <- data.table::as.data.table(dplyr::collect(storeRead(f$store@nodes)))
     expect_setequal(lk$int_id, nodes$int_id)
-    got <- lk$label[match(nodes$int_id, lk$int_id)]
+    got <- lk$value[match(nodes$int_id, lk$int_id)]
     expect_identical(got, unname(f$lab[as.character(nodes$node_id)]))
 })
 
 test_that("the lookup leaves out unlabelled nodes and needs names", {
     f <- .motif_store()
-    lk <- .edge_label_lookup(f$store, f$lab[1:10])
+    lk <- .edge_vertex_lookup(f$store, f$lab[1:10])
     expect_length(lk$int_id, 10L)
-    expect_error(.edge_label_lookup(f$store, unname(f$lab)), "must be named")
+    expect_error(.edge_vertex_lookup(f$store, unname(f$lab)), "must be named")
 })
 
 test_that("strata and anchored_on are refused, not approximated", {

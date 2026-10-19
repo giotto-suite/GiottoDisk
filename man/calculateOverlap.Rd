@@ -4,6 +4,7 @@
 \alias{calculateOverlap}
 \alias{calculateOverlap,parquetGeomStore,parquetGeomStore-method}
 \alias{calculateOverlap,parquetGeomStore,parquetGeomTileStore-method}
+\alias{calculateOverlap,parquetGeomStore,giottoBinPoints-method}
 \title{Calculate Overlap}
 \usage{
 \S4method{calculateOverlap}{parquetGeomStore,parquetGeomStore}(
@@ -18,6 +19,7 @@
   poly_id_col = "poly_ID",
   feat_id_col = "feat_ID",
   keep_cols = NULL,
+  feat_count_column = NULL,
   ...
 )
 
@@ -34,6 +36,16 @@
   poly_id_col = "poly_ID",
   feat_id_col = "feat_ID",
   keep_cols = NULL,
+  feat_count_column = NULL,
+  ...
+)
+
+\S4method{calculateOverlap}{parquetGeomStore,giottoBinPoints}(
+  x,
+  y,
+  engine = NULL,
+  path = .dump_tempfile(),
+  poly_id_col = "poly_ID",
   ...
 )
 }
@@ -83,6 +95,9 @@ params (\code{threshold}, \code{tiles}, \code{pad_y}, \code{poly_buf_factor}, \c
 
 \item{keep_cols}{\code{character} (optional) additional columns from \code{y} to carry
 into the result. \code{"count"} is auto-included if present in \code{y}.}
+
+\item{feat_count_column}{\code{FALSE} leaves \code{"count"} out of the result, so
+\code{\link[=overlapToMatrix]{overlapToMatrix()}} counts rows.}
 
 \item{...}{additional params to pass}
 

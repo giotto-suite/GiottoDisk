@@ -46,8 +46,8 @@ when the op chain cannot be lowered to Acero.}
 
 \describe{
 \item{\code{giottodisk.chunk_ram_frac}}{fraction of free RAM to budget per
-window (default 0.25). Lower it on a busy machine; raise it on a
-dedicated one. Scales every pass without knowing any store's shape. This
+window (default 0.25), which also sizes the DuckDB memory limit. Lower
+it on a busy machine; raise it on a dedicated one. Scales every pass without knowing any store's shape. This
 is the one to reach for first.}
 \item{\code{giottodisk.chunk_size}}{pins an absolute window in cells, overriding
 the derivation entirely. An escape hatch — for a machine whose free
@@ -56,6 +56,9 @@ that need to force several windows. Also the fallback value when the
 derivation cannot run.}
 \item{\code{giottodisk.gef_batch_rows}}{pins the records per batch when a
 Stereo-seq \code{.gef} is written to a store. Derived from the same budget
+otherwise.}
+\item{\code{giottodisk.h5_batch_rows}}{pins the records per batch when a 10x
+\code{.h5} matrix is written to a store. Derived from the same budget
 otherwise.}
 }
 

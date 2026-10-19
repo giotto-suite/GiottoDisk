@@ -87,3 +87,19 @@ test_that("gDirSource stores an absolute path for a new relative directory", {
     setwd(tempdir())
     expect_true(file.exists(.gdsrc_json_path(src@path)))
 })
+
+
+test_that("as.data.frame(gDirSource) keeps depends with several snapshot tags", {
+    proj_dir <- tempfile("gd_depends_")
+    src <- gDirSource(proj_dir)
+    .gdsrc_json_add_artifact(src@path, store_type = "overlap", uid = "ovlp",
+        hash = "h", giottosave = c("first", "second"),
+        depends = c("poly", "bins_a", "bins_b"))
+
+    manifest <- as.data.frame(src)
+    expect_identical(manifest[uid == "ovlp", giottosave], c("first", "second"))
+    expect_identical(manifest[uid == "ovlp", depends][[1L]],
+        c("poly", "bins_a", "bins_b"))
+
+    unlink(proj_dir, recursive = TRUE)
+})

@@ -2,7 +2,6 @@
 % Please edit documentation in R/class-gsource.R
 \name{giotto_json}
 \alias{giotto_json}
-\alias{.atomic_write}
 \alias{.json_atomic_write}
 \alias{.json_read}
 \alias{.gdsrc_json_header}
@@ -13,13 +12,6 @@
 \alias{.gdsrc_json_consolidate}
 \title{Giotto Directory JSON}
 \usage{
-.atomic_write(
-  writer,
-  file,
-  temp_file = tempfile(tmpdir = dirname(file), fileext = ".tmp"),
-  cleanup = TRUE
-)
-
 .json_atomic_write(
   x,
   file,
@@ -29,9 +21,9 @@
 
 .json_read(file)
 
-.gdsrc_json_header()
+.gdsrc_json_header(version = .GDSRC_SCHEMA_VERSION)
 
-.gdsrc_json_write(p, x)
+.gdsrc_json_write(p, x, version = NULL, check = TRUE)
 
 .gdsrc_json_read(p, consolidate = FALSE)
 
@@ -47,7 +39,7 @@
   depends = NULL
 )
 
-.gdsrc_json_consolidate(p)
+.gdsrc_json_consolidate(p, check = TRUE)
 }
 \arguments{
 \item{uid}{character. Unique ID for artifact tracking}
@@ -67,10 +59,6 @@ Internal utilities for editing the \link{gDirSource} managed
 }
 \section{Functions}{
 \itemize{
-\item \code{.atomic_write()}: Safe atomic writes so that there is no instant
-at which the data does not exist on disk. \code{writer} is called with the
-path to write to.
-
 \item \code{.json_atomic_write()}: Safe atomic writes of information to json
 files so that there is no instant at which the data does not exist
 on disk.
@@ -82,11 +70,13 @@ with GiottoDisk's usecase where values are generally atomic vectors
 files from GiottoDisk. Stamps with information for:
 \itemize{
 \item GiottoDisk version
-\item manifest version
+\item schema version of the project directory (see \code{\link[=sourceSchema]{sourceSchema()}})
 }
 
 \item \code{.gdsrc_json_write()}: Write function for the main
-\code{giottodir.json}.
+\code{giottodir.json}. The schema version already on disk is kept; a new
+project is stamped with the current one. Only \code{\link[=sourceUpdate]{sourceUpdate()}} passes
+\code{version}, which stamps it without the schema check.
 
 \item \code{.gdsrc_json_read()}: Read function for the main
 \code{giottodir.json}. This function does not check or consolidate

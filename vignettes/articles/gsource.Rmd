@@ -76,7 +76,7 @@ g <- snapshotLoad(src2, "qc_pass")
   giottodir.json       # manifest of all tracked artifacts
   artifacts/<uid>/...  # vault — each artifact gets its own uid-named subdir
   _pending/            # write-ahead-log staging area for manifest edits
-  giottosave/          # `.rds` / `.qs` snapshots of giotto objects
+  giottosave/<name>.<id>/gobject.RDS   # one folder per snapshot
   dump/                # (optional) persistent staging area
 ```
 
@@ -190,15 +190,24 @@ sourcePrune(src)  # safe — only deletes things no snapshot needs
 
 # Snapshot verbs
 
-A snapshot is a serialized giotto object (`.rds` or `.qs`) under
-`giottosave/<name>.<ext>` plus the manifest tags that pin its
-artifacts. Snapshots are how a giotto object survives across sessions
+A snapshot is a serialized giotto object (`gobject.RDS` or `gobject.qs2`)
+in its own folder, `giottosave/<name>.<id>/`, plus the manifest tags that
+pin its artifacts. The folder name is the tag. The `<id>` is new on every
+save, so a snapshot's protection ends with it: deleting or overwriting it
+releases what only it referenced, and a later snapshot of the same name
+starts with no tags of its own. Verbs take the `name`; the id is
+internal.
+
+Beside the object, a `giotto` snapshot's folder holds `manifest.json` (what
+the object contains) and `history.ndjson` (how it was produced). Read them
+with `snapshotManifest(src, name)` and `snapshotHistory(src, name)` to
+inspect a snapshot without loading it. Snapshots are how a giotto object survives across sessions
 without breaking when the artifacts it references get relocated or
 pruned.
 
 ## `snapshotSave(src, gobject, name)`
 
-Five-step lifecycle, in order:
+Six-step lifecycle, in order:
 
 1. **Session reset** — `.adopt_session_reset()` clears the per-leaf
    path cache.
@@ -207,13 +216,15 @@ Five-step lifecycle, in order:
 3. **Adopt external expression matrices** — `IterableMatrix` /
    `HDF5Array` not in the vault are adopted (sharing the session cache
    so shared leaves move once).
-4. **Write snapshot atomically** — temp file → `file.rename` to
-   `giottosave/<name>.rds` (or `.qs`).
-5. **Tag artifacts** — every store referenced by the gobject (or
-   reachable via `depends`) gets `name` appended to its `giottosave`
-   manifest field. Tagging is hash-based via `.ss_hash_expr_base`,
-   which strips lazy `@ops` so a filtered store and its unfiltered
-   parent map to the same artifact.
+4. **Write snapshot atomically** — the object is written into a staging
+   folder inside `giottosave/`, which is renamed to
+   `giottosave/<name>.<id>/` once complete.
+5. **Tag artifacts** — every vault artifact the gobject references gets
+   the snapshot's tag appended to its `giottosave` manifest field,
+   whether or not this save adopted it. Stores are matched by uid; BPCells
+   and HDF5 matrices by content hash; images by their vault path.
+6. **Drop older snapshots of the same name** — on `overwrite = TRUE`,
+   only after the new one is in place.
 
 After save, `sourcePrune` is safe — every artifact reachable from any
 snapshot stays.
@@ -230,9 +241,8 @@ spatPlot(g)
 
 ## `snapshotDelete(src, name)`
 
-Removes the `giottosave/<name>` file **and** untags `name` from all
-artifacts in the manifest. After delete, artifacts that were tagged
-*only* by this snapshot become prune-eligible.
+Removes the snapshot's folder. Its tag then matches nothing, so artifacts
+that were tagged *only* by this snapshot become prune-eligible.
 
 ```r
 snapshotDelete(src, "old_attempt")
@@ -294,8 +304,9 @@ setArtifactDumpDir(src)   # dump = artifacts/
 - `giottodir.json` consolidation is atomic (write to temp → rename
   over the old file). Either the old manifest or the new manifest is
   always intact, never a partial write.
-- Snapshot writes are atomic (`giottosave/<name>.tmp` → rename to
-  `<name>.rds`).
+- Snapshot writes are atomic (staging folder → rename to
+  `giottosave/<name>.<id>/`). A folder without its object file is not a
+  snapshot.
 - The vault is append-only via `sourceWrite` / `sourceAdopt`. Nothing
   inside `artifacts/` ever gets modified in place.
 
@@ -303,6 +314,20 @@ If a process crashes mid-`snapshotSave` *after* artifact adoption but
 *before* the snapshot file lands, the adopted artifacts are
 "abandoned" — present in the vault and the manifest but not yet tagged
 by any save. The next `sourcePrune` will reclaim them.
+
+# Upgrading an older project
+
+The project directory's layout is versioned (`sourceSchema(src)$version`).
+GiottoDisk reads and writes only its current layout, and refuses a project
+outside the supported range rather than guess at it:
+
+```r
+sourceSchema("/projects/visium_exp1")
+sourceUpdate("/projects/visium_exp1")  # migrate in place, then re-stamp
+```
+
+`options(giottodisk.schema_check = FALSE)` downgrades the refusal to a
+warning, as a last resort for reaching data.
 
 # Further reading
 

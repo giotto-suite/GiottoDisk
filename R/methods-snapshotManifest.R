@@ -2,42 +2,28 @@
 #' @include class-gsource.R
 NULL
 
-# Snapshot sidecars: a description of a saved gobject, kept beside it as
-# text rather than inside it. Payload untouched, provenance greppable.
+# Snapshot sidecars describe a saved gobject beside it, as text:
 #
-#   giottosave/<name>.rds             the object
-#   giottosave/<name>.manifest.json   what it is    (GiottoClass::objManifest)
-#   giottosave/<name>.history.ndjson  why it is     (one operation per line)
+#   giottosave/<name>.<id>/gobject.<ext>    the object
+#   giottosave/<name>.<id>/manifest.json    what it is   (GiottoClass::objManifest)
+#   giottosave/<name>.<id>/history.ndjson   why it is    (one operation per line)
 #
-# The point is reading a snapshot's contents without loading it. Both files
-# are derived from the object, so failing to write one loses a convenience,
-# never data.
+# The point is reading a snapshot's contents without loading it.
 
-.gdsrc_manifest_path <- function(p, name) {
-    file.path(.gdsrc_giottosave_dir(p), paste0(name, ".manifest.json"))
-}
+.GDSRC_SNAPSHOT_MANIFEST <- "manifest.json"
+.GDSRC_SNAPSHOT_HISTORY <- "history.ndjson"
 
-.gdsrc_history_path <- function(p, name) {
-    file.path(.gdsrc_giottosave_dir(p), paste0(name, ".history.ndjson"))
-}
-
-# Written by snapshotSave() once the snapshot itself has landed. Uses the
-# same temp-then-rename write as the artifacts manifest, so a reader never
-# sees a half-written sidecar.
-.ss_gdsrc_write_sidecars <- function(x, p, name, verbose = NULL) {
+# Written into the staging folder, so they land with the object in one rename.
+# Derived from the object, so a failed write costs a convenience, never data.
+.ss_gdsrc_write_sidecars <- function(x, dir) {
+    if (!inherits(x, "giotto")) return(invisible(FALSE))
     tryCatch(
         {
-            .atomic_write(
-                writer = function(f) {
-                    GiottoClass::objManifest_json(x, file = f, level = "full")
-                },
-                file = .gdsrc_manifest_path(p, name)
+            GiottoClass::objManifest_json(x,
+                file = file.path(dir, .GDSRC_SNAPSHOT_MANIFEST), level = "full"
             )
-            .atomic_write(
-                writer = function(f) {
-                    GiottoClass::objHistory_ndjson(x, file = f)
-                },
-                file = .gdsrc_history_path(p, name)
+            GiottoClass::objHistory_ndjson(x,
+                file = file.path(dir, .GDSRC_SNAPSHOT_HISTORY)
             )
             invisible(TRUE)
         },
@@ -51,19 +37,22 @@ NULL
     )
 }
 
-# most recently modified snapshot, used when no name is given
-.gdsrc_latest_gsavename <- function(p) {
-    gsdir <- .gdsrc_giottosave_dir(p)
-    names <- .gdsrc_detect_gsavename(gsdir)
-    if (length(names) == 0L) {
-        stop("[GiottoDisk] no snapshots in this project directory\n",
-            call. = FALSE
-        )
+# path of a sidecar of the snapshot `name` (the most recent if NULL)
+.gdsrc_sidecar_path <- function(p, name, file, site) {
+    .gdsrc_check_schema(p, site = site)
+    snap <- .gdsrc_find_snapshot(.gdsrc_giottosave_dir(p), name = name)
+    if (is.null(snap)) {
+        stop(site, if (is.null(name)) " no snapshots found\n" else
+            sprintf(" no snapshot named '%s'\n", name), call. = FALSE)
     }
-    files <- list.files(gsdir,
-        pattern = "\\.rds$|\\.qs$", full.names = TRUE
-    )
-    names[[which.max(file.info(files)$mtime)]]
+    f <- file.path(dirname(snap$file), file)
+    if (!file.exists(f)) {
+        stop(sprintf(
+            "%s no %s for snapshot '%s'.\n%s", site, file, snap$name,
+            "Re-save the snapshot to create one."
+        ), call. = FALSE)
+    }
+    f
 }
 
 #' @name snapshotManifest
@@ -94,16 +83,9 @@ setMethod("snapshotManifest", signature("character"), function(
 #' @export
 setMethod("snapshotManifest", signature("gDirSource"), function(
         src, name = NULL, ...) {
-    p <- src@path
-    name <- name %null% .gdsrc_latest_gsavename(p)
-    f <- .gdsrc_manifest_path(p, name)
-    if (!file.exists(f)) {
-        stop(sprintf(
-            "[snapshotManifest] no manifest for snapshot '%s'.\n%s",
-            name,
-            "Snapshots written before manifests existed have none; re-save to create one."
-        ), call. = FALSE)
-    }
+    f <- .gdsrc_sidecar_path(src@path, name, .GDSRC_SNAPSHOT_MANIFEST,
+        site = "[snapshotManifest]"
+    )
     out <- jsonlite::fromJSON(f, simplifyVector = FALSE)
     class(out) <- c("gmanifest", "list")
     out
@@ -130,14 +112,9 @@ setMethod("snapshotHistory", signature("character"), function(
 #' @export
 setMethod("snapshotHistory", signature("gDirSource"), function(
         src, name = NULL, ...) {
-    p <- src@path
-    name <- name %null% .gdsrc_latest_gsavename(p)
-    f <- .gdsrc_history_path(p, name)
-    if (!file.exists(f)) {
-        stop(sprintf(
-            "[snapshotHistory] no history for snapshot '%s'\n", name
-        ), call. = FALSE)
-    }
+    f <- .gdsrc_sidecar_path(src@path, name, .GDSRC_SNAPSHOT_HISTORY,
+        site = "[snapshotHistory]"
+    )
     lines <- readLines(f, warn = FALSE)
     lapply(lines[nzchar(lines)], jsonlite::fromJSON, simplifyVector = FALSE)
 })

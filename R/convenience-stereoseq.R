@@ -89,13 +89,36 @@ setMethod(
         }
         obj@calls$load_expression <- ex_fun
 
+        # bin points (disk override): a bin size's counts and one point per
+        # bin as a store-backed giottoBinPoints, bin1 by default as in the
+        # in-memory loader. `spat_unit` is kept for that loader's signature;
+        # bin points have no spatial unit of their own.
+        bp_fun <- function(
+            path        = .def_bin1_path,
+            gene_column = gene_col_,
+            negative_y  = obj@negative_y,
+            spat_unit   = NULL,
+            bin_size    = "bin1",
+            verbose     = NULL
+        ) {
+            .stereoseq_binpoints_disk(
+                path        = path,
+                gsource     = gsrc,
+                gene_column = gene_column,
+                negative_y  = negative_y,
+                bin_size    = bin_size,
+                verbose     = verbose
+            )
+        }
+        obj@calls$load_binpoints <- bp_fun
+
         # create_gobject (disk variant). Mirrors the parent's gobject_fun
         # body but: (a) initializes the giotto via createGiottoObject(
         # backend = gsrc, ...) instead of bare giotto(), and (b) the
         # expression branch goes through funs$load_expression -- the disk
         # override -- so the parquetExprStore lands in the vault.
-        # Spatlocs / image / binpoints / polygons / mask remain inherited
-        # (in-mem) closures and can be ported following the same pattern.
+        # Spatlocs / image / polygons / mask remain inherited (in-mem)
+        # closures and can be ported following the same pattern.
         gobject_fun <- function(
             load_expression = TRUE,
             load_spatlocs   = TRUE,
@@ -111,8 +134,31 @@ setMethod(
             bin1_path       = .def_bin1_path,
             image_path      = .def_image_dir,
             mask_path       = .def_mask_path,
+            load_bin_mapping = FALSE,
+            gobject         = NULL,
             instructions    = NULL,
             verbose         = NULL) {
+
+            # several bin sizes: each is its own spat_unit in one object. The
+            # GEF holds them all, so only bin_size changes; the image, mask
+            # and binpoints are loaded once.
+            if (type == "bin" && length(bin_size) > 1L) {
+                a <- as.list(environment())
+                a$load_bin_mapping <- FALSE
+                g <- .create_units(a, "bin_size", bin_size,
+                    once = c("load_image", "load_mask", "load_binpoints"),
+                    create_for = function(b) obj@calls$create_gobject)
+                if (isTRUE(load_bin_mapping) && load_spatlocs) {
+                    g <- .stereoseq_add_parent_bins(g, bin_size,
+                        negative_y = negative_y, verbose = verbose)
+                }
+                return(g)
+            }
+            if (isTRUE(load_bin_mapping)) {
+                GiottoUtils::vmsg(.v = verbose, "[StereoSeqDiskReader]",
+                    "load_bin_mapping: parent bins need two or more bin",
+                    "sizes in one call; none added")
+            }
 
             spat_unit <- if (type == "bin") bin_size else "cell"
 
@@ -126,10 +172,7 @@ setMethod(
 
             funs <- obj@calls
 
-            g <- GiottoClass::createGiottoObject(
-                backend = gsrc,
-                instructions = instructions
-            )
+            g <- .backed_gobject_init(gobject, gsrc, instructions)
 
             # expression (disk; overridden closure)
             bin_coords <- NULL
@@ -175,7 +218,7 @@ setMethod(
                 g <- GiottoClass::setGiotto(g, sl, verbose = verbose)
             }
 
-            # binpoints (inherited; in-mem)
+            # binpoints (disk)
             if (load_binpoints) {
                 if (is.null(bin1_path)) {
                     stop("[StereoSeqDiskReader] no bin GEF for bin1 binpoints. ",
@@ -381,6 +424,60 @@ importStereoSeqDisk <- function(
 
     attr(out, "bin_coords") <- bin_coords
     out
+}
+
+
+# A bin size as a store-backed giottoBinPoints: its counts through the bin
+# GEF ingest, and one point per bin from the (x, y) map that ingest
+# publishes.
+.stereoseq_binpoints_disk <- function(path, gsource, gene_column = "geneName",
+                                      negative_y = TRUE, bin_size = "bin1",
+                                      verbose = NULL) {
+    if (is.null(path) || !file.exists(path)) {
+        stop("[StereoSeqDiskReader] no bin GEF for the binpoints. ",
+             "Provide `path` explicitly or ensure a *.tissue.gef or *.gef ",
+             "is present.", call. = FALSE)
+    }
+    pe <- .stereoseq_expression_disk(path, gsource = gsource, type = "bin",
+        bin_size = bin_size, gene_column = gene_column, spat_unit = bin_size,
+        output = "store", verbose = verbose)
+    # `pos` is a bin's row in the store, so no bin IDs are needed
+    xy <- attr(pe, "bin_coords")
+    attr(pe, "bin_coords") <- NULL
+    xy <- data.table::data.table(row_id = xy$pos, sdimx = as.integer(xy$x),
+        sdimy = if (isTRUE(negative_y)) -as.integer(xy$y) else as.integer(xy$y))
+    .binpoints_disk(pe, xy, gsource, feat_type = "rna", verbose = verbose)
+}
+
+
+# Parent-bin columns between the bin units of one object. SAW writes binN
+# coordinates as origin-aligned multiples of N, so a binM bin at (x, y) lies in
+# the binN bin at (x %/% N * N, y %/% N * N) whenever N is a multiple of M.
+# Coordinates come from each unit's raw spatlocs (y un-negated); the columns
+# go through `.add_parent_units`.
+.stereoseq_add_parent_bins <- function(gobject, bin_sizes, negative_y = TRUE,
+                                       verbose = NULL) {
+    n <- as.integer(sub("^bin", "", bin_sizes))
+    xy <- lapply(bin_sizes, function(su) {
+        sl <- GiottoClass::getSpatialLocations(gobject, spat_unit = su,
+            name = "raw", output = "data.table")
+        y <- if (isTRUE(negative_y)) -sl$sdimy else sl$sdimy
+        list(id = sl$cell_ID, x = sl$sdimx, y = y)
+    })
+    for (i in seq_along(bin_sizes)) {
+        parents <- which(n > n[i] & n %% n[i] == 0L)
+        if (!length(parents)) next
+        child <- xy[[i]]
+        mapping <- data.table::data.table(cell_ID = child$id)
+        for (j in parents) {
+            p <- xy[[j]]
+            key <- paste(child$x %/% n[j] * n[j], child$y %/% n[j] * n[j])
+            mapping[[bin_sizes[[j]]]] <- p$id[match(key, paste(p$x, p$y))]
+        }
+        gobject <- .add_parent_units(gobject, spat_unit = bin_sizes[[i]],
+                                     mapping = mapping, verbose = verbose)
+    }
+    gobject
 }
 
 

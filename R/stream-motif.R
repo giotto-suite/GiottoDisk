@@ -32,11 +32,11 @@ setMethod("analyzeData",
         }
         package_check("smotif", repository = "github:drieslab/smotif")
 
-        lookup <- .edge_label_lookup(x, cell_type)
+        lookup <- .edge_vertex_lookup(x, cell_type)
         smotif::motif_enrichment_stream(
             storeRead(x, output = "arrowstream"),
             int_ids = lookup$int_id,
-            cell_type = lookup$label,
+            cell_type = lookup$value,
             size = param$size,
             n_perm = param$n_perm,
             seed = as.integer(param$seed_number),
@@ -46,26 +46,3 @@ setMethod("analyzeData",
     }
 )
 
-
-# helpers ####
-
-# Labels named by node ID -> one label per int_id, through the node sidecar.
-# The sidecar is one row per cell, so it is read whole and matched in R rather
-# than filtered in Arrow against a literal set of every label name. Nodes
-# without a label are left out: an edge that reaches one is the engine's error
-# to raise, since only the stream knows which nodes are in the network.
-.edge_label_lookup <- function(x, lab) {
-    int_id <- node_id <- NULL  # NSE
-    if (is.null(names(lab))) {
-        stop("[analyzeData] cell_type must be named by node ID", call. = FALSE)
-    }
-    nm <- storeRead(x@nodes) |>
-        dplyr::select(int_id, node_id) |>
-        dplyr::collect()
-    i <- match(as.character(nm$node_id), names(lab))
-    keep <- !is.na(i)
-    list(
-        int_id = as.integer(nm$int_id[keep]),
-        label = unname(lab[i[keep]])
-    )
-}

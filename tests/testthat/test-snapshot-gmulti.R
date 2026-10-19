@@ -32,28 +32,21 @@ skip_if(
 }
 
 
-test_that("snapshotSave(gDirSource, giottoMulti) writes multi + per-child .rds", {
+test_that("snapshotSave(gDirSource, giottoMulti) writes multi + per-child snapshots", {
     td <- tempfile("multi_snap_"); dir.create(td)
     on.exit(unlink(td, recursive = TRUE), add = TRUE)
 
     mg <- .mk_test_multi(td)
     snapshotSave(mg@source, mg, verbose = FALSE)
 
-    # Multi vault gets <name>.rds
-    multi_gsd <- file.path(mg@source@path, "giottosave")
-    expect_true(dir.exists(multi_gsd))
-    multi_rds <- list.files(multi_gsd, pattern = "\\.rds$")
-    expect_length(multi_rds, 1L)
+    # Multi vault gets one snapshot
+    multi_name <- .gdsrc_snapshot_names(.snap_gsdir(mg@source@path))
+    expect_length(multi_name, 1L)
 
-    # Each child vault gets <multi_name>_<child_name>.rds
-    multi_name <- tools::file_path_sans_ext(multi_rds)
+    # Each child vault gets <multi_name>_<child_name>
     for (child_name in names(mg@objects)) {
-        child_gsd <- file.path(mg@objects[[child_name]]@source@path, "giottosave")
-        expect_true(dir.exists(child_gsd))
-        child_rds <- list.files(child_gsd, pattern = "\\.rds$")
-        expect_length(child_rds, 1L)
         expect_identical(
-            tools::file_path_sans_ext(child_rds),
+            .gdsrc_snapshot_names(.snap_gsdir(mg@objects[[child_name]]@source@path)),
             paste0(multi_name, "_", child_name)
         )
     }
@@ -80,7 +73,7 @@ test_that("snapshotLoad reconstitutes the giottoMulti with children intact", {
 })
 
 
-test_that("snapshotSave on a multi with in-memory child writes only multi .rds", {
+test_that("snapshotSave on a multi with in-memory child writes only the multi snapshot", {
     td <- tempfile("multi_inmem_"); dir.create(td)
     on.exit(unlink(td, recursive = TRUE), add = TRUE)
 
@@ -94,9 +87,7 @@ test_that("snapshotSave on a multi with in-memory child writes only multi .rds",
 
     snapshotSave(mg@source, mg, verbose = FALSE)
 
-    multi_gsd <- file.path(mg@source@path, "giottosave")
-    expect_true(dir.exists(multi_gsd))
-    expect_length(list.files(multi_gsd, pattern = "\\.rds$"), 1L)
+    expect_length(.gdsrc_snapshot_names(.snap_gsdir(mg@source@path)), 1L)
 
     # No per-child vault created since child has no @source
     expect_false(dir.exists(file.path(td, "only_proj")))
@@ -111,9 +102,9 @@ test_that("snapshotDelete on a giottoMulti cascades to per-child snapshots", {
     snapshotSave(mg@source, mg, name = "snap_v1", verbose = FALSE)
 
     # Pre-condition: multi + per-child snapshots all exist on disk
-    multi_rds <- file.path(mg@source@path, "giottosave", "snap_v1.rds")
-    s1_rds <- file.path(mg@objects$s1@source@path, "giottosave", "snap_v1_s1.rds")
-    s2_rds <- file.path(mg@objects$s2@source@path, "giottosave", "snap_v1_s2.rds")
+    multi_rds <- .snap_file(mg@source@path, "snap_v1")
+    s1_rds <- .snap_file(mg@objects$s1@source@path, "snap_v1_s1")
+    s2_rds <- .snap_file(mg@objects$s2@source@path, "snap_v1_s2")
     expect_true(all(file.exists(c(multi_rds, s1_rds, s2_rds))))
 
     # Delete the multi → per-child snapshots are removed too
@@ -132,10 +123,10 @@ test_that("snapshotDelete cascade is best-effort: parent removed even if a child
     snapshotSave(mg@source, mg, name = "snap_v1", verbose = FALSE)
 
     # Pre-emptively delete one child snapshot to force a cascade failure
-    s1_rds <- file.path(mg@objects$s1@source@path, "giottosave", "snap_v1_s1.rds")
-    unlink(s1_rds)
-    multi_rds <- file.path(mg@source@path, "giottosave", "snap_v1.rds")
-    s2_rds <- file.path(mg@objects$s2@source@path, "giottosave", "snap_v1_s2.rds")
+    s1_rds <- .snap_file(mg@objects$s1@source@path, "snap_v1_s1")
+    unlink(dirname(s1_rds), recursive = TRUE)
+    multi_rds <- .snap_file(mg@source@path, "snap_v1")
+    s2_rds <- .snap_file(mg@objects$s2@source@path, "snap_v1_s2")
     expect_true(file.exists(multi_rds))
     expect_true(file.exists(s2_rds))
 

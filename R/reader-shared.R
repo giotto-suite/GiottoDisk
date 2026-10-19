@@ -7,6 +7,43 @@
 
 
 
+## object ####
+
+# New backed giotto, or the given one (which must be backed by a source) to
+# add into, so a reader can load several units into one object.
+.backed_gobject_init <- function(gobject, gsource, instructions) {
+    if (is.null(gobject)) {
+        return(GiottoClass::createGiottoObject(
+            backend = gsource, instructions = instructions))
+    }
+    checkmate::assert_class(gobject, "giotto")
+    if (is.null(gobject@source)) {
+        stop("`gobject` must be backed by a source ",
+             "(createGiottoObject(backend = ))", call. = FALSE)
+    }
+    gobject
+}
+
+
+
+# Several units into one object: call `create_for(unit)` -- a reader's
+# create_gobject for that unit -- with `args`, `unit_arg` set to the unit and
+# `gobject` to the object built so far. The `once` flags (image, mask, points)
+# stay as given for the first unit only.
+.create_units <- function(args, unit_arg, units, once, create_for) {
+    g <- args$gobject
+    for (i in seq_along(units)) {
+        a <- args
+        a[[unit_arg]] <- units[[i]]
+        a$gobject <- g
+        for (f in once) a[[f]] <- isTRUE(args[[f]]) && i == 1L
+        g <- do.call(create_for(units[[i]]), a)
+    }
+    g
+}
+
+
+
 ## unit hierarchy ####
 
 # Record which parent unit each unit belongs to, as cell metadata.

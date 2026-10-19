@@ -54,3 +54,20 @@ test_that("storeChunkInfo errors on a store with no shape", {
         "no cells or no features"
     )
 })
+
+test_that("plan workers are capped by the memory budget, explicit ones are not", {
+    skip_if_not_installed("future")
+    withr::defer(future::plan(future::sequential))
+    future::plan(future::multisession, workers = 4L)
+    withr::local_options(list(giottodisk.par_workers = NULL,
+                              giottodisk.chunk_ram_frac = NULL))
+
+    # a budget below one worker's share runs serially
+    withr::local_options(list(giottodisk.chunk_ram_frac = 1e-6))
+    expect_identical(.par_workers(), 1L)
+    # never more than the plan offers
+    expect_lte(.workers_in_budget(4L), 4L)
+    # an explicit count is used as given
+    withr::local_options(list(giottodisk.par_workers = 3L))
+    expect_identical(.par_workers(), 3L)
+})

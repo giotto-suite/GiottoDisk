@@ -202,6 +202,29 @@ NULL
     }))[!is.na(w)]
 }
 
+# Build a `multiply` payload for a per-axis vector given in VIEW order.
+#
+# The op registry keys factors by on-disk id per substore uid (see the
+# `multiply` note in utils-pestore-ops.R), and `.pe_axis_pos_map()` is the
+# view-position -> on-disk-key map that every other consumer uses. A single
+# store's map carries no `source_id`, so the payload is keyed by its own uid.
+# On-disk ids outside the view get `fill`.
+.pe_axis_factor_payload <- function(pe, w, axis = c("feat", "cell"), fill = 0) {
+    axis <- match.arg(axis)
+    map <- .pe_axis_pos_map(pe, axis)
+    subs <- .exprbase_substores(pe)
+    if (!"source_id" %in% names(map)) {
+        uid <- as.character(subs[[1L]]$store@uid)
+        map <- data.table::copy(map)[, "source_id" := uid]
+    }
+    split_map <- split(map, map$source_id)
+    lapply(split_map, function(d) {
+        v <- rep(fill, max(d$key_id))
+        v[d$key_id] <- w[d$pos]
+        v
+    })
+}
+
 
 # ---- GEF ingest: cell-major batches ----------------------------------------
 #
@@ -234,19 +257,26 @@ NULL
 .gef_batch_rows_fallback <- 5e6
 
 .gef_batch_rows <- function() {
-    pinned <- getOption("giottodisk.gef_batch_rows")
+    .ingest_batch_rows(96, pinned = getOption("giottodisk.gef_batch_rows"),
+                       fallback = .gef_batch_rows_fallback)
+}
+
+# Records per ingest batch for an input holding about `bytes_per_record` per
+# record while a batch is in memory: the chunk budget over free RAM, at least
+# 1e6. `pinned` overrides it; `fallback` is used when free RAM cannot be read.
+.ingest_batch_rows <- function(bytes_per_record, pinned = NULL,
+                               fallback = 5e6) {
     if (!is.null(pinned)) return(max(1, as.numeric(pinned)))
     free <- tryCatch(.sc_free_ram(), error = function(e) NA_real_)
-    if (!isTRUE(is.finite(free)) || free <= 0) return(.gef_batch_rows_fallback)
-    ram_frac <- getOption("giottodisk.chunk_ram_frac", 0.25)
-    budget <- .chunk_budget(free, ram_frac, n_cells = 0, k = 0, p = 0)
-    max(1e6, floor(budget / 96))
+    if (!isTRUE(is.finite(free)) || free <= 0) return(fallback)
+    budget <- .chunk_budget(free, .ram_frac(), n_cells = 0, k = 0, p = 0)
+    max(1e6, floor(budget / bytes_per_record))
 }
 
 # Contiguous cell ranges of at most `max_rows` records each, cut greedily; a
 # single cell with more records than that gets a range of its own. Returns a
 # list of c(a, b).
-.gef_cell_ranges <- function(n_per_cell, max_rows) {
+.ingest_cell_ranges <- function(n_per_cell, max_rows) {
     n <- length(n_per_cell)
     if (!n) return(list())
     cs <- c(0, cumsum(as.numeric(n_per_cell)))   # cs[i + 1] = records through cell i
@@ -263,7 +293,7 @@ NULL
 # Fine buckets for a spill of `n_records`: several per budget-sized batch, so
 # that pass 2 can group consecutive buckets under the budget even when records
 # are unevenly spread over the cell axis.
-.gef_n_buckets <- function(n_records, max_rows, per_batch = 8L) {
+.ingest_n_buckets <- function(n_records, max_rows, per_batch = 8L) {
     max(1L, as.integer(per_batch * ceiling(n_records / max_rows)))
 }
 
@@ -277,7 +307,7 @@ NULL
 # `(row_id, col_id, value)`, keyed. Buckets must partition the cell axis in
 # ascending order for the output to be cell-major. The spill is removed on
 # close.
-.gef_spill_iterator <- function(produce, n_chunks, n_buckets, finish, max_rows) {
+.ingest_spill_iterator <- function(produce, n_chunks, n_buckets, finish, max_rows) {
     b <- NULL  # data.table var
     spill <- .dump_tempfile()
     spilled <- FALSE
@@ -335,10 +365,97 @@ NULL
 }
 
 
+# Rewrite a store's view into a new single store at `path` with its cells in
+# `order` (view positions; the new store's cell k is the view's cell
+# order[k]), out of core: one pass reads the view a pruned cell window at a
+# time and spills each triplet to a bucket of its new position
+# (.ingest_spill_iterator), a second reads the buckets back in order and
+# writes them cell-major (.pestore_write_itr). The chain is applied on the
+# way, so the new store holds the values the view produces and has an empty
+# chain. Features keep the view's order. Memory is bounded by the ingest
+# batch budget, whatever the permutation; `storeWrite(pe[, order])` would
+# instead rescan the source once per window when `order` is scattered.
+.pe_rewrite_cell_order <- function(pe, order, path) {
+    row_id <- col_id <- value <- NULL  # NSE
+    if (isTRUE(pe@transposed)) {
+        stop("[.pe_rewrite_cell_order] transpose the store back first.",
+            call. = FALSE)
+    }
+    n_cells <- as.integer(pe@n_cells)
+    stopifnot(length(order) == n_cells, !anyDuplicated(order))
+    new_pos <- integer(n_cells)
+    new_pos[order] <- seq_len(n_cells)
+
+    fmap <- .pe_axis_pos_map(pe, "feat")
+    is_union <- "source_id" %in% names(fmap)
+    if (!is_union) fmap[, "source_id" := NA_character_]
+    # a window holds its triplets about four times over (arrow table, frame,
+    # bucket frame, the split), so size it for that rather than for the
+    # accumulators' grouped rows
+    windows <- .pe_windows(pe, .pe_window_cells(pe, bytes_per_nz = 200, k = 0L))
+    cols <- c("row_id", "col_id", "value", if (is_union) "source_id")
+
+    max_rows <- .ingest_batch_rows(96)
+    dens <- tryCatch(.pe_view_density(pe), error = function(e) 1)
+    n_rec <- as.numeric(n_cells) * as.numeric(pe@n_genes) * min(1, dens)
+    n_buckets <- .ingest_n_buckets(n_rec, max_rows)
+    per_bucket <- max(1L, as.integer(ceiling(n_cells / n_buckets)))
+
+    produce <- function(i) {
+        d <- windows[[i]]
+        w <- .pe_window_store(d)
+        q <- storeRead(w, output = "query")
+        if (!length(w@post_ops)) q <- dplyr::select(q, dplyr::all_of(cols))
+        dt <- data.table::as.data.table(dplyr::collect(q))
+        rm(q)
+        if (!nrow(dt)) return(NULL)
+        dt <- .pe_apply_post_ops_df(dt, w@post_ops)
+        if (!nrow(dt)) return(NULL)
+        sub <- d$sub
+        ki <- if (length(sub@cell_idx)) sub@cell_idx else seq_len(sub@n_cells)
+        local <- integer(max(ki))
+        local[ki[d$cs:d$ce]] <- d$offset + (d$cs:d$ce)
+        pos <- local[dt$row_id]
+        fk <- if (!is_union) {
+            fpos <- integer(max(fmap$key_id, dt$col_id))
+            fpos[fmap$key_id] <- fmap$pos
+            fpos[dt$col_id]
+        } else {
+            fmap$pos[match(paste(dt$source_id, dt$col_id),
+                           paste(fmap$source_id, fmap$key_id))]
+        }
+        np <- new_pos[pos]
+        out <- data.table::data.table(row_id = np, col_id = as.integer(fk),
+            value = dt$value, b = (np - 1L) %/% per_bucket + 1L)
+        rm(dt)
+        out[!is.na(row_id) & col_id > 0L]
+    }
+    finish <- function(dt) {
+        dt <- dt[, list(row_id = as.integer(row_id), col_id = as.integer(col_id),
+                        value = as.numeric(value))]
+        data.table::setkeyv(dt, c("row_id", "col_id"))
+        dt
+    }
+    itr <- .ingest_spill_iterator(produce, length(windows), n_buckets,
+        finish, max_rows)
+    cell_ids <- pe@cell_ids[order]
+    feat_ids <- pe@feat_ids
+    itr$cell_ids <- function() cell_ids
+    itr$feat_ids <- function() feat_ids
+    itr$n_cells <- function() n_cells
+    itr$n_genes <- function() length(feat_ids)
+
+    out <- parquetExprStore(path = path)
+    partition_dir <- .idpath(path, out@uid)
+    dir.create(partition_dir, recursive = TRUE, showWarnings = FALSE)
+    .pestore_write_itr(out, itr, partition_dir)
+}
+
+
 # Build chunk boundaries that respect duplicate-name groups: never split
 # a run of raw geneDT rows that share the same name_to_row between two
 # chunks. Non-adjacent duplicates are summed later, by the batch aggregate of
-# `.gef_spill_iterator()`. Returns a list of c(g_lo, g_hi) integer pairs
+# `.ingest_spill_iterator()`. Returns a list of c(g_lo, g_hi) integer pairs
 # covering 1..n. `target_size` is the desired chunk size in raw geneDT rows.
 .gef_safe_chunks <- function(name_to_row, target_size) {
     n <- length(name_to_row)

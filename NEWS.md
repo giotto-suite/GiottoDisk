@@ -1,3 +1,147 @@
+# GiottoDisk 0.0.0.5
+
+## breaking changes
+- A snapshot is a folder, `giottosave/<name>.<id>/gobject.RDS` (or
+  `gobject.qs2`), instead of `giottosave/<name>.rds`. Artifacts are tagged
+  with the folder name, `<name>.<id>`, which is new on every save: deleting
+  or overwriting a snapshot ends the protection it gave, and saving again
+  under the same name no longer revives tags a deleted snapshot left behind.
+  `snapshotLoad()` and `snapshotDelete()` still take the name.
+- Project directories are versioned (schema v2 with this release). Writing
+  to, pruning, or saving and loading snapshots in a project written by an
+  older GiottoDisk errors until it is upgraded with `sourceUpdate()`.
+  `options(giottodisk.schema_check = FALSE)` proceeds with a warning instead.
+- Snapshot names may not contain a path separator or start with `.`.
+
+## new
+- `sourceSchema()` reports a project directory's schema version and whether
+  this GiottoDisk supports it. `sourceUpdate()` migrates an older project in
+  place: flat snapshot files move into snapshot folders and their artifacts
+  are retagged. `.qs` snapshots, which are no longer read, are moved too, so
+  their artifacts stay protected from `sourcePrune()`.
+- `snapshotSave()` writes `manifest.json` (what the object holds, from
+  GiottoClass's `objManifest()`) and `history.ndjson` (how it was produced,
+  one operation per line) into each `giotto` snapshot's folder, landing with
+  the object. `snapshotManifest()` and `snapshotHistory()` read them, so a
+  snapshot can be inspected without loading it. A failed sidecar write warns
+  and never fails the save.
+- Spatial co-expression on disk-backed objects: `processData()` for
+  GiottoClass's `spatialSmoothParam` writes a smoothed store (windowed over
+  cells, in network order when the stored order is not local), and
+  `analyzeData()` for `featCorParam` correlates the features of a store in
+  one pass -- with `smooth =`, window by window over the smoothed values,
+  which are never written. `crossprod(W, store)` gives weighted feature sums
+  per cell in one pass, which `createMetafeats()` uses for module scores.
+  With them Giotto's `spatialCoexpression()` runs on backed objects within a
+  laptop memory budget. Needs `GiottoClass (>= 0.7.16)`.
+- Bin points on disk: the Visium HD reader's `load_transcripts()` and the
+  Stereo-seq reader's `load_binpoints()` return a `giottoBinPoints` whose
+  slots hold stores -- one point per bin with counts, and the bins' counts as
+  a `parquetExprStore` -- instead of loading the bins into memory. The finest
+  bins stay the default; both take the bin size. `calculateOverlap()` with
+  polygons intersects the bins only and `overlapToMatrix()` sums their counts
+  per polygon in one DuckDB query; crops, feature selection, subsetting,
+  in-situ plots and snapshots work on them. In-memory bin points set on a
+  backed object are written to stores. Needs `GiottoClass (>= 0.7.13)`.
+- Spatial autocorrelation on disk-backed objects: `analyzeData()` for
+  GiottoClass's `edgeStatsParam` on a `parquetExprBase` with a
+  `parquetEdgeStore` network, so Giotto's `spatAutoCorParam()` (Moran's I,
+  Geary's C, binSpect, with or without the covariate null) and
+  `binSpect(implementation = "fast")` run on backed objects. Needs the
+  matching GiottoClass and Giotto.
+- `thresholdParam("binarize")` on a `parquetExprBase`: one threshold, one per
+  feature, or a rule (`"kmeans"`, `"rank"`) solved per feature on a streamed
+  value histogram. Lazy, like the other comparisons.
+- `x > v` on an expression store takes one threshold per row.
+- With GiottoKernels (>= 0.3.0) installed, the edge sums behind the spatial
+  autocorrelation statistics run in its `edge_products_stream()` kernel,
+  streaming the features in blocks sized to the memory budget, so the stored
+  cell order no longer matters. Without it, or for a union store, the R path
+  runs.
+- The Stereo-seq disk reader's `create_gobject()` takes several bin sizes
+  (`bin_size = c("bin50", "bin100")`), each its own spat_unit in one object, and
+  a `gobject` to add into. `load_bin_mapping = TRUE` records each bin's parent
+  bins as cell metadata, from the bin coordinates (SAW writes binN coordinates
+  as multiples of N); with one bin size there are no parents, and it says so.
+- `analyzeData()` for a `dwlsDeconvParam` on a `parquetExprBase`: spatialDWLS
+  deconvolution of a disk-backed store, so `runDWLSDeconv()` works on backed
+  objects. The store is narrowed to the signature features and read one
+  window of cells at a time through `spatialDWLS::dwls_stream()`; results
+  match the in-memory method to ~1e-15. Needs the suggested spatialDWLS
+  package and `Giotto (>= 4.3.2)`.
+- Motif enrichment on a backed spatial network:
+  `analyzeData(<parquetEdgeStore>, <smotifParam>)`, reached from
+  `cellProximityMotifs()` at the default `method = "auto"`. The edges cross
+  into smotif's `motif_enrichment_stream()` through
+  `storeRead(output = "arrowstream")`, so a pending subset is honoured and the
+  network is never read into an `igraph`; whether smotif runs that in R or in
+  its Rust backend is smotif's choice. Labels are expected named by node ID.
+  `strata` and `anchored_on` are not supported on a backed network yet and
+  error rather than falling back. Needs smotif >= 0.2.0 (Suggests).
+
+## changes
+- Snapshots use qs2 instead of qs, which is archived on CRAN and no longer
+  builds: `snapshotSave(method = "qs2")` writes `<name>.qs2`. The `"qs"`
+  method is removed and `.qs` snapshots are no longer read. qs2 replaces qs in
+  Suggests.
+- The DuckDB memory limit follows the memory budget
+  (`giottodisk.chunk_ram_frac` of free RAM) when `giottodisk.duckdb_memory_limit`
+  is unset, instead of a fixed 8 GB.
+- Parallel workers from a `future::plan()` are capped by the memory budget
+  (about three times the session's R heap each), so a small machine runs the
+  forked steps (10x `.h5` ingest, PCA bands, zarr conversion) with fewer
+  workers. `options(giottodisk.par_workers =)` is still used as given.
+- Points are written to a geometry store straight from their coordinate
+  columns: the WKB is built with *wk* instead of through a terra SpatVector,
+  which made up most of the write time (e.g. transcripts, bin points). The
+  files hold the same rows, geometry and metadata.
+- `tenxH5Input` sizes its batches by stored values from free memory, as the
+  Stereo-seq GEF readers do, instead of a fixed 250,000 cells, so a matrix with
+  many values per cell no longer loads in one oversized batch. In the parallel
+  path the workers share the budget. `batch_cells = <n>` still pins a cell
+  count; `options(giottodisk.h5_batch_rows =)` pins the record count.
+- Requires `Giotto (>= 4.3.1)`, up from 4.3.0. The motif enrichment method
+  imports `smotifParam`, which a `gsource` install reporting 4.3.0 may predate;
+  against one, loading failed with an S4 import error instead of a version
+  message.
+- `overlapToMatrix()` to a `parquetExprStore` takes an `engine` argument
+  (`"duckdb"` or `"arrow"`) to pick one explicitly; the default `NULL` takes
+  duckdb and falls back to arrow.
+- `importVisiumHDDisk()` reads `NNNum_outputs.tar` bin outputs, extracting
+  them next to the tar (or into `outdir`) on first use as the in-memory reader
+  does; `force_untar = TRUE` re-extracts. It required extracted directories
+  before.
+- Requires `GiottoClass (>= 0.7.10)`, so `calculateOverlap(feat_count_column =
+  FALSE)` on store-backed points reaches the disk method.
+
+## bug fixes
+- A second `snapshotSave()` of an object holding images copied every image
+  into the vault again: after adoption the image still read from the
+  original file. It now reads from the vault copy.
+- Images were protected only by the snapshot that first adopted them, so
+  deleting that snapshot and running `sourcePrune()` deleted images a later
+  snapshot still referenced. Every save now tags the vault images it holds.
+- The disk Xenium reader names focus images from Xenium Onboard Analysis
+  2.x (`morphology_focus_0000.ome.tif`, ...) by their channel, read from the
+  OME header: `dapi`, `18s`, `atp1a1_cd45_e-cadherin`, `alphasma_vimentin`,
+  as the files of later versions are named. They were `bound1`-`bound4`,
+  which named the DAPI image `bound1`.
+- `saveGiotto()` no longer fails on a project where an overlap that is in more
+  than one snapshot depends on several stores: `as.data.frame()` of a
+  `gDirSource` keeps `depends` as one list cell per artifact.
+- `saveGiotto()` / `loadGiotto()` on a backed object holding `giottoBinPoints`
+  (for example from `load_transcripts = TRUE`) failed with "object of type
+  'S4' is not subsettable": the snapshot steps read every points object as a
+  store. Bin points stay in memory and are saved by GiottoClass.
+- The disk Visium HD reader took a binned directory without the 2 um output
+  (for example a single `008um_outputs.tar`) for segmented outputs and failed
+  loading polygons. It now uses the in-memory reader's own decision.
+- `overlapToMatrix()` on a disk overlap sums a `count` column by default, as
+  GiottoClass does for in-memory overlaps; `count_col = FALSE` counts rows.
+  It also takes `feat_count_column`, the name GiottoClass passes, which was
+  ignored before. `calculateOverlap(feat_count_column = FALSE)` leaves `count`
+  out of the overlap, as in memory.
+
 # GiottoDisk 0.0.0.4
 
 ## breaking changes
@@ -14,31 +158,11 @@
   on load, with a warning; rerun `calculateOverlap()` to rebuild them.
 
 ## new
-- Motif enrichment on a backed spatial network:
-  `analyzeData(<parquetEdgeStore>, <smotifParam>)`, reached from
-  `cellProximityMotifs()` at the default `method = "auto"`. The edges cross
-  into smotif's `motif_enrichment_stream()` through
-  `storeRead(output = "arrowstream")`, so a pending subset is honoured and the
-  network is never read into an `igraph`; whether smotif runs that in R or in
-  its Rust backend is smotif's choice. Labels are expected named by node ID.
-  `strata` and `anchored_on` are not supported on a backed network yet and
-  error rather than falling back. Needs smotif >= 0.2.0 (Suggests).
 - `calculateOverlap(engine = "sedona")` (sedonadb >= 0.4): one spatial join
   over both stores. On a 624M-point, 170k-cell Atera sample it takes 39 s,
   against about 12 minutes for `engine = "terra"`.
-- `snapshotSave()` writes `<name>.manifest.json` and `<name>.history.ndjson`
-  beside each snapshot in `giottosave/`, using the same temp-then-rename write
-  as the artifacts manifest. Derived from the gobject, so a failed write is
-  never fatal.
-- `snapshotManifest()` and `snapshotHistory()` read those sidecars, so what a
-  snapshot contains and how it was produced can be inspected without loading
-  it. Requires GiottoClass with `objManifest()`.
 
 ## changes
-- Requires `Giotto (>= 4.3.1)`, up from 4.3.0. The motif enrichment method
-  imports `smotifParam`, which a `gsource` install reporting 4.3.0 may predate;
-  against one, loading failed with an S4 import error instead of a version
-  message.
 - `calculateOverlap(engine = "duckdb")` reads both stores through
   `storeRead()`, so filters pending on either store now apply (it used to
   read the raw files and count filtered-out cells and features). It no
@@ -46,9 +170,7 @@
   thread: about 4 minutes on the Atera sample instead of about 12.
 - `overlapToMatrix()` to a `parquetExprStore` runs as one DuckDB query when
   duckdb is installed: 17.5 s for the Atera sample's 300M values, against
-  80 s through Arrow, which remains the path without duckdb. A new `engine`
-  argument (`"duckdb"` or `"arrow"`) picks one explicitly; the default
-  `NULL` takes duckdb and falls back to arrow.
+  80 s through Arrow, which remains the path without duckdb.
 - `overlapToMatrix()` drops overlap rows outside the feature and cell ID
   universes instead of writing them with missing keys, so narrowing an
   overlap's `@spat_ids` / `@feat_ids` narrows the matrix.

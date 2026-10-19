@@ -7,14 +7,15 @@ NULL
 # through the shared 10x path (`.tenx_expression_disk`). Everything else is
 # the inherited closures: tissue positions, cell metadata, scalefactors and
 # images read `tissue_positions.parquet` lazily through arrow and apply every
-# spatial filter, micron scaling and the y flip; the 2 um bins load as the
-# in-memory giottoBinPoints, which a backed object keeps in memory; polygons
-# and tessellations are built in memory and written to the vault by the
-# backed object's setter when attached, as in StereoSeqDiskReader.
+# spatial filter, micron scaling and the y flip; the bin points
+# (`load_transcripts`, the 2 um bins by default) load as a giottoBinPoints
+# (points and counts in the vault); polygons and tessellations
+# are built in memory and written to the vault by the backed object's setter
+# when attached, as in StereoSeqDiskReader.
 #
 # The object takes the same shape as the disk Stereo-seq one -- bin
 # spat_units named as in memory (`bin002`/`bin008`/`bin016`, `cell`),
-# `rna`/`raw` expression, `raw` spatlocs, in-memory giottoBinPoints -- and
+# `rna`/`raw` expression, `raw` spatlocs, bin points -- and
 # several units can be loaded into one object: `create_gobject()` takes a
 # vector of bins and an existing `gobject` to add into, and
 # `load_bin_mapping` records each bin's parent units as cell metadata.
@@ -56,20 +57,15 @@ setMethod(
         if (length(obj@visiumhd_dir) == 0L) return(obj)
 
         list2env(obj@paths, envir = environment())
-        # `binpath2` is only detected for binned (non-segmented) outputs
-        is_seg <- is.null(obj@paths$binpath2)
-        if (!dir.exists(binpath)) {
-            stop("[VisiumHDDiskReader] expects extracted output directories; ",
-                 "found ", binpath, ". Extract it (or load it once with ",
-                 "Giotto::importVisiumHD(), which unpacks it) first.",
-                 call. = FALSE)
-        }
+        # the parent's own call: it builds polygon loaders only for segmented
+        # outputs. (`binpath2`, the 2 um output, may be absent for either.)
+        is_seg <- !is.null(obj@calls$load_polygon)
 
         # Distinct names for detected paths used as `gobject_fun` defaults;
         # `binpath = binpath` in a formal would be a recursive default
         # (see StereoSeqDiskReader).
         .def_binpath <- binpath
-        .def_binpath2 <- if (is_seg) NULL else binpath2
+        .def_binpath2 <- if (is_seg) NULL else obj@paths$binpath2
         .def_map_path <- if (is_seg) NULL
                          else .visiumhd_mapping_path(obj@visiumhd_dir, binpath)
 
@@ -85,6 +81,9 @@ setMethod(
             expression_source = obj@expression_source,
             bin = obj@bin,
             barcodes = obj@barcodes,
+            outdir = obj@outdir,
+            force_untar = FALSE,
+            untar_params = list(),
             output = c("exprObj", "store"),
             verbose = NULL,
             ...
@@ -98,6 +97,9 @@ setMethod(
                 expression_source = expression_source,
                 bin = bin,
                 barcodes = barcodes,
+                outdir = outdir,
+                force_untar = force_untar,
+                untar_params = untar_params,
                 output = output,
                 verbose = verbose,
                 ...
@@ -116,6 +118,83 @@ setMethod(
                                   barcodes = barcodes, verbose = verbose)
         }
         if (!is_seg) obj@calls$load_bin_mapping <- map_fun
+
+        ## bin points (disk) ####
+        # The bins as points: their counts as a parquetExprStore and one point
+        # per bin with counts, as a store-backed giottoBinPoints per feature
+        # type. Takes the
+        # arguments and defaults (the 2 um output) of the in-memory
+        # load_transcripts(), which builds giottoBinPoints.
+        tx_fun <- function(
+            expr_path = .def_binpath2,
+            feature_id_type = obj@feature_id_type,
+            remove_zero_rows = TRUE,
+            split_by_type = TRUE,
+            expression_source = obj@expression_source,
+            tissue_positions_path = .def_binpath2,
+            scalefactors_path = .def_binpath2,
+            micron = obj@micron,
+            outdir = obj@outdir,
+            bin = 2L,
+            tissue_only = obj@tissue_only,
+            barcodes = obj@barcodes,
+            array_subset_row = obj@array_subset_row,
+            array_subset_col = obj@array_subset_col,
+            pxl_subset_row = obj@pxl_subset_row,
+            pxl_subset_col = obj@pxl_subset_col,
+            filter = obj@filter,
+            filter_coverage_cutoff = obj@filter_coverage,
+            force_untar = FALSE,
+            untar_params = list(),
+            verbose = NULL,
+            ...
+        ) {
+            if (is.null(expr_path)) {
+                stop("[VisiumHDDiskReader] no binned output found for the ",
+                     "bin points", call. = FALSE)
+            }
+            sl <- parent$load_tissue_position(
+                path = tissue_positions_path,
+                bin = bin,
+                micron = micron,
+                scalefactors_path = scalefactors_path,
+                barcodes = barcodes,
+                tissue_only = tissue_only,
+                array_subset_row = array_subset_row,
+                array_subset_col = array_subset_col,
+                pxl_subset_row = pxl_subset_row,
+                pxl_subset_col = pxl_subset_col,
+                filter = filter,
+                filter_coverage_cutoff = filter_coverage_cutoff,
+                outdir = outdir,
+                force_untar = force_untar,
+                output = "spatLocsObj",
+                verbose = verbose
+            )
+            stores <- .visiumhd_expression_disk(
+                path = expr_path,
+                gsource = gsrc,
+                feature_id_type = feature_id_type,
+                remove_zero_rows = remove_zero_rows,
+                split_by_type = split_by_type,
+                expression_source = expression_source,
+                bin = bin,
+                barcodes = GiottoClass::spatIDs(sl),
+                outdir = outdir,
+                untar_params = untar_params,
+                output = "store",
+                verbose = verbose
+            )
+            # one bin points store, shared by the feature types
+            bins <- NULL
+            lapply(names(stores), function(ft) {
+                bp <- .binpoints_disk(stores[[ft]], sl, gsrc,
+                    feat_type = ft, bins = bins, verbose = verbose)
+                bins <<- bp@spatial
+                bp
+            })
+        }
+        if (!is_seg) obj@calls$load_transcripts <- tx_fun
 
 
         ## create_gobject (binned) ####
@@ -162,35 +241,22 @@ setMethod(
             instructions = NULL,
             verbose = NULL
         ) {
-            # untar arguments are accepted so a call written for the parent
-            # runs unchanged; only extracted directories are read
-            if (isTRUE(force_untar)) {
-                stop("[VisiumHDDiskReader] force_untar: only extracted ",
-                     "output directories are read", call. = FALSE)
-            }
             a <- as.list(environment())
 
             # several units: one reader per bin, each adding into the same
             # object. Paths are re-detected per bin, and the image, the 2 um
             # bin points and any tessellation are loaded once.
             if (length(bin) > 1L) {
-                bins <- as.integer(bin)
-                g <- gobject
-                for (b_i in seq_along(bins)) {
-                    rb <- obj
-                    rb$bin <- bins[[b_i]]
-                    ab <- a[setdiff(names(a), c(
-                        "tissue_positions_path", "scalefactors_path",
-                        "expression_path", "image_path"))]
-                    ab$bin <- bins[[b_i]]
-                    ab$gobject <- g
-                    ab$load_image <- load_image && b_i == 1L
-                    ab$load_transcripts <- load_transcripts && b_i == 1L
-                    ab$create_tessellated_polys <- create_tessellated_polys &&
-                        b_i == 1L
-                    g <- do.call(rb@calls$create_gobject, ab)
-                }
-                return(g)
+                a <- a[setdiff(names(a), c("tissue_positions_path",
+                    "scalefactors_path", "expression_path", "image_path"))]
+                return(.create_units(a, "bin", as.integer(bin),
+                    once = c("load_image", "load_transcripts",
+                             "create_tessellated_polys"),
+                    create_for = function(b) {
+                        rb <- obj
+                        rb$bin <- b
+                        rb@calls$create_gobject
+                    }))
             }
 
             load_expression <- as.logical(load_expression)
@@ -206,6 +272,12 @@ setMethod(
             }
             su <- sprintf("bin%03d", as.integer(bin))
             funs <- obj@calls
+            # a forced re-extract happens once, before anything is read
+            if (isTRUE(force_untar)) {
+                .visiumhd_untar(expression_path, bin = bin, outdir = outdir,
+                    force = TRUE, untar_params = untar_params,
+                    verbose = verbose)
+            }
 
             spat_filter <- list(
                 array_subset_row = array_subset_row,
@@ -241,6 +313,8 @@ setMethod(
                     remove_zero_rows = expression_remove_zero_rows,
                     split_by_type = expression_split_by_type,
                     expression_source = expression_source,
+                    outdir = outdir,
+                    untar_params = untar_params,
                     verbose = verbose
                 )
                 barcodes <- GiottoClass::spatIDs(expr_list[[1L]]) %||%
@@ -248,11 +322,9 @@ setMethod(
                 if (!is.null(sl)) sl <- sl[barcodes]
             }
 
-            # 2 um bin points: the inherited loader, with the arguments the
-            # parent's gobject_fun gives it. It reads the 2 um data in memory
-            # itself -- giottoBinPoints needs an in-memory matrix, so the disk
-            # expression is not reused. Unlike the parent, `barcodes` is not
-            # replaced by the 2 um barcodes afterwards: for bin != 2 that
+            # bin points on disk, with the arguments the parent's
+            # gobject_fun gives its loader. Unlike the parent, `barcodes` is
+            # not replaced by the 2 um barcodes afterwards: for bin != 2 that
             # filtered the cell metadata to nothing.
             tx_list <- NULL
             if (load_transcripts) {
@@ -324,7 +396,7 @@ setMethod(
                 )
             }
 
-            g <- .visiumhd_disk_init(gobject, gsrc, instructions)
+            g <- .backed_gobject_init(gobject, gsrc, instructions)
             if (!is.null(expr_list)) {
                 g <- GiottoClass::setGiotto(g, expr_list, verbose = verbose)
             }
@@ -426,7 +498,7 @@ setMethod(
                 )
             }
 
-            g <- .visiumhd_disk_init(gobject, gsrc, instructions)
+            g <- .backed_gobject_init(gobject, gsrc, instructions)
             for (p in poly_list) {
                 g <- .visiumhd_attach_poly(g, p, centroids_to_spatlocs = TRUE,
                                            verbose = verbose)
@@ -460,16 +532,18 @@ setMethod(
 #' * expression (binned or segmented) streams from the 10x `.h5` (or mtx
 #'   directory) into a `parquetExprStore`;
 #' * cell / nucleus polygons (segmented outputs) and tessellations are
-#'   written to the vault as parquet geometry when attached to the object.
+#'   written to the vault as parquet geometry when attached to the object;
+#' * the bin points (`load_transcripts`, the 2 um bins by default) are a
+#'   `giottoBinPoints` backed by two stores: one point per bin with counts,
+#'   and the bins' counts.
 #'
-#' Tissue positions, cell metadata, images and the 2 um bin points
-#' (`load_transcripts`, an in-memory `giottoBinPoints`) come from the
+#' Tissue positions, cell metadata and images come from the
 #' inherited `VisiumHDReader` loaders, so spat_unit names, barcodes,
 #' coordinates and filters match the in-memory reader. `create_gobject()` additionally takes
 #' `bin` as a vector (e.g. `c(2, 8, 16)`), a `gobject` to add into, and
 #' `load_bin_mapping = TRUE` to record each unit's parent units (from
-#' `barcode_mappings.parquet`) as cell metadata. Only extracted output
-#' directories are read; `.tar` outputs must be unpacked first.
+#' `barcode_mappings.parquet`) as cell metadata. `NNNum_outputs.tar` bin
+#' outputs are extracted next to the tar (or into `outdir`) on first use.
 #' @param visiumhd_dir Visium HD output directory: the `outs` directory, a
 #'   `binned_outputs` / `square_XXXum` directory, or `segmented_outputs`.
 #' @param backend a `gsource` (typically `gDirSource`) project backend, or a
@@ -542,6 +616,9 @@ importVisiumHDDisk <- function(
     expression_source = c("raw", "filtered"),
     bin = 8L,
     barcodes = NULL,
+    outdir = NULL,
+    force_untar = FALSE,
+    untar_params = list(),
     output = c("exprObj", "store"),
     verbose = NULL,
     ...
@@ -555,6 +632,8 @@ importVisiumHDDisk <- function(
     output <- match.arg(output)
     checkmate::assert_character(barcodes, null.ok = TRUE)
 
+    path <- .visiumhd_untar(path, bin = bin, outdir = outdir,
+        force = force_untar, untar_params = untar_params, verbose = verbose)
     mat <- .visiumhd_matrix_path(path, expression_source)
     spat_unit <- if (grepl("_feature_cell_matrix", basename(mat))) {
         "cell"
@@ -612,6 +691,20 @@ importVisiumHDDisk <- function(
              " feature matrix under ", path, call. = FALSE)
     }
     hit[[1L]]
+}
+
+
+## tar outputs ####
+
+# A `NNNum_outputs.tar` path becomes its extracted `square_NNNum` directory,
+# extracted by the in-memory reader's own helper (next to the tar, or into
+# `outdir`); any other path is returned as is. The single call site of the
+# internal `Giotto:::.visiumhd_untar_bin`.
+.visiumhd_untar <- function(path, bin, outdir = NULL, force = FALSE,
+                            untar_params = list(), verbose = NULL) {
+    if (!any(GiottoUtils::file_extension(path) %in% "tar")) return(path)
+    do.call(Giotto:::.visiumhd_untar_bin, c(list(path, outdir = outdir,
+        bin = bin, force = force, verbose = verbose), untar_params))
 }
 
 
@@ -675,19 +768,4 @@ importVisiumHDDisk <- function(
 .visiumhd_attach_poly <- function(g, gpoly, ...) {
     gpoly@spatVectorCentroids <- NULL
     GiottoClass::setGiotto(g, gpoly, ...)
-}
-
-# New backed giotto, or the given one (which must be backed by a source) to
-# add into.
-.visiumhd_disk_init <- function(gobject, gsource, instructions) {
-    if (is.null(gobject)) {
-        return(GiottoClass::createGiottoObject(
-            backend = gsource, instructions = instructions))
-    }
-    checkmate::assert_class(gobject, "giotto")
-    if (is.null(gobject@source)) {
-        stop("[VisiumHDDiskReader] `gobject` must be backed by a source ",
-             "(createGiottoObject(backend = ))", call. = FALSE)
-    }
-    gobject
 }

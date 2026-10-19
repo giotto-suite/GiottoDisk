@@ -26,16 +26,10 @@ setMethod("snapshotDelete", signature("character", "character"), function(src, n
 #' @export
 setMethod("snapshotDelete", signature("gDirSource", "character"), function(src, name, ...) {
     p <- src@path
+    .gdsrc_check_schema(p, site = "[snapshotDelete]")
     gsdir <- .gdsrc_giottosave_dir(p)
-    save_path <- list.files(gsdir,
-        pattern = paste0("^", name, "\\."),
-        full.names = TRUE,
-        recursive = FALSE
-    )
-    # sidecars share the `<name>.` prefix but are not the snapshot; only the
-    # payload decides existence and is what the cascade below loads
-    snap_path <- grep("\\.(rds|qs)$", save_path, value = TRUE)
-    if (length(snap_path) == 0L) {
+    found <- .gdsrc_find_snapshot(gsdir, name = name)
+    if (is.null(found)) {
         stop(
             sprintf("[snapshotDelete] no snapshot found with name '%s'\n", name),
             call. = FALSE
@@ -53,7 +47,7 @@ setMethod("snapshotDelete", signature("gDirSource", "character"), function(src, 
     # whose snapshot was already deleted produces a warning, not a
     # hard error — the multi delete always proceeds.
     snap <- tryCatch(
-        .load_serialized(snap_path[[1L]]),
+        .load_serialized(found$file),
         error = function(e) NULL
     )
     if (inherits(snap, "giottoMulti")) {
@@ -71,6 +65,11 @@ setMethod("snapshotDelete", signature("gDirSource", "character"), function(src, 
         }
     }
 
-    unlink(save_path, force = TRUE)
+    # every folder of this name: its tag then matches nothing, which is what
+    # releases its artifacts to sourcePrune
+    snaps <- .gdsrc_snapshots(gsdir)
+    unlink(file.path(gsdir, snaps$tag[snaps$name == name]),
+        recursive = TRUE, force = TRUE
+    )
     invisible(TRUE)
 })

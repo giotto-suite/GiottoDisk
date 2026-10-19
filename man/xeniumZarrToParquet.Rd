@@ -30,7 +30,8 @@ xeniumZarrToParquet(
 \item{overwrite}{overwrite existing outputs (default \code{FALSE})}
 
 \item{workers}{parallel workers for the transcripts step (default
-taken from \code{options("giottodisk.par_workers")} / the future plan)}
+taken from \code{options("giottodisk.par_workers")}, or the future plan capped
+by the memory budget)}
 
 \item{compression}{parquet compression codec (falls back to
 \code{"snappy"} when the arrow build lacks the requested codec)}

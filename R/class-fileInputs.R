@@ -216,7 +216,7 @@ mtxInput <- function(
 # tenxH5Input ####
 
 #' @name tenxH5Input-class
-#' @title 10x cell_feature_matrix.h5 Input
+#' @title 10x feature-barcode matrix .h5 Input
 #' @description
 #' Wraps a 10x HDF5 sparse-matrix file (CSC layout with `data`,
 #' `indices`, `indptr`, `barcodes`, `features/{id,name}`, `shape`).
@@ -224,7 +224,9 @@ mtxInput <- function(
 #' streamed in cell-chunks by [storeRead()] via hyperslab reads on a
 #' long-lived `hdf5r::H5File` handle.
 #'
-#' @slot batch_cells integer. Cells per batch. Default 250,000.
+#' @slot batch_cells integer. Cells per batch, or `NA` (default) to size
+#'   batches by stored values from free memory
+#'   (`options(giottodisk.h5_batch_rows =)` pins that record count).
 #' @slot feature_id_col integer. `1L` for Ensembl ID, `2L` for gene
 #'   symbol (default).
 #' @family store types
@@ -237,29 +239,33 @@ setClass("tenxH5Input",
         feature_id_col = "integer"
     ),
     prototype = list(
-        batch_cells    = 250000L,
+        batch_cells    = NA_integer_,
         feature_id_col = 2L
     )
 )
 
 #' @name tenxH5Input
-#' @title Create a 10x cell_feature_matrix.h5 input
+#' @title Create a 10x feature-barcode matrix .h5 input
 #' @description
 #' Opens the h5 briefly to read `barcodes`, `features/{id,name}`, and
 #' `shape`; closes immediately. The handle is reopened by `storeRead()`
 #' for streaming.
 #'
-#' @param h5_path character. Path to `cell_feature_matrix.h5`.
+#' @param h5_path character. Path to a 10x feature-barcode matrix `.h5`:
+#'   Xenium `cell_feature_matrix.h5`, Visium HD `raw_feature_bc_matrix.h5` /
+#'   `filtered_feature_bc_matrix.h5` (bins) or `raw_feature_cell_matrix.h5` /
+#'   `filtered_feature_cell_matrix.h5` (segmented cells).
 #' @param feature_id_col integer. `1L` = Ensembl ID, `2L` = gene symbol
 #'   (default).
-#' @param batch_cells integer. Cells per batch. Default 250,000.
+#' @param batch_cells integer. Cells per batch, or `NA` (default) to size
+#'   batches by stored values from free memory.
 #' @return A `tenxH5Input` object.
 #' @family store constructors
 #' @export
 tenxH5Input <- function(
     h5_path,
     feature_id_col = 2L,
-    batch_cells    = 250000L
+    batch_cells    = NA_integer_
 ) {
     if (!requireNamespace("hdf5r", quietly = TRUE)) {
         stop("[tenxH5Input] hdf5r is required to read 10x .h5 files. ",

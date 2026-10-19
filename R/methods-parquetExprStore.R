@@ -1204,9 +1204,10 @@ setAs("parquetExprBase", "dgCMatrix", function(from) {
 # Compare ####
 
 #' @name parquetExprStore-compare
-#' @title Compare an expression store against a scalar
+#' @title Compare an expression store against a threshold
 #' @description
-#' `>`, `>=`, `<`, `<=`, `==` and `!=` against a numeric scalar return the
+#' `>`, `>=`, `<`, `<=`, `==` and `!=` against a numeric scalar, or against
+#' one threshold per row, return the
 #' store with a lazy indicator queued on its op chain: stored entries that
 #' pass keep value 1, entries that fail are dropped. Nothing is read until
 #' the result is, so `rowSums(x >= 1)` counts per feature in one streaming
@@ -1220,8 +1221,8 @@ setAs("parquetExprBase", "dgCMatrix", function(from) {
 #'
 #' Passing entries read back as the double `1`, not `TRUE`, because a stored
 #' value is a double on every read path. Sums and counts are unaffected.
-#' @param e1,e2 a `parquetExprBase`-inheriting store and a numeric scalar, in
-#'   either order
+#' @param e1,e2 a `parquetExprBase`-inheriting store and either a numeric
+#'   scalar or one threshold per row (as base R's `m >= v`), in either order
 #' @returns the store, with a `compare` record appended to its op chain
 #' @examples
 #' \dontrun{
@@ -1260,26 +1261,37 @@ setMethod("Compare", signature("parquetExprBase", "parquetExprBase"),
 }
 
 .pe_compare <- function(x, op, e2) {
-    if (length(e2) != 1L || is.na(e2)) {
+    n_row <- nrow(x)
+    if (!length(e2) %in% c(1L, n_row) || anyNA(e2)) {
         stop("[Compare] an expression store compares against a single ",
-             "non-NA number.", call. = FALSE)
+             "non-NA number, or one non-NA number per row (", n_row, ").",
+             call. = FALSE)
     }
     e2 <- as.numeric(e2)
     op <- as.character(op) # `.Generic` carries a package attribute
     # The whole design rests on this: an unstored entry is 0, so if 0 passes,
     # every unstored entry would have to become a stored 1.
-    if (isTRUE(do.call(op, list(0, e2)))) {
-        stop("[Compare] `x ", op, " ", e2, "` is TRUE for every unstored ",
+    dense <- do.call(op, list(0, e2))
+    if (any(dense)) {
+        bad <- e2[which(dense)[1L]]
+        stop("[Compare] `x ", op, " ", bad, "` is TRUE for every unstored ",
              "zero, so the result would be dense. Use a comparison that 0 ",
              "fails, or materialize a bounded slice with ",
              "storeRead(x[i, j], output = \"dgcmatrix\") first.",
              call. = FALSE)
     }
+    # One per row: base R's `m >= v` with length(v) == nrow(m), which is the
+    # feature axis unless the store is transposed. The thresholds become a
+    # payload keyed by on-disk id, so `[` after the comparison cannot shift
+    # them. A single number is the scalar form, whatever the row count.
+    axis <- "all"
+    if (length(e2) > 1L) {
+        axis <- if (isTRUE(x@transposed)) "cell" else "feat"
+        e2 <- .pe_axis_factor_payload(x, e2, axis, fill = NA_real_)
+    }
     # Lowerable on either carrier, so it goes wherever the chain currently
     # ends -- after a post op it has to run R-side too (monotonic rule).
-    phase <- if (length(x@post_ops) > 0L) "post" else "lazy"
-    .pe_push_op(x, list(type = "compare", op = op, axis = "all", e2 = e2),
-        phase = phase)
+    .pe_push_op_last(x, list(type = "compare", op = op, axis = axis, e2 = e2))
 }
 
 

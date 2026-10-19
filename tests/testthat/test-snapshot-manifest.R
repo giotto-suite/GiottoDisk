@@ -17,11 +17,11 @@ test_that("snapshotSave writes manifest and history sidecars", {
     g <- .mk_backed_g(td)
     snapshotSave(g@source, g, name = "snap1", verbose = FALSE)
 
-    gsdir <- file.path(td, "giottosave")
-    expect_true(file.exists(file.path(gsdir, "snap1.manifest.json")))
-    expect_true(file.exists(file.path(gsdir, "snap1.history.ndjson")))
-    # the snapshot itself is still discoverable by name
-    expect_true("snap1" %in% .gdsrc_detect_gsavename(gsdir))
+    snapdir <- dirname(.snap_file(td, "snap1"))
+    expect_true(file.exists(file.path(snapdir, "manifest.json")))
+    expect_true(file.exists(file.path(snapdir, "history.ndjson")))
+    # the sidecars are not mistaken for the snapshot object
+    expect_identical(basename(.snap_file(td, "snap1")), "gobject.RDS")
 })
 
 test_that("snapshotManifest reads a snapshot without loading it", {
@@ -58,7 +58,7 @@ test_that("the most recent snapshot is used when no name is given", {
 
     g <- .mk_backed_g(td)
     snapshotSave(g@source, g, name = "older", verbose = FALSE)
-    Sys.sleep(1.1) # mtime resolution
+    Sys.setFileTime(.snap_file(td, "older"), Sys.time() - 60L)
     g2 <- g
     g2@expression$cell$rna$scaled <- NULL
     snapshotSave(g2@source, g2, name = "newer", verbose = FALSE)
@@ -78,11 +78,10 @@ test_that("snapshotDelete removes the sidecars with the snapshot", {
 
     g <- .mk_backed_g(td)
     snapshotSave(g@source, g, name = "snap1", verbose = FALSE)
+    snapdir <- dirname(.snap_file(td, "snap1"))
     snapshotDelete(g@source, "snap1")
 
-    expect_length(
-        list.files(file.path(td, "giottosave"), pattern = "^snap1\\."), 0L
-    )
+    expect_false(dir.exists(snapdir))
 })
 
 test_that("a snapshot written without a manifest reports that clearly", {
@@ -91,7 +90,22 @@ test_that("a snapshot written without a manifest reports that clearly", {
 
     g <- .mk_backed_g(td)
     snapshotSave(g@source, g, name = "snap1", verbose = FALSE)
-    unlink(file.path(td, "giottosave", "snap1.manifest.json"))
+    unlink(file.path(dirname(.snap_file(td, "snap1")), "manifest.json"))
 
-    expect_error(snapshotManifest(g@source, "snap1"), "no manifest")
+    expect_error(snapshotManifest(g@source, "snap1"), "no manifest.json")
+})
+
+test_that("an overwrite replaces the sidecars with the snapshot", {
+    td <- tempfile("manifest_"); dir.create(td)
+    on.exit(unlink(td, recursive = TRUE), add = TRUE)
+
+    g <- .mk_backed_g(td)
+    snapshotSave(g@source, g, name = "snap1", verbose = FALSE)
+    g2 <- g
+    g2@expression$cell$rna$scaled <- NULL
+    snapshotSave(g2@source, g2, name = "snap1", overwrite = TRUE,
+        verbose = FALSE)
+
+    m <- snapshotManifest(g@source, "snap1")
+    expect_false("scaled" %in% names(m$slots$expression$cell$rna))
 })
