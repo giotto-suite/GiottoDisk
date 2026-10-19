@@ -1,10 +1,9 @@
-# Streaming PAGE enrichment, and the two methods that are refused.
+# Streaming PAGE and hypergeometric enrichment, and rank, which is refused.
 #
 # The bar is parity with the in-memory implementation: the same cells in the
 # same order with the same scores. Scores agree to floating point rather than
-# bit-for-bit, because the per-cell sd is recovered from raw moments and sums
-# in a different order than stats::sd. Everything downstream divides by that
-# sd, so the tolerance is stated rather than left to expect_equal's default.
+# bit-for-bit, because the reference level is summed window by window, so the
+# tolerance is stated rather than left to expect_equal's default.
 
 # `envir` is the caller's frame: withr's local_* would otherwise unwind when
 # this helper returns, deleting the project directory before a single test has
@@ -82,8 +81,10 @@ test_that("a per-feature multiply payload reaches the right rows", {
 
 # parity -------------------------------------------------------------------
 
-test_that("streaming PAGE matches the in-memory method", {
+test_that("streaming enrichment matches the in-memory method", {
     skip_if_not_installed("Giotto")
+    # several windows, so cells scored apart must agree with all at once
+    withr::local_options(giottodisk.chunk_size = 37L)
     f <- .enrich_pe_fixture()
     sm <- .enrich_sign_matrix(rownames(f$m))
     pe <- GiottoClass::getExpression(f$backed, values = "raw",
@@ -92,16 +93,23 @@ test_that("streaming PAGE matches the in-memory method", {
     mm <- as.matrix(GiottoClass::getExpression(f$mem, values = "raw",
                                                output = "matrix"))
 
+    page <- function(...) Giotto::enrichParam("PAGE", verbose = FALSE, ...)
+    hyper <- function(...) Giotto::enrichParam("hypergeometric", ...)
     configs <- list(
-        default = list(),
-        zscore = list(output_enrichment = "zscore"),
-        no_reverse = list(reverse_log_scale = FALSE),
-        natural_log = list(logbase = exp(1)),
-        strict_overlap = list(min_overlap_genes = 50)
+        default = page(),
+        zscore = page(output_enrichment = "zscore"),
+        p_value = page(p_value = TRUE),
+        depletion = page(p_value = TRUE, include_depletion = TRUE),
+        no_reverse = page(reverse_log_scale = FALSE),
+        natural_log = page(logbase = exp(1)),
+        strict_overlap = page(min_overlap_genes = 50),
+        hyper = hyper(),
+        hyper_zscore = hyper(output_enrichment = "zscore"),
+        hyper_p = hyper(p_value = TRUE),
+        hyper_top = hyper(top_percentage = 20, reverse_log_scale = FALSE)
     )
     for (nm in names(configs)) {
-        p <- do.call(Giotto::enrichParam,
-                     c(list("PAGE", verbose = FALSE), configs[[nm]]))
+        p <- configs[[nm]]
         streamed <- GiottoClass::analyzeData(pe, p, sign_matrix = sm)
         memory <- data.table::as.data.table(
             GiottoClass::analyzeData(mm, p, sign_matrix = sm)
@@ -160,7 +168,7 @@ test_that("runPAGEEnrich runs end to end on a backed object", {
 
 # what is refused ----------------------------------------------------------
 
-test_that("the unsupported enrichment paths say why", {
+test_that("rank enrichment is refused, and says why", {
     skip_if_not_installed("Giotto")
     f <- .enrich_pe_fixture(G = 150L, N = 60L)
     sm <- .enrich_sign_matrix(rownames(f$m), sizes = c(30L, 30L))
@@ -168,19 +176,9 @@ test_that("the unsupported enrichment paths say why", {
                                      output = "exprObj")[]
 
     expect_error(
-        GiottoClass::analyzeData(pe,
-            Giotto::enrichParam("PAGE", p_value = TRUE), sign_matrix = sm),
-        "p_value = TRUE` is not supported"
-    )
-    expect_error(
         GiottoClass::analyzeData(pe, Giotto::enrichParam("rank"),
                                  sign_matrix = sm),
         "ranks each gene across every cell"
-    )
-    expect_error(
-        GiottoClass::analyzeData(pe,
-            Giotto::enrichParam("hypergeometric"), sign_matrix = sm),
-        "not supported on a disk-backed"
     )
 })
 

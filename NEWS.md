@@ -19,8 +19,16 @@
   place: flat snapshot files move into snapshot folders and their artifacts
   are retagged. `.qs` snapshots, which are no longer read, are moved too, so
   their artifacts stay protected from `sourcePrune()`.
+- PAGE (now with `p_value = TRUE`) and hypergeometric enrichment run on a
+  store: one pass for the per-feature reference level, then Giotto's own
+  method scores one window of cells at a time. Rank enrichment is still
+  refused.
 
 ## bug fixes
+- PAGE on a store follows Giotto's in-memory method again: the per-feature
+  reference level is logged in `logbase` (it was base e), a feature marks a
+  type where its sign-matrix value is > 0, and cells come back in the
+  store's order. Needs `Giotto (>= 4.3.5)`.
 - A second `snapshotSave()` of an object holding images copied every image
   into the vault again: after adoption the image still read from the
   original file. It now reads from the vault copy.
