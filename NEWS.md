@@ -91,6 +91,11 @@
   FALSE)` on store-backed points reaches the disk method.
 
 ## bug fixes
+- The disk Xenium reader names focus images from Xenium Onboard Analysis
+  2.x (`morphology_focus_0000.ome.tif`, ...) by their channel, read from the
+  OME header: `dapi`, `18s`, `atp1a1_cd45_e-cadherin`, `alphasma_vimentin`,
+  as the files of later versions are named. They were `bound1`-`bound4`,
+  which named the DAPI image `bound1`.
 - `saveGiotto()` no longer fails on a project where an overlap that is in more
   than one snapshot depends on several stores: `as.data.frame()` of a
   `gDirSource` keeps `depends` as one list cell per artifact.
