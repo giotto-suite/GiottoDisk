@@ -8,29 +8,11 @@ NULL
 .GDSRC_SCHEMA_VERSION <- 2L
 .GDSRC_SCHEMA_MIN <- 2L
 
-# per-session cache of on-disk versions, keyed by project path. The version
-# only changes through sourceUpdate(), which refreshes it.
-.gdsrc_schema_env <- new.env(parent = emptyenv())
-
-.gdsrc_schema_key <- function(p) normalizePath(p, mustWork = FALSE)
-
 # on-disk schema version, NA for a directory without a giottodir.json
-.gdsrc_schema_ondisk <- function(p, cache = TRUE) {
-    key <- .gdsrc_schema_key(p)
-    if (cache && !is.null(v <- .gdsrc_schema_env[[key]])) return(v)
+.gdsrc_schema_ondisk <- function(p) {
     f <- .gdsrc_json_path(p)
     if (!file.exists(f)) return(NA_integer_)
-    v <- as.integer(.json_read(f)$header$versions$manifest %||% NA_integer_)
-    .gdsrc_schema_env[[key]] <- v
-    v
-}
-
-.gdsrc_schema_forget <- function(p) {
-    key <- .gdsrc_schema_key(p)
-    if (exists(key, envir = .gdsrc_schema_env, inherits = FALSE)) {
-        rm(list = key, envir = .gdsrc_schema_env)
-    }
-    invisible(NULL)
+    as.integer(.json_read(f)$header$versions$manifest %||% NA_integer_)
 }
 
 # Refuse a project whose layout this GiottoDisk does not read or write.
@@ -93,7 +75,7 @@ setMethod("sourceSchema", signature("character"), function(src, ...) {
 #' @rdname sourceSchema
 #' @export
 setMethod("sourceSchema", signature("gDirSource"), function(src, ...) {
-    v <- .gdsrc_schema_ondisk(src@path, cache = FALSE)
+    v <- .gdsrc_schema_ondisk(src@path)
     list(
         version = v,
         current = .GDSRC_SCHEMA_VERSION,
@@ -132,7 +114,7 @@ setMethod("sourceUpdate", signature("character"), function(src, ...) {
 setMethod("sourceUpdate", signature("gDirSource"), function(src,
     verbose = NULL, ...) {
     p <- src@path
-    v <- .gdsrc_schema_ondisk(p, cache = FALSE)
+    v <- .gdsrc_schema_ondisk(p)
     if (is.na(v) || v == .GDSRC_SCHEMA_VERSION) return(invisible(src))
     if (v > .GDSRC_SCHEMA_VERSION) {
         stop(sprintf(paste0(
