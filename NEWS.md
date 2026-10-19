@@ -1,6 +1,12 @@
 # GiottoDisk 0.0.0.5
 
 ## new
+- Spatial co-expression on disk-backed objects: `processData()` for
+  GiottoClass's `spatialSmoothParam` writes a smoothed store (windowed over
+  cells, in network order when the stored order is not local), and
+  `analyzeData()` for `featCorParam` correlates the features of a store in
+  one pass. With them Giotto's `spatialCoexpression()` runs on backed
+  objects. Needs `GiottoClass (>= 0.7.16)`.
 - Bin points on disk: the Visium HD reader's `load_transcripts()` and the
   Stereo-seq reader's `load_binpoints()` return a `giottoBinPoints` whose
   slots hold stores -- one point per bin with counts, and the bins' counts as
