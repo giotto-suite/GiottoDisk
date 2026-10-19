@@ -1,4 +1,4 @@
-# GiottoDisk 0.0.0.5
+# GiottoDisk 0.0.0.6
 
 ## breaking changes
 - A snapshot is a folder, `giottosave/<name>.<id>/gobject.RDS` (or
@@ -19,6 +19,18 @@
   place: flat snapshot files move into snapshot folders and their artifacts
   are retagged. `.qs` snapshots, which are no longer read, are moved too, so
   their artifacts stay protected from `sourcePrune()`.
+
+## bug fixes
+- A second `snapshotSave()` of an object holding images copied every image
+  into the vault again: after adoption the image still read from the
+  original file. It now reads from the vault copy.
+- Images were protected only by the snapshot that first adopted them, so
+  deleting that snapshot and running `sourcePrune()` deleted images a later
+  snapshot still referenced. Every save now tags the vault images it holds.
+
+# GiottoDisk 0.0.0.5
+
+## new
 - Spatial co-expression on disk-backed objects: `processData()` for
   GiottoClass's `spatialSmoothParam` writes a smoothed store (windowed over
   cells, in network order when the stored order is not local), and
@@ -109,12 +121,6 @@
   FALSE)` on store-backed points reaches the disk method.
 
 ## bug fixes
-- A second `snapshotSave()` of an object holding images copied every image
-  into the vault again: after adoption the image still read from the
-  original file. It now reads from the vault copy.
-- Images were protected only by the snapshot that first adopted them, so
-  deleting that snapshot and running `sourcePrune()` deleted images a later
-  snapshot still referenced. Every save now tags the vault images it holds.
 - The disk Xenium reader names focus images from Xenium Onboard Analysis
   2.x (`morphology_focus_0000.ome.tif`, ...) by their channel, read from the
   OME header: `dapi`, `18s`, `atp1a1_cd45_e-cadherin`, `alphasma_vimentin`,
