@@ -299,7 +299,6 @@ NULL
     )
 
     .json_atomic_write(x = content, file = .gdsrc_json_path(p))
-    .gdsrc_schema_forget(p)
     invisible(TRUE)
 }
 
