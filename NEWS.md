@@ -21,6 +21,10 @@
   their artifacts stay protected from `sourcePrune()`.
 
 ## bug fixes
+- PAGE on a store follows Giotto's in-memory method again: the per-feature
+  reference level is logged in `logbase` (it was base e), a feature marks a
+  type where its sign-matrix value is > 0, and cells come back in the
+  store's order. Needs `Giotto (>= 4.3.5)`.
 - A second `snapshotSave()` of an object holding images copied every image
   into the vault again: after adoption the image still read from the
   original file. It now reads from the vault copy.

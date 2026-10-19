@@ -105,16 +105,20 @@ setMethod("analyzeData",
     # ---- cell-type selection, identical to the in-memory method ------------
     # detected = column sums of the sign matrix over genes the store holds
     in_store <- rownames(sign_matrix) %in% all_genes
-    detected <- colSums(sign_matrix[in_store, , drop = FALSE])
+    detected <- colSums(sign_matrix[in_store, , drop = FALSE] > 0)
     lost <- names(detected)[detected <= param$min_overlap_genes]
     for (ct in lost) {
         if (verbose) {
-            print(paste0("Warning, ", ct, " only has ", detected[[ct]],
-                " overlapping genes. Will be removed."))
+            message(ct, " only has ", detected[[ct]],
+                " overlapping genes. Will be removed.")
         }
     }
     available_ct <- names(detected)[detected > param$min_overlap_genes]
-    if (length(available_ct) == 1L) stop("Only one cell type available.")
+    if (!length(available_ct)) {
+        stop("[PAGE] no cell type has more than `min_overlap_genes` (",
+            param$min_overlap_genes, ") genes in the expression data.",
+            call. = FALSE)
+    }
 
     interGene <- intersect(rownames(sign_matrix), all_genes)
     filterSig <- sign_matrix[interGene, available_ct, drop = FALSE]
@@ -124,7 +128,7 @@ setMethod("analyzeData",
         base <- param$logbase
         src <- .pe_push_op_last(pe, list(type = "expm1", base = base))
         m <- log(.stream_expr_accum(src, axis = "feat", stats = "sum")$sum /
-                     n_cells + 1)
+                     n_cells + 1, base = base)
     } else {
         m <- .stream_expr_accum(pe, axis = "feat", stats = "sum")$sum / n_cells
     }
@@ -151,7 +155,7 @@ setMethod("analyzeData",
 
     # ---- pass 4..T+3: one per cell type, over its marker rows only ---------
     zs <- vapply(available_ct, function(ct) {
-        markers <- interGene[filterSig[, ct] == 1]
+        markers <- interGene[filterSig[, ct] > 0]
         k <- length(markers)
         sub <- pe[markers, ]
         got <- .stream_expr_accum(sub, axis = "cell", stats = "sum")$sum
@@ -166,12 +170,9 @@ setMethod("analyzeData",
         dimnames(zs) <- list(cell_ids, available_ct)
     }
 
+    # cells in the store's order, as the in-memory method returns them
     out <- data.table::data.table(cell_ID = cell_ids)
     out <- cbind(out, data.table::as.data.table(zs))
-    # Ordered by cell_ID, because the in-memory method's final dcast() is: the
-    # two backends must hand back the same table, not the same table up to a
-    # permutation.
-    data.table::setorderv(out, "cell_ID")
     out[]
 }
 
