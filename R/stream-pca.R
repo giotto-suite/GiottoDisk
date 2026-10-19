@@ -500,6 +500,38 @@ setMethod("reduceData",
         n_threads = .gd_kernel_threads())
 }
 
+# Gram pass over a materialized single store: G = X X^T (features x
+# features) and the per-feature sums s = X 1, in one read. Through
+# GiottoKernels when installed, else over cell bands in parallel, each
+# chunk read genes x cells. Shared by stream PCA and featCorParam.
+.pe_gram_pass <- function(pe, P, info1 = NULL, bands = NULL,
+    n_workers = .par_workers(), chunk_size = .exprbase_chunk_size(pe)) {
+    kern <- .gram_pass_kernel(pe, P)
+    if (!is.null(kern)) return(list(G = kern$G, s = kern$s))
+    if (is.null(info1)) info1 <- list(sub = .exprbase_substores(pe)[[1L]]$store)
+    if (is.null(bands)) bands <- .pe_bands(as.integer(pe@n_cells), n_workers)
+    chunk_size <- as.integer(chunk_size)
+    gram_band <- function(rng) {
+        G_local <- matrix(0.0, nrow = P, ncol = P)
+        s_local <- numeric(P)
+        for (w in .pe_chunk_ranges(rng[1L], rng[2L], chunk_size)) {
+            M <- .pe_read_chunk_sub(info1, w[[1L]], w[[2L]], list(), P)
+            if (!is.null(M)) {
+                # M is genes x cells, so M M^T is the gram over genes and
+                # rowSums gives the per-gene totals
+                G_local <- G_local + as.matrix(Matrix::tcrossprod(M))
+                s_local <- s_local + as.numeric(Matrix::rowSums(M))
+            }
+        }
+        list(G = G_local, s = s_local)
+    }
+    partials <- Filter(Negate(is.null),
+        .pe_band_lapply(bands, gram_band, n_workers))
+    list(G = Reduce("+", lapply(partials, `[[`, "G"),
+            init = matrix(0.0, nrow = P, ncol = P)),
+        s = Reduce("+", lapply(partials, `[[`, "s"), init = numeric(P)))
+}
+
 # Streaming gram-eigen core. Two passes over a materialized store:
 # (1) accumulate G_raw = Σ chunkᵀchunk plus per-gene column sums, from which
 # μ, σ and G = G_raw − n·μμᵀ (optionally / σσᵀ) all follow; (2) coords
@@ -613,35 +645,9 @@ setMethod("reduceData",
     info1 <- sub_infos[[1L]]
     bands <- .pe_bands(info1$n_sub, n_workers)
 
-    kern <- .gram_pass_kernel(pe, P_hvg)
-    if (!is.null(kern)) {
-        G_raw <- kern$G
-        g_sum <- kern$s
-    } else {
-        G_raw <- matrix(0.0, nrow = P_hvg, ncol = P_hvg)
-        gram_band <- function(rng) {
-            G_local <- matrix(0.0, nrow = P_hvg, ncol = P_hvg)
-            s_local <- numeric(P_hvg)
-            # A band is a sub-range of ONE substore, so this takes the range
-            # primitive directly rather than `.pe_windows()` -- there is no
-            # substore walk to do here, the band already picked one.
-            for (w in .pe_chunk_ranges(rng[1L], rng[2L], chunk_size)) {
-                M <- .read_chunk_sub(info1, w[[1L]], w[[2L]])
-                if (!is.null(M)) {
-                    # M is genes × cells, so MMᵀ is the gram over genes and
-                    # rowSums gives the per-gene totals.
-                    G_local <- G_local + as.matrix(Matrix::tcrossprod(M))
-                    s_local <- s_local + as.numeric(Matrix::rowSums(M))
-                }
-            }
-            list(G = G_local, s = s_local)
-        }
-        partials <- .pe_band_lapply(bands, gram_band, n_workers)
-        partials <- Filter(Negate(is.null), partials)
-        G_raw <- Reduce("+", lapply(partials, `[[`, "G"), init = G_raw)
-        g_sum <- Reduce("+", lapply(partials, `[[`, "s"),
-                        init = numeric(P_hvg))
-    }
+    gp <- .pe_gram_pass(pe, P_hvg, info1, bands, n_workers, chunk_size)
+    G_raw <- gp$G
+    g_sum <- gp$s
 
     # Derive the stats a dedicated pass would have read the store for.
     # `mu_true` is the actual per-gene mean and is used for σ regardless of

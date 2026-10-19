@@ -25,7 +25,7 @@ Imports:
     digest,
     dplyr,
     Giotto (>= 4.3.3),
-    GiottoClass (>= 0.7.14),
+    GiottoClass (>= 0.7.16),
     GiottoUtils,
     igraph,
     jsonlite,
@@ -116,15 +116,18 @@ Collate:
     'methods-transforms.R'
     'pca-param.R'
     'stream-binarize.R'
+    'stream-crossprod.R'
     'stream-deconv.R'
     'stream-edgestats.R'
     'stream-enrich.R'
+    'stream-featCor.R'
     'stream-filter.R'
     'stream-labelProportions.R'
     'stream-markers.R'
     'stream-motif.R'
     'stream-normalize.R'
     'stream-pca.R'
+    'stream-spatialSmooth.R'
     'utils-spatial.R'
     'tilework.R'
     'utils-arrow.R'
