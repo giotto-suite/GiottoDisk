@@ -77,13 +77,13 @@ setMethod("analyzeData",
 
 # Score one window of cells at a time with Giotto's in-memory method, handing
 # it what each window needs from all cells (`window_args(M)`). Windows return
-# raw scores; scaling (`output_enrichment = "zscore"`) is across all cells,
-# so it comes last. `dense_bytes` is the dense working memory per value of a
+# raw scores (and with p_value their p-values, the scores as an attribute);
+# scaling (`output_enrichment = "zscore"`) is across all cells, so it comes
+# last. `dense_bytes` is the dense working memory per value of a
 # window (features x cells), on top of reading it.
 .stream_enrich_windows <- function(pe, sign_matrix, param, window_args,
                                    dense_bytes = 0) {
-    zscore <- identical(param$output_enrichment, "zscore") &&
-        !isTRUE(param$p_value)
+    zscore <- identical(param$output_enrichment, "zscore")
     inner <- param
     inner$output_enrichment <- "original"
 
@@ -91,7 +91,7 @@ setMethod("analyzeData",
     per_nz <- 150 + dense_bytes / max(min(1, dens), 1e-6)
     windows <- .pe_windows(pe, .pe_window_cells(pe, bytes_per_nz = per_nz,
                                                 k = 0L))
-    out <- data.table::rbindlist(lapply(seq_along(windows), function(i) {
+    res <- lapply(seq_along(windows), function(i) {
         M <- storeRead(.pe_window_store(windows[[i]]), output = "dgcmatrix",
             max_rows = Inf, max_cols = Inf)
         # cell types are kept or dropped by feature counts alone, so report
@@ -99,13 +99,20 @@ setMethod("analyzeData",
         if (i > 1L && !is.null(inner$verbose)) inner$verbose <- FALSE
         do.call(analyzeData,
             c(list(M, inner, sign_matrix = sign_matrix), window_args(M)))
-    }))
+    })
+    out <- data.table::rbindlist(res)
+    scores <- if (isTRUE(param$p_value)) {
+        data.table::rbindlist(lapply(res, attr, "scores"))
+    } else {
+        out
+    }
 
     if (zscore) {
-        types <- setdiff(names(out), "cell_ID")
-        out[, (types) := lapply(.SD, function(v) as.numeric(scale(v))),
+        types <- setdiff(names(scores), "cell_ID")
+        scores[, (types) := lapply(.SD, function(v) as.numeric(scale(v))),
             .SDcols = types]
     }
+    if (isTRUE(param$p_value)) data.table::setattr(out, "scores", scores[])
     out[]
 }
 

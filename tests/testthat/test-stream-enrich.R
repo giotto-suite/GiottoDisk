@@ -100,6 +100,7 @@ test_that("streaming enrichment matches the in-memory method", {
         zscore = page(output_enrichment = "zscore"),
         p_value = page(p_value = TRUE),
         depletion = page(p_value = TRUE, include_depletion = TRUE),
+        zscore_p = page(p_value = TRUE, output_enrichment = "zscore"),
         no_reverse = page(reverse_log_scale = FALSE),
         natural_log = page(logbase = exp(1)),
         strict_overlap = page(min_overlap_genes = 50),
@@ -122,6 +123,11 @@ test_that("streaming enrichment matches the in-memory method", {
         for (cl in setdiff(names(streamed), "cell_ID")) {
             expect_equal(streamed[[cl]], memory[[cl]],
                          tolerance = 1e-10, info = paste(nm, cl))
+        }
+        # with p-values, the scores they come from ride along
+        if (isTRUE(p$p_value)) {
+            expect_equal(attr(streamed, "scores"), attr(memory, "scores"),
+                         tolerance = 1e-10, info = nm)
         }
     }
 
@@ -163,6 +169,19 @@ test_that("runPAGEEnrich runs end to end on a backed object", {
         expression_values = "raw", verbose = FALSE)
     expect_true("PAGE" %in% GiottoClass::list_spatial_enrichments_names(
         g2, spat_unit = "cell", feat_type = "rna"))
+
+    # p-values land beside the scores, as in memory
+    g3 <- Giotto::runPAGEEnrich(f$backed, sign_matrix = sm,
+        expression_values = "raw", p_value = TRUE, verbose = FALSE)
+    m3 <- Giotto::runPAGEEnrich(f$mem, sign_matrix = sm,
+        expression_values = "raw", p_value = TRUE, verbose = FALSE)
+    for (nm in c("PAGE", "PAGE_p", "PAGE_padj")) {
+        b <- GiottoClass::getSpatialEnrichment(g3, name = nm,
+                                               output = "data.table")
+        m <- GiottoClass::getSpatialEnrichment(m3, name = nm,
+                                               output = "data.table")
+        expect_equal(b, m, tolerance = 1e-10, info = nm)
+    }
 })
 
 
