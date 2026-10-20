@@ -71,21 +71,34 @@ setMethod("analyzeData",
 
 .stream_enrich <- function(pe, sign_matrix, param) {
     ref <- .stream_enrich_reference(pe, param)
+    .stream_enrich_windows(pe, sign_matrix, param,
+        window_args = function(M) list(reference = ref))
+}
 
-    # raw scores per window; the scaling across all cells comes last
+# Score one window of cells at a time with Giotto's in-memory method, handing
+# it what each window needs from all cells (`window_args(M)`). Windows return
+# raw scores; scaling (`output_enrichment = "zscore"`) is across all cells,
+# so it comes last. `dense_bytes` is the dense working memory per value of a
+# window (features x cells), on top of reading it.
+.stream_enrich_windows <- function(pe, sign_matrix, param, window_args,
+                                   dense_bytes = 0) {
     zscore <- identical(param$output_enrichment, "zscore") &&
         !isTRUE(param$p_value)
     inner <- param
     inner$output_enrichment <- "original"
 
-    windows <- .pe_windows(pe, .pe_window_cells(pe, bytes_per_nz = 150, k = 0L))
+    dens <- tryCatch(.pe_view_density(pe), error = function(e) 1)
+    per_nz <- 150 + dense_bytes / max(min(1, dens), 1e-6)
+    windows <- .pe_windows(pe, .pe_window_cells(pe, bytes_per_nz = per_nz,
+                                                k = 0L))
     out <- data.table::rbindlist(lapply(seq_along(windows), function(i) {
         M <- storeRead(.pe_window_store(windows[[i]]), output = "dgcmatrix",
             max_rows = Inf, max_cols = Inf)
         # cell types are kept or dropped by feature counts alone, so report
         # that once, not per window
         if (i > 1L && !is.null(inner$verbose)) inner$verbose <- FALSE
-        analyzeData(M, inner, sign_matrix = sign_matrix, reference = ref)
+        do.call(analyzeData,
+            c(list(M, inner, sign_matrix = sign_matrix), window_args(M)))
     }))
 
     if (zscore) {
@@ -143,25 +156,10 @@ setMethod("analyzeData",
     }
     h <- .rank_hist(pe, n_bins)
     ties <- if (identical(param$ties_method, "max")) "min" else "average"
-
-    zscore <- identical(param$output_enrichment, "zscore")
-    inner <- param
-    inner$output_enrichment <- "original"
-
-    windows <- .pe_windows(pe, .pe_window_cells(pe, bytes_per_nz = 150, k = 0L))
-    out <- data.table::rbindlist(lapply(windows, function(d) {
-        M <- storeRead(.pe_window_store(d), output = "dgcmatrix",
-            max_rows = Inf, max_cols = Inf)
-        R <- .rank_from_hist(M, h, match(rownames(M), pe@feat_ids), ties)
-        analyzeData(M, inner, sign_matrix = sign_matrix, ranks = R)
-    }))
-
-    if (zscore) {
-        types <- setdiff(names(out), "cell_ID")
-        out[, (types) := lapply(.SD, function(v) as.numeric(scale(v))),
-            .SDcols = types]
-    }
-    out[]
+    # each window holds its dense rank matrix, about two copies while built
+    .stream_enrich_windows(pe, sign_matrix, param, dense_bytes = 16,
+        window_args = function(M) list(ranks = .rank_from_hist(
+            M, h, match(rownames(M), pe@feat_ids), ties)))
 }
 
 # The histogram as lookup tables: per feature its max, the cells at or below
