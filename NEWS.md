@@ -611,6 +611,19 @@
   the resulting window across RAM budgets for both read shapes (a chunk landing
   in a sparse matrix versus a collected triplet frame, which differ ~4x in
   bytes per stored value).
+- new `importMerscopeDisk()` and `createGiottoMerscopeObjectDisk()` for Vizgen
+  MERSCOPE region directories. `data_to_use = "subcellular"` (default) writes
+  `detected_transcripts.parquet` and `cell_boundaries.parquet` to stores;
+  `"aggregate"` uses `cell_by_gene.csv` only.
+- MERSCOPE boundaries replicated across z-planes are read from the lowest plane.
+  Boundaries that differ between planes stop with an error; `poly_z_indices`
+  selects planes.
+- MERSCOPE `Blank` barcodes are loaded as feature type `neg_probe`.
+- MERSCOPE `polygon_format = "hdf5"` is not implemented.
+- MERSCOPE transcript, polygon and cell center y coordinates are negated on
+  load.
+- MERSCOPE `load_images` loads mosaic images (e.g. `"DAPI_z3"`), placed with
+  `images/micron_to_mosaic_pixel_transform.csv`.
 - Halko PCA accepts `scale = TRUE`, applied without densifying.
 - an `add` op is registered as a refused stub for a future centred-display path;
   both executors reject it, and nothing emits one.
