@@ -13,6 +13,11 @@
   `options(giottodisk.schema_check = FALSE)` proceeds with a warning instead.
 - Snapshot names may not contain a path separator or start with `.`.
 
+## changes
+- The Visium HD and Stereo-seq disk readers no longer drop polygon centroids
+  themselves; `GiottoClass (>= 0.7.18)`'s setter does it for every polygon set
+  on a backed object.
+
 ## new
 - `sourceSchema()` reports a project directory's schema version and whether
   this GiottoDisk supports it. `sourceUpdate()` migrates an older project in

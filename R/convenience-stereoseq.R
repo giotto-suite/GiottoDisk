@@ -265,16 +265,8 @@ setMethod(
                 }
             }
             if (!is.null(gpoly)) {
-                # Drop the terra centroids the in-memory loaders pre-compute,
-                # so they are derived from the `parquetGeomBase` at attach
-                # time instead. This is the same choice the Xenium disk
-                # reader makes (see `.xenium_polygons_disk`). Keeping them
-                # leaves a centroid SpatVector with no `poly_ID` attribute
-                # next to a store-backed `@spatVector`, and subsetting the
-                # polygon -- `subset(gpolygon@spatVectorCentroids, poly_ID
-                # %in% cell_ids)` in GiottoClass -- then fails, taking
-                # `filterGiotto()` / `subsetGiotto()` down with it.
-                gpoly@spatVectorCentroids <- NULL
+                # the setter drops the terra centroids the in-memory loaders
+                # pre-compute; a backed polygon derives them from its store
                 g <- GiottoClass::setGiotto(g, gpoly, verbose = verbose)
             }
 
