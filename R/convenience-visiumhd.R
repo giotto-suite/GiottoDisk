@@ -408,7 +408,7 @@ setMethod(
                 g <- GiottoClass::setGiotto(g, gimg, verbose = verbose)
             }
             if (!is.null(tess_poly)) {
-                g <- .visiumhd_attach_poly(g, tess_poly, verbose = verbose)
+                g <- GiottoClass::setGiotto(g, tess_poly, verbose = verbose)
             }
             if (!is.null(tx_list)) {
                 g <- GiottoClass::setGiotto(g, tx_list, verbose = verbose)
@@ -500,8 +500,8 @@ setMethod(
 
             g <- .backed_gobject_init(gobject, gsrc, instructions)
             for (p in poly_list) {
-                g <- .visiumhd_attach_poly(g, p, centroids_to_spatlocs = TRUE,
-                                           verbose = verbose)
+                g <- GiottoClass::setGiotto(g, p, centroids_to_spatlocs = TRUE,
+                                            verbose = verbose)
             }
             if (!is.null(expr_list)) {
                 g <- GiottoClass::setGiotto(g, expr_list, verbose = verbose)
@@ -757,15 +757,4 @@ importVisiumHDDisk <- function(
     dt <- data.table::as.data.table(dplyr::collect(q))
     data.table::setnames(dt, c(key, parents), c("cell_ID", su_of(parents)))
     dt
-}
-
-
-## object ####
-
-# Attach an in-memory polygon to a backed object; the setter writes it to the
-# vault. Terra centroids are dropped first so they are derived from the store
-# (see StereoSeqDiskReader's create_gobject for why they must not travel).
-.visiumhd_attach_poly <- function(g, gpoly, ...) {
-    gpoly@spatVectorCentroids <- NULL
-    GiottoClass::setGiotto(g, gpoly, ...)
 }
