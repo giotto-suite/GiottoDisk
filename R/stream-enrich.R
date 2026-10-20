@@ -4,8 +4,8 @@ NULL
 
 # stream-enrich ####
 #
-# analyzeData(parquetExprBase, pageEnrichParam | hyperEnrichParam) --
-# streaming PAGE and hypergeometric enrichment.
+# analyzeData(parquetExprBase, pageEnrichParam | hyperEnrichParam |
+# rankEnrichParam) -- streaming sign-matrix enrichment.
 #
 # The statistics are Giotto's, not a re-implementation. Both score each cell
 # from that cell's own values and one per-feature reference level shared by
@@ -28,7 +28,7 @@ NULL
 
 
 #' @name analyzeData-pageEnrichParam
-#' @title Streaming PAGE and hypergeometric enrichment
+#' @title Streaming sign-matrix enrichment
 NULL
 
 #' @rdname analyzeData-pageEnrichParam
@@ -37,11 +37,16 @@ NULL
 #' or [Giotto::hyperEnrichParam-class] on a disk-backed expression store. The
 #' store is read one window of cells at a time and each window is scored by
 #' Giotto's in-memory method against the reference level of all cells, so
-#' memory follows the window, not the number of cells. Rank enrichment is not
-#' supported: it ranks each feature across all cells at once.
+#' memory follows the window, not the number of cells.
+#'
+#' A [Giotto::rankEnrichParam-class] runs the same way, except that rank
+#' enrichment first ranks each feature across all cells. Those ranks are
+#' approximated from a per-feature histogram of the values, so scores agree
+#' closely with the in-memory method rather than exactly. Rank `p_value =
+#' TRUE` is not supported on a store.
 #' @param x a `parquetExprBase` store.
-#' @param param a [Giotto::pageEnrichParam-class] or
-#'   [Giotto::hyperEnrichParam-class].
+#' @param param a [Giotto::pageEnrichParam-class],
+#'   [Giotto::hyperEnrichParam-class] or [Giotto::rankEnrichParam-class].
 #' @param sign_matrix sign matrix, features x cell types.
 #' @param ... additional arguments (none used).
 #' @returns a `data.table` of `cell_ID` and one column per cell type, the same
@@ -108,19 +113,89 @@ setMethod("analyzeData",
 }
 
 
-# ---- rank: refused, with the reason -----------------------------------------
+# ---- rank: feature ranks from a histogram -----------------------------------
+#
+# Rank enrichment ranks each feature across all cells, then ranks those ranks
+# within each cell. The first step needs every cell at once, so it is
+# approximated: one pass counts each feature's values into equal bins over
+# (0, max] (`.pe_value_hist()`), and a value's rank is the count below its bin
+# plus its share of the bin. The score uses these ranks only through their
+# order within a cell, so it stays close to the in-memory result; ties and
+# values sharing a bin are where it differs. Windows of cells are then scored
+# by Giotto's method from these ranks.
 
 #' @rdname analyzeData-pageEnrichParam
 #' @export
 setMethod("analyzeData",
     signature(x = "parquetExprBase", param = "rankEnrichParam"),
     function(x, param, ..., sign_matrix) {
-        stop("[analyzeData(parquetExprBase, rankEnrichParam)] ",
-            "rank enrichment is not supported on a disk-backed store. It ",
-            "ranks each gene across every cell (sparseMatrixStats::rowRanks), ",
-            "so no window of cells can be scored without the others -- ",
-            "unlike PAGE and hypergeometric, which score each cell on its ",
-            "own. Use one of those, or materialize the store first.",
-            call. = FALSE)
+        .stream_rank(pe = x, sign_matrix = sign_matrix, param = param)
     }
 )
+
+.stream_rank <- function(pe, sign_matrix, param, n_bins = 1024L) {
+    if (isTRUE(param$p_value)) {
+        stop("[analyzeData(parquetExprBase, rankEnrichParam)] ",
+            "`p_value = TRUE` is not supported on a disk-backed store: its ",
+            "null is fitted to the scores of every cell for n_times random ",
+            "signatures. Use the scores, or an in-memory object.",
+            call. = FALSE)
+    }
+    h <- .rank_hist(pe, n_bins)
+    ties <- if (identical(param$ties_method, "max")) "min" else "average"
+
+    zscore <- identical(param$output_enrichment, "zscore")
+    inner <- param
+    inner$output_enrichment <- "original"
+
+    windows <- .pe_windows(pe, .pe_window_cells(pe, bytes_per_nz = 150, k = 0L))
+    out <- data.table::rbindlist(lapply(windows, function(d) {
+        M <- storeRead(.pe_window_store(d), output = "dgcmatrix",
+            max_rows = Inf, max_cols = Inf)
+        R <- .rank_from_hist(M, h, match(rownames(M), pe@feat_ids), ties)
+        analyzeData(M, inner, sign_matrix = sign_matrix, ranks = R)
+    }))
+
+    if (zscore) {
+        types <- setdiff(names(out), "cell_ID")
+        out[, (types) := lapply(.SD, function(v) as.numeric(scale(v))),
+            .SDcols = types]
+    }
+    out[]
+}
+
+# The histogram as lookup tables: per feature its max, the cells at or below
+# 0, and per bin the count and the count of all lower bins.
+.rank_hist <- function(pe, n_bins) {
+    h <- .pe_value_hist(pe, n_bins = n_bins)
+    G <- length(h$max)
+    n <- matrix(0, G, n_bins)
+    n[cbind(h$counts$pos, h$counts$bin + 1L)] <- h$counts$n
+    below <- cbind(0, t(apply(n, 1L, cumsum)))[, seq_len(n_bins), drop = FALSE]
+    list(n = n, below = below, max = h$max, n_zero = h$n_zero,
+         n_bins = n_bins)
+}
+
+# Each feature's approximate rank across all cells, for the cells of `M`
+# (features x cells, dgCMatrix). `pos` maps the rows of `M` into the
+# histogram. Ranks follow `ties`: "average", or "min" for the max-ties rule.
+.rank_from_hist <- function(M, h, pos, ties) {
+    if (length(M@x) && min(M@x) < 0) {
+        stop("[rank enrichment] disk-backed rank enrichment needs ",
+            "non-negative expression values.", call. = FALSE)
+    }
+    nz <- h$n_zero[pos]
+    zero <- if (ties == "average") (nz + 1) / 2 else rep(1, length(pos))
+    R <- matrix(zero, nrow(M), ncol(M), dimnames = dimnames(M))
+    on <- M@x > 0   # stored zeros keep the zero rank
+    if (!any(on)) return(R)
+    row <- (M@i + 1L)[on]
+    col <- rep(seq_len(ncol(M)), diff(M@p))[on]
+    g <- pos[row]
+    s <- M@x[on] * h$n_bins / h$max[g]
+    b <- pmin(pmax(ceiling(s) - 1, 0), h$n_bins - 1)
+    k <- cbind(g, b + 1L)
+    R[cbind(row, col)] <- h$n_zero[g] +
+        h$below[k] + (s - b) * h$n[k] + if (ties == "average") 0.5 else 1
+    R
+}

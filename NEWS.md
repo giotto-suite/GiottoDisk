@@ -21,8 +21,11 @@
   their artifacts stay protected from `sourcePrune()`.
 - PAGE (now with `p_value = TRUE`) and hypergeometric enrichment run on a
   store: one pass for the per-feature reference level, then Giotto's own
-  method scores one window of cells at a time. Rank enrichment is still
-  refused.
+  method scores one window of cells at a time.
+- Rank enrichment runs on a store too. Each feature's ranks across all cells
+  are approximated from a histogram of its values, so scores agree closely
+  with the in-memory method rather than exactly; rank `p_value = TRUE` is
+  not supported on a store.
 
 ## bug fixes
 - PAGE on a store follows Giotto's in-memory method again: the per-feature
