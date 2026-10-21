@@ -71,3 +71,48 @@ test_that("plan workers are capped by the memory budget, explicit ones are not",
     withr::local_options(list(giottodisk.par_workers = 3L))
     expect_identical(.par_workers(), 3L)
 })
+
+test_that("the window floors are options", {
+    withr::local_options(giottodisk.chunk_min_rows = NULL,
+        giottodisk.chunk_min_frac = NULL)
+    expect_equal(GiottoDisk:::.chunk_min_rows(), 10000)
+    expect_equal(GiottoDisk:::.chunk_min_frac(), 0.05)
+
+    # a budget too small for even one row lands on the floor
+    local_mocked_bindings(.sc_free_ram = function() 1e6, .package = "GiottoDisk")
+    rec <- function() GiottoDisk:::.recommend_chunk_size(
+        n_cells = 1e6, n_genes = 2e4, density = 0.1, k = 0L,
+        bytes_per_nz = 64)
+    expect_identical(rec(), 10000L)
+    withr::local_options(giottodisk.chunk_min_rows = 500)
+    expect_identical(rec(), 500L)
+
+    # the budget floor is a share of free RAM
+    withr::local_options(giottodisk.chunk_min_frac = 0.5)
+    expect_equal(GiottoDisk:::.chunk_budget(1e9, 0.01, n_cells = 1e7), 5e8)
+})
+
+test_that("storeChunkProbe measures one window and sizes the budget", {
+    mat <- Matrix::rsparsematrix(30, 400, density = 0.3,
+        rand.x = function(n) as.double(seq_len(n)))
+    rownames(mat) <- paste0("g", seq_len(30))
+    colnames(mat) <- paste0("c", seq_len(400))
+    pe <- storeWrite(
+        parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+
+    local_mocked_bindings(.sc_free_ram = function() 4e9, .package = "GiottoDisk")
+    p <- storeChunkProbe(pe, cells = 100, verbose = FALSE)
+    expect_s3_class(p, "data.table")
+    expect_identical(nrow(p), 1L)
+    expect_identical(p$cells, 100L)
+    expect_identical(p$stored_values, length(mat[, 1:100]@x))
+    expect_true(p$seconds >= 0 && p$peak_mb >= 0)
+    expect_equal(p$free_mb, 4000L)
+    expect_true(p$suggested_cells >= 1L && p$suggested_cells <= 400L)
+    expect_identical(p$n_windows, as.integer(ceiling(400 / p$suggested_cells)))
+
+    # more cells than the store has probes the whole store
+    expect_identical(storeChunkProbe(pe, cells = 1e6, verbose = FALSE)$cells,
+        400L)
+    expect_output(storeChunkProbe(pe, cells = 50), "storeChunkProbe")
+})

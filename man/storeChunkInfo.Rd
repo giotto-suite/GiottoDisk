@@ -54,6 +54,12 @@ the derivation entirely. An escape hatch — for a machine whose free
 memory cannot be read, for a shape the model sizes badly, and for tests
 that need to force several windows. Also the fallback value when the
 derivation cannot run.}
+\item{\code{giottodisk.chunk_min_rows}}{the smallest window the derivation
+returns, in cells (default 10,000). On a machine where a window of this
+size does not fit, lower it together with \code{giottodisk.chunk_ram_frac}.}
+\item{\code{giottodisk.chunk_min_frac}}{the smallest budget, as a fraction of
+free RAM (default 0.05), which applies when a large PCA sketch would
+otherwise leave no room for a window.}
 \item{\code{giottodisk.gef_batch_rows}}{pins the records per batch when a
 Stereo-seq \code{.gef} is written to a store. Derived from the same budget
 otherwise.}
@@ -81,6 +87,13 @@ reassociates the addition, so a float statistic can differ by a few units in
 the last place between runs with different window counts (measured 2-3 ULP).
 Results are reproducible to tolerance, not bitwise: compare them with a
 tolerance rather than hashing them or snapshotting exact digits.
+}
+
+\section{Measured instead of modelled}{
+
+The table is a model: it assumes a fixed number of bytes per stored value.
+\code{\link[=storeChunkProbe]{storeChunkProbe()}} reads one real window on this machine and reports the
+time and memory it took, and the window size that fits a given budget.
 }
 
 \section{Further reading}{

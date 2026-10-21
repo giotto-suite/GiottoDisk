@@ -140,3 +140,30 @@ test_that("dgcmatrix output on unionParquetExprStore spans substores", {
     expected_n <- t(t(expected) * (1e4 / libsz))
     expect_equal(as.matrix(out_n), expected_n, tolerance = 1e-10)
 })
+
+test_that(".pe_build_csc builds CSC directly and agrees with sparseMatrix", {
+    pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
+        Matrix::rsparsematrix(6, 5, density = 0.5))
+    set.seed(3)
+    i <- c(3L, 1L, 6L, 2L, 4L, 1L); j <- c(1L, 1L, 2L, 5L, 5L, 3L)
+    x <- as.double(seq_along(i))
+    m <- GiottoDisk:::.pe_build_csc(pe, i, j, x, 6L, 5L)
+    ref <- Matrix::sparseMatrix(i = i, j = j, x = x, dims = c(6L, 5L),
+        dimnames = list(pe@feat_ids, pe@cell_ids), repr = "C")
+    expect_s4_class(m, "dgCMatrix")
+    expect_true(methods::validObject(m))
+    expect_identical(m, ref)
+
+    # positions outside the view (NA) are dropped
+    m_na <- GiottoDisk:::.pe_build_csc(pe, c(i, NA), c(j, 2L), c(x, 99), 6L, 5L)
+    expect_identical(m_na, ref)
+
+    # duplicated (row, col) pairs fall back to sparseMatrix, which sums them
+    m_dup <- GiottoDisk:::.pe_build_csc(pe, c(i, 3L), c(j, 1L), c(x, 10), 6L, 5L)
+    expect_equal(m_dup[3L, 1L], 11)
+
+    # no stored values
+    m0 <- GiottoDisk:::.pe_build_csc(pe, integer(), integer(), double(), 6L, 5L)
+    expect_identical(dim(m0), c(6L, 5L))
+    expect_length(m0@x, 0L)
+})

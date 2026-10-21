@@ -41,8 +41,10 @@ all of this is recorded in `adr/0011-cell-windowing-over-spill.md`.
 options(
   giottodisk.chunk_ram_frac = 0.25,  # share of free RAM the window budget
                                      # calculation is allowed to work with
-  giottodisk.chunk_size     = NULL   # NULL: accept the calculated budget.
+  giottodisk.chunk_size     = NULL,  # NULL: accept the calculated budget.
                                      # An integer pins the window, in cells.
+  giottodisk.chunk_min_rows = 10000, # smallest calculated window, in cells
+  giottodisk.chunk_min_frac = 0.05   # smallest budget, share of free RAM
 )
 ```
 
@@ -53,6 +55,21 @@ badly, or a test that needs to force several windows.
 
 `storeChunkInfo()` reports what a given store will do on the current machine, for
 both read shapes, and carries both options.
+
+The two floors keep a window from becoming so small that per-window overhead
+dominates. On a machine where even a 10,000-cell window does not fit, lower
+`giottodisk.chunk_min_rows` together with `giottodisk.chunk_ram_frac`.
+
+`storeChunkInfo()` is a model: it assumes a number of bytes per stored value.
+`storeChunkProbe()` measures instead. It reads one window into a sparse matrix,
+the read most streaming passes repeat, and reports the time and peak memory it
+took, the window that fits the budget, and how long one pass over the store
+takes:
+
+```{r probe}
+probe <- storeChunkProbe(pe)            # one 10,000-cell window by default
+options(giottodisk.chunk_size = probe$suggested_cells)   # optional: pin it
+```
 
 **One window is the no-windowing case.** When the budget covers the whole view,
 the window comes back as the full cell count: the loop runs once and the pass is
@@ -265,4 +282,5 @@ the aggregate.
 ## See also
 
 - `?storeChunkInfo` — the numbers for a given store on this machine, and the
-  two options that steer the window.
+  options that steer the window.
+- `?storeChunkProbe` — the same, measured on one real window.

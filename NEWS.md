@@ -14,6 +14,18 @@
 - Snapshot names may not contain a path separator or start with `.`.
 
 ## changes
+- `storeRead(output = "dgcmatrix")` needs less than half the memory and less
+  time. It no longer reads the `source_id` partition column unless post-ops
+  need it, and builds the CSC matrix directly instead of through
+  `Matrix::sparseMatrix()`. On an 87M-value window, transient memory falls
+  from 10.2 to 4.2 GB and read time from 11.5 to 7.3 s; the matrix is
+  identical. Streaming passes that read windows this way (PAGE and
+  hypergeometric enrichment, deconvolution) inherit it: PAGE on 400,000
+  cells, with 8 GB free, peaks at 8.8 instead of 10.4 GB and runs in 65
+  instead of 82 s.
+- The floors of the window derivation are options:
+  `giottodisk.chunk_min_rows` (smallest window, default 10,000 cells) and
+  `giottodisk.chunk_min_frac` (smallest budget, default 5% of free RAM).
 - The Atera reader has its own cell metadata, centroid and image loaders
   (`.atera_cellmeta()`, `.atera_spatlocs()`, `.atera_image()`), adapted from
   the Xenium ones, and the Visium HD reader its own tar extraction, so no
@@ -26,6 +38,9 @@
   on a backed object.
 
 ## new
+- `storeChunkProbe()` measures one streaming window on the current machine --
+  time, peak memory and bytes per stored value -- and reports the window that
+  fits the budget and the time for one pass over the store.
 - Atera v1 output (zarr only) imports with `importAteraDisk()` (or
   `Giotto::createGiottoAteraObject(backend = )`), now a reader of its own
   rather than a Xenium subclass. Transcripts are written
