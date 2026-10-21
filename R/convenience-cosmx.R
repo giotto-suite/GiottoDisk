@@ -408,7 +408,7 @@ importCosMxDisk <- function(cosmx_dir = NULL,
 
 ## polygon ####
 
-# Disk-backed CosMx polygon ingestion, following `.xenium_poly_disk()`:
+# Disk-backed CosMx polygon ingestion, following `.tenx_poly_disk()`:
 # a `parquetStore` intermediate first (polygons need `row_index` for stable
 # vertex ordering), then a `parquetGeomTileStore`.
 #
