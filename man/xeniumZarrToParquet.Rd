@@ -2,7 +2,7 @@
 % Please edit documentation in R/zarr-convert.R
 \name{xeniumZarrToParquet}
 \alias{xeniumZarrToParquet}
-\title{Convert Xenium/Atera zarr output to parquet}
+\title{Convert a Xenium/Atera zarr output directory to parquet}
 \usage{
 xeniumZarrToParquet(
   xenium_dir,
@@ -20,7 +20,7 @@ xeniumZarrToParquet(
 \item{xenium_dir}{Xenium/Atera output directory containing the
 \code{.zarr.zip} archives (unzipped \code{.zarr} directories also work)}
 
-\item{output_dir}{directory to write parquet into (created if needed)}
+\item{output_dir}{directory to write into (created if needed)}
 
 \item{what}{which products to convert}
 
@@ -44,23 +44,23 @@ products
 }
 \description{
 Standalone converter from the \code{.zarr.zip} archives shipped by 10x
-Xenium (and Atera, which ships zarr only) to parquet files matching
-the 10x-shipped schemas: \code{cells.parquet},
-\code{cell_boundaries.parquet} / \code{nucleus_boundaries.parquet} (from
-\code{cells.zarr.zip}), \code{transcripts.parquet} (from \code{transcripts.zarr.zip}),
-and \code{cell_feature_matrix.parquet} (from \code{cell_feature_matrix.zarr.zip},
-written in the long triplet layout consumed by \code{\link[=parquetExprStore]{parquetExprStore()}}:
-\code{row_id}, \code{col_id}, \code{value}, sorted by \code{row_id}).
+Xenium and Atera to parquet files in the 10x-shipped schemas:
+\code{cells.parquet}, \code{cell_boundaries.parquet} / \code{nucleus_boundaries.parquet}
+(from \code{cells.zarr.zip}), \code{transcripts.parquet} (from
+\code{transcripts.zarr.zip}), and \code{cell_feature_matrix.parquet} (from
+\code{cell_feature_matrix.zarr.zip}, written in the long triplet layout
+consumed by \code{\link[=parquetExprStore]{parquetExprStore()}}: \code{row_id}, \code{col_id}, \code{value}, sorted by
+\code{row_id}). An Atera \code{experiment.spatial} is copied as \code{experiment.xenium}.
 
-Output is unfiltered and unflipped; the Giotto readers apply qv
-filtering and the vertical flip lazily. Transcripts with
-\code{workers > 1} are written as a \verb{transcripts/} directory of parquet
-shards, which \code{\link[arrow:open_dataset]{arrow::open_dataset()}} (and the Giotto readers) consume
-transparently.
+Output is unfiltered and unflipped. Transcripts with \code{workers > 1} are
+written as a \verb{transcripts/} directory of parquet shards, which
+\code{\link[arrow:open_dataset]{arrow::open_dataset()}} reads transparently. Atera v1 transcripts keep
+their per-transcript \code{cell_id} and \code{overlaps_nucleus}; \code{transcript_id}
+is synthesized and \code{fov_name} is \code{NA}.
 
-The disk readers (\code{\link[=importXeniumDisk]{importXeniumDisk()}}, \code{\link[=importAteraDisk]{importAteraDisk()}}) call the
-converter automatically for zarr input -- this entry point is for
-producing parquet outside of a Giotto pipeline.
+The disk readers (\code{\link[=importXeniumDisk]{importXeniumDisk()}}, \code{\link[=importAteraDisk]{importAteraDisk()}}) read zarr
+input directly -- this entry point is for producing parquet outside of
+a Giotto pipeline.
 }
 \examples{
 \dontrun{
