@@ -13,6 +13,7 @@ detectZarrLayout(dir)
 list with \code{layout_version} (\code{NA} when the directory holds no
 zarr products), \code{products} (named paths for \code{cells}, \code{transcripts},
 \code{cell_feature_matrix}, \code{analysis}; \code{NULL} when absent),
+\code{product_layouts} (the layout id detected for each product),
 \code{gene_panel_json}, and \code{experiment_info}.
 }
 \description{

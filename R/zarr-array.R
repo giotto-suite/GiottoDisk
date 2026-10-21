@@ -19,47 +19,44 @@
 .zarr_array <- function(src, prefix, range = NULL, u4_as_integer = FALSE) {
     prefix <- sub("/+$", "", prefix)
     meta <- .zarr_meta(src, prefix)
-    dt <- .parse_zarr_dtype(meta$dtype)
+    dt <- .zarr_meta_dtype(meta, prefix)
     shape <- unlist(meta$shape)
     chunks <- unlist(meta$chunks)
     order <- meta$order %||% "C"
-    fill <- meta$fill_value %||% 0
 
     if (!length(shape) %in% 1:2) {
         stop("[zarr] only 1D/2D arrays supported (got ", length(shape),
             "D at ", prefix, ")", call. = FALSE)
     }
 
-    r0 <- 1L
+    # doubles: row ranges of large arrays (e.g. nnz) exceed int32
+    r0 <- 1
     r1 <- shape[1L]
     if (!is.null(range)) {
-        r0 <- as.integer(range[1L])
-        r1 <- as.integer(range[2L])
+        r0 <- as.numeric(range[1L])
+        r1 <- as.numeric(range[2L])
         if (is.na(r0) || is.na(r1) || r0 < 1L || r1 > shape[1L] || r1 < r0) {
             stop("[zarr] bad range [", range[1L], ", ", range[2L],
                 "] for axis of length ", shape[1L], " at ", prefix,
                 call. = FALSE)
         }
     }
-    n_rows <- r1 - r0 + 1L
+    n_rows <- r1 - r0 + 1
 
-    dbl_out <- dt$kind == "f" ||
-        (dt$kind == "u" && dt$size == 4L && !isTRUE(u4_as_integer)) ||
-        (dt$kind == "u" && dt$size == 8L)
     decode <- function(raw_bytes) {
         .zarr_decode_values(
             .zarr_blosc_decompress(raw_bytes, meta, dt),
             dt, u4_as_integer = u4_as_integer
         )
     }
-    fill_val <- if (dbl_out) as.double(fill) else as.integer(fill)
+    fill_val <- .zarr_fill_value(meta$fill_value, dt, u4_as_integer)
 
     # chunk index range overlapping [r0, r1] on the first axis (0-based)
-    ci0 <- (r0 - 1L) %/% chunks[1L]
-    ci1 <- (r1 - 1L) %/% chunks[1L]
+    ci0 <- (r0 - 1) %/% chunks[1L]
+    ci1 <- (r1 - 1) %/% chunks[1L]
 
     if (length(shape) == 1L) {
-        out <- if (dbl_out) numeric(n_rows) else integer(n_rows)
+        out <- vector(typeof(fill_val), n_rows)
         for (ci in ci0:ci1) {
             cs <- ci * chunks[1L] + 1L # global first row of chunk
             ce <- min(cs + chunks[1L] - 1L, shape[1L])
@@ -78,7 +75,8 @@
 
     # 2D: rows ranged, columns full (possibly chunked on the trailing axis)
     n_col_chunks <- as.integer(ceiling(shape[2L] / chunks[2L]))
-    out <- matrix(if (dbl_out) 0.0 else 0L, nrow = n_rows, ncol = shape[2L])
+    out <- matrix(vector(typeof(fill_val), 1L), nrow = n_rows,
+        ncol = shape[2L])
     for (ci in ci0:ci1) {
         cs <- ci * chunks[1L] + 1L
         ce <- min(cs + chunks[1L] - 1L, shape[1L])
@@ -105,6 +103,60 @@
     out
 }
 
+# Read a row range of a 2D array as a list of column vectors. When the
+# trailing axis is a single chunk, each column is copied straight out of
+# the decoded chunk (a contiguous slice in F order), with no intermediate
+# matrix; otherwise falls back to `.zarr_array()`.
+.zarr_columns <- function(src, prefix, range = NULL, u4_as_integer = FALSE) {
+    prefix <- sub("/+$", "", prefix)
+    meta <- .zarr_meta(src, prefix)
+    shape <- unlist(meta$shape)
+    chunks <- unlist(meta$chunks)
+    if (length(shape) != 2L || chunks[2L] != shape[2L]) {
+        m <- .zarr_array(src, prefix, range = range,
+            u4_as_integer = u4_as_integer)
+        if (!is.matrix(m)) return(list(m))
+        return(lapply(seq_len(ncol(m)), function(j) m[, j]))
+    }
+    dt <- .zarr_meta_dtype(meta, prefix)
+    order <- meta$order %||% "C"
+    nc <- shape[2L]
+    cn <- chunks[1L]
+    r0 <- if (is.null(range)) 1 else as.numeric(range[1L])
+    r1 <- if (is.null(range)) shape[1L] else as.numeric(range[2L])
+    if (r0 < 1 || r1 > shape[1L] || r1 < r0) {
+        stop("[zarr] bad range [", r0, ", ", r1, "] for axis of length ",
+            shape[1L], " at ", prefix, call. = FALSE)
+    }
+    fill_val <- .zarr_fill_value(meta$fill_value, dt, u4_as_integer)
+    n <- r1 - r0 + 1
+    out <- lapply(seq_len(nc), function(j) vector(typeof(fill_val), n))
+    for (ci in seq.int((r0 - 1) %/% cn, (r1 - 1) %/% cn)) {
+        cs <- ci * cn + 1
+        s <- max(cs, r0)
+        e <- min(cs + cn - 1, r1)
+        dst <- seq.int(s - r0 + 1, e - r0 + 1)
+        raw_bytes <- .zarr_read_raw(src, paste0(prefix, "/", ci, ".0"))
+        if (is.null(raw_bytes)) {
+            for (j in seq_len(nc)) out[[j]][dst] <- fill_val
+            next
+        }
+        vals <- .zarr_decode_values(
+            .zarr_blosc_decompress(raw_bytes, meta, dt),
+            dt, u4_as_integer = u4_as_integer
+        )
+        rows <- seq.int(s - cs + 1, e - cs + 1)
+        for (j in seq_len(nc)) {
+            out[[j]][dst] <- if (order == "F") {
+                vals[(j - 1) * cn + rows]
+            } else {
+                vals[(rows - 1) * nc + j]
+            }
+        }
+    }
+    out
+}
+
 # Streaming chunk reader for 1D or 2D-Nx1 arrays. Returns
 # list(n_chunks, total, chunk_size, read_chunk) where read_chunk(i0b)
 # yields the decoded values of chunk i0b (missing chunk -> fill_value,
@@ -112,7 +164,7 @@
 .zarr_chunk_reader <- function(src, prefix, u4_as_integer = FALSE) {
     prefix <- sub("/+$", "", prefix)
     meta <- .zarr_meta(src, prefix)
-    dt <- .parse_zarr_dtype(meta$dtype)
+    dt <- .zarr_meta_dtype(meta, prefix)
     shape <- unlist(meta$shape)
     chunks <- unlist(meta$chunks)
 
@@ -123,10 +175,8 @@
     total <- shape[1L]
     chunk_axis <- chunks[1L]
     n_chunks <- as.integer(ceiling(total / chunk_axis))
-    fill <- meta$fill_value %||% 0
+    fill_val <- .zarr_fill_value(meta$fill_value, dt, u4_as_integer)
     is_2d <- length(shape) == 2L
-    int_out <- !(dt$kind == "f" || (dt$kind == "u" && dt$size >= 4L)) ||
-        (dt$kind == "u" && dt$size == 4L && isTRUE(u4_as_integer))
 
     read_chunk <- function(chunk_idx_0b) {
         fpath <- if (is_2d) paste0(prefix, "/", chunk_idx_0b, ".0")
@@ -134,7 +184,7 @@
         raw_bytes <- .zarr_read_raw(src, fpath)
         cs <- min(chunk_axis, total - chunk_idx_0b * chunk_axis)
         if (is.null(raw_bytes)) {
-            return(rep(if (int_out) as.integer(fill) else as.double(fill), cs))
+            return(rep(fill_val, cs))
         }
         vals <- .zarr_decode_values(
             .zarr_blosc_decompress(raw_bytes, meta, dt),
