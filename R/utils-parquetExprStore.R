@@ -267,10 +267,17 @@ NULL
 .ingest_batch_rows <- function(bytes_per_record, pinned = NULL,
                                fallback = 5e6) {
     if (!is.null(pinned)) return(max(1, as.numeric(pinned)))
-    free <- tryCatch(.sc_free_ram(), error = function(e) NA_real_)
-    if (!isTRUE(is.finite(free)) || free <= 0) return(fallback)
-    budget <- .chunk_budget(free, .ram_frac(), n_cells = 0, k = 0, p = 0)
+    budget <- .ingest_budget()
+    if (is.na(budget)) return(fallback)
     max(1e6, floor(budget / bytes_per_record))
+}
+
+# Bytes an ingest pass may hold: the chunk budget over free RAM. NA when
+# free RAM cannot be read.
+.ingest_budget <- function() {
+    free <- tryCatch(.sc_free_ram(), error = function(e) NA_real_)
+    if (!isTRUE(is.finite(free)) || free <= 0) return(NA_real_)
+    .chunk_budget(free, .ram_frac(), n_cells = 0, k = 0, p = 0)
 }
 
 # Contiguous cell ranges of at most `max_rows` records each, cut greedily; a

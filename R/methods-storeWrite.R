@@ -1062,6 +1062,35 @@ setMethod(
     )
 }
 
+# .store_write_points for attributes held in an arrow Table: the same
+# on-disk frame (row index, centroid, WKB, attributes; Morton order)
+# without converting the attributes to R vectors. `meta` must not hold
+# the coordinate columns.
+.store_write_points_arrow <- function(store, x, y, meta, row_offset = 0,
+                                      .arrow_meta = NULL, ...) {
+    gext <- c(min(x), max(x), min(y), max(y))
+    store@params$disk_extent <- gext
+    store@geomtype <- "points"
+    store@params$crs <- ""
+    o <- order(.morton_encode(x, y, gext))
+    x <- x[o]
+    y <- y[o]
+    data <- arrow::arrow_table(
+        row_index = arrow::Array$create(
+            as.integer(row_offset + o), type = arrow::int32()),
+        x_index = x,
+        y_index = y,
+        geom = arrow::Array$create(unclass(wk::as_wkb(wk::xy(x, y))),
+            type = arrow::binary())
+    )
+    meta <- meta$Take(o - 1L)
+    for (nm in names(meta)) data[[nm]] <- meta[[nm]]
+    data$metadata <- c(data$metadata,
+        .arrow_meta_add_geoparquet(store, .arrow_meta))
+    .write_parquet(store, data, ...)
+    initialize(store)
+}
+
 # generate the geoparquet metadata for a geom store if needed
 .arrow_meta_add_geoparquet <- function(store, .arrow_meta = NULL, extent = NULL) {
     checkmate::assert_class(store, "parquetGeomStore")

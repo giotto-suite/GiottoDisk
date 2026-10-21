@@ -9,21 +9,26 @@ importAteraDisk(atera_dir = NULL, backend, qv_threshold = 20)
 \arguments{
 \item{atera_dir}{Atera output directory}
 
-\item{backend}{a \code{gsource} (typically \code{gDirSource}) project backend.}
+\item{backend}{a \code{gsource} (typically \code{gDirSource}) project backend, or a
+path to one}
 
-\item{qv_threshold}{minimum Phred-scaled quality score retained. Only
-applies when transcript-level data is present.}
+\item{qv_threshold}{minimum Phred-scaled quality score retained for
+transcripts}
 }
 \value{
 \code{AteraDiskReader} object
 }
 \description{
-Disk-backed counterpart to \code{\link[Giotto:importAtera]{Giotto::importAtera()}}. Produces an
-\code{AteraDiskReader} which writes transcripts and boundaries to a
-\code{gDirSource}-managed project vault, exactly as the Xenium disk reader
-does -- including zarr-only output directories (the only format Atera
-will ship); see \code{\link[=importXeniumDisk]{importXeniumDisk()}} for how zarr input is handled.
+Disk-backed reader for Atera output (zarr archives). Each data type is
+written to a \code{gDirSource}-managed project vault as its own store:
+transcripts stream from the zarr grid straight into a tiled store, the
+expression matrix streams in cell order, and cell / nucleus polygons go
+through the same tiled polygon ingest as Xenium. The pixel size is read
+from \code{experiment.spatial}.
 }
-\seealso{
-\code{\link[Giotto:importAtera]{Giotto::importAtera()}} for the in-memory variant
+\examples{
+\dontrun{
+rdr <- importAteraDisk("/path/to/atera_outs", backend = "my_project")
+g <- rdr$create_gobject()
+}
 }

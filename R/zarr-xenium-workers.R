@@ -303,18 +303,130 @@
     )
 }
 
+# atera-zarr-v6 transcripts ####
+
+# Unassigned transcripts carry UINT32_MAX in both cell_id columns.
+.atera_unassigned_cell <- 4294967295
+
+# Tiles of a v6 archive (`grid/<i,j>`), sorted by (i, j) so the tile
+# ordinal -- and with it the synthesized transcript_id -- is stable.
+.atera_tx_tiles <- function(src) {
+    tiles <- .zarr_list(src, "grid", dirs_only = TRUE)
+    if (!length(tiles)) return(character(0L))
+    ij <- do.call(rbind, lapply(strsplit(tiles, ",", fixed = TRUE),
+        as.integer))
+    tiles[order(ij[, 1L], ij[, 2L])]
+}
+
+# Work units: (tile, row window) pairs, so a worker's memory is bounded by
+# `window_rows` rather than by the tile size (~90M rows on a full run).
+.atera_tx_units <- function(src, window_rows = 4194304L) {
+    tiles <- .atera_tx_tiles(src)
+    units <- list()
+    for (k in seq_along(tiles)) {
+        n <- unlist(.zarr_meta(src,
+            paste0("grid/", tiles[k], "/location"))$shape)[1L]
+        if (!n) next
+        starts <- seq.int(1, n, by = window_rows)
+        for (s in starts) {
+            units[[length(units) + 1L]] <- list(
+                tile = tiles[k], ord = k - 1L,
+                r0 = s, r1 = min(s + window_rows - 1, n)
+            )
+        }
+    }
+    units
+}
+
+# Root lookups of a v6 archive: codeword -> gene index, gene names.
+.atera_tx_lookups <- function(src) {
+    attrs <- .zarr_attrs(src, "")
+    list(
+        gene_names = as.character(attrs$gene_names),
+        cw_gene = as.integer(attrs$codeword_gene_mapping)
+    )
+}
+
+# Arrow table for one work unit. Feature names and cell ids are built as
+# dictionary indices and decoded to strings in arrow, never per row in R.
+# `transcript_id` is synthesized as (tile ordinal << 32) + row within the
+# tile: stable and unique, but not the 10x FOV packing (v6 ships no ids).
+.atera_tx_unit_table <- function(src, unit, lookups, qv_threshold = NULL) {
+    pref <- paste0("grid/", unit$tile, "/")
+    rng <- c(unit$r0, unit$r1)
+    rd <- function(a, ...) .zarr_columns(src, paste0(pref, a), range = rng, ...)
+    loc <- rd("location")
+    cw <- rd("codeword_identity", u4_as_integer = TRUE)[[1L]]
+    qv_ <- rd("quality_score")[[1L]]
+    cid <- rd("cell_id")
+    ovl <- rd("overlaps_nucleus")[[1L]]
+    row <- seq.int(unit$r0 - 1, unit$r1 - 1)
+
+    if (!is.null(qv_threshold)) {
+        keep <- qv_ > qv_threshold
+        if (!any(keep)) return(NULL)
+        loc <- lapply(loc, `[`, keep)
+        cid <- lapply(cid, `[`, keep)
+        cw <- cw[keep]
+        qv_ <- qv_[keep]
+        ovl <- ovl[keep]
+        row <- row[keep]
+    }
+    n <- length(cw)
+
+    gene <- arrow::DictionaryArray$create(
+        lookups$cw_gene[cw + 1L], lookups$gene_names
+    )$cast(arrow::utf8())
+
+    # one encoded id per distinct (prefix, suffix); the last dictionary
+    # entry is "UNASSIGNED"
+    unassigned <- cid[[1L]] == .atera_unassigned_cell
+    key <- cid[[1L]] + cid[[2L]] * 4294967296
+    ukey <- unique(key[!unassigned])
+    ids <- c(
+        .encode_xenium_id(ukey %% 4294967296, ukey %/% 4294967296),
+        "UNASSIGNED"
+    )
+    idx <- match(key, ukey) - 1L
+    idx[unassigned] <- length(ukey)
+    cell <- arrow::DictionaryArray$create(idx, ids)$cast(arrow::utf8())
+
+    tid <- bit64::as.integer64(unit$ord) * 4294967296 +
+        bit64::as.integer64(row)
+    f32 <- function(x) arrow::Array$create(x, type = arrow::float32())
+    arrow::arrow_table(
+        transcript_id = arrow::Array$create(tid, type = arrow::uint64()),
+        cell_id = cell,
+        overlaps_nucleus = arrow::Array$create(ovl, type = arrow::uint8()),
+        feature_name = gene,
+        x_location = f32(loc[[1L]]),
+        y_location = f32(loc[[2L]]),
+        z_location = f32(loc[[3L]]),
+        qv = f32(qv_),
+        fov_name = arrow::Scalar$create(NA_character_)$as_array(n),
+        nucleus_distance =
+            arrow::Scalar$create(NA_real_, arrow::float32())$as_array(n),
+        codeword_index = arrow::Array$create(cw, type = arrow::int32())
+    )
+}
+
 # One worker: open an own zarr source (zip connections don't survive
-# fork/serialization), process a tile subset, write one parquet shard.
-# Tile tables are buffered and flushed at >= flush_rows so row groups are
-# ~1-4M rows instead of one tiny group per tile. Top-level internal so it
-# ships to workers as a namespace reference, never a closure.
+# fork/serialization), process a subset of work units, write one parquet
+# shard. A unit is a tile name (xenium-zarr-v1) or a (tile, row window)
+# list (atera-zarr-v6). Tables are buffered and flushed at >= flush_rows so
+# row groups are ~1-4M rows instead of one tiny group per unit. Top-level
+# internal so it ships to workers as a namespace reference, never a
+# closure.
 #' @keywords internal
 #' @noRd
 .xenium_tx_worker <- function(tiles, zarr_path, gene_lookup, qv_threshold,
-    part_path, flush_rows = 2000000L, compression = "zstd") {
+    part_path, flush_rows = 2000000L, compression = "zstd",
+    layout = "xenium-zarr-v1") {
     src <- .zarr_open(zarr_path)
     on.exit(.zarr_close(src), add = TRUE)
-    lk <- .zarr_tx_lookups(src, gene_lookup)
+    v6 <- identical(layout, "atera-zarr-v6")
+    lk <- if (v6) .atera_tx_lookups(src) else
+        .zarr_tx_lookups(src, gene_lookup)
     schema_tx <- .xenium_tx_schema()
     sink <- arrow::FileOutputStream$create(part_path)
     props <- arrow::ParquetWriterProperties$create(
@@ -342,8 +454,12 @@
     }
     n_total <- 0
     for (tile in tiles) {
-        tbl <- .xenium_tx_tile_table(src, tile, lk$gene_names,
-            qv_threshold, fov_names = lk$fov_names)
+        tbl <- if (v6) {
+            .atera_tx_unit_table(src, tile, lk, qv_threshold)
+        } else {
+            .xenium_tx_tile_table(src, tile, lk$gene_names,
+                qv_threshold, fov_names = lk$fov_names)
+        }
         if (is.null(tbl)) next
         buf[[length(buf) + 1L]] <- tbl
         buf_rows <- buf_rows + nrow(tbl)
@@ -358,14 +474,23 @@
 # out_path file; `workers > 1` writes a directory of part-*.parquet
 # shards (read transparently by arrow::open_dataset). Scheduling follows
 # .storewrite_h5_parallel: fork on unix, lapply_flex elsewhere, plain
-# lapply when serial -- one worker function for all three.
+# lapply when serial -- one worker function for all three. Work units are
+# whole tiles for xenium-zarr-v1 and `window_rows`-row slices of tiles for
+# atera-zarr-v6.
 .zarr_transcripts_to_parquet <- function(src, out_path, gene_lookup,
     qv_threshold = NULL, workers = 1L, zarr_path = NULL,
-    flush_rows = 2000000L, compression = "zstd", verbose = NULL) {
+    flush_rows = 2000000L, compression = "zstd", verbose = NULL,
+    layout = "xenium-zarr-v1", window_rows = 4194304L) {
     t0 <- Sys.time()
-    tiles <- .zarr_list(src, "grids/0", dirs_only = TRUE)
+    if (identical(layout, "atera-zarr-v6")) {
+        tiles <- .atera_tx_units(src, window_rows = window_rows)
+        root <- "grid"
+    } else {
+        tiles <- .zarr_list(src, "grids/0", dirs_only = TRUE)
+        root <- "grids/0"
+    }
     if (!length(tiles)) {
-        stop("[zarr] no transcript tiles under grids/0 -- corrupt or ",
+        stop("[zarr] no transcript tiles under ", root, " -- corrupt or ",
             "unsupported archive layout", call. = FALSE)
     }
     workers <- max(1L, as.integer(workers))
@@ -389,7 +514,7 @@
                 tiles = tile_groups[[i]], zarr_path = zarr_path,
                 gene_lookup = gene_lookup, qv_threshold = qv_threshold,
                 part_path = part_paths[i], flush_rows = flush_rows,
-                compression = compression
+                compression = compression, layout = layout
             )
         }
         counts <- if (.Platform$OS.type == "unix") {
@@ -419,7 +544,7 @@
         zarr_path = if (!is.null(zarr_path)) zarr_path else src$path,
         gene_lookup = gene_lookup, qv_threshold = qv_threshold,
         part_path = out_path, flush_rows = flush_rows,
-        compression = compression
+        compression = compression, layout = layout
     )
     GiottoUtils::vmsg(sprintf(
         "  transcripts.parquet: %d rows in %.2fs", total_rows,

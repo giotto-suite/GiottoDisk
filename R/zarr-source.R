@@ -283,12 +283,75 @@
     bo <- substr(dtype, 1L, 1L)
     has_bo <- bo %in% c("<", ">", "|", "=")
     rest <- if (has_bo) substring(dtype, 2L) else dtype
+    kind <- substr(rest, 1L, 1L)
     list(
-        kind = substr(rest, 1L, 1L),
-        size = as.integer(substring(rest, 2L)),
+        kind = kind,
+        # "O" (object) has no item size; its bytes are a filter encoding
+        size = if (kind == "O") 1L else as.integer(substring(rest, 2L)),
         # "|" (n/a) and "=" (native) behave as little on Xenium hardware
         endian = if (has_bo && bo == ">") "big" else "little"
     )
+}
+
+# dtype of an array from its .zarray metadata. Object arrays are only
+# readable through the vlen-utf8 filter (AnnData string columns).
+.zarr_meta_dtype <- function(meta, prefix = "") {
+    dt <- .parse_zarr_dtype(meta$dtype)
+    if (dt$kind == "O") {
+        ids <- vapply(meta$filters %||% list(), function(f) {
+            as.character(f$id %||% "")
+        }, character(1L))
+        if (!"vlen-utf8" %in% ids) {
+            stop("[zarr] object array without a vlen-utf8 filter at ",
+                prefix, call. = FALSE)
+        }
+    }
+    dt
+}
+
+# Does the decoder return doubles for this dtype? (f*; u4, u8, i8 unless
+# asked for integers)
+.zarr_dtype_is_double <- function(dt, u4_as_integer = FALSE) {
+    dt$kind == "f" ||
+        (dt$kind %in% c("u", "i") && dt$size >= 4L &&
+            !(dt$kind == "i" && dt$size == 4L) && !isTRUE(u4_as_integer))
+}
+
+# Typed fill value for a dtype.
+.zarr_fill_value <- function(fill, dt, u4_as_integer = FALSE) {
+    if (dt$kind == "O") return(NA_character_)
+    if (.zarr_dtype_is_double(dt, u4_as_integer)) as.double(fill %||% 0)
+    else as.integer(fill %||% 0)
+}
+
+# IEEE 754 half precision -> double, vectorised over uint16 words.
+.half_to_double <- function(u16) {
+    sgn <- 1 - 2 * (u16 >= 32768L)
+    ex <- (u16 %/% 1024L) %% 32L
+    mant <- u16 %% 1024L
+    out <- sgn * (1 + mant / 1024) * 2^(ex - 15L)
+    sub <- ex == 0L
+    if (any(sub)) out[sub] <- sgn[sub] * mant[sub] * 2^-24
+    spec <- ex == 31L
+    if (any(spec)) out[spec] <- ifelse(mant[spec] == 0L, sgn[spec] * Inf, NaN)
+    out
+}
+
+# numcodecs vlen-utf8: uint32 item count, then per item a uint32 byte
+# length followed by the UTF-8 bytes.
+.zarr_decode_vlen_utf8 <- function(decomp) {
+    u32 <- function(p) sum(as.numeric(decomp[p + 1:4]) * 256^(0:3))
+    n <- u32(0)
+    out <- character(n)
+    p <- 4
+    for (i in seq_len(n)) {
+        len <- u32(p)
+        p <- p + 4
+        if (len > 0) out[i] <- rawToChar(decomp[p + seq_len(len)])
+        p <- p + len
+    }
+    Encoding(out) <- "UTF-8"
+    out
 }
 
 # Decompress one chunk's raw bytes via Rarr's internal blosc/zlib decoder.
@@ -317,12 +380,19 @@
 #   u4         -> double with the uint32 sign shift (values > 2^31 exact),
 #                 or R integer without the shift when `u4_as_integer`
 #                 (caller asserts values < 2^31; halves per-chunk memory)
-#   u8         -> double via lo/hi uint32 split (exact to 2^53)
+#   u8 / i8    -> double via lo/hi uint32 split (exact to 2^53), or the
+#                 low word as R integer when `u4_as_integer` (values < 2^31)
+#   f2         -> double via the half-precision bit layout
 #   u1/u2/i1/i2/i4 -> integer
 #   b1         -> logical
+#   O          -> character (vlen-utf8)
 .zarr_decode_values <- function(decomp, dt, u4_as_integer = FALSE) {
+    if (dt$kind == "O") return(.zarr_decode_vlen_utf8(decomp))
     n_vals <- length(decomp) / dt$size
-    if (dt$kind == "f") {
+    if (dt$kind == "f" && dt$size == 2L) {
+        .half_to_double(readBin(decomp, what = "integer", size = 2L,
+            n = n_vals, signed = FALSE, endian = dt$endian))
+    } else if (dt$kind == "f") {
         readBin(decomp, what = "double", size = dt$size, n = n_vals,
             endian = dt$endian)
     } else if (dt$kind == "u" && dt$size == 4L) {
@@ -333,25 +403,25 @@
         neg <- !is.na(out) & out < 0
         out[neg] <- out[neg] + 4294967296
         out
-    } else if (dt$kind == "u" && dt$size == 8L) {
-        # uint64 as double: exact up to 2^53, ample for nnz offsets.
+    } else if (dt$size == 8L && dt$kind %in% c("u", "i")) {
+        # (u)int64 as double: exact up to 2^53, ample for nnz offsets.
         words <- readBin(decomp, what = "integer", size = 4L, n = n_vals * 2,
             signed = TRUE, endian = dt$endian)
-        u32 <- as.double(words)
-        neg <- !is.na(u32) & u32 < 0
-        u32[neg] <- u32[neg] + 4294967296
-        if (dt$endian == "little") {
-            lo <- u32[seq.int(1L, length(u32), by = 2L)]
-            hi <- u32[seq.int(2L, length(u32), by = 2L)]
-        } else {
-            hi <- u32[seq.int(1L, length(u32), by = 2L)]
-            lo <- u32[seq.int(2L, length(u32), by = 2L)]
+        odd <- seq.int(1L, length(words), by = 2L)
+        if (isTRUE(u4_as_integer)) {
+            # caller asserts non-negative values < 2^31 (e.g. feature
+            # indices): the low word is the value
+            lo <- if (dt$endian == "little") words[odd] else words[odd + 1L]
+            return(lo)
         }
+        w <- as.double(words)
+        lo <- if (dt$endian == "little") w[odd] else w[odd + 1L]
+        hi <- if (dt$endian == "little") w[odd + 1L] else w[odd]
+        lo[lo < 0] <- lo[lo < 0] + 4294967296
+        # the high word carries the sign for int64, not for uint64
+        if (dt$kind == "u") hi[hi < 0] <- hi[hi < 0] + 4294967296
         lo + hi * 4294967296
     } else if (dt$kind == "u" || dt$kind == "i") {
-        if (dt$size == 8L) {
-            stop("[zarr] int64 arrays are not supported", call. = FALSE)
-        }
         readBin(decomp, what = "integer", size = dt$size, n = n_vals,
             signed = dt$kind == "i", endian = dt$endian)
     } else if (dt$kind == "b") {

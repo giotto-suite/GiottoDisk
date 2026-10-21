@@ -107,7 +107,7 @@ setMethod(
             verbose = NULL,
             ...
         ) {
-            .xenium_poly_disk(
+            .tenx_poly_disk(
                 path = path,
                 gsource = gsrc,
                 name = name,
@@ -620,8 +620,13 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
         ...
     )
 
-    if (output == "store") return(tx_store)
+    .tx_points_out(tx_store, output, feat_type, split_keyword)
+}
 
+# transcripts store -> requested output: the store itself, or giottoPoints
+# split by feature type. Shared by the Xenium and Atera readers.
+.tx_points_out <- function(tx_store, output, feat_type, split_keyword) {
+    if (output == "store") return(tx_store)
     gpoints <- GiottoClass::createGiottoPoints(
         x = tx_store,
         feat_type = feat_type,
@@ -635,13 +640,14 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
 
 ## polygon ####
 
-# Disk-backed Xenium polygon ingestion.
+# Disk-backed 10x polygon ingestion (Xenium boundaries parquet or the
+# cells.zarr archive Xenium and Atera share).
 #
 # Writes a `parquetStore` intermediate first (polygons need `row_index`
 # for stable vertex ordering), then a `parquetGeomTileStore`. The
 # optional vertical flip is applied lazily via the source read_fun on
 # the way into the intermediate.
-.xenium_poly_disk <- function(
+.tenx_poly_disk <- function(
     path,
     gsource,
     name = "cell",
@@ -657,7 +663,7 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
     ...
 ) {
     if (missing(path)) {
-        stop("[xenium_poly_disk] no path provided", call. = FALSE)
+        stop("[tenx_poly_disk] no path provided", call. = FALSE)
     }
     # zarr source: both boundary sets live in cells.zarr; `name` picks the
     # polygon set. Conversion output is a SINGLE cell-ordered parquet file
@@ -679,7 +685,7 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
     GiottoUtils::package_check("dplyr")
 
     GiottoUtils::vmsg(
-        sprintf("[xenium_poly_disk] loading boundary '%s'", name),
+        sprintf("[tenx_poly_disk] loading boundary '%s'", name),
         .v = verbose
     )
 

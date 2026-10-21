@@ -614,8 +614,8 @@ setMethod(
 # `n_workers` concurrent batches, as the cellbin GEF reader cuts its ranges; a
 # fixed cell count gives no bound when values per cell are high. A
 # non-missing `batch_cells` pins a fixed number of cells per range instead.
-# A batch holds the h5 values, the triplet frame and its sort, about 64 B per
-# record.
+# A batch holds the h5 values, the triplet frame, its sort and the parquet
+# write: about 128 B per record (measured RSS on an Atera h5).
 .tenxh5_ranges <- function(indptr, batch_cells = NA_integer_, n_workers = 1L) {
     n_cells <- length(indptr) - 1L
     if (n_cells < 1L) return(list())
@@ -625,7 +625,7 @@ setMethod(
             c(a, min(a + as.integer(batch_cells) - 1L, n_cells))
         }))
     }
-    rows <- .ingest_batch_rows(64,
+    rows <- .ingest_batch_rows(128,
         pinned = getOption("giottodisk.h5_batch_rows"))
     .ingest_cell_ranges(diff(indptr), max(1, floor(rows / max(1L, n_workers))))
 }
