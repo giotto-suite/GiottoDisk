@@ -26,6 +26,17 @@
   on a backed object.
 
 ## new
+- `importMerscopeDisk()` reads Vizgen MERSCOPE region directories into a
+  project: transcripts, cell boundaries and the cell by gene matrix are
+  written as stores; cell metadata, cell centers and images stay in memory.
+  `$create_gobject()` takes the same arguments as Giotto's in-memory reader,
+  so `Giotto::createGiottoMerscopeObject(backend =)` uses it.
+  - Transcripts may be parquet or csv; a csv is converted to parquet once and
+    cached.
+  - Boundaries may be `cell_boundaries.parquet` or the per-FOV HDF5 files;
+    replicated z-planes load one plane, true 3D stops with an error.
+  - `FOVs` applies to every data type, the expression matrix included.
+  - Cell IDs (64-bit `EntityID`) are kept exact as character.
 - Atera v1 output (zarr only) imports with `importAteraDisk()` (or
   `Giotto::createGiottoAteraObject(backend = )`), now a reader of its own
   rather than a Xenium subclass. Transcripts are written
@@ -634,19 +645,6 @@
   the resulting window across RAM budgets for both read shapes (a chunk landing
   in a sparse matrix versus a collected triplet frame, which differ ~4x in
   bytes per stored value).
-- new `importMerscopeDisk()` and `createGiottoMerscopeObjectDisk()` for Vizgen
-  MERSCOPE region directories. `data_to_use = "subcellular"` (default) writes
-  `detected_transcripts.parquet` and `cell_boundaries.parquet` to stores;
-  `"aggregate"` uses `cell_by_gene.csv` only.
-- MERSCOPE boundaries replicated across z-planes are read from the lowest plane.
-  Boundaries that differ between planes stop with an error; `poly_z_indices`
-  selects planes.
-- MERSCOPE `Blank` barcodes are loaded as feature type `neg_probe`.
-- MERSCOPE `polygon_format = "hdf5"` is not implemented.
-- MERSCOPE transcript, polygon and cell center y coordinates are negated on
-  load.
-- MERSCOPE `load_images` loads mosaic images (e.g. `"DAPI_z3"`), placed with
-  `images/micron_to_mosaic_pixel_transform.csv`.
 - Halko PCA accepts `scale = TRUE`, applied without densifying.
 - an `add` op is registered as a refused stub for a future centred-display path;
   both executors reject it, and nothing emits one.

@@ -1,8 +1,20 @@
 # MERSCOPE (Vizgen MERFISH) ingest pipeline for `gDirSource`-managed projects.
+#
+# Laid out like the Xenium disk reader: class and init (loaders, then
+# create_gobject), the import function, then the modular loaders. Transcripts,
+# polygons and expression are written to the project as stores; cell metadata,
+# cell centers and images stay in memory. `create_gobject()` takes the same
+# arguments as Giotto's in-memory MERSCOPE reader, so
+# Giotto::createGiottoMerscopeObject(backend =) runs it unchanged.
+#
+# MERSCOPE specifics kept: `FOVs` (applied to every data type, the expression
+# matrix included), replicated z-planes in the boundaries, and the two boundary
+# formats (`cell_boundaries.parquet`, or per-FOV HDF5 files in
+# `cell_boundaries/`). Transcripts may be parquet or csv; a csv is converted to
+# parquet once and cached, since tiling scans its source once per tile.
 
 
 # CLASS ####
-
 
 setClass(
     "MerscopeDiskReader",
@@ -37,29 +49,6 @@ setMethod("show", signature("MerscopeDiskReader"), function(object) {
     invisible(object)
 })
 
-# * accessors ####
-#' @export
-setMethod("$", signature("MerscopeDiskReader"), function(x, name) {
-    basic_info <- c("merscope_dir", "polygon_format", "score_threshold",
-                    "backend", "paths")
-    if (name %in% basic_info) {
-        return(methods::slot(x, name))
-    }
-    x@calls[[name]]
-})
-
-#' @export
-setMethod("$<-", signature("MerscopeDiskReader"), function(x, name, value) {
-    basic_info <- c("merscope_dir", "polygon_format", "score_threshold",
-                    "backend")
-    if (name %in% basic_info) {
-        methods::slot(x, name) <- value
-        return(initialize(x))
-    }
-    x@calls[[name]] <- value
-    x
-})
-
 # * init ####
 setMethod(
     "initialize", signature("MerscopeDiskReader"),
@@ -91,13 +80,16 @@ setMethod(
         }
 
         .Object@paths <- .merscope_detect_paths(.Object@merscope_dir)
-
         list2env(.Object@paths, envir = environment())
         gsrc     <- .Object@backend
         score_th <- .Object@score_threshold
         poly_fmt <- .Object@polygon_format
+        bound_path <- if (poly_fmt == "hdf5") cell_bound_dir else cell_bound_path
+        # not `transform_path = transform_path` below: a default that names its
+        # own argument cannot be evaluated
+        tf_path <- transform_path
 
-        # transcripts
+        ## transcripts ####
         tx_fun <- function(
             path = tx_path,
             feat_type = c("rna", "neg_probe"),
@@ -120,14 +112,15 @@ setMethod(
         }
         .Object@calls$load_transcripts <- tx_fun
 
-        # polygons
+        ## polygons ####
         poly_fun <- function(
-            path = cell_bound_path,
+            path = bound_path,
             name = "cell",
             poly_z_indices = NULL,
             polygon_format = poly_fmt,
             FOVs = NULL,
             metadata_path = cell_meta_path,
+            cells = NULL,
             flip_vertical = TRUE,
             output = c("giottoPolygon", "store"),
             verbose = NULL,
@@ -137,20 +130,41 @@ setMethod(
                 path = path, gsource = gsrc, name = name,
                 poly_z_indices = poly_z_indices,
                 polygon_format = polygon_format,
-                FOVs = FOVs, metadata_path = metadata_path,
+                FOVs = FOVs, metadata_path = metadata_path, cells = cells,
                 flip_vertical = flip_vertical,
                 output = output, verbose = verbose, ...
             )
         }
         .Object@calls$load_polys <- poly_fun
 
-        # expression
+        ## cell metadata (in memory) ####
+        cm_fun <- function(path = cell_meta_path, spat_unit = "cell",
+                           FOVs = NULL, cells = NULL, verbose = NULL, ...) {
+            .merscope_cellmeta(path = path, spat_unit = spat_unit, FOVs = FOVs,
+                               cells = cells, verbose = verbose)
+        }
+        .Object@calls$load_cellmeta <- cm_fun
+
+        ## spatial locations (cell centers, in memory) ####
+        sl_fun <- function(path = cell_meta_path, spat_unit = "cell",
+                           FOVs = NULL, cells = NULL, flip_vertical = TRUE,
+                           verbose = NULL, ...) {
+            .merscope_spatlocs(path = path, spat_unit = spat_unit, FOVs = FOVs,
+                               cells = cells, flip_vertical = flip_vertical,
+                               verbose = verbose)
+        }
+        .Object@calls$load_spatlocs <- sl_fun
+
+        ## expression ####
         ex_fun <- function(
             path = expr_path,
             spat_unit = "cell",
             split_by_type = TRUE,
             feat_type = c("rna", "neg_probe"),
             split_keyword = "Blank",
+            FOVs = NULL,
+            metadata_path = cell_meta_path,
+            cells = NULL,
             remove_zero_rows = TRUE,
             output = c("exprObj", "store"),
             verbose = NULL,
@@ -160,33 +174,15 @@ setMethod(
                 path = path, gsource = gsrc, spat_unit = spat_unit,
                 split_by_type = split_by_type,
                 feat_type = feat_type, split_keyword = split_keyword,
+                FOVs = FOVs, metadata_path = metadata_path, cells = cells,
                 remove_zero_rows = remove_zero_rows,
                 output = output, verbose = verbose, ...
             )
         }
         .Object@calls$load_expression <- ex_fun
 
-        # cell metadata (in memory)
-        cm_fun <- function(path = cell_meta_path, spat_unit = "cell",
-                           FOVs = NULL, verbose = NULL, ...) {
-            .merscope_cellmeta(path = path, spat_unit = spat_unit, FOVs = FOVs,
-                               verbose = verbose, ...)
-        }
-        .Object@calls$load_cellmeta <- cm_fun
-
-        # spatial locations (cell centers from cell metadata, in memory)
-        sl_fun <- function(path = cell_meta_path, spat_unit = "cell",
-                           FOVs = NULL, flip_vertical = TRUE,
-                           verbose = NULL, ...) {
-            .merscope_spatlocs(path = path, spat_unit = spat_unit, FOVs = FOVs,
-                               flip_vertical = flip_vertical,
-                               verbose = verbose, ...)
-        }
-        .Object@calls$load_spatlocs <- sl_fun
-
-        # images (in memory, file-backed)
-        img_fun <- function(path, name = "image",
-                            transform_path = transform_path,
+        ## images (in memory, file-backed) ####
+        img_fun <- function(path, name = "image", transform_path = tf_path,
                             negative_y = TRUE, verbose = NULL, ...) {
             .merscope_image(path = path, name = name,
                             transform_path = transform_path,
@@ -194,10 +190,11 @@ setMethod(
         }
         .Object@calls$load_image <- img_fun
 
-        # orchestrator
+        ## create_gobject ####
+        # Same arguments as Giotto's in-memory MerscopeReader$create_gobject().
         gobject_fun <- function(
             transcript_path = tx_path,
-            boundary_path = cell_bound_path,
+            boundary_path = bound_path,
             expression_path = expr_path,
             metadata_path = cell_meta_path,
             data_to_use = c("subcellular", "aggregate"),
@@ -211,7 +208,7 @@ setMethod(
             load_expression = TRUE,
             load_cellmeta = FALSE,
             load_images = NULL,
-            image_transform_path = transform_path,
+            image_transform_path = tf_path,
             instructions = NULL,
             verbose = NULL) {
 
@@ -224,7 +221,6 @@ setMethod(
                 load_transcripts <- FALSE
                 load_expression  <- TRUE
             }
-
             if (!load_transcripts && !load_expression) {
                 warning(GiottoUtils::wrap_txt(
                     "One of either transcripts or expression info should be loaded for a fully functioning object"
@@ -233,7 +229,24 @@ setMethod(
 
             funs <- .Object@calls
 
-            tx_list <- NULL
+            # cell_metadata.csv maps cells to FOVs and holds the cell centers:
+            # read at most once, and only when a step needs it
+            cell_env <- new.env()
+            get_cells <- function() {
+                if (is.null(cell_env$cells)) {
+                    cell_env$cells <- .merscope_read_cells(metadata_path,
+                        FOVs = FOVs)
+                }
+                cell_env$cells
+            }
+            fov_cells <- function() if (!is.null(FOVs)) get_cells()
+
+            g <- GiottoClass::createGiottoObject(
+                backend = gsrc,
+                instructions = instructions
+            )
+
+            # transcripts
             if (load_transcripts) {
                 tx_list <- funs$load_transcripts(
                     path = transcript_path,
@@ -243,8 +256,10 @@ setMethod(
                     dropcols = dropcols,
                     verbose = verbose
                 )
+                g <- GiottoClass::setGiotto(g, tx_list, verbose = FALSE)
             }
 
+            # polygons; their centroids are attached as spatial locations
             b <- NULL
             if (data_to_use == "subcellular" && !is.na(boundary_path)) {
                 b <- funs$load_polys(
@@ -253,72 +268,59 @@ setMethod(
                     poly_z_indices = poly_z_indices,
                     FOVs = FOVs,
                     metadata_path = metadata_path,
+                    cells = fov_cells(),
                     verbose = verbose
                 )
-                if (!is.null(b) && !inherits(b, "list")) b <- list(b)
+                if (!is.null(b)) {
+                    g <- GiottoClass::setGiotto(g, b,
+                        centroids_to_spatlocs = TRUE, verbose = FALSE)
+                }
             }
 
-            ex <- NULL
+            # expression
             if (load_expression) {
                 ex <- funs$load_expression(
                     path = expression_path,
                     spat_unit = spat_unit,
                     split_by_type = TRUE,
                     feat_type = feat_type,
-                    split_keyword = if (is.list(split_keyword)) {
-                        unlist(split_keyword)
-                    } else split_keyword,
+                    split_keyword = unlist(split_keyword),
+                    FOVs = FOVs,
+                    metadata_path = metadata_path,
+                    cells = fov_cells(),
                     verbose = verbose
                 )
+                g <- GiottoClass::setGiotto(g, ex)
             }
 
-            cx <- NULL
+            # cell metadata
             if (load_cellmeta) {
                 cx <- funs$load_cellmeta(path = metadata_path,
-                                         spat_unit = spat_unit, FOVs = FOVs,
-                                         verbose = verbose)
+                    spat_unit = spat_unit, cells = get_cells(),
+                    verbose = verbose)
+                g <- GiottoClass::setGiotto(g, cx, verbose = FALSE)
             }
 
-            sl <- NULL
-            if (is.null(b) && !is.na(metadata_path)) {
-                sl <- funs$load_spatlocs(path = metadata_path,
-                                         spat_unit = spat_unit, FOVs = FOVs,
-                                         verbose = verbose)
-            }
-
-            imglist <- NULL
+            # images
             if (!is.null(load_images)) {
                 img_paths <- .merscope_image_paths(load_images, image_dir)
-                imglist <- list()
-                for (img_i in seq_along(img_paths)) {
-                    im <- funs$load_image(
+                imglist <- lapply(seq_along(img_paths), function(img_i) {
+                    funs$load_image(
                         path = img_paths[[img_i]],
                         name = names(img_paths)[[img_i]],
                         transform_path = image_transform_path,
                         verbose = verbose
                     )
-                    imglist <- c(imglist, im)
-                }
-            }
-
-            # init gobject with disk backend, then attach
-            g <- GiottoClass::createGiottoObject(
-                backend = gsrc,
-                instructions = instructions
-            )
-
-            if (!is.null(tx_list)) {
-                g <- GiottoClass::setGiotto(g, tx_list, verbose = FALSE)
-            }
-            if (!is.null(b)) {
-                g <- GiottoClass::setGiotto(g, b,
-                    centroids_to_spatlocs = TRUE, verbose = FALSE)
-            }
-            if (!is.null(ex)) g <- GiottoClass::setGiotto(g, ex)
-            if (!is.null(cx)) g <- GiottoClass::setGiotto(g, cx, verbose = FALSE)
-            if (!is.null(sl)) g <- GiottoClass::setGiotto(g, sl, verbose = FALSE)
-            if (!is.null(imglist)) {
+                })
                 g <- GiottoClass::setGiotto(g, imglist, verbose = FALSE)
+            }
+
+            # no polygons loaded: cell centers from the cell metadata
+            if (is.null(b) && !is.na(metadata_path)) {
+                sl <- funs$load_spatlocs(path = metadata_path,
+                    spat_unit = spat_unit, cells = get_cells(),
+                    verbose = verbose)
+                g <- GiottoClass::setGiotto(g, sl, verbose = FALSE)
             }
 
             GiottoUtils::vmsg(.v = verbose, "done")
@@ -330,6 +332,29 @@ setMethod(
     }
 )
 
+# * access ####
+#' @export
+setMethod("$", signature("MerscopeDiskReader"), function(x, name) {
+    basic_info <- c("merscope_dir", "polygon_format", "score_threshold",
+                    "backend", "paths")
+    if (name %in% basic_info) {
+        return(methods::slot(x, name))
+    }
+    x@calls[[name]]
+})
+
+#' @export
+setMethod("$<-", signature("MerscopeDiskReader"), function(x, name, value) {
+    basic_info <- c("merscope_dir", "polygon_format", "score_threshold",
+                    "backend")
+    if (name %in% basic_info) {
+        methods::slot(x, name) <- value
+        return(initialize(x))
+    }
+    x@calls[[name]] <- value
+    x
+})
+
 
 # CREATE READER ####
 
@@ -338,16 +363,31 @@ setMethod(
 #' @description
 #' Disk-backed MERSCOPE reader. Produces a `MerscopeDiskReader` whose
 #' `load_transcripts()`, `load_polys()` and `load_expression()` calls write to a
-#' `gDirSource`-managed project vault. Cell metadata remains in memory.
-#' @param merscope_dir MERSCOPE region directory (the one containing
-#'   `detected_transcripts.parquet`). `experiment.json` is read from the parent
-#'   directory.
-#' @param backend a `gsource` (typically `gDirSource`) project backend.
+#' `gDirSource`-managed project vault; cell metadata, cell centers and images
+#' stay in memory. `$create_gobject()` takes the same arguments as
+#' [Giotto::importMerscope()]'s, and [Giotto::createGiottoMerscopeObject()]
+#' with `backend =` uses this reader.
+#'
+#' Transcripts may be `detected_transcripts.parquet` or `.csv`; a csv is
+#' converted to parquet once, cached by path, size and modification time.
+#' Cell boundaries may be `cell_boundaries.parquet` or (with
+#' `polygon_format = "hdf5"`) the per-FOV HDF5 files in `cell_boundaries/`.
+#' `FOVs` applies to transcripts, polygons, expression, cell metadata and cell
+#' centers. The y coordinates are negated (`y` becomes `-y`).
+#' @param merscope_dir MERSCOPE region directory
+#' @param backend a `gsource` (typically `gDirSource`) project backend, or a
+#'   directory path for one
 #' @param score_threshold `numeric` or `NULL` (default). Minimum
-#'   `transcript_score` retained; `NULL` keeps all transcripts.
+#'   `transcript_score` retained; `NULL` keeps all transcripts. Exports without
+#'   a `transcript_score` column are not filtered.
 #' @param polygon_format `character`. `"parquet"` (default) or `"hdf5"`.
 #' @returns `MerscopeDiskReader` object
 #' @seealso [importXeniumDisk()]
+#' @examples
+#' \dontrun{
+#' x <- importMerscopeDisk("path/to/region_0", backend = "path/to/project")
+#' g <- x$create_gobject()
+#' }
 #' @export
 importMerscopeDisk <- function(merscope_dir = NULL,
                                backend,
@@ -365,111 +405,27 @@ importMerscopeDisk <- function(merscope_dir = NULL,
 }
 
 
-#' @title Create a disk-backed MERSCOPE Giotto object
-#' @name createGiottoMerscopeObjectDisk
-#' @description
-#' Create a disk-backed `giotto` object from a Vizgen MERSCOPE region
-#' directory. The y coordinates of transcripts, polygons and cell centers are
-#' negated (`y` becomes `-y`).
-#' @param merscope_dir MERSCOPE region directory
-#' @param backend a `gsource` project backend
-#' @param score_threshold minimum `transcript_score`, or `NULL` (default)
-#' @param polygon_format `"parquet"` (default) or `"hdf5"`
-#' @param data_to_use `"subcellular"` (default) builds from transcripts and
-#'   polygons; `"aggregate"` uses only the vendor cell x gene matrix.
-#' @param poly_z_indices which z-indices to use for polygons. `NULL` (default)
-#'   uses the lowest plane when all planes hold identical boundaries and stops
-#'   otherwise.
-#' @param FOVs which FOVs to load. `NULL` (default) loads all.
-#' @param dropcols transcript columns not written to the store. Default
-#'   `c("x", "y", "barcode_id", "transcript_id")`; `character(0)` keeps all.
-#' @param feat_type feature type names: the first for detections matching no
-#'   keyword, then one per `split_keyword`. Default `c("rna", "neg_probe")`.
-#' @param split_keyword keywords separating feature detections. Default
-#'   `list("Blank")`, the MERSCOPE negative-control prefix.
-#' @param spat_unit name for the cell spatial unit (default `"cell"`)
-#' @param load_transcripts,load_expression,load_cellmeta logical
-#' @param load_images images to load: mosaic names (e.g. `"DAPI_z3"` for
-#'   `images/mosaic_DAPI_z3.tif`) or image file paths. List names are used as
-#'   image names. Images are placed with
-#'   `images/micron_to_mosaic_pixel_transform.csv`. `NULL` (default) loads no
-#'   images.
-#' @param instructions Giotto instructions
-#' @param verbose verbosity
-#' @returns a `giotto` object backed by `backend`
-#' @export
-createGiottoMerscopeObjectDisk <- function(
-    merscope_dir,
-    backend,
-    score_threshold = NULL,
-    polygon_format = c("parquet", "hdf5"),
-    data_to_use = c("subcellular", "aggregate"),
-    poly_z_indices = NULL,
-    FOVs = NULL,
-    dropcols = c("x", "y", "barcode_id", "transcript_id"),
-    feat_type = c("rna", "neg_probe"),
-    split_keyword = list("Blank"),
-    spat_unit = "cell",
-    load_transcripts = TRUE,
-    load_expression = TRUE,
-    load_cellmeta = FALSE,
-    load_images = NULL,
-    instructions = NULL,
-    verbose = NULL
-) {
-    x <- importMerscopeDisk(
-        merscope_dir = merscope_dir,
-        backend = backend,
-        score_threshold = score_threshold,
-        polygon_format = polygon_format
-    )
-    x$create_gobject(
-        data_to_use = data_to_use,
-        feat_type = feat_type,
-        split_keyword = split_keyword,
-        poly_z_indices = poly_z_indices,
-        FOVs = FOVs,
-        dropcols = dropcols,
-        spat_unit = spat_unit,
-        load_transcripts = load_transcripts,
-        load_expression = load_expression,
-        load_cellmeta = load_cellmeta,
-        load_images = load_images,
-        instructions = instructions,
-        verbose = verbose
-    )
-}
+# MODULAR ####
 
-
-# PATHS ####
+## paths ####
 
 .merscope_detect_paths <- function(merscope_dir) {
     f <- function(...) {
         p <- file.path(merscope_dir, ...)
         if (file.exists(p)) normalizePath(p) else NULL
     }
-    parent <- dirname(merscope_dir)
-    fp <- function(...) {
-        p <- file.path(parent, ...)
-        if (file.exists(p)) normalizePath(p) else NULL
-    }
-
-    # transcripts: prefer parquet over csv
-    tx_path <- f("detected_transcripts.parquet") %||% f("detected_transcripts.csv")
-
-    # boundaries: parquet file, else the per-FOV hdf5 directory
-    cell_bound_path <- f("cell_boundaries.parquet") %||% f("cell_boundaries")
+    bound_dir <- file.path(merscope_dir, "cell_boundaries")
 
     paths <- list(
-        tx_path          = tx_path,
-        cell_bound_path  = cell_bound_path,
-        expr_path        = f("cell_by_gene.csv"),
-        cell_meta_path   = f("cell_metadata.csv"),
-        cell_cat_path    = f("cell_categories.csv"),
-        cell_numcat_path = f("cell_numeric_categories.csv"),
-        experiment_path  = fp("experiment.json"),
-        image_dir        = f("images"),
-        transform_path   = f("images", "micron_to_mosaic_pixel_transform.csv")
+        # transcripts: parquet over csv
+        tx_path         = f("detected_transcripts.parquet") %||%
+                          f("detected_transcripts.csv"),
+        cell_bound_path = f("cell_boundaries.parquet"),
+        cell_bound_dir  = if (dir.exists(bound_dir)) normalizePath(bound_dir),
+        expr_path       = f("cell_by_gene.csv"),
+        cell_meta_path  = f("cell_metadata.csv"),
+        image_dir       = f("images"),
+        transform_path  = f("images", "micron_to_mosaic_pixel_transform.csv")
     )
 
     if (is.null(paths$tx_path) && is.null(paths$expr_path)) {
@@ -482,22 +438,22 @@ createGiottoMerscopeObjectDisk <- function(
 }
 
 
-# MODULAR ####
+## transcript ####
 
-
-## transcripts ####
-
-# Name unnamed columns in a MERSCOPE transcript schema.
-.merscope_tx_schema <- function(path) {
-    sc <- arrow::schema(arrow::open_dataset(path))
+# Schema of a parquet transcript file with unnamed (pandas index) columns
+# named, and `cell_id` read as string: MERSCOPE cell IDs are 64-bit.
+.merscope_tx_schema <- function(path, format = "parquet") {
+    sc <- arrow::open_dataset(path, format = format)$schema
     nms <- names(sc)
     unnamed <- !nzchar(nms)
     if (any(unnamed)) {
         nms[unnamed] <- paste0(".merscope_unnamed_", seq_len(sum(unnamed)))
     }
     list(
-        schema = do.call(arrow::schema,
-            lapply(seq_along(nms), function(i) arrow::field(nms[i], sc[[i]]$type))),
+        schema = do.call(arrow::schema, lapply(seq_along(nms), function(i) {
+            arrow::field(nms[[i]],
+                if (nms[[i]] == "cell_id") arrow::string() else sc[[i]]$type)
+        })),
         dropcols = nms[unnamed]
     )
 }
@@ -506,26 +462,60 @@ createGiottoMerscopeObjectDisk <- function(
 .merscope_tx_query <- function(path, score_threshold = NULL, FOVs = NULL,
                                dropcols = character(0L),
                                flip_vertical = FALSE) {
+    transcript_score <- fov <- global_y <- NULL # NSE vars
     sch <- .merscope_tx_schema(path)
     a <- arrow::open_dataset(sources = path, schema = sch$schema)
     drop <- unique(c(sch$dropcols, as.character(dropcols)))
     if (length(drop) > 0L) {
         a <- dplyr::select(a, -dplyr::any_of(drop))
     }
-    if (!is.null(score_threshold)) {
+    if (!is.null(score_threshold) && "transcript_score" %in% names(a)) {
         a <- dplyr::filter(a, transcript_score >= score_threshold)
     }
     if (!is.null(FOVs)) {
         fovs_ <- as.integer(FOVs)
         a <- dplyr::filter(a, fov %in% fovs_)
     }
-    if ("cell_id" %in% names(a)) {
-        a <- dplyr::mutate(a, cell_id = arrow::cast(cell_id, arrow::string()))
-    }
     if (isTRUE(flip_vertical)) {
         a <- dplyr::mutate(a, global_y = -global_y)
     }
     a
+}
+
+# detected_transcripts.csv converted once to a parquet dataset with the
+# vendor's columns (an unnamed index column dropped, `cell_id` as string),
+# cached by path, size and modification time like the zarr conversions.
+# Tiling scans its source once per tile; a csv would be parsed in full each
+# time.
+.merscope_csv_to_parquet <- function(path, verbose = NULL) {
+    info <- file.info(path)
+    key <- .hash(list(
+        path = normalizePath(path, winslash = "/", mustWork = FALSE),
+        size = as.numeric(info$size),
+        mtime = as.numeric(info$mtime),
+        what = "merscope-transcripts-csv-v1"
+    ))
+    cache_dir <- file.path(getArtifactDumpDir(), "merscope_cache", key)
+    target <- file.path(cache_dir, "detected_transcripts")
+    if (dir.exists(target)) {
+        GiottoUtils::vmsg(.v = verbose,
+            "[merscope] using cached parquet transcripts:", target)
+        return(target)
+    }
+    GiottoUtils::vmsg(.v = verbose,
+        "[merscope] converting csv transcripts to parquet (once):", path)
+    dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
+
+    sch <- .merscope_tx_schema(path, format = "csv")
+    q <- arrow::open_dataset(path, format = "csv", schema = sch$schema,
+                             skip = 1L) |>
+        dplyr::select(-dplyr::any_of(sch$dropcols))
+    # written aside and renamed, so an interrupted conversion is never reused
+    tmp <- file.path(cache_dir, ".writing")
+    unlink(tmp, recursive = TRUE)
+    arrow::write_dataset(q, tmp, format = "parquet")
+    file.rename(tmp, target)
+    target
 }
 
 # Disk-backed MERSCOPE transcript ingestion.
@@ -555,11 +545,15 @@ createGiottoMerscopeObjectDisk <- function(
     GiottoUtils::vmsg("[merscope_transcript_disk] loading transcripts",
                       .v = verbose)
 
+    if (!grepl("\\.parquet$", path, ignore.case = TRUE)) {
+        path <- .merscope_csv_to_parquet(path, verbose = verbose)
+    }
+
+    # capture bare values only -- read_fun is shipped to workers
     score_thr <- score_threshold
     fovs_     <- if (is.null(FOVs)) NULL else as.integer(FOVs)
     drop      <- as.character(dropcols)
-
-    flip <- isTRUE(flip_vertical)
+    flip      <- isTRUE(flip_vertical)
     read_fun <- function(x, schema = NULL) {
         .merscope_tx_query(x, score_threshold = score_thr, FOVs = fovs_,
                            dropcols = drop, flip_vertical = flip)
@@ -579,81 +573,84 @@ createGiottoMerscopeObjectDisk <- function(
         ...
     )
 
-    if (output == "store") return(tx_store)
-
-    gpoints <- GiottoClass::createGiottoPoints(
-        x = tx_store,
-        feat_type = feat_type,
-        split_keyword = split_keyword
-    )
-    if (!inherits(gpoints, "list")) gpoints <- list(gpoints)
-    gpoints
+    .tx_points_out(tx_store, output, feat_type, split_keyword)
 }
 
 
-## polygons ####
+## polygon ####
 
-# Determine the z-plane architecture of a MERSCOPE boundary table.
+# The z-plane to load from cell_boundaries.parquet: the lowest of
+# `poly_z_indices` (all planes when NULL), after checking that the planes are
+# replicates. NA when the file has no ZIndex.
 .merscope_zplane_architecture <- function(path, poly_z_indices = NULL,
                                           n_sample = 200L, verbose = NULL) {
+    ZIndex <- EntityID <- Geometry <- NULL # NSE vars
     ds <- arrow::open_dataset(path)
     if (!"ZIndex" %in% names(ds)) {
         return(list(kind = "2d", z_indices = NA_integer_, use_z = NA_integer_))
     }
+    ds <- dplyr::mutate(ds, EntityID = arrow::cast(EntityID, arrow::string()))
 
     z_all <- sort(ds |> dplyr::distinct(ZIndex) |> dplyr::collect() |>
                   dplyr::pull(ZIndex))
-    if (!is.null(poly_z_indices)) {
-        keep <- intersect(as.integer(poly_z_indices), as.integer(z_all))
-        if (!length(keep)) {
-            stop("[merscope] none of `poly_z_indices` (",
-                 paste(poly_z_indices, collapse = ", "),
-                 ") are present. Available: ", paste(z_all, collapse = ", "),
-                 call. = FALSE)
-        }
-        z_all <- keep
-    }
-
+    z_all <- .merscope_select_z(z_all, poly_z_indices)
     if (length(z_all) == 1L) {
         GiottoUtils::vmsg(.v = verbose,
             "[merscope] single z-plane; 2D architecture")
         return(list(kind = "2d", z_indices = z_all, use_z = z_all[[1L]]))
     }
 
-    zA <- z_all[[1L]]; zB <- z_all[[2L]]
+    zA <- z_all[[1L]]
+    zB <- z_all[[2L]]
     ids_A <- ds |> dplyr::filter(ZIndex == zA) |> dplyr::select(EntityID) |>
              dplyr::collect() |> dplyr::pull(EntityID)
     ids_B <- ds |> dplyr::filter(ZIndex == zB) |> dplyr::select(EntityID) |>
              dplyr::collect() |> dplyr::pull(EntityID)
-
     if (!setequal(ids_A, ids_B)) {
-        return(.merscope_stop_3d(z_all, reason = "cell ID sets differ between z-planes"))
+        .merscope_stop_3d(z_all, reason = "cell ID sets differ between z-planes")
     }
 
-    # sample cells and compare serialized geometry across all planes
-    set.seed(1L)
-    samp <- if (length(ids_A) > n_sample) sample(ids_A, n_sample) else ids_A
-    g <- ds |> dplyr::filter(EntityID %in% samp) |>
+    # compare the serialized geometry of a sample of cells across the planes
+    samp <- .merscope_sample_ids(ids_A, n_sample)
+    g <- ds |> dplyr::filter(EntityID %in% samp, ZIndex %in% z_all) |>
          dplyr::select(EntityID, ZIndex, Geometry) |> dplyr::collect()
-    sp <- split(g, g$EntityID)
-    same <- vapply(sp, function(gi) {
+    same <- vapply(split(g, g$EntityID), function(gi) {
         gi <- gi[order(gi$ZIndex), ]
         ref <- as.raw(gi$Geometry[[1L]])
         all(vapply(seq_len(nrow(gi)),
                    function(i) identical(as.raw(gi$Geometry[[i]]), ref),
                    logical(1L)))
     }, logical(1L))
-
     if (!all(same)) {
-        return(.merscope_stop_3d(z_all, reason = sprintf(
+        .merscope_stop_3d(z_all, reason = sprintf(
             "geometry differs across z-planes for %d of %d sampled cells",
-            sum(!same), length(same))))
+            sum(!same), length(same)))
     }
 
     GiottoUtils::vmsg(.v = verbose, sprintf(
-        "[merscope] [Auto-Detection] Identical IDs AND vertices across %d z-planes (Replicated 2D Data).\n[merscope] [Auto-Correction] Using z-plane %s, dropping %d redundant plane(s).",
-        length(z_all), zA, length(z_all) - 1L))
+        "[merscope] identical polygons across %d z-planes; using z-plane %s",
+        length(z_all), zA))
     list(kind = "replicated_2d", z_indices = z_all, use_z = zA)
+}
+
+# z-planes to consider: all of `z_all`, or the requested ones that exist
+.merscope_select_z <- function(z_all, poly_z_indices = NULL) {
+    if (is.null(poly_z_indices)) return(z_all)
+    keep <- sort(intersect(as.integer(poly_z_indices), as.integer(z_all)))
+    if (!length(keep)) {
+        stop("[merscope] none of `poly_z_indices` (",
+             paste(poly_z_indices, collapse = ", "),
+             ") are present. Available: ", paste(z_all, collapse = ", "),
+             call. = FALSE)
+    }
+    keep
+}
+
+# up to n IDs spread evenly over `ids`: deterministic, leaves the RNG alone
+.merscope_sample_ids <- function(ids, n) {
+    ids <- sort(unique(ids))
+    if (length(ids) <= n) return(ids)
+    ids[unique(round(seq(1, length(ids), length.out = n)))]
 }
 
 .merscope_stop_3d <- function(z_indices, reason) {
@@ -666,6 +663,101 @@ To load a single plane, pass e.g. poly_z_indices = %s",
     )), call. = FALSE)
 }
 
+# cell_boundaries.parquet -> SpatVector (`poly_ID`) of one z-plane. With
+# `flip_vertical`, y is negated in the WKB itself (wk), before terra decodes
+# it: no vertex matrix is built.
+.merscope_poly_parquet <- function(path, poly_z_indices = NULL, ids = NULL,
+                                   flip_vertical = TRUE, verbose = NULL) {
+    ZIndex <- EntityID <- Geometry <- NULL # NSE vars
+    checkmate::assert_file_exists(path)
+    arch <- .merscope_zplane_architecture(path,
+        poly_z_indices = poly_z_indices, verbose = verbose)
+
+    q <- arrow::open_dataset(path) |>
+        dplyr::mutate(EntityID = arrow::cast(EntityID, arrow::string()))
+    if (!is.na(arch$use_z)) {
+        use_z <- arch$use_z
+        q <- dplyr::filter(q, ZIndex == use_z)
+    }
+    if (!is.null(ids)) q <- dplyr::filter(q, EntityID %in% ids)
+    x <- q |> dplyr::select(EntityID, Geometry) |> dplyr::collect()
+    if (nrow(x) == 0L) return(NULL)
+    GiottoUtils::vmsg(.v = verbose,
+        sprintf("[merscope_poly_disk] decoding %s geometries",
+                format(nrow(x), big.mark = ",")))
+
+    wkb <- as.list(x$Geometry)
+    if (isTRUE(flip_vertical)) {
+        GiottoUtils::package_check("wk")
+        wkb <- unclass(wk::wk_transform(wk::new_wk_wkb(wkb),
+            wk::wk_affine_scale(1, -1)))
+    }
+    sv <- terra::vect(wkb)
+    terra::values(sv) <- data.frame(poly_ID = x$EntityID)
+    sv
+}
+
+# cell_boundaries/feature_data_<fov>.hdf5 -> SpatVector (`poly_ID`) of one
+# z-plane, read with Giotto's Vizgen HDF5 reader (raw vertices, not smoothed).
+# Planes are 0-based like ZIndex; the HDF5 reader counts from 1. The replicate
+# check reads two planes of one FOV file; all FOVs are then read for one plane.
+.merscope_poly_hdf5 <- function(path, poly_z_indices = NULL, FOVs = NULL,
+                                flip_vertical = TRUE, n_sample = 200L,
+                                verbose = NULL) {
+    GiottoUtils::package_check("rhdf5", repository = "Bioc")
+    checkmate::assert_directory_exists(path)
+    y <- NULL # NSE var
+    files <- list.files(path, pattern = "^feature_data_\\d+\\.hdf5$")
+    all_fovs <- sort(as.integer(sub("^feature_data_(\\d+)\\.hdf5$", "\\1",
+        files)))
+    sel <- if (is.null(FOVs)) all_fovs else intersect(all_fovs, FOVs)
+    if (!length(sel)) return(NULL)
+
+    read_planes <- function(fovs, z) {
+        Giotto::readPolygonFilesVizgenHDF5(
+            boundaries_path = path,
+            fovs = fovs,
+            z_indices = z + 1L,
+            flip_y_axis = FALSE,
+            calc_centroids = FALSE,
+            H5Fopen_flags = "H5F_ACC_RDONLY",
+            verbose = FALSE,
+            output = "data.table"
+        )
+    }
+
+    z <- .merscope_select_z(0:6, poly_z_indices)
+    if (length(z) > 1L) {
+        planes <- read_planes(sel[[1L]], z[1:2])
+        if (length(planes) > 1L) {
+            a <- planes[[1L]]
+            b <- planes[[2L]]
+            if (!setequal(unique(a$cell_id), unique(b$cell_id))) {
+                .merscope_stop_3d(z, reason = "cell ID sets differ between z-planes")
+            }
+            samp <- .merscope_sample_ids(a$cell_id, n_sample)
+            va <- a[a$cell_id %in% samp]
+            vb <- b[b$cell_id %in% samp]
+            va <- va[order(va$cell_id)]
+            vb <- vb[order(vb$cell_id)]
+            if (nrow(va) != nrow(vb) || !isTRUE(all.equal(va$x, vb$x)) ||
+                !isTRUE(all.equal(va$y, vb$y))) {
+                .merscope_stop_3d(z, reason = "geometry differs across z-planes")
+            }
+        }
+    }
+    v <- read_planes(sel, z[[1L]])
+    if (!length(v)) return(NULL)
+    v <- v[[1L]]
+    if (isTRUE(flip_vertical)) v[, y := -y]
+    ids <- unique(v$cell_id)
+    m <- cbind(geom = match(v$cell_id, ids), part = 1, x = v$x, y = v$y,
+               hole = 0)
+    sv <- terra::vect(m, type = "polygons")
+    terra::values(sv) <- data.frame(poly_ID = as.character(ids))
+    sv
+}
+
 # Disk-backed MERSCOPE polygon ingestion.
 .merscope_poly_disk <- function(
     path,
@@ -675,6 +767,7 @@ To load a single plane, pass e.g. poly_z_indices = %s",
     polygon_format = c("parquet", "hdf5"),
     FOVs = NULL,
     metadata_path = NULL,
+    cells = NULL,
     threshold = 25000L,
     flip_vertical = TRUE,
     output = c("giottoPolygon", "store"),
@@ -691,78 +784,37 @@ To load a single plane, pass e.g. poly_z_indices = %s",
     GiottoUtils::package_check("arrow")
     GiottoUtils::package_check("terra")
 
-    if (polygon_format == "hdf5") {
-        stop(GiottoUtils::wrap_txt(
-            "[merscope] `polygon_format = 'hdf5'` is not implemented.
-Use cell_boundaries.parquet."
-        ), call. = FALSE)
-    }
-    checkmate::assert_file_exists(path)
-
     GiottoUtils::vmsg(
         sprintf("[merscope_poly_disk] loading boundary '%s'", name),
         .v = verbose
     )
 
-    arch <- .merscope_zplane_architecture(path,
-        poly_z_indices = poly_z_indices, verbose = verbose)
-
-    ds <- arrow::open_dataset(path)
-    q <- ds
-    if (!is.na(arch$use_z) && "ZIndex" %in% names(ds)) {
-        use_z <- arch$use_z
-        q <- dplyr::filter(q, ZIndex == use_z)
-    }
-
-    if (!is.null(FOVs)) {
-        if (is.null(metadata_path) || is.na(metadata_path)) {
-            stop("[merscope_poly_disk] `FOVs` requires cell_metadata.csv to ",
-                 "map EntityID -> fov, but no metadata path was found.",
-                 call. = FALSE)
-        }
-        cm <- data.table::fread(metadata_path, select = c("EntityID", "fov"))
-        keep_ids <- cm[["EntityID"]][cm[["fov"]] %in% as.integer(FOVs)]
-        if (!length(keep_ids)) {
-            stop("[merscope_poly_disk] no cells found in FOV(s): ",
-                 paste(FOVs, collapse = ", "), call. = FALSE)
-        }
-        GiottoUtils::vmsg(.v = verbose, sprintf(
-            "[merscope_poly_disk] FOV subset -> %s cells",
-            format(length(keep_ids), big.mark = ",")))
-        q <- dplyr::filter(q, EntityID %in% keep_ids)
-    }
-
-    x <- q |> dplyr::select(EntityID, Geometry) |> dplyr::collect()
-
-    if (nrow(x) == 0L) {
+    sv <- switch(polygon_format,
+        "parquet" = {
+            ids <- NULL
+            if (!is.null(FOVs)) {
+                if (is.null(cells)) {
+                    cells <- .merscope_read_cells(metadata_path, FOVs = FOVs)
+                }
+                ids <- .merscope_fov_cell_ids(cells, FOVs)
+            }
+            .merscope_poly_parquet(path, poly_z_indices = poly_z_indices,
+                ids = ids, flip_vertical = flip_vertical, verbose = verbose)
+        },
+        "hdf5" = .merscope_poly_hdf5(path, poly_z_indices = poly_z_indices,
+            FOVs = FOVs, flip_vertical = flip_vertical, verbose = verbose)
+    )
+    if (is.null(sv)) {
         GiottoUtils::vmsg(.v = verbose, "[merscope_poly_disk] no polygons found")
         return(NULL)
     }
-    GiottoUtils::vmsg(.v = verbose,
-        sprintf("[merscope_poly_disk] decoding %s geometries",
-                format(nrow(x), big.mark = ",")))
-
-    sv <- terra::vect(as.list(x$Geometry))
-    terra::values(sv) <- data.frame(
-        poly_ID = as.character(x$EntityID),
-        stringsAsFactors = FALSE
-    )
-    if (isTRUE(flip_vertical)) {
-        gm <- terra::geom(sv)
-        gm[, "y"] <- -gm[, "y"]
-        vals <- terra::values(sv)
-        sv <- terra::vect(gm, type = "polygons", crs = terra::crs(sv))
-        terra::values(sv) <- vals
-    }
 
     pg <- sourceWrite(gsource, sv, store_type = "parquetGeom")
-
     poly_store <- sourceWrite(gsource, pg,
         store_type = "parquetGeomTile", threshold = threshold,
         verbose = verbose, ...)
 
     if (output == "store") return(poly_store)
-
     GiottoClass::createGiottoPolygon(x = poly_store, name = name)
 }
 
@@ -784,7 +836,8 @@ Use cell_boundaries.parquet."
     out
 }
 
-# Disk-backed MERSCOPE expression ingestion.
+# Disk-backed MERSCOPE expression ingestion. With `FOVs`, the store keeps the
+# cells of those FOVs only, like every other data type.
 .merscope_expression_disk <- function(
     path,
     gsource,
@@ -792,6 +845,9 @@ Use cell_boundaries.parquet."
     split_by_type = TRUE,
     feat_type = c("rna", "neg_probe"),
     split_keyword = "Blank",
+    FOVs = NULL,
+    metadata_path = NULL,
+    cells = NULL,
     remove_zero_rows = TRUE,
     output = c("exprObj", "store"),
     verbose = NULL,
@@ -816,6 +872,14 @@ Use cell_boundaries.parquet."
 
     pe <- sourceWrite(gsource, inp, store_type = "parquetExpr",
                       verbose = verbose, ...)
+
+    if (!is.null(FOVs)) {
+        if (is.null(cells)) {
+            cells <- .merscope_read_cells(metadata_path, FOVs = FOVs)
+        }
+        ids <- .merscope_fov_cell_ids(cells, FOVs)
+        pe <- pe[, which(colnames(pe) %in% ids), drop = FALSE]
+    }
 
     if (isTRUE(remove_zero_rows)) {
         col_id <- NULL # NSE binding
@@ -857,30 +921,42 @@ Use cell_boundaries.parquet."
 
 ## cell metadata ####
 
-.merscope_cellmeta <- function(path, spat_unit = "cell", FOVs = NULL,
-                               verbose = NULL, ...) {
-    if (missing(path) || is.na(path)) {
-        stop("[merscope_cellmeta] no cell metadata path provided", call. = FALSE)
+# cell_metadata.csv as a data.table with `cell_ID` as character (MERSCOPE
+# EntityIDs are 64-bit integers, beyond what a double holds exactly). Older
+# exports have an unnamed first column holding the IDs.
+.merscope_read_cells <- function(path, FOVs = NULL) {
+    if (is.null(path) || is.na(path)) {
+        stop("[merscope] cell_metadata.csv is needed here (to map cells to ",
+             "FOVs, or for cell centers), but none was found.", call. = FALSE)
     }
     checkmate::assert_file_exists(path)
-    GiottoUtils::vmsg("[merscope_cellmeta] loading cell metadata", .v = verbose)
-
-    dt <- data.table::fread(path)
-
+    hdr <- names(data.table::fread(path, nrows = 0L))
+    id_col <- if ("EntityID" %in% hdr) "EntityID" else hdr[[1L]]
+    dt <- data.table::fread(path,
+        colClasses = stats::setNames("character", id_col))
+    data.table::setnames(dt, id_col, "cell_ID")
     if (!is.null(FOVs) && "fov" %in% names(dt)) {
-        n_before <- nrow(dt)
         dt <- dt[dt[["fov"]] %in% as.integer(FOVs)]
-        GiottoUtils::vmsg(.v = verbose, sprintf(
-            "[merscope_cellmeta] FOV subset -> %s of %s cells",
-            format(nrow(dt), big.mark = ","), format(n_before, big.mark = ",")))
     }
+    dt
+}
 
-    if ("EntityID" %in% names(dt)) {
-        data.table::setnames(dt, "EntityID", "cell_ID")
-        dt[, cell_ID := as.character(cell_ID)]
+# cell IDs of the selected FOVs
+.merscope_fov_cell_ids <- function(cells, FOVs) {
+    ids <- cells[["cell_ID"]][cells[["fov"]] %in% as.integer(FOVs)]
+    if (!length(ids)) {
+        stop("[merscope] no cells found in FOV(s): ",
+             paste(FOVs, collapse = ", "), call. = FALSE)
     }
+    ids
+}
+
+.merscope_cellmeta <- function(path, spat_unit = "cell", FOVs = NULL,
+                               cells = NULL, verbose = NULL) {
+    GiottoUtils::vmsg("[merscope_cellmeta] loading cell metadata", .v = verbose)
+    if (is.null(cells)) cells <- .merscope_read_cells(path, FOVs = FOVs)
     GiottoClass::createCellMetaObj(
-        metadata = dt,
+        metadata = cells,
         spat_unit = spat_unit,
         feat_type = "rna",
         provenance = spat_unit
@@ -891,23 +967,15 @@ Use cell_boundaries.parquet."
 ## spatial locations ####
 
 .merscope_spatlocs <- function(path, spat_unit = "cell", FOVs = NULL,
-                               flip_vertical = TRUE,
-                               verbose = NULL, ...) {
-    if (missing(path) || is.na(path)) {
-        stop("[merscope_spatlocs] no cell metadata path provided", call. = FALSE)
-    }
-    checkmate::assert_file_exists(path)
+                               cells = NULL, flip_vertical = TRUE,
+                               verbose = NULL) {
     GiottoUtils::vmsg("[merscope_spatlocs] loading cell centers", .v = verbose)
+    if (is.null(cells)) cells <- .merscope_read_cells(path, FOVs = FOVs)
     sdimy <- NULL # NSE var
-
-    dt <- data.table::fread(path)
-    if (!is.null(FOVs) && "fov" %in% names(dt)) {
-        dt <- dt[dt[["fov"]] %in% as.integer(FOVs)]
-    }
     sl <- data.table::data.table(
-        sdimx = dt[["center_x"]],
-        sdimy = dt[["center_y"]],
-        cell_ID = as.character(dt[["EntityID"]])
+        sdimx = cells[["center_x"]],
+        sdimy = cells[["center_y"]],
+        cell_ID = cells[["cell_ID"]]
     )
     if (isTRUE(flip_vertical)) {
         sl[, sdimy := -sdimy]

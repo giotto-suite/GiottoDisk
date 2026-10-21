@@ -161,20 +161,18 @@ test_that("poly_z_indices rejects indices that are not present", {
 
 # path detection ####
 
-test_that("region files are found and experiment.json is read from the parent", {
+test_that("region files are found", {
     root <- file.path(tempfile(), "EXP_1")
     region <- file.path(root, "region_R1")
     dir.create(region, recursive = TRUE)
     for (f in c("detected_transcripts.parquet", "cell_boundaries.parquet",
                 "cell_by_gene.csv", "cell_metadata.csv"))
         file.create(file.path(region, f))
-    file.create(file.path(root, "experiment.json"))   # parent level
 
     p <- GiottoDisk:::.merscope_detect_paths(region)
     expect_match(p$tx_path, "detected_transcripts\\.parquet$")
     expect_match(p$cell_bound_path, "cell_boundaries\\.parquet$")
     expect_match(p$expr_path, "cell_by_gene\\.csv$")
-    expect_match(p$experiment_path, "experiment\\.json$")
     # absent modalities come back as NA, not NULL
     expect_true(is.na(p$image_dir))
 })
@@ -192,13 +190,3 @@ test_that("importMerscopeDisk requires a backend", {
     expect_error(importMerscopeDisk("somewhere"), "`backend` is required")
 })
 
-test_that("hdf5 boundaries are refused with an explicit message", {
-    skip_if_not_installed("terra")
-    d <- tempfile(); dir.create(d)
-    expect_error(
-        GiottoDisk:::.merscope_poly_disk(
-            path = tempfile(), gsource = structure(list(), class = "gsource"),
-            polygon_format = "hdf5"),
-        "not implemented"
-    )
-})
