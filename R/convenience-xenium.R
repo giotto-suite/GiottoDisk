@@ -59,13 +59,15 @@ setMethod(
                 "NegControlProbe",
                 "UnassignedCodeword",
                 "NegControlCodeword",
-                "GenomicControl"
+                "GenomicControl",
+                "DeprecatedCodeword"
             ),
             split_keyword = list(
                 "NegControlProbe",
                 "UnassignedCodeword",
                 "NegControlCodeword",
-                "GenomicControl"
+                c("GenomicControl", "Intergenic_Region"),
+                "DeprecatedCodeword"
             ),
             flip_vertical = TRUE,
             dropcols = c(),
@@ -194,13 +196,15 @@ setMethod(
                 "NegControlProbe",
                 "UnassignedCodeword",
                 "NegControlCodeword",
-                "GenomicControl"
+                "GenomicControl",
+                "DeprecatedCodeword"
             ),
             split_keyword = list(
                 "NegControlProbe",
                 "UnassignedCodeword",
                 "NegControlCodeword",
-                "GenomicControl"
+                c("GenomicControl", "Intergenic_Region"),
+                "DeprecatedCodeword"
             ),
             load_images = "focus",
             load_aligned_images = NULL,
@@ -534,13 +538,15 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
         "NegControlProbe",
         "UnassignedCodeword",
         "NegControlCodeword",
-        "GenomicControl"
+        "GenomicControl",
+        "DeprecatedCodeword"
     ),
     split_keyword = list(
         "NegControlProbe",
         "UnassignedCodeword",
         "NegControlCodeword",
-        "GenomicControl"
+        c("GenomicControl", "Intergenic_Region"),
+        "DeprecatedCodeword"
     ),
     flip_vertical = TRUE,
     dropcols = c(),

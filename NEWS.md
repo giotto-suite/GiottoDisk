@@ -46,6 +46,11 @@
   refused.
 
 ## bug fixes
+- Xenium and Atera disk readers: genomic control probes named
+  `Intergenic_Region_*` (Atera WTA panels) and `DeprecatedCodeword_*`
+  features were loaded as `rna` transcripts. The defaults now put them in
+  `GenomicControl` and a new `DeprecatedCodeword` feature type, matching the
+  split of the 10x expression matrix.
 - With sedonadb 0.5, spatial queries on a store written without a CRS (all
   Giotto data) failed with "Mismatched CRS arguments: None vs ogc:crs84", for
   example in cropped or zoomed plots. The query geometry now takes the CRS of

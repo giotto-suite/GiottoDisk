@@ -122,13 +122,15 @@ setMethod(
                 "NegControlProbe",
                 "UnassignedCodeword",
                 "NegControlCodeword",
-                "GenomicControl"
+                "GenomicControl",
+                "DeprecatedCodeword"
             ),
             split_keyword = list(
                 "NegControlProbe",
                 "UnassignedCodeword",
                 "NegControlCodeword",
-                "GenomicControl"
+                c("GenomicControl", "Intergenic_Region"),
+                "DeprecatedCodeword"
             ),
             flip_vertical = TRUE,
             dropcols = c(),
@@ -292,13 +294,15 @@ setMethod(
                 "NegControlProbe",
                 "UnassignedCodeword",
                 "NegControlCodeword",
-                "GenomicControl"
+                "GenomicControl",
+                "DeprecatedCodeword"
             ),
             split_keyword = list(
                 "NegControlProbe",
                 "UnassignedCodeword",
                 "NegControlCodeword",
-                "GenomicControl"
+                c("GenomicControl", "Intergenic_Region"),
+                "DeprecatedCodeword"
             ),
             load_images = "morphology",
             load_aligned_images = NULL,
