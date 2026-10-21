@@ -1,19 +1,11 @@
-# The Atera output layout matches Xenium's today, so `AteraDiskReader`
-# subclasses `XeniumDiskReader` and overrides nothing but the platform label.
-# These assertions are the contract that keeps that true: if someone later
-# copies the Xenium reader instead of extending it, the inheritance check fails.
-# They are deliberately data-free so they run in CI.
+# AteraDiskReader is a reader of its own, not a Xenium subclass, so the two
+# technologies can diverge. It shares lower-level loaders with Xenium only
+# where the data type and its reading are the same. Data-free checks; the
+# end-to-end import is in test-zarr-atera-v6.R.
 
-test_that("AteraDiskReader extends the Xenium disk reader", {
-    expect_true(extends("AteraDiskReader", "XeniumDiskReader"))
-    expect_true(extends("AteraDiskReader", "XeniumReader"))
-})
-
-test_that("AteraDiskReader reports Atera in path-detection messages", {
-    # the label is carried by a prototype slot, so no instance is needed
-    expect_identical(getClass("AteraDiskReader")@prototype@platform, "Atera")
-    # and the parent must be unchanged
-    expect_identical(getClass("XeniumDiskReader")@prototype@platform, "Xenium")
+test_that("AteraDiskReader is standalone", {
+    expect_false(extends("AteraDiskReader", "XeniumDiskReader"))
+    expect_false(extends("AteraDiskReader", "XeniumReader"))
 })
 
 test_that("importAteraDisk requires a backend", {

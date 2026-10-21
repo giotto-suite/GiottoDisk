@@ -5,7 +5,7 @@
 \alias{AteraDiskReader-class}
 \title{Atera disk reader}
 \description{
-Disk-backed reader for Atera output. Inherits \code{XeniumDiskReader}, since the
-two output layouts are presently identical.
+Disk-backed reader for Atera output. Create with \code{\link[=importAteraDisk]{importAteraDisk()}};
+\verb{$create_gobject()} builds the object and \verb{$load_*()} load one data type.
 }
 \keyword{internal}

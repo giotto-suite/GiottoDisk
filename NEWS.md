@@ -14,11 +14,27 @@
 - Snapshot names may not contain a path separator or start with `.`.
 
 ## changes
+- The Atera reader has its own cell metadata, centroid and image loaders
+  (`.atera_cellmeta()`, `.atera_spatlocs()`, `.atera_image()`), adapted from
+  the Xenium ones, and the Visium HD reader its own tar extraction, so no
+  GiottoDisk code calls Giotto internals. Output is unchanged.
+- 10x `.h5` expression ingest sizes its batches from the measured cost per
+  stored value (about twice the earlier estimate), so a load stays within
+  `giottodisk.chunk_ram_frac`.
 - The Visium HD and Stereo-seq disk readers no longer drop polygon centroids
   themselves; `GiottoClass (>= 0.7.18)`'s setter does it for every polygon set
   on a backed object.
 
 ## new
+- Atera v1 output (zarr only) imports with `importAteraDisk()` (or
+  `Giotto::createGiottoAteraObject(backend = )`), now a reader of its own
+  rather than a Xenium subclass. Transcripts are written
+  from the zarr grid straight into a tiled store, with no intermediate
+  table; the expression matrix streams in cell order; the `morphology_2d`
+  images load by default. The pixel size is read from `experiment.spatial`.
+  `xeniumZarrToParquet()` also converts Atera v1 folders. Atera output in
+  the Xenium layout (preview data) reads with `importXeniumDisk()`.
+
 - `sourceSchema()` reports a project directory's schema version and whether
   this GiottoDisk supports it. `sourceUpdate()` migrates an older project in
   place: flat snapshot files move into snapshot folders and their artifacts
@@ -30,6 +46,13 @@
   refused.
 
 ## bug fixes
+- With sedonadb 0.5, spatial queries on a store written without a CRS (all
+  Giotto data) failed with "Mismatched CRS arguments: None vs ogc:crs84", for
+  example in cropped or zoomed plots. The query geometry now takes the CRS of
+  the store's `geom` column, which works with sedonadb 0.4 and 0.5.
+- Backed Xenium and Atera readers: an output folder without
+  `morphology_focus/` no longer fails with "invalid 'path' argument" after
+  reading everything else; the focus images are skipped with a warning.
 - PAGE on a store follows Giotto's in-memory method again: the per-feature
   reference level is logged in `logbase` (it was base e), a feature marks a
   type where its sign-matrix value is > 0, and cells come back in the

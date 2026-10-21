@@ -20,3 +20,27 @@ test_that("without an OME header there are no channel names", {
     file.copy(f, g)
     expect_null(.xenium_focus_channel_names(g))
 })
+
+test_that("a backed Xenium object without morphology_focus loads without images", {
+    skip_on_cran()
+    skip_if_offline()
+    skip_if_not_installed("GiottoData")
+    d <- GiottoData::getSpatialDataset("xenium_mini_lung_ffpe",
+        directory = tempdir())
+    nofocus <- file.path(tempdir(), "xenium_nofocus_disk")
+    unlink(nofocus, recursive = TRUE)
+    dir.create(nofocus)
+    keep <- setdiff(list.files(d), "morphology_focus")
+    file.copy(file.path(d, keep), nofocus, recursive = TRUE)
+    proj <- tempfile("xen_nofocus_proj_")
+    on.exit(unlink(c(nofocus, proj), recursive = TRUE), add = TRUE)
+    src <- suppressMessages(sourceCreate(proj, type = "gDirSource"))
+    suppressMessages(setArtifactDumpDir(src))
+
+    expect_warning(
+        g <- Giotto::createGiottoXeniumObject(nofocus,
+            load_transcripts = FALSE, backend = src, verbose = FALSE),
+        "No morphology_focus image found"
+    )
+    expect_s4_class(g, "giotto")
+})

@@ -121,10 +121,9 @@ R/
   convenience-cosmx.R    # CosMx import convenience
   convenience-stereoseq.R # Stereo-seq import convenience
   convenience-xenium.R   # Xenium import convenience
-  convenience-atera.R    # Atera import convenience (subclasses the
-                         #   Xenium disk reader; layouts are identical
-                         #   today, so it overrides nothing but the
-                         #   platform label)
+  convenience-atera.R    # Atera import convenience: standalone reader
+                         #   (not a Xenium subclass); reuses the shared 10x
+                         #   loaders where data type and reading match
   convenience-visiumhd.R # Visium HD import convenience (binned +
                          #   segmented; several bins into one object)
   reader-shared.R        # technology-agnostic reader pieces:
@@ -136,9 +135,12 @@ R/
   zarr-array.R           # .zarr_array (range reads) + .zarr_chunk_reader
   zarr-xenium-workers.R  # zarr -> 10x-schema parquet workers
                          #   (cells / boundaries / transcripts)
-  zarr-detect.R          # detectZarrLayout(): versioned layout detection
+  zarr-detect.R          # detectZarrLayout(): per-archive layout detection
   zarr-convert.R         # xeniumZarrToParquet() + .zarr_ensure_parquet()
                          #   fingerprint-keyed conversion cache
+  zarr-tx-store.R        # Atera v6 transcripts -> parquetGeomTileStore
+                         #   directly (tenxZarrTxInput)
+  zarr-matrix.R          # Atera v6 CSR matrix input (tenxZarrCsrInput)
   utils.R                # .dplyr_nrow, .dump_tempfile, .move_path, etc.
   utils-arrow.R          # .arrow_sample_max_rows, .dplyr_ext, .dplyr_crop, etc.
   utils-spatial.R        # affine half-plane helpers, AABB, etc.
@@ -741,8 +743,34 @@ GiottoDisk owns the reading. Invariants:
   Rarr and zip live in Suggests.
 - `.zarr.zip` entries must be STORED (zip method 0) — the seek-based
   reader refuses deflated entries; unzip the archive instead. All layout
-  assumptions sit behind `detectZarrLayout()` (`xenium-zarr-v1`); zarr v3
-  and unknown structures fail loudly there.
+  assumptions sit behind `.zarr_layout_specs` / `.zarr_detect_product()`,
+  one layout id per archive; zarr v3 and unknown structures fail loudly
+  there.
+- **Two layouts.** `xenium-zarr-v1` (Xenium: `grids/0` transcript tiles,
+  CSC-by-feature `cell_features`) and `atera-zarr-v6` (Atera v1: `grid/<i,j>`
+  cells of `grid_size` microns, gene-sorted, with per-row `cell_id` and
+  `overlaps_nucleus`; AnnData CSR-by-cell matrix). The cells archive is the
+  same in both. v6 adds `f2`, `i8` and vlen-utf8 decoding.
+- **Atera v6 transcripts skip the conversion cache**: `tenxZarrTxInput` +
+  `storeWrite(parquetGeomTileStore, tenxZarrTxInput)` (`R/zarr-tx-store.R`)
+  write tile partitions directly, one worker per grid cell. Each cell is
+  cut into s x s tiles by x/y quantiles of a location sample, s from its row
+  count and `.auto_threshold()`. qv filter and y flip are applied at write,
+  as the reader's `read_fun` does. `row_index` stays contiguous per tile;
+  the plan's metadata must carry a `tile` column or `crop()` cannot prune.
+  Workers, window and buffer come from the ingest budget
+  (`.atera_tx_sizes()`, `.ingest_budget()`), using the measured per-worker
+  cost in `.atera_tx_mem` -- re-measure it if the kernel changes.
+- **Atera v6 expression** is `tenxZarrCsrInput` (from `tenxZarrInput()`):
+  already cell-major, streamed in cell windows with no reorder.
+- **`AteraDiskReader` is standalone**, not a `XeniumDiskReader`: own path
+  detection by exact file name (`.atera_detect_paths`; the folder also holds
+  `binned_transcripts`, `csc_cell_feature_matrix` and `panel_config.json`,
+  which it does not read), pixel size from `experiment.spatial`, own
+  `create_gobject`. It reuses a lower-level loader only where the data type
+  and its reading are the same as Xenium's: `.tenx_poly_disk` (cells
+  archive), `.tenx_expression_disk`, `.tx_points_out`, and Giotto's 10x
+  cells / OME-TIFF image readers.
 
 ## Metadata
 

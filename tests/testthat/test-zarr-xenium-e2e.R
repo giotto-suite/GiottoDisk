@@ -65,24 +65,12 @@ test_that("importXeniumDisk builds a gobject from a zarr-only dir", {
     expect_identical(m, truth_rna)
 })
 
-test_that("importAteraDisk inherits the zarr pathway unchanged", {
-    skip_if_not_installed("Giotto")
+test_that("importAteraDisk points Xenium-layout output to importXeniumDisk", {
     fx <- make_zarr_fixture()
-    dump <- withr::local_tempdir()
-    withr::local_options(giottodisk.artifact_dump = dump)
-    rdr <- suppressWarnings(importAteraDisk(
-        atera_dir = fx$dir,
-        backend = withr::local_tempdir(),
-        qv_threshold = 20
-    ))
-    expect_s4_class(rdr, "AteraDiskReader")
-    expect_identical(rdr@platform, "Atera")
-    expect_identical(rdr@paths$tx_path, fx$paths$transcripts)
-    expect_identical(rdr@paths$expr_path, fx$paths$cell_feature_matrix)
-    # one modality end to end through the inherited closures
-    ex <- rdr$load_expression(verbose = FALSE)
-    expect_true(any(vapply(ex, function(e) e@feat_type == "rna",
-        logical(1L))))
+    expect_error(
+        importAteraDisk(atera_dir = fx$dir, backend = withr::local_tempdir()),
+        "importXeniumDisk"
+    )
 })
 
 # ---- golden tests against a real dataset (env-gated) ----

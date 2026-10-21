@@ -695,6 +695,11 @@ tenxZarrInput <- function(
     drop_aggregate  = TRUE
 ) {
     mode <- match.arg(mode)
+    # Atera v1 ships an AnnData matrix that is already cell-major
+    if (identical(.zarr_detect_product(zarr_path, "cell_feature_matrix"),
+        "atera-zarr-v6")) {
+        return(.tenx_zarr_csr_input(zarr_path, feature_id_col))
+    }
     src <- .zarr_open(zarr_path)
     on.exit(.zarr_close(src), add = TRUE)
 
