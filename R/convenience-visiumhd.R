@@ -696,15 +696,39 @@ importVisiumHDDisk <- function(
 
 ## tar outputs ####
 
-# A `NNNum_outputs.tar` path becomes its extracted `square_NNNum` directory,
-# extracted by the in-memory reader's own helper (next to the tar, or into
-# `outdir`); any other path is returned as is. The single call site of the
-# internal `Giotto:::.visiumhd_untar_bin`.
+# A `NNNum_outputs.tar` path becomes its extracted `square_NNNum` directory
+# (next to the tar, or into `outdir`); any other path is returned as is.
 .visiumhd_untar <- function(path, bin, outdir = NULL, force = FALSE,
                             untar_params = list(), verbose = NULL) {
     if (!any(GiottoUtils::file_extension(path) %in% "tar")) return(path)
-    do.call(Giotto:::.visiumhd_untar_bin, c(list(path, outdir = outdir,
+    do.call(.visiumhd_untar_bin, c(list(path, outdir = outdir,
         bin = bin, force = force, verbose = verbose), untar_params))
+}
+
+# Extract a binned-output tar to `outdir/square_NNNum` unless that folder
+# already holds more than the spatial info. GiottoDisk's own copy of the
+# in-memory reader's helper of the same name, so no Giotto internal is called.
+.visiumhd_untar_bin <- function(f, outdir = NULL, bin = 8, pattern = NULL,
+                                force = FALSE, verbose = NULL, ...) {
+    checkmate::assert_file_exists(f, extension = c("tar", "tar.gz"))
+    checkmate::assert_character(pattern, null.ok = TRUE)
+    bin <- as.integer(bin)
+    if (is.null(outdir)) outdir <- dirname(f)
+    # the tar holds one top folder, `square_NNNum`
+    data_subdir <- file.path(outdir, sprintf("square_%03dum", bin))
+    # spatial/ may have been extracted on its own before
+    data_info <- list.files(data_subdir, include.dirs = TRUE, recursive = FALSE)
+    if (!length(data_info) || setequal(data_info, "spatial")) force <- TRUE
+    if (!force) return(data_subdir)
+
+    files <- NULL
+    if (!is.null(pattern)) {
+        tar_manifest <- utils::untar(f, list = TRUE, ...)
+        files <- tar_manifest[grepl(pattern = pattern, x = tar_manifest)]
+    }
+    GiottoUtils::vmsg(.v = verbose, "untarring...\n", f)
+    utils::untar(f, exdir = outdir, files = files, ...)
+    data_subdir
 }
 
 
