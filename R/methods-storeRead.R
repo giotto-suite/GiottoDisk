@@ -870,15 +870,9 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
     )
 
     # --- 2. Build inner SQL via shared helper ---
-    # geom_sql_fn handles the SRID-aware ST_GeomFromText (DataFusion).
+    # the query geometry takes the CRS of the store's geom column
     sedona_geom_sql_fn <- function(op, store) {
-        wkt_esc <- gsub("'", "''", op$y_wkt, fixed = TRUE)
-        srid <- .spatrelate_store_srid(store)
-        if (is.na(srid)) {
-            sprintf("ST_GeomFromText('%s')", wkt_esc)
-        } else {
-            sprintf("ST_GeomFromText('%s', %d)", wkt_esc, srid)
-        }
+        .sedona_query_geom_sql(op$y_wkt)
     }
     sedona_register_id_fn <- function(ids_tab) {
         name <- tolower(paste0("gd_idf_", .make_uid()))

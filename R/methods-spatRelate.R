@@ -76,23 +76,14 @@ NULL
     result
 }
 
-# Choose the SRID literal for `ST_GeomFromText` to match the store's geom
-# CRS. Sedonadb requires both sides of a spatial predicate to share a CRS.
-# Biology data is typically written with no CRS (`crs = ""`); sedonadb's
-# GeoParquet reader assigns the spec default (`ogc:crs84`, internally
-# `lnglat()`) to absent or `null` CRS. `ST_GeomFromText('...', 4326)`
-# produces a geometry with CRS `epsg:4326`, which sedonadb also normalizes
-# to `lnglat()` -- so the two sides match. For stores written with an
-# explicit `EPSG:NNNN` CRS, pull the SRID from the store params.
-.spatrelate_store_srid <- function(store) {
-    crs <- if (.hasSlot(store, "params")) store@params$crs else NULL
-    if (is.null(crs) || !nzchar(crs)) return(4326L)
-    if (identical(crs, "OGC:CRS84")) return(4326L)
-    m <- regmatches(crs, regexec("EPSG:([0-9]+)", crs))[[1L]]
-    if (length(m) >= 2L) return(as.integer(m[[2L]]))
-    # Unrecognized CRS string -- emit without explicit SRID and surface
-    # any downstream mismatch as a sedonadb error.
-    NA_integer_
+# SedonaDB SQL for the query geometry of a spat_relate. SedonaDB requires both
+# sides of a predicate to share a CRS, and which CRS it gives a store written
+# without one (`crs: null`) depends on its version: `ogc:crs84` in older
+# releases, none in newer ones. The query geometry takes the CRS of the store's
+# own `geom` column, so the two always match.
+.sedona_query_geom_sql <- function(wkt) {
+    wkt_escaped <- gsub("'", "''", wkt, fixed = TRUE)
+    sprintf("ST_SetCrs(ST_GeomFromText('%s'), ST_Crs(geom))", wkt_escaped)
 }
 
 # sedona / DuckDB SQL function for a predicate.
@@ -461,13 +452,7 @@ setMethod(
     view_name <- tolower(paste0("gd_srnarrow_", .make_uid()))
     sedonadb::sd_to_view(sdf, view_name, overwrite = TRUE)
     sql_pred <- .sql_relation_fn(op$relation)
-    wkt_escaped <- gsub("'", "''", op$y_wkt, fixed = TRUE)
-    srid <- .spatrelate_store_srid(store)
-    geom_sql <- if (is.na(srid)) {
-        sprintf("ST_GeomFromText('%s')", wkt_escaped)
-    } else {
-        sprintf("ST_GeomFromText('%s', %d)", wkt_escaped, srid)
-    }
+    geom_sql <- .sedona_query_geom_sql(op$y_wkt)
     select_sql <- paste(sprintf('"%s"', id_cols), collapse = ", ")
     sql <- sprintf(
         'SELECT %s FROM "%s" WHERE %s(geom, %s)',
