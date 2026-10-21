@@ -256,8 +256,38 @@ setMethod(
         obj@calls$load_image <- img_fun
 
         ## create_gobject ####
+        ## aligned images (10x image alignment) ####
+        img_aff_fun <- function(
+            path,
+            imagealignment_path,
+            name = "aligned_image",
+            micron = obj@micron,
+            verbose = NULL
+        ) {
+            Giotto::read10xAffineImage(
+                file = path,
+                imagealignment_path = imagealignment_path,
+                name = name,
+                micron = micron,
+                verbose = verbose
+            )
+        }
+        obj@calls$load_aligned_image <- img_aff_fun
+
+        ## create_gobject ####
+        # Takes the arguments of the Giotto 10x readers' create_gobject so
+        # Giotto's createGiottoAteraObject(backend = ...) can call it.
+        # `gene_panel_json_path` is accepted for that reason; Atera ships no
+        # gene panel.
         gobject_fun <- function(
-            load_bounds = c("cell", "nucleus"),
+            transcript_path = .tx_path,
+            load_bounds = list(
+                cell = "cell",
+                nucleus = "nucleus"
+            ),
+            gene_panel_json_path = NULL,
+            expression_path = .expr_path,
+            metadata_path = .cells_path,
             feat_type = c(
                 "rna",
                 "NegControlProbe",
@@ -272,6 +302,7 @@ setMethod(
                 "GenomicControl"
             ),
             load_images = "morphology",
+            load_aligned_images = NULL,
             load_transcripts = TRUE,
             load_expression = TRUE,
             load_cellmeta = FALSE,
@@ -283,6 +314,11 @@ setMethod(
                     "expression info should be loaded for a fully",
                     "functioning object"))
             }
+            if (length(gene_panel_json_path) &&
+                nzchar(gene_panel_json_path[[1L]])) {
+                warning("[AteraDiskReader] `gene_panel_json_path` is ignored: ",
+                    "Atera ships no gene panel", call. = FALSE)
+            }
             funs <- obj@calls
             g <- GiottoClass::createGiottoObject(
                 backend = gsrc,
@@ -290,51 +326,81 @@ setMethod(
             )
 
             if (load_transcripts) {
-                tx_list <- funs$load_transcripts(feat_type = feat_type,
-                    split_keyword = split_keyword, verbose = verbose)
+                tx_list <- funs$load_transcripts(path = transcript_path,
+                    feat_type = feat_type, split_keyword = split_keyword,
+                    verbose = verbose)
                 g <- GiottoClass::setGiotto(g, tx_list, verbose = FALSE)
             }
 
+            # named list: polygon name -> path, where "cell" / "nucleus"
+            # stand for the cells archive (a character vector of those
+            # shortnames works too)
             if (length(load_bounds)) {
-                load_bounds <- match.arg(load_bounds, c("cell", "nucleus"),
-                    several.ok = TRUE)
-                blist <- lapply(load_bounds, function(b) {
+                if (is.null(names(load_bounds))) {
+                    names(load_bounds) <- unlist(load_bounds)
+                }
+                load_bounds <- as.list(load_bounds)
+                is_short <- unlist(load_bounds) %in% c("cell", "nucleus")
+                load_bounds[is_short] <- list(.cells_path)
+                blist <- lapply(names(load_bounds), function(b) {
                     if (b == "nucleus") {
-                        funs$load_polys(name = "nucleus", split_geom = TRUE,
+                        funs$load_polys(path = load_bounds[[b]],
+                            name = "nucleus", split_geom = TRUE,
                             split_geom_fmt = "nucleus_%d", verbose = verbose)
                     } else {
-                        funs$load_polys(name = "cell", verbose = verbose)
+                        funs$load_polys(path = load_bounds[[b]], name = b,
+                            verbose = verbose)
                     }
                 })
                 # centroids are attached as spatlocs at set time
                 g <- GiottoClass::setGiotto(g, do.call(c, blist),
                     centroids_to_spatlocs = TRUE, verbose = FALSE)
             } else {
-                sl <- funs$load_spatlocs(verbose = verbose)
+                sl <- funs$load_spatlocs(path = metadata_path,
+                    verbose = verbose)
                 if (!is.null(sl)) g <- GiottoClass::setGiotto(g, sl,
                     verbose = FALSE)
             }
 
             if (load_expression) {
-                ex <- funs$load_expression(verbose = verbose)
+                ex <- funs$load_expression(path = expression_path,
+                    verbose = verbose)
                 g <- GiottoClass::setGiotto(g, ex)
             }
 
             if (load_cellmeta) {
-                cx <- funs$load_cellmeta(verbose = verbose)
+                cx <- funs$load_cellmeta(path = metadata_path,
+                    verbose = verbose)
                 g <- GiottoClass::setGiotto(g, cx, verbose = FALSE)
             }
 
-            # "morphology" = every morphology_2d channel; else a named list
-            # of image paths
-            if (identical(load_images, "morphology")) load_images <- .img_paths
+            # "morphology" (or Xenium's "focus") = every morphology_2d
+            # channel; else a named list of image paths
+            if (length(load_images) == 1L && is.character(load_images) &&
+                load_images %in% c("morphology", "focus")) {
+                load_images <- .img_paths
+            }
             if (length(load_images)) {
+                load_images <- as.list(load_images)
                 checkmate::assert_list(load_images, names = "named")
                 imglist <- do.call(c, lapply(names(load_images), function(nm) {
                     funs$load_image(path = load_images[[nm]], name = nm,
                         verbose = verbose)
                 }))
                 g <- GiottoClass::setGiotto(g, imglist)
+            }
+
+            # list of c(image path, alignment matrix path), by name
+            if (length(load_aligned_images)) {
+                checkmate::assert_list(load_aligned_images, names = "named")
+                aimglist <- lapply(names(load_aligned_images), function(nm) {
+                    funs$load_aligned_image(
+                        path = load_aligned_images[[nm]][1L],
+                        imagealignment_path = load_aligned_images[[nm]][2L],
+                        name = nm
+                    )
+                })
+                g <- GiottoClass::setGiotto(g, aimglist)
             }
             g
         }

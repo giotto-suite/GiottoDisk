@@ -22,8 +22,9 @@
   on a backed object.
 
 ## new
-- Atera v1 output (zarr only) imports with `importAteraDisk()`, now a
-  reader of its own rather than a Xenium subclass. Transcripts are written
+- Atera v1 output (zarr only) imports with `importAteraDisk()` (or
+  `Giotto::createGiottoAteraObject(backend = )`), now a reader of its own
+  rather than a Xenium subclass. Transcripts are written
   from the zarr grid straight into a tiled store, with no intermediate
   table; the expression matrix streams in cell order; the `morphology_2d`
   images load by default. The pixel size is read from `experiment.spatial`.

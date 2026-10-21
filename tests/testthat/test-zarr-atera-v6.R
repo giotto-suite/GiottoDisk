@@ -216,3 +216,28 @@ test_that("create_gobject loads the morphology_2d images by default", {
     expect_setequal(GiottoClass::list_images_names(g),
         names(rdr@paths$img_paths))
 })
+
+test_that("Giotto's createGiottoAteraObject builds the disk object", {
+    skip_if_not_installed("Giotto")
+    skip_if_not_installed("tilework")
+    skip_if_not(exists("createGiottoAteraObject", asNamespace("Giotto")))
+    withr::local_options(giottodisk.artifact_dump = withr::local_tempdir())
+    withr::local_options(tilework.warn_sequential = FALSE)
+    withr::local_options(giotto.warn_sequential = FALSE)
+    withr::local_options(giottodisk.par_workers = 1L)
+    dir <- withr::local_tempdir()
+    file.copy(list.files(av6, full.names = TRUE), dir, recursive = TRUE)
+
+    # the wrapper passes the 10x reader arguments (bounds as a named list,
+    # load_images = "focus", load_aligned_images, path overrides)
+    g <- suppressWarnings(Giotto::createGiottoAteraObject(atera_dir = dir,
+        backend = withr::local_tempdir(), verbose = FALSE))
+    expect_s4_class(g, "giotto")
+    expect_setequal(
+        GiottoClass::list_spatial_info_names(g), c("cell", "nucleus")
+    )
+    expect_length(GiottoClass::list_images_names(g), 4L)
+    pe <- GiottoClass::getExpression(g, spat_unit = "cell",
+        feat_type = "rna", values = "raw")[]
+    expect_s4_class(pe, "parquetExprStore")
+})
