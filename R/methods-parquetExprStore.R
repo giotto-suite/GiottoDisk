@@ -326,32 +326,92 @@ setMethod("storeRead", signature("parquetExprStore"), function(store,
 
     # `atab` is the lazy query with @ops + @cell_idx / @gene_idx already
     # composed (built by callNextMethod(output = "query") in the caller).
-    df <- data.table::as.data.table(dplyr::collect(atab))
-    row_id <- col_id <- value <- NULL  # NSE
-
-    # Apply @post_ops R-side; mutates df$value in place.
-    df <- .pe_apply_post_ops_df(df, store@post_ops)
+    # Only the three triplet columns are read: the partition column
+    # `source_id` is one string per stored value, and converting it cost more
+    # time and memory than the rest of the read together. @post_ops are the
+    # one consumer of it (a `multiply` payload is keyed by uid), so it is kept
+    # only when there are any.
+    row_id <- col_id <- value <- source_id <- NULL  # NSE
+    if (length(store@post_ops) > 0L) {
+        df <- dplyr::collect(dplyr::select(atab,
+            dplyr::any_of(c("row_id", "col_id", "value", "source_id"))))
+        data.table::setDT(df)
+        # Apply @post_ops R-side; mutates df$value in place.
+        df <- .pe_apply_post_ops_df(df, store@post_ops)
+        col_ids <- df$col_id
+        row_ids <- df$row_id
+        x_col <- df$value
+        rm(df)
+    } else {
+        # Without post-ops no table is needed: pull each column out of the
+        # arrow result and drop the result before the matrix is built.
+        tab <- arrow::as_arrow_table(dplyr::select(atab, row_id, col_id, value))
+        col_ids <- as.vector(tab$col_id)
+        row_ids <- as.vector(tab$row_id)
+        x_col <- as.vector(tab$value)
+        rm(tab)
+    }
 
     # Map original parquet ids -> 1..n_rows / 1..n_cols positions.
     # row_id (cell axis) -> j (matrix col); col_id (gene axis) -> i (matrix row).
-    i_pos <- .pe_remap_col(df$col_id, store)
-    j_pos <- .pe_remap_row(df$row_id, store)
-    keep  <- !is.na(i_pos) & !is.na(j_pos)
+    i_pos <- .pe_remap_col(col_ids, store)
+    j_pos <- .pe_remap_row(row_ids, store)
+    rm(col_ids, row_ids)
+
+    .pe_build_csc(store, i_pos, j_pos, x_col, n_rows, n_cols)
+}
+
+# Assemble the dgCMatrix from storage-axis positions (i = gene, j = cell),
+# dropping positions outside the view. Shared by the single-store and union
+# builders.
+#
+# Built as CSC directly: one radix order of the entries plus a column count
+# for @p. `Matrix::sparseMatrix()` goes through a triplet matrix and a
+# conversion, holding several full copies of i, j and x at once -- measured at
+# about twice the transient memory on an 87M-value window. The direct build
+# assumes each (row, column) pair occurs once, which a store's triplets
+# satisfy; if one ever does not, it falls back to `sparseMatrix()`, which sums
+# duplicates as before.
+.pe_build_csc <- function(store, i_pos, j_pos, x, n_rows, n_cols) {
+    keep <- !is.na(i_pos) & !is.na(j_pos)
     if (!all(keep)) {
-        i_pos <- i_pos[keep]; j_pos <- j_pos[keep]; df <- df[keep]
+        i_pos <- i_pos[keep]; j_pos <- j_pos[keep]; x <- x[keep]
     }
-    x_col <- df$value
+    rm(keep)
 
     # Last logical-position site: which storage axis becomes the matrix row.
-    ij   <- .pe_orient(store, i_pos, j_pos)
-    dims <- unlist(.pe_orient(store, n_rows, n_cols))
-    Matrix::sparseMatrix(
-        i = ij[[1L]],
-        j = ij[[2L]],
-        x = as.double(x_col),
-        dims = as.integer(dims),
-        dimnames = .pe_orient(store, store@feat_ids, store@cell_ids),
-        repr = "C"
+    ij <- .pe_orient(store, i_pos, j_pos)
+    rm(i_pos, j_pos)
+    rows <- as.integer(ij[[1L]])
+    cols <- as.integer(ij[[2L]])
+    rm(ij)
+    dims <- as.integer(unlist(.pe_orient(store, n_rows, n_cols)))
+    dimnames <- .pe_orient(store, store@feat_ids, store@cell_ids)
+
+    o <- order(cols, rows, method = "radix")
+    rows <- rows[o]
+    x <- as.double(x)[o]
+    cols <- cols[o]
+    rm(o)
+
+    p <- c(0L, cumsum(tabulate(cols, nbins = dims[[2L]])))
+
+    # Once ordered, rows must rise strictly within each column. A step that
+    # does not rise is either a column boundary or a duplicate pair.
+    steps <- which(diff(rows) <= 0L)
+    if (length(steps) &&
+        length(setdiff(steps, p[-c(1L, length(p))]))) {
+        return(Matrix::sparseMatrix(i = rows, j = cols, x = x, dims = dims,
+            dimnames = dimnames, repr = "C"))
+    }
+    rm(cols, steps)
+
+    methods::new("dgCMatrix",
+        i = rows - 1L,
+        p = as.integer(p),
+        x = x,
+        Dim = dims,
+        Dimnames = lapply(dimnames, function(d) if (length(d)) d else NULL)
     )
 }
 
@@ -438,7 +498,9 @@ setMethod("storeRead", signature("unionParquetExprStore"), function(store,
     cap <- .pe_orient(store, n_rows, n_cols)
     .pe_check_dgc_dims(cap[[1L]], cap[[2L]], max_rows, max_cols)
 
-    df <- data.table::as.data.table(dplyr::collect(atab))
+    # setDT converts in place; as.data.table() would copy every column
+    df <- dplyr::collect(atab)
+    data.table::setDT(df)
     source_id <- row_id <- col_id <- value <- NULL  # NSE
 
     # Apply @post_ops R-side; mutates df$value in place. Post-op union
@@ -471,23 +533,10 @@ setMethod("storeRead", signature("unionParquetExprStore"), function(store,
     gi <- if (length(rep_store@gene_idx) > 0L) rep_store@gene_idx
           else seq_len(as.integer(rep_store@n_genes))
     i_pos <- match(df$col_id, gi)
-
-    keep <- !is.na(i_pos) & !is.na(j_pos)
-    if (!all(keep)) {
-        i_pos <- i_pos[keep]; j_pos <- j_pos[keep]; df <- df[keep]
-    }
     x_col <- df$value
+    rm(df)
 
-    ij   <- .pe_orient(store, i_pos, j_pos)
-    dims <- unlist(.pe_orient(store, n_rows, n_cols))
-    Matrix::sparseMatrix(
-        i = ij[[1L]],
-        j = ij[[2L]],
-        x = as.double(x_col),
-        dims = as.integer(dims),
-        dimnames = .pe_orient(store, store@feat_ids, store@cell_ids),
-        repr = "C"
-    )
+    .pe_build_csc(store, i_pos, j_pos, x_col, n_rows, n_cols)
 }
 
 # Build the source_id-aware composite filter expression for a union read.
