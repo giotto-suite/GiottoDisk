@@ -216,10 +216,10 @@ setMethod(
             dropcols = c("x_centroid", "y_centroid"),
             verbose = NULL
         ) {
-            do.call(Giotto:::.xenium_cellmeta, list(
+            .atera_cellmeta(
                 path = .zarr_ensure_parquet(path, what = "cells"),
                 dropcols = dropcols, verbose = verbose
-            ))
+            )
         }
         obj@calls$load_cellmeta <- cmeta_fun
 
@@ -228,10 +228,10 @@ setMethod(
             flip_vertical = TRUE,
             verbose = NULL
         ) {
-            do.call(Giotto:::.xenium_spatlocs, list(
+            .atera_spatlocs(
                 path = .zarr_ensure_parquet(path, what = "cells"),
                 flip_vertical = flip_vertical, verbose = verbose
-            ))
+            )
         }
         obj@calls$load_spatlocs <- sloc_fun
 
@@ -239,7 +239,7 @@ setMethod(
         img_fun <- function(
             path,
             name = "image",
-            output_dir,
+            output_dir = NULL,
             micron = obj@micron,
             negative_y = TRUE,
             flip_vertical = FALSE,
@@ -247,11 +247,10 @@ setMethod(
             verbose = NULL,
             ...
         ) {
-            a <- list(path = path, name = name, micron = micron,
-                negative_y = negative_y, flip_vertical = flip_vertical,
-                flip_horizontal = flip_horizontal, verbose = verbose, ...)
-            if (!missing(output_dir)) a$output_dir <- output_dir
-            do.call(Giotto:::.xenium_image, a)
+            .atera_image(path = path, name = name, output_dir = output_dir,
+                micron = micron, negative_y = negative_y,
+                flip_vertical = flip_vertical,
+                flip_horizontal = flip_horizontal, verbose = verbose)
         }
         obj@calls$load_image <- img_fun
 
@@ -409,6 +408,116 @@ setMethod(
         obj
     }
 )
+
+# cell metadata ####
+
+# The cells archive converted to 10x `cells.parquet` -> cellMetaObj. The
+# centroids are dropped by default: they are the spatial locations
+# (.atera_spatlocs()). Adapted from Giotto's Xenium cell metadata loader, kept
+# as Atera's own copy so the two readers can follow their formats separately.
+.atera_cellmeta <- function(path, dropcols = c("x_centroid", "y_centroid"),
+    verbose = NULL) {
+    if (missing(path) || is.null(path)) {
+        stop("[atera_cellmeta] no cell metadata path provided", call. = FALSE)
+    }
+    checkmate::assert_file_exists(path)
+    GiottoUtils::vmsg("Loading Atera cell metadata...", .v = verbose)
+    cell_id <- NULL # NSE var
+    cx <- data.table::as.data.table(arrow::read_parquet(path))
+    cx <- cx[, setdiff(names(cx), dropcols), with = FALSE]
+    cx[, cell_id := as.character(cell_id)]
+    data.table::setnames(cx, "cell_id", "cell_ID")
+    GiottoClass::createCellMetaObj(
+        metadata = cx,
+        spat_unit = "cell",
+        feat_type = "rna",
+        provenance = "cell",
+        verbose = verbose %null% TRUE
+    )
+}
+
+# spatlocs ####
+
+# Cell centroids from the same parquet as spatial locations: the fallback when
+# no polygons are loaded. y is negated like the transcripts and polygons.
+.atera_spatlocs <- function(path, flip_vertical = TRUE, verbose = NULL) {
+    if (missing(path) || length(path) == 0L || !nzchar(path[[1L]])) {
+        return(NULL)
+    }
+    checkmate::assert_file_exists(path)
+    GiottoUtils::vmsg("Loading cell centroids as spatial locations...",
+        .v = verbose)
+    cols <- c("cell_id", "x_centroid", "y_centroid")
+    cell_id <- NULL # NSE var
+    sl <- data.table::as.data.table(
+        arrow::read_parquet(path, col_select = dplyr::all_of(cols))
+    )
+    sl[, cell_id := as.character(cell_id)]
+    data.table::setnames(sl, cols, c("cell_ID", "sdimx", "sdimy"))
+    sdimy <- NULL # NSE var
+    if (isTRUE(flip_vertical)) sl[, sdimy := -sdimy]
+    GiottoClass::createSpatLocsObj(
+        coordinates = sl,
+        name = "raw",
+        spat_unit = "cell",
+        provenance = "cell",
+        verbose = FALSE
+    )
+}
+
+# images ####
+
+# `morphology_2d` OME-TIFFs -> list of giottoLargeImage in microns. GDAL reads
+# the OME-TIFFs directly; a codec it cannot read is converted once with
+# to_simple_tif() (into `tif_exports/` next to the image, or `output_dir`).
+# Adapted from Giotto's Xenium image loader without the Xenium-only parts
+# (focus directories, earlier conversions); Atera names its channels from the
+# file names (.atera_image_paths()).
+.atera_image <- function(path,
+    name = "image",
+    output_dir = NULL,
+    micron,
+    negative_y = TRUE,
+    flip_vertical = FALSE,
+    flip_horizontal = FALSE,
+    verbose = NULL) {
+    if (missing(path)) {
+        stop("[atera_image] no image path provided", call. = FALSE)
+    }
+    if (length(name) != length(path) && length(name) != 1L) {
+        stop("length of `name` should be same as length of `path`",
+            call. = FALSE)
+    }
+    if (length(name) == 1L && length(path) > 1L) {
+        name <- sprintf("%s_%d", name, seq_along(path))
+    }
+    vapply(path, checkmate::assert_file_exists, FUN.VALUE = character(1L))
+    checkmate::assert_numeric(micron)
+
+    lapply(seq_along(path), function(i) {
+        GiottoUtils::vmsg(.v = verbose, sprintf("loading image as '%s'",
+            name[[i]]))
+        read_img <- function(f) {
+            GiottoClass::createGiottoLargeImage(f,
+                name = name[[i]],
+                flip_vertical = flip_vertical,
+                flip_horizontal = flip_horizontal,
+                negative_y = negative_y,
+                verbose = verbose
+            )
+        }
+        img <- try(read_img(path[[i]]), silent = TRUE)
+        if (inherits(img, "try-error")) {
+            # last resort for codecs GDAL cannot reach: convert through python
+            out <- output_dir %null% file.path(dirname(path[[i]]),
+                "tif_exports")
+            img <- read_img(GiottoClass::to_simple_tif(
+                input_file = path[[i]], output_dir = out, overwrite = FALSE
+            ))
+        }
+        GiottoClass::rescale(img, micron, x0 = 0, y0 = 0)
+    })
+}
 
 # transcripts ####
 

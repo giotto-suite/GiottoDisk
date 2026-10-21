@@ -14,6 +14,10 @@
 - Snapshot names may not contain a path separator or start with `.`.
 
 ## changes
+- The Atera reader has its own cell metadata, centroid and image loaders
+  (`.atera_cellmeta()`, `.atera_spatlocs()`, `.atera_image()`), adapted from
+  the Xenium ones, and the Visium HD reader its own tar extraction, so no
+  GiottoDisk code calls Giotto internals. Output is unchanged.
 - 10x `.h5` expression ingest sizes its batches from the measured cost per
   stored value (about twice the earlier estimate), so a load stays within
   `giottodisk.chunk_ram_frac`.
