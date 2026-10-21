@@ -30,6 +30,9 @@
   refused.
 
 ## bug fixes
+- Backed Xenium and Atera readers: an output folder without
+  `morphology_focus/` no longer fails with "invalid 'path' argument" after
+  reading everything else; the focus images are skipped with a warning.
 - PAGE on a store follows Giotto's in-memory method again: the per-feature
   reference level is logged in `logbase` (it was base e), a feature marks a
   type where its sign-matrix value is > 0, and cells come back in the
