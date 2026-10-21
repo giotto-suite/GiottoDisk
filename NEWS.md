@@ -30,6 +30,10 @@
   refused.
 
 ## bug fixes
+- With sedonadb 0.5, spatial queries on a store written without a CRS (all
+  Giotto data) failed with "Mismatched CRS arguments: None vs ogc:crs84", for
+  example in cropped or zoomed plots. The query geometry now takes the CRS of
+  the store's `geom` column, which works with sedonadb 0.4 and 0.5.
 - Backed Xenium and Atera readers: an output folder without
   `morphology_focus/` no longer fails with "invalid 'path' argument" after
   reading everything else; the focus images are skipped with a warning.
