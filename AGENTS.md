@@ -112,6 +112,8 @@ R/
   methods-snapshotSave.R # snapshotSave (giottosave snapshot lifecycle)
   methods-snapshotLoad.R # snapshotLoad
   methods-snapshotDelete.R # snapshotDelete
+  methods-snapshotSidecars.R # manifest.json / history.ndjson per snapshot;
+                         #   objManifest / objHistory methods for gDirSource
   stream-filter.R        # filterData(parquetExprStore, ...)
   stream-normalize.R     # processData(parquetExprStore, libraryNormParam/logNormParam)
   stream-markers.R       # analyzeData(parquetExprBase, markersParam) pairwise markers
@@ -571,7 +573,10 @@ rationale (manifest design, dump lifecycle, multi-analysis guarantees).
   giottodir.json       # manifest (consolidated from _pending/ on read)
   artifacts/<uid>/...  # vault
   _pending/            # WAL-style pending manifest edits
-  giottosave/<name>.<id>/gobject.RDS  # one folder per snapshot; folder name = tag
+  giottosave/<name>.<id>/  # one folder per snapshot; folder name = tag
+    gobject.RDS            # the object (or gobject.qs2)
+    manifest.json          # what it holds (giotto snapshots only)
+    history.ndjson         # how it was produced (giotto snapshots only)
 ```
 
 Manifest access: `src["uid"]`, `src["uid", "field"]`, `src[, "field"]`,

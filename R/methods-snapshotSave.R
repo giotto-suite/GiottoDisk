@@ -613,6 +613,7 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
     .save_serialized(x, file.path(stage, .gdsrc_snapshot_objfile(method)),
         method, method_params
     )
+    .ss_gdsrc_write_sidecars(x, stage)
     if (!file.rename(stage, file.path(gsdir, tag))) {
         stop("[snapshotSave] save failed\n", call. = FALSE)
     }
