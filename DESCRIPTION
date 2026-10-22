@@ -25,7 +25,7 @@ Imports:
     digest,
     dplyr,
     Giotto (>= 4.3.5),
-    GiottoClass (>= 0.7.21),
+    GiottoClass (>= 0.7.24),
     GiottoUtils (>= 0.2.9),
     igraph,
     jsonlite,
@@ -106,6 +106,7 @@ Collate:
     'methods-snapshotDelete.R'
     'methods-snapshotLoad.R'
     'methods-snapshotSave.R'
+    'methods-snapshotSidecars.R'
     'methods-sourceWrite.R'
     'methods-sourceAdopt.R'
     'methods-sourcePrune.R'

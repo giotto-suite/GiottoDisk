@@ -88,6 +88,13 @@
   `manifestDiff()` sees a store being replaced, subset or given new ops. It
   is built from the handle and never reads data, and it survives saving into
   a project.
+- `snapshotSave()` writes `manifest.json` and `history.ndjson` into each
+  `giotto` snapshot's folder. `objManifest(src, name)` and
+  `objHistory(src, name)` read them back without loading the snapshot, in the
+  same form as for the live object, so snapshots can be compared with
+  `manifestDiff()`. A project directory path works too:
+  `objManifest("my_project", name = "clustered")`. A failed write warns and
+  never fails the save. Requires GiottoClass >= 0.7.24.
 
 ## bug fixes
 - Xenium and Atera disk readers: genomic control probes named
