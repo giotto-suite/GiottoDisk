@@ -14,6 +14,18 @@
 - Snapshot names may not contain a path separator or start with `.`.
 
 ## changes
+- `storeRead(output = "dgcmatrix")` needs less than half the memory and less
+  time. It no longer reads the `source_id` partition column unless post-ops
+  need it, and builds the CSC matrix directly instead of through
+  `Matrix::sparseMatrix()`. On an 87M-value window, transient memory falls
+  from 10.2 to 4.2 GB and read time from 11.5 to 7.3 s; the matrix is
+  identical. Streaming passes that read windows this way (PAGE and
+  hypergeometric enrichment, deconvolution) inherit it: PAGE on 400,000
+  cells, with 8 GB free, peaks at 8.8 instead of 10.4 GB and runs in 65
+  instead of 82 s.
+- The floors of the window derivation are options:
+  `giottodisk.chunk_min_rows` (smallest window, default 10,000 cells) and
+  `giottodisk.chunk_min_frac` (smallest budget, default 5% of free RAM).
 - The Atera reader has its own cell metadata, centroid and image loaders
   (`.atera_cellmeta()`, `.atera_spatlocs()`, `.atera_image()`), adapted from
   the Xenium ones, and the Visium HD reader its own tar extraction, so no
@@ -37,6 +49,9 @@
     replicated z-planes load one plane, true 3D stops with an error.
   - `FOVs` applies to every data type, the expression matrix included.
   - Cell IDs (64-bit `EntityID`) are kept exact as character.
+- `storeChunkProbe()` measures one streaming window on the current machine --
+  time, peak memory and bytes per stored value -- and reports the window that
+  fits the budget and the time for one pass over the store.
 - Atera v1 output (zarr only) imports with `importAteraDisk()` (or
   `Giotto::createGiottoAteraObject(backend = )`), now a reader of its own
   rather than a Xenium subclass. Transcripts are written
@@ -57,6 +72,11 @@
   refused.
 
 ## bug fixes
+- Xenium and Atera disk readers: genomic control probes named
+  `Intergenic_Region_*` (Atera WTA panels) and `DeprecatedCodeword_*`
+  features were loaded as `rna` transcripts. The defaults now put them in
+  `GenomicControl` and a new `DeprecatedCodeword` feature type, matching the
+  split of the 10x expression matrix.
 - With sedonadb 0.5, spatial queries on a store written without a CRS (all
   Giotto data) failed with "Mismatched CRS arguments: None vs ogc:crs84", for
   example in cropped or zoomed plots. The query geometry now takes the CRS of
