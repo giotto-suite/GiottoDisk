@@ -7,8 +7,25 @@ NULL
 # `giottodisk.use_kernels = FALSE` forces the R paths.
 .gd_kernel <- function(name) {
     isTRUE(getOption("giottodisk.use_kernels", TRUE)) &&
-        requireNamespace("GiottoKernels", quietly = TRUE) &&
+        .gd_kernels_installed() &&
         GiottoKernels::has_kernel(name)
+}
+
+# A missing or outdated GiottoKernels is mentioned once per session, since the
+# R path is only slower. `pkg` is a seam for the tests.
+.gd_kernels_installed <- function(pkg = "GiottoKernels") {
+    GiottoUtils::package_check(pkg,
+        repository = sprintf("r-universe:giotto-suite/%s>=0.3.0", pkg),
+        on_missing = "message",
+        once = TRUE,
+        custom_msg = sprintf(paste0(
+            "%s is not installed, so this step runs in R: same results, ",
+            "slower. To use the compiled kernels:\n",
+            "install.packages(\"%s\",\n",
+            "    repos = c(\"https://giotto-suite.r-universe.dev\", ",
+            "\"https://cloud.r-project.org\"))"
+        ), pkg, pkg)
+    )
 }
 
 # The (row_id, col_id, value) triplets a store's view produces, as the Arrow

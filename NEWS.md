@@ -14,6 +14,11 @@
 - Snapshot names may not contain a path separator or start with `.`.
 
 ## changes
+- Steps that GiottoKernels speeds up (gram-eigen PCA, edge statistics) say
+  once per session when it is missing or older than 0.3.0, with the
+  r-universe install. They still fall back to R, as before.
+  `options(giottodisk.use_kernels = FALSE)` skips the check. Requires
+  GiottoUtils >= 0.2.9.
 - `Remotes:` installs tilework from its `dev` branch until tilework 1.0.1 is
   on CRAN. `main` lacks the tile-edge fix (drieslab/tilework#5), without which
   a point or polygon on the top or right edge of the data can be dropped from a
