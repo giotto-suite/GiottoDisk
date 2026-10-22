@@ -62,7 +62,7 @@ Suggests:
     TileDBArray
 VignetteBuilder: knitr
 Remotes:
-    drieslab/tilework,
+    drieslab/tilework@dev,
     drieslab/cosmxscan,
     drieslab/spatialDWLS,
     giotto-suite/GiottoUtils@dev,

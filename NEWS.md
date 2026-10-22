@@ -14,6 +14,10 @@
 - Snapshot names may not contain a path separator or start with `.`.
 
 ## changes
+- `Remotes:` installs tilework from its `dev` branch until tilework 1.0.1 is
+  on CRAN. `main` lacks the tile-edge fix (drieslab/tilework#5), without which
+  a point or polygon on the top or right edge of the data can be dropped from a
+  tiled store.
 - `storeRead(output = "dgcmatrix")` needs less than half the memory and less
   time. It no longer reads the `source_id` partition column unless post-ops
   need it, and builds the CSC matrix directly instead of through
