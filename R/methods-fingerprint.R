@@ -16,7 +16,8 @@ NULL
 #'
 #' `@path` is left out, so moving an artifact into a project vault keeps its
 #' fingerprint, as are `@read_fun`, the cached marginals in `@stats` and the
-#' tile plan, which is fixed when the artifact is written. A function in the
+#' tile plan, which is fixed when the artifact is written. The CRS in
+#' `@params` is left out as well. A function in the
 #' handle counts by its code (see [GiottoClass::fingerprint_data()]). A value
 #' with no canonical form, such as an environment, errors, and the manifest
 #' reports the store as unfingerprinted.
@@ -31,9 +32,16 @@ NULL
 # location slot has to be listed here.
 .FP_SKIP_SLOTS <- c("path", "read_fun", "stats", "tiles")
 
+# Entries of @params left out the same way. Giotto does not use a CRS.
+.FP_SKIP_PARAMS <- "crs"
+
 .fp_store <- function(x, ...) {
     sn <- setdiff(methods::slotNames(x), .FP_SKIP_SLOTS)
-    parts <- lapply(sn, function(s) .fp_canon(methods::slot(x, s)))
+    parts <- lapply(sn, function(s) {
+        v <- methods::slot(x, s)
+        if (identical(s, "params")) v <- v[setdiff(names(v), .FP_SKIP_PARAMS)]
+        .fp_canon(v)
+    })
     fingerprint_data(c(
         list(class = class(x)[[1L]]),
         stats::setNames(parts, sn)

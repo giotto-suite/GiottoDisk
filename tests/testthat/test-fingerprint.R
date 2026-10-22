@@ -70,6 +70,13 @@ describe("fingerprint_data on stores", {
         expect_identical(fingerprint_data(pe), fingerprint_data(pe2))
     })
 
+    it("ignores the CRS", {
+        g <- .fp_geom()
+        g2 <- g
+        g2@params$crs <- "EPSG:4326"
+        expect_identical(fingerprint_data(g), fingerprint_data(g2))
+    })
+
     it("survives adoption into a project vault", {
         src <- .fp_src()
         on.exit(unlink(src@path, recursive = TRUE), add = TRUE)
