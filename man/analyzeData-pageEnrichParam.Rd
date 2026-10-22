@@ -5,7 +5,7 @@
 \alias{analyzeData,parquetExprBase,pageEnrichParam-method}
 \alias{analyzeData,parquetExprBase,hyperEnrichParam-method}
 \alias{analyzeData,parquetExprBase,rankEnrichParam-method}
-\title{Streaming PAGE and hypergeometric enrichment}
+\title{Streaming sign-matrix enrichment}
 \usage{
 \S4method{analyzeData}{parquetExprBase,pageEnrichParam}(x, param, ..., sign_matrix)
 
@@ -16,8 +16,8 @@
 \arguments{
 \item{x}{a \code{parquetExprBase} store.}
 
-\item{param}{a \link[Giotto:pageEnrichParam-class]{Giotto::pageEnrichParam} or
-\link[Giotto:hyperEnrichParam-class]{Giotto::hyperEnrichParam}.}
+\item{param}{a \link[Giotto:pageEnrichParam-class]{Giotto::pageEnrichParam},
+\link[Giotto:hyperEnrichParam-class]{Giotto::hyperEnrichParam} or \link[Giotto:rankEnrichParam-class]{Giotto::rankEnrichParam}.}
 
 \item{...}{additional arguments (none used).}
 
@@ -32,6 +32,10 @@ contract the in-memory method returns.
 or \link[Giotto:hyperEnrichParam-class]{Giotto::hyperEnrichParam} on a disk-backed expression store. The
 store is read one window of cells at a time and each window is scored by
 Giotto's in-memory method against the reference level of all cells, so
-memory follows the window, not the number of cells. Rank enrichment is not
-supported: it ranks each feature across all cells at once.
+memory follows the window, not the number of cells.
+
+A \link[Giotto:rankEnrichParam-class]{Giotto::rankEnrichParam} runs the same way, except that rank
+enrichment first ranks each feature across all cells. Those ranks are
+approximated from a per-feature histogram of the values, so scores agree
+closely with the in-memory method rather than exactly. Rank \code{p_value = TRUE} is not supported on a store.
 }
