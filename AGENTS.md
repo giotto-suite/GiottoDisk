@@ -104,6 +104,9 @@ R/
   methods-fileInputs.R   # readers for the *Input file-input types
   methods-sourceWrite.R  # sourceWrite (allocate uid → write → register)
   methods-sourceAdopt.R  # sourceContains, sourceAdopt
+  methods-fingerprint.R  # fingerprint_data() for stores (objManifest). Every
+                         #   slot is hashed except .FP_SKIP_SLOTS: a new cache
+                         #   or location slot must be added there
   methods-sourcePrune.R  # sourcePrune
   methods-sourceSchema.R # sourceSchema, sourceUpdate, schema check + upgrades
   methods-snapshotSave.R # snapshotSave (giottosave snapshot lifecycle)

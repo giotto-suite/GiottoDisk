@@ -25,7 +25,7 @@ Imports:
     digest,
     dplyr,
     Giotto (>= 4.3.5),
-    GiottoClass (>= 0.7.18),
+    GiottoClass (>= 0.7.21),
     GiottoUtils (>= 0.2.9),
     igraph,
     jsonlite,
@@ -95,6 +95,7 @@ Collate:
     'methods-combine.R'
     'methods-expanse.R'
     'methods-fileInputs.R'
+    'methods-fingerprint.R'
     'methods-giotto.R'
     'methods-ops.R'
     'methods-parquetExprStore.R'
