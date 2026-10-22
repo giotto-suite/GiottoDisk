@@ -273,3 +273,21 @@ test_that("the GiottoKernels path matches the R path, in feature blocks", {
         })
     }
 })
+
+# A missing GiottoKernels is mentioned once, then the R path runs silently.
+test_that("a missing kernel package is mentioned once per session", {
+    fake <- paste0("NoKernels", sample.int(1e6, 1L))
+    expect_message(r <- GiottoDisk:::.gd_kernels_installed(fake),
+        regexp = "same results, slower")
+    expect_false(r)
+    expect_no_message(r <- GiottoDisk:::.gd_kernels_installed(fake))
+    expect_false(r)
+})
+
+test_that("use_kernels = FALSE skips the kernel check", {
+    local_mocked_bindings(
+        .gd_kernels_installed = function(...) stop("checked"))
+    old <- options(giottodisk.use_kernels = FALSE)
+    on.exit(options(old), add = TRUE)
+    expect_false(GiottoDisk:::.gd_kernel("gram_stream"))
+})
