@@ -17,7 +17,7 @@
 - A missing *sedonadb* or *smotif* now points at its r-universe
   (`install.packages(..., repos = ...)`), which serves binaries, instead of
   `devtools::install_github()`, which compiles Rust from source. Requires
-  GiottoUtils >= 0.2.8.
+  GiottoUtils >= 0.2.9.
 - `Remotes:` installs tilework from its `dev` branch until tilework 1.0.1 is
   on CRAN. `main` lacks the tile-edge fix (drieslab/tilework#5), without which
   a point or polygon on the top or right edge of the data can be dropped from a
