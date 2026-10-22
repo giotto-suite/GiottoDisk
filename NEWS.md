@@ -84,7 +84,7 @@
   are approximated from a histogram of its values, so scores agree closely
   with the in-memory method rather than exactly; rank `p_value = TRUE` is
   not supported on a store.
-- Stores have a fingerprint in `objManifest()` (GiottoClass >= 0.7.20), so
+- Stores have a fingerprint in `objManifest()` (GiottoClass >= 0.7.21), so
   `manifestDiff()` sees a store being replaced, subset or given new ops. It
   is built from the handle and never reads data, and it survives saving into
   a project.

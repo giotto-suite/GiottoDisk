@@ -106,9 +106,21 @@ describe("fingerprint_data on stores", {
         expect_false(identical(fingerprint_data(u), fingerprint_data(u[1:3, ])))
     })
 
+    it("counts a function in an op by its code", {
+        pe <- .fp_pe()
+        op <- function(f) {
+            pe@ops <- c(pe@ops, list(list(type = "custom", fun = f)))
+            pe
+        }
+        expect_identical(fingerprint_data(op(function(x) x)),
+            fingerprint_data(op(function(x) x)))
+        expect_false(identical(fingerprint_data(op(function(x) x)),
+            fingerprint_data(op(function(x) x + 1))))
+    })
+
     it("errors on a handle value it has no canonical form for", {
         pe <- .fp_pe()
-        pe@ops <- c(pe@ops, list(list(type = "custom", fun = function(x) x)))
-        expect_error(fingerprint_data(pe), "no canonical form for function")
+        pe@ops <- c(pe@ops, list(list(type = "custom", env = new.env())))
+        expect_error(fingerprint_data(pe), "no canonical form for environment")
     })
 })

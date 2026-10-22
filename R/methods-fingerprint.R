@@ -16,9 +16,10 @@ NULL
 #'
 #' `@path` is left out, so moving an artifact into a project vault keeps its
 #' fingerprint, as are `@read_fun`, the cached marginals in `@stats` and the
-#' tile plan, which is fixed when the artifact is written. A handle holding
-#' a value with no canonical form, such as a function, errors, and the
-#' manifest reports the store as unfingerprinted.
+#' tile plan, which is fixed when the artifact is written. A function in the
+#' handle counts by its code (see [GiottoClass::fingerprint_data()]). A value
+#' with no canonical form, such as an environment, errors, and the manifest
+#' reports the store as unfingerprinted.
 #' @param x a store
 #' @param ... ignored
 #' @returns character scalar
@@ -43,7 +44,7 @@ NULL
 # fingerprint_data() knows, so GiottoClass does the hashing. Queued ops hold
 # calls with inlined values, arrow id tables and other stores.
 .fp_canon <- function(x) {
-    if (is.null(x) || is.atomic(x)) return(x)
+    if (is.null(x) || is.atomic(x) || is.function(x)) return(x)
     if (is.name(x)) return(list(symbol = as.character(x)))
     if (is.call(x)) return(list(call = lapply(as.list(x), .fp_canon)))
     if (is.data.frame(x)) return(x)

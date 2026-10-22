@@ -28,8 +28,9 @@ their substores.
 
 \verb{@path} is left out, so moving an artifact into a project vault keeps its
 fingerprint, as are \verb{@read_fun}, the cached marginals in \verb{@stats} and the
-tile plan, which is fixed when the artifact is written. A handle holding
-a value with no canonical form, such as a function, errors, and the
-manifest reports the store as unfingerprinted.
+tile plan, which is fixed when the artifact is written. A function in the
+handle counts by its code (see \code{\link[GiottoClass:fingerprint_data]{GiottoClass::fingerprint_data()}}). A value
+with no canonical form, such as an environment, errors, and the manifest
+reports the store as unfingerprinted.
 }
 \keyword{internal}
