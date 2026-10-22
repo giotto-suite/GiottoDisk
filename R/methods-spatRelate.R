@@ -447,7 +447,7 @@ setMethod(
 # the id cols.
 .spat_relate_narrow_sedona <- function(trim_store, op, id_cols, store) {
     GiottoUtils::package_check("sedonadb",
-        repository = "github:apache/sedona-db/r/sedonadb")
+        repository = "r-universe:apache/sedonadb")
     sdf <- storeRead(trim_store, output = "sedona")
     view_name <- tolower(paste0("gd_srnarrow_", .make_uid()))
     sedonadb::sd_to_view(sdf, view_name, overwrite = TRUE)

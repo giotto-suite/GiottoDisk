@@ -115,7 +115,7 @@ setMethod("expanse", signature("parquetGeomTileStore"), function(
 
 .expanse_sedona <- function(x, output, poly_id_col) {
     GiottoUtils::package_check("sedonadb",
-        repository = "github:apache/sedona-db/r/sedonadb")
+        repository = "r-universe:apache/sedonadb")
     sdf <- storeRead(x, output = "sedona")
     # Register the full query (including any pending ST_Affine) as a new view
     # so that ST_Area operates on the transformed geometry.

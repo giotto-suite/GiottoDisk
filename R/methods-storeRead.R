@@ -822,7 +822,7 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
 # predicates for geometry-based filtering post-transform.
 .pstore_to_sedona <- function(store, fields = NULL, ...) {
     GiottoUtils::package_check("sedonadb",
-        repository = "github:apache/sedona-db/r/sedonadb")
+        repository = "r-universe:apache/sedonadb")
     if (!.sedonadb_has_discovery()) {
         stop("[storeRead][sedona] sedonadb >= 0.4.0 is required (installed: ",
             utils::packageVersion("sedonadb"), ")", call. = FALSE)
