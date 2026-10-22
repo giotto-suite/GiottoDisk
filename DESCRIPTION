@@ -83,6 +83,7 @@ Collate:
     'class-viewCoordinator.R'
     'convenience-atera.R'
     'convenience-cosmx.R'
+    'convenience-merscope.R'
     'convenience-stereoseq.R'
     'reader-shared.R'
     'convenience-xenium.R'

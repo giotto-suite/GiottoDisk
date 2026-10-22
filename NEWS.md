@@ -38,6 +38,17 @@
   on a backed object.
 
 ## new
+- `importMerscopeDisk()` reads Vizgen MERSCOPE region directories into a
+  project: transcripts, cell boundaries and the cell by gene matrix are
+  written as stores; cell metadata, cell centers and images stay in memory.
+  `$create_gobject()` takes the same arguments as Giotto's in-memory reader,
+  so `Giotto::createGiottoMerscopeObject(backend =)` uses it.
+  - Transcripts may be parquet or csv; a csv is converted to parquet once and
+    cached.
+  - Boundaries may be `cell_boundaries.parquet` or the per-FOV HDF5 files;
+    replicated z-planes load one plane, true 3D stops with an error.
+  - `FOVs` applies to every data type, the expression matrix included.
+  - Cell IDs (64-bit `EntityID`) are kept exact as character.
 - `storeChunkProbe()` measures one streaming window on the current machine --
   time, peak memory and bytes per stored value -- and reports the window that
   fits the budget and the time for one pass over the store.
