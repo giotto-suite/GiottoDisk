@@ -132,11 +132,17 @@ setMethod("sourceAdopt", signature("gDirSource", "fileStore"),
 # physically relocates BOTH the edges/ and nodes/ subdirs since
 # they live under the moved parent. The in-memory @nodes handle
 # (a parquetStore at <old_root>/nodes/) is stale after the move; we
-# rebuild it from the new path to keep storeRead working.
+# re-point it at the new path to keep storeRead working. Re-pointing rather
+# than rebuilding keeps its @uid, so the network's fingerprint survives.
 setMethod("sourceAdopt", signature("gDirSource", "parquetEdgeStore"),
     function(src, store, meta = NULL, giottosave = NULL, depends = NULL, ...) {
     store <- callNextMethod() # fileStore: moves files, updates @path
-    store@nodes <- parquetStore(path = file.path(store@path, "nodes"))
+    nodes_path <- file.path(store@path, "nodes")
+    if (is.null(store@nodes)) {
+        store@nodes <- parquetStore(path = nodes_path)
+    } else {
+        store@nodes@path <- nodes_path
+    }
     store
 })
 
