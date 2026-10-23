@@ -55,6 +55,14 @@
 - `sourceContains(src, <giotto>)` tells whether a `snapshotSave()` would move
   any of the object's stores into the project, and names them if so.
 
+## bug fixes
+- `snapshotSave()` put a small VRT pointer into the vault instead of the image
+  for JPEG-2000 OME-TIFFs (every vendor-original Xenium and Atera morphology
+  image), so the project broke once the original files moved. It now copies
+  the image file; with `export_image = FALSE` the image keeps pointing at the
+  original. Vaulted images now record a content fingerprint, where every image
+  used to record the same hash.
+
 # GiottoDisk 0.0.0.7
 
 Requires GiottoClass 0.7.27.

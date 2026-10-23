@@ -55,9 +55,13 @@ NULL
 #' * `fileStore`: checks whether the store's uid is present in the manifest.
 #' * `SpatRaster`: checks whether all source file paths are inside the vault
 #'   directory. In-memory rasters always return `FALSE`.
+#' * `giottoLargeImage`: as `SpatRaster`, for the file the image reads its
+#'   pixels from. For a JPEG-2000 image that is `@file_path`, not the VRT
+#'   GiottoClass reads it through.
 #' * Union stores: `TRUE` only if all substores are contained.
 #' @param src `gsource` object
-#' @param store object to test (`fileStore`, `SpatRaster`, or union store)
+#' @param store object to test (`fileStore`, `SpatRaster`, `giottoLargeImage`,
+#'   or union store)
 #' @param ... additional params (unused)
 #' @returns `logical(1)`
 #' @export
@@ -70,11 +74,44 @@ setMethod("sourceContains", signature("gDirSource", "fileStore"),
 #' @export
 setMethod("sourceContains", signature("gDirSource", "SpatRaster"),
     function(src, store, ...) {
-    f <- normalizePath(terra::sources(store), mustWork = FALSE)
-    if (all(!nzchar(f))) return(FALSE) # in-memory
-    vdir <- normalizePath(.gdsrc_vault_dir(src@path))
-    all(startsWith(f, paste0(vdir, "/")))
+    .gdsrc_in_vault(src@path, terra::sources(store))
 })
+
+#' @rdname sourceContains
+#' @export
+setMethod("sourceContains", signature("gDirSource", "giottoLargeImage"),
+    function(src, store, ...) {
+    .gdsrc_in_vault(src@path, .img_source_file(store))
+})
+
+# FALSE for an in-memory raster (no source file)
+.gdsrc_in_vault <- function(p, f) {
+    f <- normalizePath(f, mustWork = FALSE)
+    if (all(!nzchar(f))) return(FALSE)
+    vdir <- normalizePath(.gdsrc_vault_dir(p), mustWork = FALSE)
+    all(startsWith(f, paste0(vdir, "/")))
+}
+
+# The file an image reads its pixels from: "" when in memory. GiottoClass reads
+# a JPEG-2000 TIFF through a VRT it writes under tempdir() (GiottoClass
+# adr/0005), so terra::sources() names the VRT, a pointer into the image. The
+# image itself is the file the VRT reads, which GiottoClass keeps in
+# @file_path. Any other source is the raster's own file.
+.img_source_file <- function(img) {
+    f <- terra::sources(img@raster_object)
+    fp <- img@file_path
+    if (length(f) != 1L || !grepl("\\.vrt$", f, ignore.case = TRUE) ||
+        !is.character(fp) || length(fp) != 1L || !file.exists(fp)) {
+        return(f)
+    }
+    # a crop or resample writes a new raster, so a VRT still reading
+    # @file_path means the image is unchanged
+    tiles <- readLines(f, warn = FALSE)
+    reads <- vapply(unique(c(fp, normalizePath(fp))), function(p) {
+        any(grepl(paste0(",", p, "<"), tiles, fixed = TRUE))
+    }, logical(1L))
+    if (any(reads)) normalizePath(fp) else f
+}
 
 #' @rdname sourceContains
 #' @export
@@ -107,11 +144,18 @@ setMethod("sourceContains", signature("gDirSource", "giotto"),
 #' * `fileStore`: the store's `@uid` is preserved so existing `source_id`
 #'   partition references remain valid. Store must already be written to disk.
 #' * `SpatRaster`: in-memory rasters are written as COG; on-disk rasters are
-#'   moved into the vault. A fresh uid is assigned. Returns the updated
-#'   `SpatRaster` pointing to the vault path.
+#'   copied into the vault. A fresh uid is assigned. Returns the updated
+#'   `SpatRaster` pointing to the vault path. A raster read through a VRT
+#'   errors: the VRT points at the image rather than holding it, so adopt the
+#'   `giottoLargeImage` instead.
+#' * `giottoLargeImage`: copies the file the image reads its pixels from, so a
+#'   JPEG-2000 image is copied as the original `.ome.tif`. Returns the image
+#'   with `@file_path` naming the vault copy, reopened through
+#'   [GiottoClass::reconnect()].
 #' * Union stores: each substore is adopted independently.
 #' @param src `gsource` object
-#' @param store object to adopt (`fileStore`, `SpatRaster`, or union store)
+#' @param store object to adopt (`fileStore`, `SpatRaster`, `giottoLargeImage`,
+#'   or union store)
 #' @param meta `list` (optional). Additional metadata to attach to the artifact entry.
 #' @param giottosave `character` (optional). Giottosave name to tag the artifact with.
 #' @param ... additional params (unused)
@@ -166,13 +210,18 @@ setMethod("sourceAdopt", signature("gDirSource", "SpatRaster"),
     function(src, store, meta = NULL, giottosave = NULL, ...) {
     p <- src@path
     r <- store
-    vdir <- normalizePath(.gdsrc_vault_dir(p))
 
     f <- normalizePath(terra::sources(r), mustWork = FALSE)
     is_in_memory <- all(!nzchar(f))
 
     # already in vault -- nothing to do
-    if (!is_in_memory && all(startsWith(f, paste0(vdir, "/")))) return(r)
+    if (.gdsrc_in_vault(p, f)) return(r)
+    # copying a VRT copies a pointer to the image, not the image
+    if (any(grepl("\\.vrt$", f, ignore.case = TRUE))) {
+        stop("[sourceAdopt] this SpatRaster is read through a VRT (", f[[1L]],
+            "), which only points at its image. Adopt the giottoLargeImage, ",
+            "whose @file_path names the image file.", call. = FALSE)
+    }
 
     savepath <- .gdsrc_allocate_artifact_dir(p, create = TRUE)
     uid <- names(savepath)
@@ -194,16 +243,50 @@ setMethod("sourceAdopt", signature("gDirSource", "SpatRaster"),
         r <- .create_terra_spatraster(savepath)
     }
 
-    capture.output(show(r)) # ping before hashing -- terra hash changes on first access
-    hash <- .hash(r)
     .gdsrc_json_add_artifact(p,
         store_type = "IMAGE",
         uid = uid,
-        hash = hash,
+        hash = fingerprint_data(r),
         meta = meta,
         giottosave = giottosave %||% NA_character_
     )
     r
+})
+
+#' @rdname sourceAdopt
+#' @export
+setMethod("sourceAdopt", signature("gDirSource", "giottoLargeImage"),
+    function(src, store, meta = NULL, giottosave = NULL, ...) {
+    img <- store
+    r <- img@raster_object
+    f <- .img_source_file(img)
+    # reconnect() reapplies the tracked extent to the reopened file
+    img@extent <- terra::ext(r)[]
+
+    if (identical(f, terra::sources(r))) {
+        # the raster's own source is the image
+        r <- sourceAdopt(src, r, meta = meta, giottosave = giottosave)
+        img@file_path <- terra::sources(r)
+        return(GiottoClass::reconnect(img))
+    }
+
+    p <- src@path
+    if (.gdsrc_in_vault(p, f)) return(img)
+    savepath <- .gdsrc_allocate_artifact_dir(p, create = TRUE)
+    uid <- names(savepath)
+    names(savepath) <- NULL
+    file.copy(f, savepath)
+    img@file_path <- savepath
+    img <- GiottoClass::reconnect(img)
+
+    .gdsrc_json_add_artifact(p,
+        store_type = "IMAGE",
+        uid = uid,
+        hash = fingerprint_data(img@raster_object),
+        meta = meta,
+        giottosave = giottosave %||% NA_character_
+    )
+    img
 })
 
 #' @rdname sourceAdopt

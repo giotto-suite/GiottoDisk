@@ -284,9 +284,10 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
     src <- gobject@source
     img_list <- gobject[["images"]]
     for (img in img_list) {
+        if (!inherits(img, "giottoLargeImage")) next
         r <- img@raster_object
         if (is.null(r)) next
-        if (sourceContains(src, r)) {
+        if (sourceContains(src, img)) {
             # Already in the vault (adopted earlier, or converted at ingest).
             # Loading rebuilds the raster from @extent, which placement
             # (rescale, spatShift) does not update: record where it is now.
@@ -297,22 +298,16 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
             }
             next
         }
-
-        f <- normalizePath(terra::sources(r), mustWork = FALSE)
-        if (!export_image && nzchar(f)) next # skip external on-disk if not exporting
+        # not exporting leaves an on-disk image where it is: @file_path keeps
+        # naming it and reconnect() reopens it on load
+        if (!export_image && any(nzchar(.img_source_file(img)))) next
 
         vmsg(.v = verbose, sprintf(
             "[GiottoDisk] processing external image '%s'",
             GiottoClass::objName(img)
         ))
 
-        # save extent info (needed for non-COG formats)
-        img@extent <- terra::ext(r)[]
-
-        r <- sourceAdopt(src, r, giottosave = giottosave)
-
-        img@file_path <- terra::sources(r)
-        img <- GiottoClass::reconnect(img)
+        img <- sourceAdopt(src, img, giottosave = giottosave)
         gobject <- GiottoClass::setGiotto(gobject, img, verbose = FALSE)
     }
     gobject
@@ -345,9 +340,9 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
     uids <- character()
     for (img in gobject[["images"]]) {
         if (!inherits(img, "giottoLargeImage")) next
-        r <- img@raster_object
-        if (!inherits(r, "SpatRaster") || !sourceContains(src, r)) next
-        f <- normalizePath(terra::sources(r), mustWork = FALSE)
+        if (!inherits(img@raster_object, "SpatRaster") ||
+            !sourceContains(src, img)) next
+        f <- normalizePath(.img_source_file(img), mustWork = FALSE)
         uids <- c(uids, sub("/.*$", "", substring(f, nchar(prefix) + 1L)))
     }
     unique(uids)
