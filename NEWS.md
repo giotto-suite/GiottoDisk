@@ -50,6 +50,12 @@
   on a backed object.
 
 ## new
+- CosMx disk reader: `load_transcripts()` writes the `tx_file` into the
+  vault as a tiled points store, split into `rna`, `negprobes` and
+  `falsecode`; `create_gobject(load_transcripts = TRUE)` adds them. The CSV
+  is converted to parquet once, in a cache under `getArtifactDumpDir()`, and
+  later imports reuse it. Detections outside any cell (`cell_ID == 0`) and the
+  vendor's own cell assignment are kept.
 - `importMerscopeDisk()` reads Vizgen MERSCOPE region directories into a
   project: transcripts, cell boundaries and the cell by gene matrix are
   written as stores; cell metadata, cell centers and images stay in memory.

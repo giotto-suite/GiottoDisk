@@ -72,3 +72,76 @@ test_that("control probes are split out by the default split_keyword", {
     expect_setequal(GiottoClass::list_expression(g)$feat_type,
                     c("rna", "negprobes", "falsecode"))
 })
+
+# transcripts ####
+
+.tx_count <- function(g, feat_type) {
+    gp <- GiottoClass::getFeatureInfo(g, feat_type = feat_type,
+        return_giottoPoints = TRUE)
+    nrow(storeRead(gp@spatVector, output = "tibble"))
+}
+
+test_that("load_transcripts writes every detection, split by feat_type", {
+    .cosmx_skip()
+    d <- .mk_cosmx_disk_dir(n_fov1 = 300L)
+    expected <- .mk_cosmx_tx(d)
+    withr::local_options(giottodisk.artifact_dump = tempfile("dump_"))
+    g <- suppressWarnings(.cosmx_obj(d, load_transcripts = TRUE))
+
+    expect_equal(.tx_count(g, "rna"),
+                 sum(expected[c("GENEA", "GENEB")]))
+    expect_equal(.tx_count(g, "negprobes"), expected[["Negative1"]])
+    expect_equal(.tx_count(g, "falsecode"), expected[["SystemControl1"]])
+})
+
+test_that("transcript coordinates and vendor cell assignment are kept", {
+    .cosmx_skip()
+    d <- .mk_cosmx_disk_dir(n_fov1 = 300L)
+    .mk_cosmx_tx(d, gz = TRUE)
+    withr::local_options(giottodisk.artifact_dump = tempfile("dump_"))
+    p <- tempfile("cosmx_proj_")
+    dir.create(p)
+    r <- suppressWarnings(importCosMxDisk(d, backend = p, version = "v6"))
+    st <- r$load_transcripts(output = "store", verbose = FALSE)
+    expect_s4_class(st, "parquetGeomTileStore")
+
+    tx <- storeRead(st, output = "tibble")
+    hit <- tx[tx$cell == "c_1_2_1", ]
+    # the 1e+05 detection, untouched; CellComp survives the blank lead-in
+    # the tile store keeps the coordinates as x_index / y_index
+    expect_setequal(hit$y_index, c(99990, 100000))
+    expect_true("Membrane" %in% tx$CellComp)
+})
+
+test_that("the tx_file is converted to parquet once and reused", {
+    .cosmx_skip()
+    d <- .mk_cosmx_disk_dir(n_fov1 = 300L)
+    .mk_cosmx_tx(d)
+    dump <- tempfile("dump_")
+    withr::local_options(giottodisk.artifact_dump = dump)
+    tx <- file.path(d, "Fixture_tx_file.csv")
+
+    first <- GiottoDisk:::.cosmx_ensure_parquet(tx)
+    stamp <- file.mtime(list.files(first, full.names = TRUE, recursive = TRUE))
+    expect_message(second <- GiottoDisk:::.cosmx_ensure_parquet(tx,
+        verbose = TRUE), "using cached conversion")
+    expect_identical(first, second)
+    expect_equal(file.mtime(list.files(second, full.names = TRUE,
+        recursive = TRUE)), stamp)
+    expect_true(startsWith(first, dump))
+})
+
+test_that("load_transcripts restricts to the reader's fovs", {
+    .cosmx_skip()
+    d <- .mk_cosmx_disk_dir(n_fov1 = 300L)
+    .mk_cosmx_tx(d)
+    withr::local_options(giottodisk.artifact_dump = tempfile("dump_"))
+    p <- tempfile("cosmx_proj_")
+    dir.create(p)
+    r <- suppressWarnings(importCosMxDisk(d, backend = p, version = "v6",
+        fovs = 2))
+    tx <- storeRead(r$load_transcripts(output = "store", verbose = FALSE),
+        output = "tibble")
+    expect_setequal(unique(tx$fov), 2L)
+    expect_equal(nrow(tx), 3L)
+})

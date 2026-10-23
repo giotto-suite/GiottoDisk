@@ -30,10 +30,16 @@ because the disk polygon loader reads the vertex CSV, not masks.}
 }
 \description{
 Disk-backed counterpart to \code{\link[Giotto:importCosMx]{Giotto::importCosMx()}}. Produces a
-\code{CosMxDiskReader} whose \code{load_expression()} call writes a
-\code{parquetExprStore} into a \code{gDirSource}-managed project vault.
-Transcripts / polys / images / cellmeta remain in-memory via the
-inherited \code{CosmxReader} closures.
+\code{CosMxDiskReader} whose \code{load_expression()}, \code{load_polys()} and
+\code{load_transcripts()} calls write to a \code{gDirSource}-managed project vault:
+a \code{parquetExprStore} for the expression matrix and \code{parquetGeomTile} stores
+for the polygons and transcripts. Images and cell metadata remain in-memory
+via the inherited \code{CosmxReader} closures.
+
+The transcript flatfile is converted to parquet once, in a cache under
+\code{\link[=getArtifactDumpDir]{getArtifactDumpDir()}} (first import converts, later imports reuse).
+Polygons of cells that have no expression (cells removed by the vendor's
+QC) are not loaded, with a warning.
 }
 \seealso{
 \code{\link[Giotto:importCosMx]{Giotto::importCosMx()}} for the in-memory variant

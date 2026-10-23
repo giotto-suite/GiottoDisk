@@ -1,10 +1,9 @@
 # CosMx ingest pipeline for `gDirSource`-managed projects.
 #
-# Disk-backed counterpart to Giotto's `CosmxReader`. Currently routes only
-# the expression matrix through GiottoDisk (`parquetExprStore` written
-# into the project vault via `sourceWrite`). Transcripts / polys / images
-# / cellmeta remain on the inherited in-mem closures from `CosmxReader`;
-# they can be ported following the same pattern when needed.
+# Disk-backed counterpart to Giotto's `CosmxReader`. The expression matrix,
+# the cell polygons and the transcripts are routed through `sourceWrite()`, so
+# the produced parquet stores live in the user's project vault. Images and
+# cell metadata remain on the inherited in-mem closures from `CosmxReader`.
 
 
 
@@ -53,6 +52,7 @@ setMethod(
         .poly_path <- obj@paths$poly_path
         .meta_path <- obj@paths$meta_path
         .expr_path <- obj@paths$expr_path
+        .tx_path <- obj@paths$tx_path
         gsrc  <- obj@backend
         slide <- obj@slide
         fovs_ <- obj@fovs
@@ -106,6 +106,33 @@ setMethod(
         }
         obj@calls$load_polys <- poly_fun
 
+        # transcripts (disk override). Signature mirrors parent's
+        # `load_transcripts`; `col_classes`, `micron` and `px2um` have no disk
+        # counterpart, as for the polygons.
+        tx_fun <- function(
+            path = .tx_path,
+            feat_type = c("rna", "negprobes"),
+            split_keyword = list("NegPrb"),
+            dropcols = c(),
+            output = c("giottoPoints", "store"),
+            verbose = NULL,
+            ...
+        ) {
+            .cosmx_transcript_disk(
+                path = path,
+                gsource = gsrc,
+                version = obj@version,
+                fovs = fovs_ %none% NULL,
+                feat_type = feat_type,
+                split_keyword = split_keyword,
+                dropcols = dropcols,
+                output = output,
+                verbose = verbose,
+                ...
+            )
+        }
+        obj@calls$load_transcripts <- tx_fun
+
         # create_gobject (disk variant). Mirrors parent's gobject_fun but
         # initializes the giotto object with backend = gsrc so any further
         # artifacts are vault-resident.
@@ -113,6 +140,7 @@ setMethod(
             polygon_path = .poly_path,
             expression_path = .expr_path,
             metadata_path = .meta_path,
+            transcript_path = .tx_path,
             poly_read_fun = NULL,
             feat_type = c("rna", "negprobes", "falsecode"),
             split_keyword = list("^Negative", "^SystemControl"),
@@ -120,6 +148,7 @@ setMethod(
             load_polygons = TRUE,
             load_expression = TRUE,
             load_cellmeta = TRUE,
+            load_transcripts = FALSE,
             instructions = NULL,
             cores = GiottoUtils::determine_cores(),
             verbose = NULL
@@ -176,6 +205,23 @@ setMethod(
                     }
                     g <- GiottoClass::setGiotto(g, ex, verbose = FALSE)
                 }
+            }
+
+            # transcripts (disk). Off by default: this is the largest
+            # object in a CosMx export and most analyses are cell-level.
+            if (isTRUE(load_transcripts)) {
+                if (is.null(transcript_path) ||
+                    !file.exists(transcript_path)) {
+                    stop("[CosMxDiskReader] `load_transcripts = TRUE` but no ",
+                         "tx_file was found or supplied.", call. = FALSE)
+                }
+                tx_list <- funs$load_transcripts(
+                    path = transcript_path,
+                    feat_type = feat_type,
+                    split_keyword = split_keyword,
+                    verbose = verbose
+                )
+                g <- GiottoClass::setGiotto(g, tx_list, verbose = FALSE)
             }
 
             # cellmeta, read from the vendor CSV rather than through the
@@ -243,10 +289,16 @@ setMethod(
 #' @name importCosMxDisk
 #' @description
 #' Disk-backed counterpart to [Giotto::importCosMx()]. Produces a
-#' `CosMxDiskReader` whose `load_expression()` call writes a
-#' `parquetExprStore` into a `gDirSource`-managed project vault.
-#' Transcripts / polys / images / cellmeta remain in-memory via the
-#' inherited `CosmxReader` closures.
+#' `CosMxDiskReader` whose `load_expression()`, `load_polys()` and
+#' `load_transcripts()` calls write to a `gDirSource`-managed project vault:
+#' a `parquetExprStore` for the expression matrix and `parquetGeomTile` stores
+#' for the polygons and transcripts. Images and cell metadata remain in-memory
+#' via the inherited `CosmxReader` closures.
+#'
+#' The transcript flatfile is converted to parquet once, in a cache under
+#' [getArtifactDumpDir()] (first import converts, later imports reuse).
+#' Polygons of cells that have no expression (cells removed by the vendor's
+#' QC) are not loaded, with a warning.
 #' @param cosmx_dir CosMx output directory
 #' @param backend a `gsource` (typically `gDirSource`) project backend.
 #'   Naming matches [GiottoClass::createGiottoObject()]'s `backend` param.
@@ -567,4 +619,174 @@ importCosMxDisk <- function(cosmx_dir = NULL,
     # a filter op through subset(): on the dropped ids, usually far fewer
     # than the kept ones
     subset(x, cell %in% drop_ids, negate = TRUE)
+}
+
+
+## transcript ####
+
+# Disk-backed CosMx transcript ingestion, following `.xenium_transcript_disk()`.
+#
+# The tx_file is CSV, so it is converted to parquet once (cached under the
+# artifact dump dir, see `.cosmx_ensure_parquet()`), then written into the
+# project vault as a `parquetGeomTileStore` of points. No `parquetStore`
+# intermediate is needed since points don't require an explicit `row_index`.
+#
+# Unlike the in-memory CosMx reader, no columns are dropped by default. That
+# matches the Xenium readers (`dropcols = c()`), and keeps `cell_ID`/`cell`:
+# the vendor's own assignment of each detection to a cell, which is what makes
+# an overlap cross-check against the segmentation possible. Detections with
+# `cell_ID == 0` (outside any cell) are kept too.
+.cosmx_transcript_disk <- function(
+    path,
+    gsource,
+    version = "v6",
+    fovs = NULL,
+    feat_type = c("rna", "negprobes", "falsecode"),
+    split_keyword = list("^Negative", "^SystemControl"),
+    dropcols = c(),
+    output = c("giottoPoints", "store"),
+    verbose = NULL,
+    ...
+) {
+    if (missing(path) || length(path) == 0L) {
+        stop("[cosmx_transcript_disk] no tx_file path provided", call. = FALSE)
+    }
+    checkmate::assert(
+        checkmate::check_file_exists(path),
+        checkmate::check_directory_exists(path)
+    )
+    checkmate::assert_class(gsource, "gsource")
+    output <- match.arg(output, choices = c("giottoPoints", "store"))
+    GiottoUtils::package_check("arrow")
+    GiottoUtils::package_check("dplyr")
+
+    path <- .cosmx_ensure_parquet(path, version = version, verbose = verbose)
+
+    GiottoUtils::vmsg("[cosmx_transcript_disk] loading transcripts",
+        .v = verbose)
+
+    # capture bare values only -- read_fun must be safe to ship to workers
+    drop <- as.character(dropcols)
+    .fovs <- if (!is.null(fovs)) as.integer(fovs) else NULL
+    fov <- NULL # NSE binding
+
+    read_fun <- function(x, schema = NULL) {
+        a <- arrow::open_dataset(sources = x, schema = schema)
+        if (length(drop) > 0L) {
+            a <- dplyr::select(a, -dplyr::any_of(drop))
+        }
+        # a row filter is safe for points: each row is independent
+        if (!is.null(.fovs)) {
+            a <- dplyr::filter(a, fov %in% .fovs)
+        }
+        a
+    }
+
+    fs <- fileStore(path = path, read_fun = read_fun)
+    qs <- as(fs, "queryableStore")
+
+    tx_store <- sourceWrite(
+        gsource, qs,
+        store_type = "parquetGeomTile",
+        type = "points",
+        id_col = "target",
+        sdimx = "x_global_px",
+        sdimy = "y_global_px",
+        verbose = verbose,
+        ...
+    )
+
+    .tx_points_out(tx_store, output, feat_type, split_keyword)
+}
+
+# Pinned arrow schema for a CosMx tx_file. CSV type inference is not safe on
+# this file: the leading rows are the detections with `cell_ID == 0`, whose
+# `CellComp` is blank, so arrow infers that column as `null` and then fails on
+# the first real value. The global coordinates are pinned to double, as the
+# geometry tile writer needs and as AtoMx writes round values in scientific
+# notation (`1e+05`).
+.cosmx_tx_schema <- function(version = c("v6", "legacy")) {
+    version <- match.arg(tolower(version), choices = c("v6", "legacy"))
+    i <- arrow::int32()
+    d <- arrow::float64()
+    s <- arrow::utf8()
+    switch(version,
+        "v6" = arrow::schema(
+            fov = i, cell_ID = i, cell = s,
+            x_local_px = i, y_local_px = i,
+            x_global_px = d, y_global_px = d,
+            z = i, target = s, CellComp = s
+        ),
+        # legacy has no `cell` column and orders global before local
+        "legacy" = arrow::schema(
+            fov = i, cell_ID = i,
+            x_global_px = d, y_global_px = d,
+            x_local_px = d, y_local_px = d,
+            z = i, target = s, CellComp = s
+        )
+    )
+}
+
+# bump when converter output changes; part of the cache fingerprint so
+# stale conversions are redone rather than reused
+.cosmx_converter_version <- "0.1.0"
+
+# Convert-once wrapper for the tx_file, mirroring `.zarr_ensure_parquet()`.
+# Streams the CSV (`.csv` or `.csv.gz`) to parquet with
+# `arrow::write_dataset()`; the read is lazy, so memory stays bounded whatever
+# the file size. A gzip member cannot be split, so this is one sequential pass
+# whose cost is I/O, not RAM. Returns `path` unchanged when it already points
+# at parquet.
+#
+# Cache layout:
+#   <getArtifactDumpDir()>/cosmx_cache/<fingerprint>/
+#     manifest.json     written last, so a half-finished conversion is redone
+#     transcripts/      parquet shards
+# The fingerprint is path + size + mtime + schema version + converter
+# version, the same "size + mtime + partial identity" contract as the zarr
+# cache.
+.cosmx_ensure_parquet <- function(path,
+    version = "v6",
+    compression = "zstd",
+    verbose = NULL) {
+    if (dir.exists(path) || grepl("[.]parquet$", path, ignore.case = TRUE)) {
+        return(path)
+    }
+    info <- file.info(path)
+    fp <- .hash(list(
+        path = normalizePath(path, winslash = "/", mustWork = FALSE),
+        size = as.numeric(info$size),
+        mtime = as.numeric(info$mtime),
+        version = tolower(version),
+        converter = .cosmx_converter_version
+    ))
+    cache_dir <- file.path(getArtifactDumpDir(), "cosmx_cache", fp)
+    manifest_path <- file.path(cache_dir, "manifest.json")
+    target <- file.path(cache_dir, "transcripts")
+
+    if (file.exists(manifest_path) && dir.exists(target)) {
+        GiottoUtils::vmsg("[cosmx_transcript_disk] using cached conversion:",
+            target, .v = verbose)
+        return(target)
+    }
+
+    GiottoUtils::vmsg("[cosmx_transcript_disk] converting tx_file to parquet:",
+        path, .v = verbose)
+    unlink(target, recursive = TRUE)
+    dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
+    ds <- arrow::open_dataset(path,
+        format = "csv",
+        schema = .cosmx_tx_schema(version),
+        skip = 1L # the pinned schema replaces the header
+    )
+    arrow::write_dataset(ds, target,
+        format = "parquet", compression = compression)
+
+    jsonlite::write_json(list(
+        source = normalizePath(path, winslash = "/", mustWork = FALSE),
+        version = tolower(version),
+        converter = .cosmx_converter_version,
+        products = list(transcripts = "transcripts")
+    ), manifest_path, auto_unbox = TRUE, pretty = TRUE)
+    target
 }
