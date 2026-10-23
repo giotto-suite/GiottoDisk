@@ -30,7 +30,7 @@ setMethod("analyzeData",
         if (isTRUE(param$set_seed)) {
             GiottoUtils::local_seed(seed = param$seed_number)
         }
-        package_check("smotif", repository = "github:drieslab/smotif")
+        package_check("smotif", repository = "r-universe:drieslab/smotif")
 
         lookup <- .edge_vertex_lookup(x, cell_type)
         smotif::motif_enrichment_stream(

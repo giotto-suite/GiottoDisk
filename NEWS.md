@@ -14,6 +14,9 @@
 - Snapshot names may not contain a path separator or start with `.`.
 
 ## changes
+- A missing *sedonadb* or *smotif* now points at its r-universe
+  (`install.packages(..., repos = ...)`), which serves binaries, instead of
+  `devtools::install_github()`, which compiles Rust from source.
 - Steps that GiottoKernels speeds up (gram-eigen PCA, edge statistics) say
   once per session when it is missing or older than 0.3.0, with the
   r-universe install. They still fall back to R, as before.
