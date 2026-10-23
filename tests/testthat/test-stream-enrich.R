@@ -100,6 +100,7 @@ test_that("streaming enrichment matches the in-memory method", {
         zscore = page(output_enrichment = "zscore"),
         p_value = page(p_value = TRUE),
         depletion = page(p_value = TRUE, include_depletion = TRUE),
+        zscore_p = page(p_value = TRUE, output_enrichment = "zscore"),
         no_reverse = page(reverse_log_scale = FALSE),
         natural_log = page(logbase = exp(1)),
         strict_overlap = page(min_overlap_genes = 50),
@@ -122,6 +123,11 @@ test_that("streaming enrichment matches the in-memory method", {
         for (cl in setdiff(names(streamed), "cell_ID")) {
             expect_equal(streamed[[cl]], memory[[cl]],
                          tolerance = 1e-10, info = paste(nm, cl))
+        }
+        # with p-values, the scores they come from ride along
+        if (isTRUE(p$p_value)) {
+            expect_equal(attr(streamed, "scores"), attr(memory, "scores"),
+                         tolerance = 1e-10, info = nm)
         }
     }
 
@@ -163,22 +169,96 @@ test_that("runPAGEEnrich runs end to end on a backed object", {
         expression_values = "raw", verbose = FALSE)
     expect_true("PAGE" %in% GiottoClass::list_spatial_enrichments_names(
         g2, spat_unit = "cell", feat_type = "rna"))
+
+    # p-values land beside the scores, as in memory
+    g3 <- Giotto::runPAGEEnrich(f$backed, sign_matrix = sm,
+        expression_values = "raw", p_value = TRUE, verbose = FALSE)
+    m3 <- Giotto::runPAGEEnrich(f$mem, sign_matrix = sm,
+        expression_values = "raw", p_value = TRUE, verbose = FALSE)
+    for (nm in c("PAGE", "PAGE_p", "PAGE_padj")) {
+        b <- GiottoClass::getSpatialEnrichment(g3, name = nm,
+                                               output = "data.table")
+        m <- GiottoClass::getSpatialEnrichment(m3, name = nm,
+                                               output = "data.table")
+        expect_equal(b, m, tolerance = 1e-10, info = nm)
+    }
 })
 
 
 # what is refused ----------------------------------------------------------
 
-test_that("rank enrichment is refused, and says why", {
+test_that("histogram ranks stay within one bin of the exact ranks", {
+    set.seed(4)
+    G <- 20L; N <- 500L
+    M <- Matrix::rsparsematrix(G, N, density = 0.4,
+        rand.x = function(n) rexp(n))
+    dimnames(M) <- list(paste0("g", seq_len(G)), paste0("c", seq_len(N)))
+    n_bins <- 64L
+    # the histogram .pe_value_hist() returns, built directly
+    mx <- apply(as.matrix(M), 1L, max)
+    s <- t(t(as.matrix(M)) * 0) + as.matrix(M) * n_bins / mx
+    n <- t(apply(s, 1L, function(v) {
+        tabulate(pmin(ceiling(v[v > 0]) - 1, n_bins - 1) + 1L, n_bins)
+    }))
+    h <- list(n = n, below = cbind(0, t(apply(n, 1L, cumsum)))[, 1:n_bins],
+              max = mx, n_zero = N - rowSums(n), n_bins = n_bins)
+
+    approx <- .rank_from_hist(M, h, seq_len(G), "average")
+    exact <- t(apply(as.matrix(M), 1L, rank, ties.method = "average"))
+    for (g in seq_len(G)) {
+        v <- M[g, ]
+        on <- v > 0
+        b <- pmin(ceiling(v[on] * n_bins / mx[g]) - 1, n_bins - 1) + 1L
+        expect_true(all(abs(approx[g, on] - exact[g, on]) <= n[g, b] + 1))
+        expect_true(all(approx[g, !on] == exact[g, !on]))
+        # order within a feature is kept
+        expect_equal(cor(approx[g, on], exact[g, on], method = "spearman"),
+                     1, tolerance = 1e-12)
+    }
+})
+
+test_that("streaming rank enrichment is close to the in-memory method", {
     skip_if_not_installed("Giotto")
-    f <- .enrich_pe_fixture(G = 150L, N = 60L)
-    sm <- .enrich_sign_matrix(rownames(f$m), sizes = c(30L, 30L))
-    pe <- GiottoClass::getExpression(f$backed, values = "raw",
+    withr::local_options(giottodisk.chunk_size = 300L)
+    withr::local_options(giotto.check_valid = FALSE, giotto.verbose = FALSE,
+                         giotto.no_python_warn = TRUE)
+    set.seed(8)
+    G <- 150L; N <- 1000L
+    m <- matrix(log2(rpois(G * N, 3) * rexp(G * N) + 1), G, N,
+        dimnames = list(paste0("g", seq_len(G)), paste0("c", seq_len(N))))
+    dir <- file.path(withr::local_tempdir(), "proj")
+    backed <- GiottoClass::createGiottoObject(expression = m,
+        spatial_locs = data.table::data.table(cell_ID = colnames(m),
+            sdimx = runif(N), sdimy = runif(N)),
+        backend = dir)
+    pe <- GiottoClass::getExpression(backed, values = "raw",
                                      output = "exprObj")[]
+    rm_ <- sapply(1:3, function(j) sample(G))
+    dimnames(rm_) <- list(rownames(m), paste0("t", 1:3))
+
+    # "max" ranks are whole numbers, so on 1,000 cells two features of a cell
+    # often share one exactly and the within-cell rule settles the tie; any
+    # nudge, even +-0.5 on the exact ranks, moves those cells. Hence the
+    # looser bar there. Both agree to > 0.9999 on a million cells.
+    bar <- c(average = 0.999, max = 0.995)
+    for (ties in c("average", "max")) {
+        for (out in c("original", "zscore")) {
+            p <- Giotto::enrichParam("rank", ties_method = ties,
+                                     output_enrichment = out)
+            streamed <- GiottoClass::analyzeData(pe, p, sign_matrix = rm_)
+            memory <- GiottoClass::analyzeData(m, p, sign_matrix = rm_)
+            expect_identical(streamed$cell_ID, memory$cell_ID)
+            for (cl in colnames(rm_)) {
+                expect_gt(cor(streamed[[cl]], memory[[cl]],
+                              method = "spearman"), bar[[ties]])
+            }
+        }
+    }
 
     expect_error(
-        GiottoClass::analyzeData(pe, Giotto::enrichParam("rank"),
-                                 sign_matrix = sm),
-        "ranks each gene across every cell"
+        GiottoClass::analyzeData(pe, Giotto::enrichParam("rank",
+            p_value = TRUE), sign_matrix = rm_),
+        "not supported on a disk-backed store"
     )
 })
 

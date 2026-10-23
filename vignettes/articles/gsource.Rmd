@@ -196,7 +196,17 @@ pin its artifacts. The folder name is the tag. The `<id>` is new on every
 save, so a snapshot's protection ends with it: deleting or overwriting it
 releases what only it referenced, and a later snapshot of the same name
 starts with no tags of its own. Verbs take the `name`; the id is
-internal. Snapshots are how a giotto object survives across sessions
+internal.
+
+Beside the object, a `giotto` snapshot's folder holds `manifest.json` (what
+the object contains) and `history.ndjson` (how it was produced).
+`objManifest(src, name)` and `objHistory(src, name)` read them back without
+loading the snapshot, in the same form they return for a live object (the
+project path works in place of `src`), so
+`manifestDiff(objManifest(src, "normalized"), objManifest(src, "clustered"))`
+compares two snapshots directly.
+
+Snapshots are how a giotto object survives across sessions
 without breaking when the artifacts it references get relocated or
 pruned.
 

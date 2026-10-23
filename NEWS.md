@@ -16,7 +16,11 @@
 ## changes
 - A missing *sedonadb* or *smotif* now points at its r-universe
   (`install.packages(..., repos = ...)`), which serves binaries, instead of
-  `devtools::install_github()`, which compiles Rust from source. Requires
+  `devtools::install_github()`, which compiles Rust from source.
+- Steps that GiottoKernels speeds up (gram-eigen PCA, edge statistics) say
+  once per session when it is missing or older than 0.3.0, with the
+  r-universe install. They still fall back to R, as before.
+  `options(giottodisk.use_kernels = FALSE)` skips the check. Requires
   GiottoUtils >= 0.2.9.
 - `Remotes:` installs tilework from its `dev` branch until tilework 1.0.1 is
   on CRAN. `main` lacks the tile-edge fix (drieslab/tilework#5), without which
@@ -76,8 +80,24 @@
   their artifacts stay protected from `sourcePrune()`.
 - PAGE (now with `p_value = TRUE`) and hypergeometric enrichment run on a
   store: one pass for the per-feature reference level, then Giotto's own
-  method scores one window of cells at a time. Rank enrichment is still
-  refused.
+  method scores one window of cells at a time.
+- With `p_value = TRUE`, PAGE and hypergeometric on a store return the scores
+  beside the p-values, as Giotto 4.3.5 stores both.
+- Rank enrichment runs on a store too. Each feature's ranks across all cells
+  are approximated from a histogram of its values, so scores agree closely
+  with the in-memory method rather than exactly; rank `p_value = TRUE` is
+  not supported on a store.
+- Stores have a fingerprint in `objManifest()` (GiottoClass >= 0.7.21), so
+  `manifestDiff()` sees a store being replaced, subset or given new ops. It
+  is built from the handle and never reads data, and it survives saving into
+  a project.
+- `snapshotSave()` writes `manifest.json` and `history.ndjson` into each
+  `giotto` snapshot's folder. `objManifest(src, name)` and
+  `objHistory(src, name)` read them back without loading the snapshot, in the
+  same form as for the live object, so snapshots can be compared with
+  `manifestDiff()`. A project directory path works too:
+  `objManifest("my_project", name = "clustered")`. A failed write warns and
+  never fails the save. Requires GiottoClass >= 0.7.24.
 
 ## bug fixes
 - Xenium and Atera disk readers: genomic control probes named

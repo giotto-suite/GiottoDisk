@@ -104,11 +104,16 @@ R/
   methods-fileInputs.R   # readers for the *Input file-input types
   methods-sourceWrite.R  # sourceWrite (allocate uid → write → register)
   methods-sourceAdopt.R  # sourceContains, sourceAdopt
+  methods-fingerprint.R  # fingerprint_data() for stores (objManifest). Every
+                         #   slot is hashed except .FP_SKIP_SLOTS: a new cache
+                         #   or location slot must be added there
   methods-sourcePrune.R  # sourcePrune
   methods-sourceSchema.R # sourceSchema, sourceUpdate, schema check + upgrades
   methods-snapshotSave.R # snapshotSave (giottosave snapshot lifecycle)
   methods-snapshotLoad.R # snapshotLoad
   methods-snapshotDelete.R # snapshotDelete
+  methods-snapshotSidecars.R # manifest.json / history.ndjson per snapshot;
+                         #   objManifest / objHistory methods for gDirSource
   stream-filter.R        # filterData(parquetExprStore, ...)
   stream-normalize.R     # processData(parquetExprStore, libraryNormParam/logNormParam)
   stream-markers.R       # analyzeData(parquetExprBase, markersParam) pairwise markers
@@ -568,7 +573,10 @@ rationale (manifest design, dump lifecycle, multi-analysis guarantees).
   giottodir.json       # manifest (consolidated from _pending/ on read)
   artifacts/<uid>/...  # vault
   _pending/            # WAL-style pending manifest edits
-  giottosave/<name>.<id>/gobject.RDS  # one folder per snapshot; folder name = tag
+  giottosave/<name>.<id>/  # one folder per snapshot; folder name = tag
+    gobject.RDS            # the object (or gobject.qs2)
+    manifest.json          # what it holds (giotto snapshots only)
+    history.ndjson         # how it was produced (giotto snapshots only)
 ```
 
 Manifest access: `src["uid"]`, `src["uid", "field"]`, `src[, "field"]`,
