@@ -53,6 +53,8 @@ setMethod(
         .meta_path <- obj@paths$meta_path
         .expr_path <- obj@paths$expr_path
         .tx_path <- obj@paths$tx_path
+        .composite_dir <- obj@paths$composite_img_dir
+        .overlay_dir <- obj@paths$overlay_img_dir
         gsrc  <- obj@backend
         slide <- obj@slide
         fovs_ <- obj@fovs
@@ -133,26 +135,54 @@ setMethod(
         }
         obj@calls$load_transcripts <- tx_fun
 
-        # create_gobject (disk variant). Mirrors parent's gobject_fun but
-        # initializes the giotto object with backend = gsrc so any further
-        # artifacts are vault-resident.
+        # create_gobject (disk variant). Mirrors parent's gobject_fun
+        # signature so `createGiottoCosMxObject(backend = gsrc, ...)` can
+        # plumb identical args through; the disk-only arguments follow.
+        # Initializes the giotto object with backend = gsrc so any further
+        # artifacts are vault-resident. Defaults differ from the parent's
+        # where the disk path reads differently: the matrix is loaded, the
+        # transcripts are not, and the split keywords match the WTx panel.
         gobject_fun <- function(
-            polygon_path = .poly_path,
+            transcript_path = .tx_path,
+            cell_labels_dir = .poly_path,
             expression_path = .expr_path,
             metadata_path = .meta_path,
-            transcript_path = .tx_path,
-            poly_read_fun = NULL,
             feat_type = c("rna", "negprobes", "falsecode"),
             split_keyword = list("^Negative", "^SystemControl"),
-            meta_cols = c("fov", "Area.um2", "nCount_RNA", "nFeature_RNA"),
-            load_polygons = TRUE,
+            load_images = list(
+                composite = "composite",
+                overlay = "overlay"
+            ),
+            image_negative_y = NULL,
             load_expression = TRUE,
             load_cellmeta = TRUE,
             load_transcripts = FALSE,
             instructions = NULL,
             cores = GiottoUtils::determine_cores(),
-            verbose = NULL
+            verbose = NULL,
+            # disk only
+            polygon_path = cell_labels_dir,
+            poly_read_fun = NULL,
+            meta_cols = c("fov", "Area.um2", "nCount_RNA", "nFeature_RNA"),
+            load_polygons = TRUE
         ) {
+            # polygons are read from the vertex CSV; the parent's mask
+            # (CellLabels) route has no disk counterpart
+            if (isTRUE(load_polygons) && length(polygon_path) &&
+                dir.exists(polygon_path)) {
+                stop("[CosMxDiskReader] polygons are read from the ",
+                     "*-polygons.csv file; mask images (CellLabels) are not ",
+                     "supported with a backend. Pass the CSV as ",
+                     "`cell_labels_dir`/`polygon_path`.", call. = FALSE)
+            }
+            if (!is.null(load_images)) {
+                checkmate::assert_list(load_images)
+                if (is.null(names(load_images))) {
+                    stop("[CosMxDiskReader] 'load_images' must be a named ",
+                         "list of image directories", call. = FALSE)
+                }
+            }
+
             funs <- obj@calls
 
             # init gobject with disk backend
@@ -189,6 +219,48 @@ setMethod(
                 g <- GiottoClass::setGiotto(
                     g, polys, centroids_to_spatlocs = TRUE, verbose = FALSE
                 )
+            }
+
+            # images (inherited in-mem closure, as the Xenium disk reader
+            # does): giottoLargeImages read lazily from the image files.
+            # Shortnames resolve to the detected folders; folders that were
+            # not found are skipped, since flat-file exports ship none.
+            if (!is.null(load_images)) {
+                found <- list(composite = .composite_dir,
+                              overlay = .overlay_dir)
+                for (i in seq_along(load_images)) {
+                    im <- load_images[[i]]
+                    if (is.character(im) && length(im) == 1L &&
+                        im %in% names(found)) {
+                        load_images[i] <- list(found[[im]])
+                    }
+                }
+                absent <- vapply(load_images, function(p) {
+                    !length(p) || !dir.exists(p[[1L]])
+                }, logical(1L))
+                if (any(absent)) {
+                    warning(GiottoUtils::wrap_txt(sprintf(
+                        "No %s image folder found; skipping. Pass
+                        `load_images` paths to load images from elsewhere.",
+                        paste(names(load_images)[absent], collapse = ", ")
+                    )), call. = FALSE)
+                    load_images <- load_images[!absent]
+                }
+                imglist <- list()
+                for (i in seq_along(load_images)) {
+                    img_args <- list(
+                        path = load_images[[i]],
+                        img_type = names(load_images)[[i]],
+                        verbose = verbose
+                    )
+                    if (!is.null(image_negative_y)) {
+                        img_args$negative_y <- image_negative_y
+                    }
+                    imglist <- c(imglist, do.call(funs$load_images, img_args))
+                }
+                if (length(imglist)) {
+                    g <- GiottoClass::setGiotto(g, imglist, verbose = FALSE)
+                }
             }
 
             # cells with expression but no polygon are dropped here

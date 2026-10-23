@@ -56,6 +56,13 @@
   is converted to parquet once, in a cache under `getArtifactDumpDir()`, and
   later imports reuse it. Detections outside any cell (`cell_ID == 0`) and the
   vendor's own cell assignment are kept.
+- CosMx disk reader: `create_gobject()` takes the in-memory reader's
+  arguments, in the same order, so `createGiottoCosMxObject(backend =)`
+  passes them unchanged. Images load through `load_images` /
+  `image_negative_y` as in memory (read lazily from the image files); image
+  folders that are not found are skipped with a warning. Mask polygons
+  (`CellLabels`) are not read on disk: `cell_labels_dir` must be the
+  polygons CSV.
 - `importMerscopeDisk()` reads Vizgen MERSCOPE region directories into a
   project: transcripts, cell boundaries and the cell by gene matrix are
   written as stores; cell metadata, cell centers and images stay in memory.

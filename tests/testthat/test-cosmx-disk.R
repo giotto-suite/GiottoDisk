@@ -145,3 +145,60 @@ test_that("load_transcripts restricts to the reader's fovs", {
     expect_setequal(unique(tx$fov), 2L)
     expect_equal(nrow(tx), 3L)
 })
+
+# signature parity with the in-memory reader ####
+
+test_that("create_gobject accepts every argument of the in-memory reader", {
+    .cosmx_skip()
+    d <- .mk_cosmx_disk_dir(n_fov1 = 300L)
+    p <- tempfile("cosmx_proj_")
+    dir.create(p)
+    mem <- names(formals(
+        suppressWarnings(Giotto::importCosMx(d))$create_gobject))
+    dsk <- names(formals(suppressWarnings(
+        importCosMxDisk(d, backend = p))$create_gobject))
+    expect_length(setdiff(mem, dsk), 0L)
+    # same order, so positional calls mean the same thing on both readers
+    expect_identical(dsk[seq_along(mem)], mem)
+})
+
+test_that("image folders that are not found are skipped with a warning", {
+    .cosmx_skip()
+    d <- .mk_cosmx_disk_dir(n_fov1 = 300L)
+    expect_warning(g <- .cosmx_obj(d), "No composite, overlay image folder")
+    expect_length(GiottoClass::list_images_names(g), 0L)
+})
+
+test_that("createGiottoCosMxObject(backend =) passes one argument list", {
+    .cosmx_skip()
+    skip_if_not("backend" %in% names(formals(Giotto::createGiottoCosMxObject)))
+    d <- .mk_cosmx_disk_dir(n_fov1 = 300L)
+    p <- tempfile("cosmx_proj_")
+    dir.create(p)
+    g <- suppressWarnings(suppressMessages(Giotto::createGiottoCosMxObject(d,
+        backend = p, version = "v6", poly_pref = "csv",
+        load_expression = TRUE, load_transcripts = FALSE,
+        feat_type = c("rna", "negprobes", "falsecode"),
+        split_keyword = list("^Negative", "^SystemControl"),
+        verbose = FALSE)))
+    expect_length(GiottoClass::spatIDs(g), 302L)
+    expect_false(is.null(g@source))
+})
+
+test_that("composite images load and sit on their FOVs", {
+    .cosmx_skip()
+    skip_if_not("JPEG" %in% terra::gdal(drivers = TRUE)$name)
+    d <- .mk_cosmx_disk_dir(n_fov1 = 300L)
+    # AtoMx names images with 5-digit FOV numbers
+    dir.create(file.path(d, "CellComposite"))
+    for (f in 1:2) {
+        r <- terra::rast(nrows = 64, ncols = 64, nlyrs = 3, vals = 128)
+        terra::writeRaster(r, file.path(d, "CellComposite",
+            sprintf("CellComposite_F%05d.jpg", f)), filetype = "JPEG",
+            datatype = "INT1U")
+    }
+    g <- suppressWarnings(.cosmx_obj(d,
+        load_images = list(composite = "composite")))
+    expect_setequal(GiottoClass::list_images_names(g),
+                    c("composite_fov001", "composite_fov002"))
+})
