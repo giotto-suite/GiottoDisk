@@ -100,6 +100,16 @@
   never fails the save. Requires GiottoClass >= 0.7.24.
 
 ## bug fixes
+- CosMx disk reader: a polygon CSV with a round coordinate written in
+  scientific notation (`1e+05`) after the first megabyte failed to read
+  ("CSV conversion error to int64"), because arrow typed the coordinate
+  columns from the head of the file. They are now read as double. AtoMx
+  writes such values; the breast multiomic export has 82, the colon WTx
+  export 205.
+- CosMx disk reader: polygons of cells with no expression (cells removed by
+  the vendor's QC, with no row in the expression matrix or metadata) made
+  `create_gobject()` fail the gobject check ("Number of entries ... != number
+  of gobject IDs"). They are now dropped, with a warning giving their count.
 - Xenium and Atera disk readers: genomic control probes named
   `Intergenic_Region_*` (Atera WTA panels) and `DeprecatedCodeword_*`
   features were loaded as `rna` transcripts. The defaults now put them in
