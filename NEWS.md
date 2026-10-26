@@ -50,6 +50,19 @@
   on a backed object.
 
 ## new
+- CosMx disk reader: `load_transcripts()` writes the `tx_file` into the
+  vault as a tiled points store, split into `rna`, `negprobes` and
+  `falsecode`; `create_gobject(load_transcripts = TRUE)` adds them. The CSV
+  is converted to parquet once, in a cache under `getArtifactDumpDir()`, and
+  later imports reuse it. Detections outside any cell (`cell_ID == 0`) and the
+  vendor's own cell assignment are kept.
+- CosMx disk reader: `create_gobject()` takes the in-memory reader's
+  arguments, in the same order, so `createGiottoCosMxObject(backend =)`
+  passes them unchanged. Images load through `load_images` /
+  `image_negative_y` as in memory (read lazily from the image files); image
+  folders that are not found are skipped with a warning. Mask polygons
+  (`CellLabels`) are not read on disk: `cell_labels_dir` must be the
+  polygons CSV.
 - `importMerscopeDisk()` reads Vizgen MERSCOPE region directories into a
   project: transcripts, cell boundaries and the cell by gene matrix are
   written as stores; cell metadata, cell centers and images stay in memory.
@@ -100,6 +113,16 @@
   never fails the save. Requires GiottoClass >= 0.7.24.
 
 ## bug fixes
+- CosMx disk reader: a polygon CSV with a round coordinate written in
+  scientific notation (`1e+05`) after the first megabyte failed to read
+  ("CSV conversion error to int64"), because arrow typed the coordinate
+  columns from the head of the file. They are now read as double. AtoMx
+  writes such values; the breast multiomic export has 82, the colon WTx
+  export 205.
+- CosMx disk reader: polygons of cells with no expression (cells removed by
+  the vendor's QC, with no row in the expression matrix or metadata) made
+  `create_gobject()` fail the gobject check ("Number of entries ... != number
+  of gobject IDs"). They are now dropped, with a warning giving their count.
 - Xenium and Atera disk readers: genomic control probes named
   `Intergenic_Region_*` (Atera WTA panels) and `DeprecatedCodeword_*`
   features were loaded as `rna` transcripts. The defaults now put them in
