@@ -369,6 +369,11 @@ setMethod(
     # `.pstore_lazy_fields` returns NULL and the underlying SELECT is `*`.
     if (.hasSlot(trim_store, "fields")) trim_store@fields <- NULL
 
+    # adr/0021: a pre-cull must return a superset of the relation's answer.
+    # crop() is centroid membership, so for "intersects" this drops polygons
+    # whose centroid lies outside the region's bbox (known bug, roadmap
+    # "Read planning"). Do not narrow candidates with a semantic op.
+    #
     # AABB pre-cull: combine the AABBs of every monotone spat_relate op
     # in @ops into a single intersection extent and apply via crop().
     # crop() composes with the store's existing @crop (intersection),

@@ -92,6 +92,7 @@ least one.
 | [0018](0018-sorted-write-by-cell-window.md) | A parquet expression write sorts per cell window and writes each window itself | Accepted | 2026-09-28 |
 | [0019](0019-overlap-carrier-is-a-queryable-store.md) | The overlap is a queryableStore carrier, built and aggregated in SQL engines | Accepted | 2026-10-06 |
 | [0020](0020-edge-statistics-contract-and-histogram-thresholds.md) | Edge statistics cross backends as sufficient statistics; order statistics come from streamed histograms | Accepted | 2026-10-16 |
+| [0021](0021-crop-selects-by-centroid-culls-are-optimizer-steps.md) | A crop selects by centroid; a cull is an optimizer step and never decides membership | Accepted | 2026-10-27 |
 
 ## Backfill candidates
 
