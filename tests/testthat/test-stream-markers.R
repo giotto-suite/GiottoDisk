@@ -3,14 +3,8 @@
 # base/Matrix, and the pairwise tail against `stats::t.test` -- independent
 # ground truth in both cases, not another run of the same path.
 
-.mk_mat <- function(n_genes = 15L, n_cells = 40L, density = 0.4, seed = 11L) {
-    set.seed(seed)
-    m <- Matrix::rsparsematrix(n_genes, n_cells, density = density,
-        rand.x = function(n) as.double(rpois(n, 4L) + 1L))
-    rownames(m) <- paste0("g", seq_len(n_genes))
-    colnames(m) <- paste0("c", seq_len(n_cells))
-    m
-}
+.mk_mat <- function(n_genes = 15L, n_cells = 40L, density = 0.4, seed = 11L)
+    .rand_counts(n_genes, n_cells, density, seed, lambda = 4L)
 
 # Dense per-group moments. Deliberately naive: loops the groups and uses
 # base rowMeans / apply(var) on the densified block, so it shares no code with

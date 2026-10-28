@@ -2,18 +2,6 @@
 # Mirrors test-sedonadb.R in scope so the two SQL backends stay parallel
 # in behavior. Skipped if {duckdb} isn't available.
 
-make_pts_dd <- function(n = 5) {
-    terra::vect(
-        data.frame(
-            x = seq_len(n),
-            y = seq_len(n),
-            cell_ID = paste0("cell_", seq_len(n))
-        ),
-        geom = c("x", "y"),
-        crs = ""
-    )
-}
-
 
 # output type ####
 
@@ -46,14 +34,14 @@ test_that("duckdb: storeRead honours duckdb_params$name", {
 
 test_that("duckdb: storeRead returns tbl_dbi", {
     skip_if_not_installed("duckdb")
-    pgs <- parquetGeomStore() |> storeWrite(make_pts_dd())
+    pgs <- parquetGeomStore() |> storeWrite(make_pts())
     tbl <- storeRead(pgs, output = "duckdb")
     expect_s3_class(tbl, "tbl_dbi")
 })
 
 test_that("duckdb: collect returns correct row count", {
     skip_if_not_installed("duckdb")
-    pgs <- parquetGeomStore() |> storeWrite(make_pts_dd(5))
+    pgs <- parquetGeomStore() |> storeWrite(make_pts(5))
     df <- storeRead(pgs, output = "duckdb") |> dplyr::collect()
     expect_equal(nrow(df), 5L)
 })
@@ -63,7 +51,7 @@ test_that("duckdb: collect returns correct row count", {
 
 test_that("duckdb: user-supplied connection is honored", {
     skip_if_not_installed("duckdb")
-    pgs <- parquetGeomStore() |> storeWrite(make_pts_dd(3))
+    pgs <- parquetGeomStore() |> storeWrite(make_pts(3))
     conn <- DBI::dbConnect(duckdb::duckdb())
     on.exit(DBI::dbDisconnect(conn, shutdown = TRUE), add = TRUE)
     tbl <- storeRead(pgs, output = "duckdb", duckdb_params = list(conn = conn))
@@ -72,7 +60,7 @@ test_that("duckdb: user-supplied connection is honored", {
 
 test_that("duckdb: ephemeral connection is created when none supplied", {
     skip_if_not_installed("duckdb")
-    pgs <- parquetGeomStore() |> storeWrite(make_pts_dd(3))
+    pgs <- parquetGeomStore() |> storeWrite(make_pts(3))
     tbl <- storeRead(pgs, output = "duckdb")
     # ephemeral conn lives on tbl$src$con and is valid for the duration
     df <- dplyr::collect(tbl)
@@ -97,7 +85,7 @@ test_that("duckdb: crop reduces row count", {
 
 test_that("duckdb: @ops filter translates to SQL", {
     skip_if_not_installed("duckdb")
-    pgs <- parquetGeomStore() |> storeWrite(make_pts_dd(5))
+    pgs <- parquetGeomStore() |> storeWrite(make_pts(5))
     pgs_f <- subset(pgs, cell_ID %in% c("cell_1", "cell_2"))
     df <- storeRead(pgs_f, output = "duckdb") |> dplyr::collect()
     expect_equal(nrow(df), 2L)
@@ -109,7 +97,7 @@ test_that("duckdb: %in% above the threshold uses a VALUES subquery", {
     skip_if_not_installed("duckdb")
     old <- options(giottodisk.sedona_in_subquery_threshold = 1L)
     on.exit(options(old), add = TRUE)
-    pgs <- parquetGeomStore() |> storeWrite(make_pts_dd(5))
+    pgs <- parquetGeomStore() |> storeWrite(make_pts(5))
     pgs_f <- subset(pgs, cell_ID %in% c("cell_1", "cell_2"))
     df <- storeRead(pgs_f, output = "duckdb") |> dplyr::collect()
     expect_setequal(df$cell_ID, c("cell_1", "cell_2"))
@@ -120,7 +108,7 @@ test_that("duckdb: %in% above the threshold uses a VALUES subquery", {
 
 test_that("duckdb: pending affine applies via ST_Affine", {
     skip_if_not_installed("duckdb")
-    pgs <- parquetGeomStore() |> storeWrite(make_pts_dd(5))
+    pgs <- parquetGeomStore() |> storeWrite(make_pts(5))
     aff <- GiottoClass::affine(diag(c(2, 1)))  # scale x by 2, y unchanged
     pgs2 <- affine(pgs, aff)
     tbl <- storeRead(pgs2, output = "duckdb")
@@ -137,7 +125,7 @@ test_that("duckdb: pending affine applies via ST_Affine", {
 # sedona transpose fix). Shear catches any future coefficient swap.
 test_that("duckdb: pending affine applies via ST_Affine (shear, off-diagonal)", {
     skip_if_not_installed("duckdb")
-    pgs <- parquetGeomStore() |> storeWrite(make_pts_dd(5))
+    pgs <- parquetGeomStore() |> storeWrite(make_pts(5))
     # Row-vector post-mult M = [[1, 0.5], [0, 1]]: (n, n) -> (n, 1.5*n).
     aff <- GiottoClass::affine(matrix(c(1, 0, 0.5, 1), nrow = 2L))
     pgs2 <- affine(pgs, aff)
@@ -155,7 +143,7 @@ test_that("duckdb: pending affine applies via ST_Affine (shear, off-diagonal)", 
 
 test_that("duckdb: spat_relate intersects matches expected ids", {
     skip_if_not_installed("duckdb")
-    pgs <- parquetGeomStore() |> storeWrite(make_pts_dd(5))
+    pgs <- parquetGeomStore() |> storeWrite(make_pts(5))
     df <- pgs |>
         spatRelate("POLYGON ((0 0, 3 0, 3 3, 0 3, 0 0))", "intersects") |>
         storeRead(output = "duckdb") |>
@@ -177,7 +165,7 @@ test_that("duckdb: flat parquetStore injects source_id only (no tile_index)", {
 
 test_that("duckdb: parquetGeomStore injects source_id and tile_index=0", {
     skip_if_not_installed("duckdb")
-    pgs <- parquetGeomStore() |> storeWrite(make_pts_dd(5))
+    pgs <- parquetGeomStore() |> storeWrite(make_pts(5))
     df <- storeRead(pgs, output = "duckdb") |> dplyr::collect()
     expect_true(all(c("source_id", "tile_index") %in% names(df)))
     expect_equal(length(unique(df$source_id)), 1L)
@@ -185,20 +173,9 @@ test_that("duckdb: parquetGeomStore injects source_id and tile_index=0", {
 })
 
 
-.make_tile_pts_dd <- function() {
-    coords <- data.frame(
-        x = rep(seq(5, 45, by = 10), 5),
-        y = rep(seq(5, 45, by = 10), each = 5)
-    )
-    terra::vect(
-        data.frame(coords, id = seq_len(nrow(coords))),
-        geom = c("x", "y"), crs = ""
-    )
-}
-
 test_that("duckdb: parquetGeomTileStore unions all tiles, composite key is unique", {
     skip_if_not_installed("duckdb")
-    pgs <- parquetGeomStore() |> storeWrite(.make_tile_pts_dd())
+    pgs <- parquetGeomStore() |> storeWrite(make_tile_pts())
     pgts <- parquetGeomTileStore() |> storeWrite(pgs, threshold = 4L)
     df <- storeRead(pgts, output = "duckdb") |> dplyr::collect()
     expect_equal(nrow(df), 25L)
@@ -209,7 +186,7 @@ test_that("duckdb: parquetGeomTileStore unions all tiles, composite key is uniqu
 
 test_that("duckdb: @tile_filter prunes at file level", {
     skip_if_not_installed("duckdb")
-    pgs <- parquetGeomStore() |> storeWrite(.make_tile_pts_dd())
+    pgs <- parquetGeomStore() |> storeWrite(make_tile_pts())
     pgts <- parquetGeomTileStore() |> storeWrite(pgs, threshold = 4L)
     pgts_cropped <- crop(pgts, terra::ext(0, 25, 0, 25))
     expect_gt(length(pgts_cropped@tile_filter), 0L)
@@ -220,7 +197,7 @@ test_that("duckdb: @tile_filter prunes at file level", {
 
 test_that("duckdb: tile_idx arg overrides filter, selects only that tile", {
     skip_if_not_installed("duckdb")
-    pgs <- parquetGeomStore() |> storeWrite(.make_tile_pts_dd())
+    pgs <- parquetGeomStore() |> storeWrite(make_tile_pts())
     pgts <- parquetGeomTileStore() |> storeWrite(pgs, threshold = 4L)
     df <- storeRead(pgts, output = "duckdb", tile_idx = 1L) |> dplyr::collect()
     expect_equal(unique(df$tile_index), 1L)
@@ -228,7 +205,7 @@ test_that("duckdb: tile_idx arg overrides filter, selects only that tile", {
 
 test_that("duckdb: tile_idx with no matching tile errors clearly", {
     skip_if_not_installed("duckdb")
-    pgs <- parquetGeomStore() |> storeWrite(make_pts_dd(5))
+    pgs <- parquetGeomStore() |> storeWrite(make_pts(5))
     expect_error(
         storeRead(pgs, output = "duckdb", tile_idx = 999L),
         "no tile directories match"

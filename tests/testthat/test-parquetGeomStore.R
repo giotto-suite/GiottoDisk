@@ -1,15 +1,3 @@
-make_pts <- function(n = 5) {
-    terra::vect(
-        data.frame(
-            x = seq_len(n),
-            y = seq_len(n),
-            cell_ID = paste0("cell_", seq_len(n))
-        ),
-        geom = c("x", "y"),
-        crs = ""
-    )
-}
-
 test_that("parquetGeomStore: unwritten store does not exist", {
     pgs <- parquetGeomStore()
     expect_false(storeExists(pgs))

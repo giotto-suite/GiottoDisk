@@ -2,15 +2,8 @@
 #   reduceData(parquetExprStore, randomPcaParam)
 #       -> list(u, d, v, sdev, eigenvalues)
 
-.tiny_mat <- function(n_genes = 80L, n_cells = 400L,
-                       density = 0.4, seed = 1L) {
-    set.seed(seed)
-    m <- Matrix::rsparsematrix(n_genes, n_cells, density = density,
-        rand.x = function(n) as.double(rpois(n, 4L) + 1L))
-    rownames(m) <- paste0("g", sprintf("%03d", seq_len(n_genes)))
-    colnames(m) <- paste0("c", sprintf("%04d", seq_len(n_cells)))
-    m
-}
+.tiny_mat <- function(n_genes = 80L, n_cells = 400L, density = 0.4, seed = 1L)
+    .rand_counts(n_genes, n_cells, density, seed, lambda = 4L, pad = c(3L, 4L))
 
 
 # Raw store carrying a library-size + log2 recipe on @post_ops, built through

@@ -2,14 +2,9 @@
 # long-format expression matrices.
 
 # helper: build a tiny labeled dgCMatrix
-.tiny_mat <- function(n_genes = 5L, n_cells = 8L, density = 0.4, seed = 1L) {
-    set.seed(seed)
-    m <- Matrix::rsparsematrix(n_genes, n_cells, density = density,
-        rand.x = function(n) as.double(rpois(n, 5L) + 1L))
-    rownames(m) <- paste0("gene", seq_len(n_genes))
-    colnames(m) <- paste0("cell", seq_len(n_cells))
-    m
-}
+.tiny_mat <- function(n_genes = 5L, n_cells = 8L, density = 0.4, seed = 1L)
+    .rand_counts(n_genes, n_cells, density, seed,
+        gene_prefix = "gene", cell_prefix = "cell")
 
 # helper: write a tiny MatrixMarket triple to a directory in 10x layout
 .write_mtx_triple <- function(mat, out_dir) {

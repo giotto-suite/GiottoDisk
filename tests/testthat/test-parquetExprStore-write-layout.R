@@ -2,13 +2,8 @@
 # every file sorted by (row_id, col_id), files covering disjoint cell ranges.
 # AGENTS.md states the layout and the Gram kernel requires it (adr/0018).
 
-.layout_mat <- function(n_genes = 60L, n_cells = 500L, seed = 1L) {
-    set.seed(seed)
-    m <- Matrix::rsparsematrix(n_genes, n_cells, density = 0.3,
-        rand.x = function(n) as.double(rpois(n, 4L) + 1L))
-    dimnames(m) <- list(paste0("g", seq_len(n_genes)), paste0("c", seq_len(n_cells)))
-    m
-}
+.layout_mat <- function(n_genes = 60L, n_cells = 500L, seed = 1L)
+    .rand_counts(n_genes, n_cells, density = 0.3, seed = seed, lambda = 4L)
 
 .write_pe <- function(x) {
     storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), x)

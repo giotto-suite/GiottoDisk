@@ -4,18 +4,6 @@ options("tilework.warn_sequential" = FALSE)
 
 
 # 5x5 grid of points covering [0, 50] x [0, 50]
-make_tile_pts <- function() {
-    coords <- data.frame(
-        x = rep(seq(5, 45, by = 10), 5),
-        y = rep(seq(5, 45, by = 10), each = 5)
-    )
-    terra::vect(
-        data.frame(coords, id = seq_len(nrow(coords))),
-        geom = c("x", "y"),
-        crs = ""
-    )
-}
-
 # Write a parquetGeomStore then tile it.
 # threshold = 4 forces multiple tiles over the 25-point grid.
 make_tile_store <- function() {

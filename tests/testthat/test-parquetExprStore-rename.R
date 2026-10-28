@@ -6,14 +6,8 @@
 # file-coordinate marginals. A rename touches only the first pair, so values
 # keep reading correctly and the file-side state is untouched.
 
-.rn_mat <- function(n_genes = 6L, n_cells = 5L, seed = 1L) {
-    set.seed(seed)
-    m <- Matrix::rsparsematrix(n_genes, n_cells, density = 0.8,
-        rand.x = function(n) as.double(rpois(n, 4L) + 1L))
-    rownames(m) <- paste0("g", seq_len(n_genes))
-    colnames(m) <- paste0("c", seq_len(n_cells))
-    m
-}
+.rn_mat <- function(n_genes = 6L, n_cells = 5L, seed = 1L)
+    .rand_counts(n_genes, n_cells, density = 0.8, seed = seed, lambda = 4L)
 
 .rn_store <- function(m) {
     storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), m)

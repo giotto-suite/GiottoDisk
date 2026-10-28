@@ -7,15 +7,6 @@
 # per-cell vector is a payload, and adr/0003 says a payload keyed by view
 # position reads the wrong entries once `[` narrows the store.
 
-.grp_mat <- function(n_genes = 12L, n_cells = 30L, density = 0.5, seed = 3L) {
-    set.seed(seed)
-    m <- Matrix::rsparsematrix(n_genes, n_cells, density = density,
-        rand.x = function(n) as.double(rpois(n, 5L) + 1L))
-    rownames(m) <- paste0("g", seq_len(n_genes))
-    colnames(m) <- paste0("c", seq_len(n_cells))
-    m
-}
-
 # Reference statistics, cells of each group selected by name.
 .ref_grouped <- function(mat, groups) {
     lvls <- levels(droplevels(factor(groups)))
@@ -40,7 +31,7 @@
 
 test_that("grouped featStats matches an in-memory reference", {
     skip_if_not_installed("Giotto")
-    mat <- .grp_mat()
+    mat <- .rand_counts(seed = 3L)
     pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
 
     grp <- stats::setNames(rep(c("a", "b", "c"), length.out = ncol(mat)),
@@ -60,7 +51,7 @@ test_that("grouped featStats matches an in-memory reference", {
 
 test_that("a named grouping is matched on cell ID, not on view position", {
     skip_if_not_installed("Giotto")
-    mat <- .grp_mat(seed = 5L)
+    mat <- .rand_counts(seed = 5L)
     pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
 
     grp <- stats::setNames(rep(c("a", "b"), length.out = ncol(mat)),
@@ -79,7 +70,7 @@ test_that("a named grouping is matched on cell ID, not on view position", {
 
 test_that("a named grouping survives a `[`-narrowed view", {
     skip_if_not_installed("Giotto")
-    mat <- .grp_mat(seed = 8L)
+    mat <- .rand_counts(seed = 8L)
     pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
 
     grp <- stats::setNames(rep(c("a", "b"), length.out = ncol(mat)),
@@ -106,7 +97,7 @@ test_that("a named grouping survives a `[`-narrowed view", {
 
 test_that("cells the grouping omits drop out rather than erroring", {
     skip_if_not_installed("Giotto")
-    mat <- .grp_mat(seed = 13L)
+    mat <- .rand_counts(seed = 13L)
     pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
 
     grp <- stats::setNames(rep(c("a", "b", "c"), length.out = ncol(mat)),
@@ -130,7 +121,7 @@ test_that("cells the grouping omits drop out rather than erroring", {
 
 test_that("an unnamed grouping stays positional, with a warning", {
     skip_if_not_installed("Giotto")
-    mat <- .grp_mat(seed = 21L)
+    mat <- .rand_counts(seed = 21L)
     pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
 
     grp <- stats::setNames(rep(c("a", "b"), length.out = ncol(mat)),
@@ -153,7 +144,7 @@ test_that("an unnamed grouping stays positional, with a warning", {
 
 test_that("a grouped pass folds exactly across forced cell windows", {
     skip_if_not_installed("Giotto")
-    mat <- .grp_mat(n_genes = 20L, n_cells = 90L, density = 0.4, seed = 31L)
+    mat <- .rand_counts(n_genes = 20L, n_cells = 90L, density = 0.4, seed = 31L)
     pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
 
     grp <- stats::setNames(rep(c("a", "b", "c"), length.out = ncol(mat)),
@@ -175,7 +166,7 @@ test_that("a grouped pass folds exactly across forced cell windows", {
 
 test_that("windowing a grouped pass is invariant to `[` and to NA groups", {
     skip_if_not_installed("Giotto")
-    mat <- .grp_mat(n_genes = 16L, n_cells = 80L, density = 0.4, seed = 37L)
+    mat <- .rand_counts(n_genes = 16L, n_cells = 80L, density = 0.4, seed = 37L)
     pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
 
     grp <- stats::setNames(rep(c("a", "b"), length.out = ncol(mat)),
@@ -193,7 +184,7 @@ test_that("windowing a grouped pass is invariant to `[` and to NA groups", {
 
 test_that("an ungrouped pass is not windowed", {
     skip_if_not_installed("Giotto")
-    mat <- .grp_mat(n_genes = 12L, n_cells = 40L, seed = 41L)
+    mat <- .rand_counts(n_genes = 12L, n_cells = 40L, seed = 41L)
     pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
 
     # Acero bounds the joinless aggregate on its own; routing it through the
@@ -215,7 +206,7 @@ test_that("an ungrouped pass is not windowed", {
 
 test_that("the data.table path folds exactly across cell windows", {
     skip_if_not_installed("Giotto")
-    mat <- .grp_mat(n_genes = 18L, n_cells = 84L, density = 0.4, seed = 43L)
+    mat <- .rand_counts(n_genes = 18L, n_cells = 84L, density = 0.4, seed = 43L)
     pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
 
     # A `log` on @post_ops forces the R-side executor: the chain cannot be
@@ -247,8 +238,8 @@ test_that("a union folds exactly when a window covers a whole substore", {
     # That is only correct because payloads are keyed by (uid, on-disk id) per
     # adr/0003 — slicing is an optimisation, not a correctness requirement.
     # Every other windowing test here is a single store, where this cannot arise.
-    m_a <- .grp_mat(n_genes = 14L, n_cells = 40L, density = 0.4, seed = 51L)
-    m_b <- .grp_mat(n_genes = 14L, n_cells = 26L, density = 0.4, seed = 52L)
+    m_a <- .rand_counts(n_genes = 14L, n_cells = 40L, density = 0.4, seed = 51L)
+    m_b <- .rand_counts(n_genes = 14L, n_cells = 26L, density = 0.4, seed = 52L)
     colnames(m_a) <- paste0("a_", colnames(m_a))
     colnames(m_b) <- paste0("b_", colnames(m_b))
     u <- unionParquetExprStore(list(

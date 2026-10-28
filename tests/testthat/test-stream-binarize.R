@@ -1,13 +1,8 @@
 # processData(parquetExprBase, thresholdParam("binarize")) against Giotto's
 # in-memory method on the same matrix.
 
-.bz_mat <- function(G = 10L, N = 50L, seed = 6L, prefix = "c") {
-    set.seed(seed)
-    m <- Matrix::rsparsematrix(G, N, density = 0.5,
-        rand.x = function(k) as.double(rpois(k, 6L) + 1L))
-    dimnames(m) <- list(paste0("g", seq_len(G)), paste0(prefix, seq_len(N)))
-    m
-}
+.bz_mat <- function(G = 10L, N = 50L, seed = 6L, prefix = "c")
+    .rand_counts(G, N, seed = seed, lambda = 6L, cell_prefix = prefix)
 .bz_pe <- function(m) {
     storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), m)
 }

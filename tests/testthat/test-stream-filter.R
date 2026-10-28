@@ -2,21 +2,11 @@
 #   processData(parquetExprStore, filterParam) -> list(feats_keep, cells_keep)
 # Result must match Giotto's in-memory two-stage filter exactly.
 
-.tiny_mat <- function(n_genes = 20L, n_cells = 80L,
-                       density = 0.5, seed = 1L) {
-    set.seed(seed)
-    m <- Matrix::rsparsematrix(n_genes, n_cells, density = density,
-        rand.x = function(n) as.double(rpois(n, 5L) + 1L))
-    rownames(m) <- paste0("g", seq_len(n_genes))
-    colnames(m) <- paste0("c", seq_len(n_cells))
-    m
-}
-
 
 test_that("filterData(parquetExprStore, filterParam) matches in-memory masks", {
     skip_if_not_installed("Giotto")
 
-    mat <- .tiny_mat()
+    mat <- .rand_counts(20L, 80L)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
 
     fp <- Giotto::filterParam(
@@ -60,7 +50,7 @@ test_that("two-stage logic — streaming recounts after gene mask is applied", {
 
 test_that("empty-result branches return empty character vectors", {
     skip_if_not_installed("Giotto")
-    mat <- .tiny_mat(seed = 7)
+    mat <- .rand_counts(20L, 80L, seed = 7)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
 
     # Impossibly tight threshold — nothing should be kept
