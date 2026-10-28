@@ -27,6 +27,7 @@ High-level direction for GiottoDisk. Specific features land in the
   on-disk artifacts, exposed through a read-only `giottoView` abstraction
   on the GiottoClass side.
 - **`bpcMatrixStore` as a wrapping store** — see below.
+- **Read planning: cull, then refine** — see below.
 
 ### Lowering peak memory in the pairwise marker tail
 
@@ -339,6 +340,38 @@ declaring BPCells in either DESCRIPTION. GiottoDisk is the only package that
 declares it. That is an `R CMD check` violation today, independent of this
 design; migrating ops here reduces but does not fix it.
 
+### Read planning: cull, then refine
+
+ADR 0021 settles what a crop means (centroid membership) and that narrowing
+candidates is an optimizer concern. What is left to build, in order:
+
+1. **An internal cull op.** Centroids within the region's bounding box widened
+   by a pad, returning a superset by construction. `spatRelate()` stops calling
+   `crop()` for its pre-cull and uses this instead, with the relation's pad
+   (0 for points tested against a region, cell reach for `intersects`). The
+   repro in ADR 0021 becomes the regression test.
+2. **A planning pass in `storeRead()`.** Collect every pending spatial
+   constraint on the store (crop extents through any pending transform,
+   relation boxes with their pads, consumer margins), prune tiles once with
+   `tilework::intersect()` on the padded plan, then push the centroid filter
+   down. `crop()` and `spatRelate()` record constraints rather than mutating
+   `@tile_filter` as they are called.
+3. **`crop(mode = c("centroid", "intersects", "clip"))`** on stores, all three
+   modes going through the same cull. `"clip"` is the expensive one (exact
+   intersection in the engine) and replaces "exact polygon masking" below.
+4. **A recorded maximum half-extent** per store, per axis, written next to
+   `max_poly_radius`. Unlike the equal-area radius it is a bound for any shape,
+   so the cull is exact without `poly_buf_factor`. A per-tile copy in the tile
+   plan's metadata only if outlier polygons appear.
+5. **Half-open tile assignment.** `getBoundedData()` is inclusive on every
+   side, so a centroid on a shared tile edge is written into both tiles. Rare
+   with continuous coordinates, common with grid-snapped ones (spots, bins).
+6. **Context rows.** A consumer margin (a plot's draw margin, a density
+   bandwidth) widens the cull; rows read only because of it come back flagged,
+   so legends and statistics count the selection alone.
+7. **An explain for the physical plan:** tiles kept, filters pushed down, pads
+   applied, printed before execution.
+
 ## Backend variants
 
 The `gsource` protocol is pluggable. Planned implementations beyond the
@@ -376,7 +409,8 @@ package's fork/`lapply_flex` convention. Deferred deliberately:
 
 ## Other items
 
-- Exact polygon masking as a post-materialization op (currently AABB-only).
+- Exact polygon masking as a post-materialization op (currently AABB-only) —
+  now `crop(mode = "clip")` under "Read planning" above.
 - Lazy virtual partitioning via filesystem hardlinks.
 - Direct sedona → parquet write path (blocked upstream on Arrow R view-type
   compute kernels).
