@@ -2,15 +2,8 @@
 # indicator record, so the margin methods count through the accumulator. The
 # ground truth throughout is the same comparison on the in-memory dgCMatrix.
 
-.cmp_mat <- function(n_genes = 12L, n_cells = 30L, seed = 1L,
-                     prefix = "c") {
-    set.seed(seed)
-    m <- Matrix::rsparsematrix(n_genes, n_cells, density = 0.5,
-        rand.x = function(n) as.double(rpois(n, 3L) + 1L))
-    rownames(m) <- paste0("g", seq_len(n_genes))
-    colnames(m) <- paste0(prefix, seq_len(n_cells))
-    m
-}
+.cmp_mat <- function(n_genes = 12L, n_cells = 30L, seed = 1L, prefix = "c")
+    .rand_counts(n_genes, n_cells, seed = seed, lambda = 3L, cell_prefix = prefix)
 .cmp_store <- function(m) {
     storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), m)
 }

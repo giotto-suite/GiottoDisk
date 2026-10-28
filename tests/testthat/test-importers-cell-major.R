@@ -3,14 +3,9 @@
 # several parts, checks the layout, and checks the values against the source
 # matrix. The Stereo-seq GEF readers are covered in test-stereoseq-gef.R.
 
-.cm_mat <- function(n_genes = 6L, n_cells = 40L, seed = 1L) {
-    set.seed(seed)
-    m <- Matrix::rsparsematrix(n_genes, n_cells, density = 0.5,
-        rand.x = function(n) as.double(rpois(n, 4L) + 1L))
-    rownames(m) <- paste0("gene", seq_len(n_genes))
-    colnames(m) <- paste0("cell", seq_len(n_cells))
-    m
-}
+.cm_mat <- function(n_genes = 6L, n_cells = 40L, seed = 1L)
+    .rand_counts(n_genes, n_cells, seed = seed, lambda = 4L,
+        gene_prefix = "gene", cell_prefix = "cell")
 
 # store -> genes x cells matrix, columns in store order
 # 10x feature-barcode h5 (CSC by cell) for a genes x cells matrix

@@ -7,14 +7,8 @@
 # * Bioconductor convention dimnames (rownames = feat_ids, colnames = cell_ids)
 # * Sparsity preserved (uses v_norm if present, else raw value)
 
-.dgc_mat <- function(n_genes = 20L, n_cells = 30L, density = 0.4, seed = 1L) {
-    set.seed(seed)
-    m <- Matrix::rsparsematrix(n_genes, n_cells, density = density,
-        rand.x = function(n) as.double(rpois(n, 4L) + 1L))
-    rownames(m) <- paste0("g", sprintf("%03d", seq_len(n_genes)))
-    colnames(m) <- paste0("c", sprintf("%03d", seq_len(n_cells)))
-    m
-}
+.dgc_mat <- function(n_genes = 20L, n_cells = 30L, density = 0.4, seed = 1L)
+    .rand_counts(n_genes, n_cells, density, seed, lambda = 4L, pad = 3L)
 
 
 test_that("storeRead(dgcmatrix) on parquetExprStore matches raw matrix", {

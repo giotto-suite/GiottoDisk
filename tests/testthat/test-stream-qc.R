@@ -2,22 +2,12 @@
 # giotto object. The result must be bit-for-bit identical to Giotto's
 # in-memory addStatistics on the same expression values.
 
-.tiny_mat <- function(n_genes = 12L, n_cells = 30L,
-                       density = 0.5, seed = 1L) {
-    set.seed(seed)
-    m <- Matrix::rsparsematrix(n_genes, n_cells, density = density,
-        rand.x = function(n) as.double(rpois(n, 5L) + 1L))
-    rownames(m) <- paste0("g", seq_len(n_genes))
-    colnames(m) <- paste0("c", seq_len(n_cells))
-    m
-}
-
 
 test_that("analyzeData(parquetExprStore, cellStatsParam) matches reference", {
     skip_if_not_installed("Giotto")
     skip_if_not_installed("GiottoClass")
 
-    mat <- .tiny_mat()
+    mat <- .rand_counts()
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
 
     n_genes <- nrow(mat); n_cells <- ncol(mat)
@@ -36,7 +26,7 @@ test_that("analyzeData(parquetExprStore, cellStatsParam) matches reference", {
 
 test_that("analyzeData(parquetExprStore, featStatsParam) matches reference", {
     skip_if_not_installed("Giotto")
-    mat <- .tiny_mat(seed = 7)
+    mat <- .rand_counts(seed = 7)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
 
     n_genes <- nrow(mat); n_cells <- ncol(mat)
@@ -58,7 +48,7 @@ test_that("addStatistics(g) on parquet backend matches in-memory reference", {
     skip_if_not_installed("Giotto")
     skip_if_not_installed("GiottoClass")
 
-    mat <- .tiny_mat(seed = 11)
+    mat <- .rand_counts(seed = 11)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
 
     # Reference: compute inline (avoid Giotto::addStatistics internal

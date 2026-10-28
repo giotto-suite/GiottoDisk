@@ -1,17 +1,8 @@
 # fingerprint_data() on stores: identity from the handle, never the data
 
-.fp_mat <- function(seed = 1L, prefix = "c") {
-    set.seed(seed)
-    m <- Matrix::rsparsematrix(12L, 30L, density = 0.5,
-        rand.x = function(n) as.double(rpois(n, 5L) + 1L))
-    rownames(m) <- paste0("g", seq_len(12L))
-    colnames(m) <- paste0(prefix, seq_len(30L))
-    m
-}
-
 .fp_pe <- function(seed = 1L, prefix = "c") {
     storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
-        .fp_mat(seed, prefix))
+        .rand_counts(seed = seed, cell_prefix = prefix))
 }
 
 .fp_geom <- function() {

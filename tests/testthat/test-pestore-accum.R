@@ -2,14 +2,9 @@
 # histogram built on them. Ground truth is the same quantity computed on the
 # in-memory dgCMatrix.
 
-.acc_mat <- function(n_genes = 15L, n_cells = 40L, seed = 1L, prefix = "c") {
-    set.seed(seed)
-    m <- Matrix::rsparsematrix(n_genes, n_cells, density = 0.4,
-        rand.x = function(n) as.double(rpois(n, 6L) + 1L))
-    rownames(m) <- paste0("g", seq_len(n_genes))
-    colnames(m) <- paste0(prefix, seq_len(n_cells))
-    m
-}
+.acc_mat <- function(n_genes = 15L, n_cells = 40L, seed = 1L, prefix = "c")
+    .rand_counts(n_genes, n_cells, density = 0.4, seed = seed, lambda = 6L,
+        cell_prefix = prefix)
 .acc_store <- function(m) {
     storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), m)
 }

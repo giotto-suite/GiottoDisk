@@ -1,27 +1,15 @@
-make_pts_sdb <- function(n = 5) {
-    terra::vect(
-        data.frame(
-            x = seq_len(n),
-            y = seq_len(n),
-            cell_ID = paste0("cell_", seq_len(n))
-        ),
-        geom = c("x", "y"),
-        crs = ""
-    )
-}
-
 # output type ####
 
 test_that("sedonadb: storeRead returns sedonadb_dataframe", {
     skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
-    pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb())
+    pgs <- parquetGeomStore() |> storeWrite(make_pts())
     sdf <- storeRead(pgs, output = "sedona")
     expect_s3_class(sdf, "sedonadb_dataframe")
 })
 
 test_that("sedonadb: collect returns correct row count", {
     skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
-    pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb(5))
+    pgs <- parquetGeomStore() |> storeWrite(make_pts(5))
     sdf <- storeRead(pgs, output = "sedona")
     df <- sedonadb::sd_collect(sdf)
     expect_equal(nrow(df), 5L)
@@ -29,7 +17,7 @@ test_that("sedonadb: collect returns correct row count", {
 
 test_that("sedonadb: geom column is geoarrow_vctr after collect", {
     skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
-    pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb(5))
+    pgs <- parquetGeomStore() |> storeWrite(make_pts(5))
     sdf <- storeRead(pgs, output = "sedona")
     df <- sedonadb::sd_collect(sdf)
     expect_true(inherits(df$geom, "geoarrow_vctr"))
@@ -39,7 +27,7 @@ test_that("sedonadb: geom column is geoarrow_vctr after collect", {
 
 test_that("sedonadb: sd_view_ref returns double-quoted lowercase name", {
     skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
-    pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb())
+    pgs <- parquetGeomStore() |> storeWrite(make_pts())
     sdf <- storeRead(pgs, output = "sedona")
     ref <- sd_view_ref(sdf)
     expect_type(ref, "character")
@@ -52,7 +40,7 @@ test_that("sedonadb: sd_view_ref errors on object without view_name attribute", 
 
 test_that("sedonadb: view is queryable via sd_sql", {
     skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
-    pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb(5))
+    pgs <- parquetGeomStore() |> storeWrite(make_pts(5))
     sdf <- storeRead(pgs, output = "sedona")
     result <- sedonadb::sd_collect(
         sedonadb::sd_sql(sprintf("SELECT COUNT(*) AS n FROM %s", sd_view_ref(sdf)))
@@ -77,7 +65,7 @@ test_that("sedonadb: crop reduces row count", {
 
 test_that("sedonadb: @ops filter translates to SQL", {
     skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
-    pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb(5))
+    pgs <- parquetGeomStore() |> storeWrite(make_pts(5))
     pgs_f <- subset(pgs, cell_ID %in% c("cell_1", "cell_2"))
     sdf <- storeRead(pgs_f, output = "sedona")
     df <- sedonadb::sd_collect(sdf)
@@ -89,7 +77,7 @@ test_that("sedonadb: %in% above the threshold uses a VALUES subquery", {
     skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     old <- options(giottodisk.sedona_in_subquery_threshold = 1L)
     on.exit(options(old), add = TRUE)
-    pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb(5))
+    pgs <- parquetGeomStore() |> storeWrite(make_pts(5))
     pgs_f <- subset(pgs, cell_ID %in% c("cell_1", "cell_2"))
     df <- sedonadb::sd_collect(storeRead(pgs_f, output = "sedona"))
     expect_setequal(df$cell_ID, c("cell_1", "cell_2"))
@@ -99,7 +87,7 @@ test_that("sedonadb: %in% above the threshold uses a VALUES subquery", {
 
 test_that("sedonadb: pending affine applies via ST_Affine", {
     skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
-    pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb(5))
+    pgs <- parquetGeomStore() |> storeWrite(make_pts(5))
     aff <- GiottoClass::affine(diag(c(2, 1)))  # scale x by 2, y unchanged
     pgs2 <- affine(pgs, aff)
     sdf <- storeRead(pgs2, output = "sedona")
@@ -114,7 +102,7 @@ test_that("sedonadb: pending affine applies via ST_Affine", {
 # scale is transpose-invariant so needs off-diagonal to expose the bug.
 test_that("sedonadb: pending affine applies via ST_Affine (shear, off-diagonal)", {
     skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
-    pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb(5))
+    pgs <- parquetGeomStore() |> storeWrite(make_pts(5))
     # Row-vector post-mult M = [[1, 0.5], [0, 1]]:
     #   x' = x*M[1,1] + y*M[2,1] = x
     #   y' = x*M[1,2] + y*M[2,2] = 0.5*x + y
@@ -137,17 +125,6 @@ test_that("sedonadb: pending affine applies via ST_Affine (shear, off-diagonal)"
 # injection. Tests lock both the presence of the reconstructed cols and the
 # downstream invariants (row_index disambiguation, file-level pruning).
 
-.make_tile_pts_sdb <- function() {
-    coords <- data.frame(
-        x = rep(seq(5, 45, by = 10), 5),
-        y = rep(seq(5, 45, by = 10), each = 5)
-    )
-    terra::vect(
-        data.frame(coords, id = seq_len(nrow(coords))),
-        geom = c("x", "y"), crs = ""
-    )
-}
-
 test_that("sedonadb: flat parquetStore injects source_id only (no tile_index)", {
     skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
     ps <- parquetStore() |> storeWrite(mtcars)
@@ -160,7 +137,7 @@ test_that("sedonadb: flat parquetStore injects source_id only (no tile_index)", 
 
 test_that("sedonadb: parquetGeomStore injects source_id and tile_index=0", {
     skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
-    pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb(5))
+    pgs <- parquetGeomStore() |> storeWrite(make_pts(5))
     sdf <- storeRead(pgs, output = "sedona")
     df <- sedonadb::sd_collect(sdf)
     expect_true(all(c("source_id", "tile_index") %in% names(df)))
@@ -170,7 +147,7 @@ test_that("sedonadb: parquetGeomStore injects source_id and tile_index=0", {
 
 test_that("sedonadb: parquetGeomTileStore unions all tiles, (tile_index, row_index) is unique", {
     skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
-    pgs <- parquetGeomStore() |> storeWrite(.make_tile_pts_sdb())
+    pgs <- parquetGeomStore() |> storeWrite(make_tile_pts())
     pgts <- parquetGeomTileStore() |> storeWrite(pgs, threshold = 4L)
     sdf <- storeRead(pgts, output = "sedona")
     df <- sedonadb::sd_collect(sdf)
@@ -183,7 +160,7 @@ test_that("sedonadb: parquetGeomTileStore unions all tiles, (tile_index, row_ind
 
 test_that("sedonadb: @tile_filter prunes at file level", {
     skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
-    pgs <- parquetGeomStore() |> storeWrite(.make_tile_pts_sdb())
+    pgs <- parquetGeomStore() |> storeWrite(make_tile_pts())
     pgts <- parquetGeomTileStore() |> storeWrite(pgs, threshold = 4L)
     pgts_cropped <- crop(pgts, terra::ext(0, 25, 0, 25))
     expect_gt(length(pgts_cropped@tile_filter), 0L)
@@ -195,7 +172,7 @@ test_that("sedonadb: @tile_filter prunes at file level", {
 
 test_that("sedonadb: tile_idx arg overrides filter, selects only that tile", {
     skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
-    pgs <- parquetGeomStore() |> storeWrite(.make_tile_pts_sdb())
+    pgs <- parquetGeomStore() |> storeWrite(make_tile_pts())
     pgts <- parquetGeomTileStore() |> storeWrite(pgs, threshold = 4L)
     sdf <- storeRead(pgts, output = "sedona", tile_idx = 1L)
     df <- sedonadb::sd_collect(sdf)
@@ -204,7 +181,7 @@ test_that("sedonadb: tile_idx arg overrides filter, selects only that tile", {
 
 test_that("sedonadb: tile_idx with no matching tile errors clearly", {
     skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
-    pgs <- parquetGeomStore() |> storeWrite(make_pts_sdb(5))
+    pgs <- parquetGeomStore() |> storeWrite(make_pts(5))
     expect_error(
         storeRead(pgs, output = "sedona", tile_idx = 999L),
         "no tile directories match"

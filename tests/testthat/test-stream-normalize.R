@@ -4,21 +4,11 @@
 #   processData(parquetExprStore, logNormParam)     -> flips the same op's
 #       log flag to TRUE (libsize+log fuse into one op)
 
-.tiny_mat <- function(n_genes = 12L, n_cells = 30L,
-                       density = 0.5, seed = 1L) {
-    set.seed(seed)
-    m <- Matrix::rsparsematrix(n_genes, n_cells, density = density,
-        rand.x = function(n) as.double(rpois(n, 5L) + 1L))
-    rownames(m) <- paste0("g", seq_len(n_genes))
-    colnames(m) <- paste0("c", seq_len(n_cells))
-    m
-}
-
 
 test_that("libraryNormParam appends a multiply op to @post_ops", {
     skip_if_not_installed("Giotto")
 
-    mat <- .tiny_mat()
+    mat <- .rand_counts()
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
 
     pe2 <- GiottoClass::processData(pe, Giotto::normParam("library", scalefactor = 1e4))
@@ -37,7 +27,7 @@ test_that("libraryNormParam appends a multiply op to @post_ops", {
 test_that("logNormParam appends an independent log op", {
     skip_if_not_installed("Giotto")
 
-    mat <- .tiny_mat(seed = 2)
+    mat <- .rand_counts(seed = 2)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
     pe  <- GiottoClass::processData(pe, Giotto::normParam("library", scalefactor = 1e4))
     pe  <- GiottoClass::processData(pe, Giotto::normParam("log", base = 2, offset = 1))
@@ -61,7 +51,7 @@ test_that("logNormParam appends an independent log op", {
 test_that("logNormParam works with no library normalization", {
     skip_if_not_installed("Giotto")
 
-    mat <- .tiny_mat(seed = 3)
+    mat <- .rand_counts(seed = 3)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
     pe  <- GiottoClass::processData(pe, Giotto::normParam("log", base = 2, offset = 1))
 
@@ -76,7 +66,7 @@ test_that("logNormParam works with no library normalization", {
 
 test_that("logNormParam with offset != 1 errors clearly", {
     skip_if_not_installed("Giotto")
-    mat <- .tiny_mat(seed = 3)
+    mat <- .rand_counts(seed = 3)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
     pe  <- GiottoClass::processData(pe, Giotto::normParam("library", scalefactor = 1e4))
     expect_error(
@@ -88,7 +78,7 @@ test_that("logNormParam with offset != 1 errors clearly", {
 
 test_that("libraryNormParam re-run appends rather than editing its own record", {
     skip_if_not_installed("Giotto")
-    mat <- .tiny_mat(seed = 6)
+    mat <- .rand_counts(seed = 6)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
     pe  <- GiottoClass::processData(pe,
         Giotto::normParam("library", scalefactor = 1e4))
@@ -120,7 +110,7 @@ test_that("normalizeGiotto end-to-end on parquet backend builds the op chain", {
     skip_if_not_installed("Giotto")
     skip_if_not_installed("GiottoClass")
 
-    mat <- .tiny_mat(seed = 4)
+    mat <- .rand_counts(seed = 4)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
 
     locs <- data.frame(cell_ID = colnames(mat),
@@ -154,7 +144,7 @@ test_that("normalizeGiotto end-to-end on parquet backend builds the op chain", {
 
 test_that("cell subset on parquetExprStore slices scalef table", {
     skip_if_not_installed("Giotto")
-    mat <- .tiny_mat(seed = 7)
+    mat <- .rand_counts(seed = 7)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
     pe  <- GiottoClass::processData(pe,
         Giotto::normParam("library", scalefactor = 1e4))
@@ -178,7 +168,7 @@ test_that("cell subset on parquetExprStore slices scalef table", {
 
 test_that("gene subset on parquetExprStore preserves the factor payload", {
     skip_if_not_installed("Giotto")
-    mat <- .tiny_mat(seed = 8)
+    mat <- .rand_counts(seed = 8)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
     pe  <- GiottoClass::processData(pe,
         Giotto::normParam("library", scalefactor = 1e4))
@@ -193,7 +183,7 @@ test_that("gene subset on parquetExprStore preserves the factor payload", {
 
 test_that("normalizeGiotto with scale_feats=TRUE errors on parquet backend", {
     skip_if_not_installed("Giotto")
-    mat <- .tiny_mat(seed = 5)
+    mat <- .rand_counts(seed = 5)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
     locs <- data.frame(cell_ID = colnames(mat),
                         sdimx = runif(ncol(mat)),
@@ -224,7 +214,7 @@ test_that("normalizeGiotto with scale_feats=TRUE errors on parquet backend", {
 test_that("norm and log ops compose in any order on both executors", {
     skip_if_not_installed("Giotto")
 
-    mat <- .tiny_mat(seed = 4)
+    mat <- .rand_counts(seed = 4)
     dm  <- as.matrix(mat)
 
     # Scale factors are taken from the values as the chain leaves them at the

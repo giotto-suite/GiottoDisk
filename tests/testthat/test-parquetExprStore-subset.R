@@ -1,17 +1,8 @@
 # Tests for parquetExprStore `[` subset method (Step 2.3-bis)
 
-.tiny_mat <- function(n_genes = 12L, n_cells = 30L, density = 0.5, seed = 1L) {
-    set.seed(seed)
-    m <- Matrix::rsparsematrix(n_genes, n_cells, density = density,
-        rand.x = function(n) as.double(rpois(n, 5L) + 1L))
-    rownames(m) <- paste0("g", seq_len(n_genes))
-    colnames(m) <- paste0("c", seq_len(n_cells))
-    m
-}
-
 
 test_that("`[` with integer indices narrows feat_ids and cell_ids", {
-    mat <- .tiny_mat()
+    mat <- .rand_counts()
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
 
     sub <- pe[c(2L, 5L, 7L), c(1L, 3L, 10L, 20L)]
@@ -26,7 +17,7 @@ test_that("`[` with integer indices narrows feat_ids and cell_ids", {
 
 
 test_that("`[` with character IDs subsets correctly", {
-    mat <- .tiny_mat(seed = 2)
+    mat <- .rand_counts(seed = 2)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
 
     sub <- pe[c("g3", "g8"), c("c5", "c10", "c25")]
@@ -40,7 +31,7 @@ test_that("`[` with character IDs subsets correctly", {
 
 
 test_that("`[` with logical indices works", {
-    mat <- .tiny_mat(n_genes = 5L, n_cells = 10L, seed = 3)
+    mat <- .rand_counts(n_genes = 5L, n_cells = 10L, seed = 3)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
     keep_g <- c(TRUE, FALSE, TRUE, FALSE, TRUE)
     keep_c <- rep(c(TRUE, FALSE), 5)
@@ -54,7 +45,7 @@ test_that("`[` with logical indices works", {
 
 
 test_that("`[` chains correctly (subset of subset)", {
-    mat <- .tiny_mat(n_genes = 10L, n_cells = 20L, seed = 4)
+    mat <- .rand_counts(n_genes = 10L, n_cells = 20L, seed = 4)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
 
     s1 <- pe[3L:8L, 5L:15L]               # 6 genes x 11 cells
@@ -68,7 +59,7 @@ test_that("`[` chains correctly (subset of subset)", {
 
 
 test_that("dim / dimnames respect the subset", {
-    mat <- .tiny_mat(seed = 5)
+    mat <- .rand_counts(seed = 5)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
     sub <- pe[1L:4L, 1L:7L]
     expect_equal(dim(sub), c(4, 7))
@@ -80,7 +71,7 @@ test_that("dim / dimnames respect the subset", {
 
 
 test_that("storeRead on a subset filters via Arrow (lazy, no rewrite)", {
-    mat <- .tiny_mat(seed = 6)
+    mat <- .rand_counts(seed = 6)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
     sub <- pe[c(2L, 4L, 9L), c(3L, 7L, 12L)]
 
@@ -106,7 +97,7 @@ test_that("storeRead on a subset filters via Arrow (lazy, no rewrite)", {
 test_that("duckdb carrier: gapless cell subset matches Acero (shape 1)", {
     skip_if_no_duckdb()
     pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
-        .tiny_mat(seed = 11))[, 5:14]
+        .rand_counts(seed = 11))[, 5:14]
     expect_true(.pe_axis_pred(pe@cell_idx)$gapless)
     .expect_dd_parity(pe)
 })
@@ -114,7 +105,7 @@ test_that("duckdb carrier: gapless cell subset matches Acero (shape 1)", {
 test_that("duckdb carrier: gapped cell subset matches Acero (shape 2, anti)", {
     skip_if_no_duckdb()
     pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
-        .tiny_mat(seed = 12))[, c(1:8, 10:30)]
+        .rand_counts(seed = 12))[, c(1:8, 10:30)]
     expect_true(.pe_axis_pred(pe@cell_idx)$use_anti)
     .expect_dd_parity(pe)
 })
@@ -122,7 +113,7 @@ test_that("duckdb carrier: gapped cell subset matches Acero (shape 2, anti)", {
 test_that("duckdb carrier: scattered gene subset matches Acero (shape 3, kept)", {
     skip_if_no_duckdb()
     pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
-        .tiny_mat(seed = 13))[c(1L, 4L, 9L, 12L), ]
+        .rand_counts(seed = 13))[c(1L, 4L, 9L, 12L), ]
     # adr/0008: kept-set only, no range -- a col_id range prunes nothing.
     expect_false(.pe_axis_pred(pe@gene_idx)$use_range)
     .expect_dd_parity(pe)
@@ -131,7 +122,7 @@ test_that("duckdb carrier: scattered gene subset matches Acero (shape 3, kept)",
 test_that("duckdb carrier: both axes subset matches Acero", {
     skip_if_no_duckdb()
     pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
-        .tiny_mat(seed = 14))[c(2L, 5L, 11L), 3:15]
+        .rand_counts(seed = 14))[c(2L, 5L, 11L), 3:15]
     .expect_dd_parity(pe)
 })
 
@@ -142,7 +133,7 @@ test_that("duckdb carrier: a large membership set is registered, not inlined", {
     skip_if_no_duckdb()
     withr::local_options(giottodisk.duckdb_in_subquery_threshold = 2L)
     pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
-        .tiny_mat(n_genes = 40L, seed = 15))[c(1L, 5L, 9L, 14L, 22L, 31L), ]
+        .rand_counts(n_genes = 40L, seed = 15))[c(1L, 5L, 9L, 14L, 22L, 31L), ]
     tbl <- storeRead(pe, output = "duckdb")
     # The compiled query is registered as a view, so remote_query() on the
     # returned tbl is just `SELECT * FROM <view>` -- read the definition.
@@ -161,7 +152,7 @@ test_that("duckdb carrier: an axis range reaches the parquet scan itself", {
     # typing -- a double bound would force a cast and cost the prune.
     skip_if_no_duckdb()
     pe <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")),
-        .tiny_mat(n_genes = 20L, n_cells = 400L, seed = 16))
+        .rand_counts(n_genes = 20L, n_cells = 400L, seed = 16))
     tbl <- storeRead(pe[, 100:140], output = "duckdb")
     plan <- DBI::dbGetQuery(dbplyr::remote_con(tbl),
         paste("EXPLAIN SELECT * FROM", dbplyr::remote_name(tbl)))[[2L]]
@@ -173,7 +164,7 @@ test_that("duckdb carrier: an axis range reaches the parquet scan itself", {
 
 
 test_that("`[` errors on invalid character IDs", {
-    mat <- .tiny_mat()
+    mat <- .rand_counts()
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
     expect_error(pe[c("g1", "missing_gene"), ], "unknown IDs")
     expect_error(pe[, c("c1", "missing_cell")], "unknown IDs")
@@ -181,7 +172,7 @@ test_that("`[` errors on invalid character IDs", {
 
 
 test_that("`[` errors on logical of wrong length", {
-    mat <- .tiny_mat()
+    mat <- .rand_counts()
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
     # names the AXIS, not the position: once a store can be transposed,
     # "row" depends on orientation while "gene" does not
@@ -191,7 +182,7 @@ test_that("`[` errors on logical of wrong length", {
 
 test_that("filterGiotto applies on parquet backend (Step 2.3-bis end-to-end)", {
     skip_if_not_installed("Giotto")
-    mat <- .tiny_mat(n_genes = 30L, n_cells = 80L, density = 0.4, seed = 99)
+    mat <- .rand_counts(n_genes = 30L, n_cells = 80L, density = 0.4, seed = 99)
     pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
     locs <- data.frame(cell_ID = colnames(mat),
                         sdimx = runif(ncol(mat)),
@@ -252,7 +243,7 @@ test_that("filterGiotto applies on parquet backend (Step 2.3-bis end-to-end)", {
 
 test_that("t() is an involution that never touches the chain", {
     old <- .tp_big_caps(); on.exit(options(old), add = TRUE)
-    pe <- .tp_store(.tiny_mat())
+    pe <- .tp_store(.rand_counts())
 
     expect_false(pe@transposed)
     expect_true(t(pe)@transposed)
@@ -265,7 +256,7 @@ test_that("t() is an involution that never touches the chain", {
 
 test_that("t() flips the logical presentation only", {
     old <- .tp_big_caps(); on.exit(options(old), add = TRUE)
-    mat <- .tiny_mat()
+    mat <- .rand_counts()
     pe  <- .tp_store(mat)
 
     expect_identical(dim(t(pe)), rev(dim(pe)))
@@ -282,7 +273,7 @@ test_that("t() flips the logical presentation only", {
 
 test_that("`[` indexes the logical matrix, not the storage axes", {
     old <- .tp_big_caps(); on.exit(options(old), add = TRUE)
-    mat   <- .tiny_mat()
+    mat   <- .rand_counts()
     pe    <- .tp_store(mat)
     genes <- rownames(mat)[1:2]
 
@@ -301,7 +292,7 @@ test_that("t() commutes with a queued axis-keyed op", {
     # The claim that makes orientation view state: ops name semantic axes
     # bound to on-disk columns, so a flip cannot re-key or reorder them.
     old <- .tp_big_caps(); on.exit(options(old), add = TRUE)
-    mat <- .tiny_mat()
+    mat <- .rand_counts()
     pe  <- .tp_store(mat)
     f   <- runif(ncol(mat), 0.5, 2)
     rec <- list(type = "multiply", axis = "cell",
@@ -320,7 +311,7 @@ test_that("t() commutes with a queued axis-keyed op", {
 
 test_that("a transposed store is refused where bytes would disagree", {
     old <- .tp_big_caps(); on.exit(options(old), add = TRUE)
-    pe <- .tp_store(.tiny_mat())
+    pe <- .tp_store(.rand_counts())
 
     # writing bakes the chain, but not the flip -- so refuse rather than
     # persist bytes that contradict what the returned store reports
@@ -341,7 +332,7 @@ test_that("a transposed store is refused where bytes would disagree", {
 # margin with no stored entries, and a transposed store.
 
 test_that("margins match the in-memory matrix, zeros included", {
-    mat <- .tiny_mat()
+    mat <- .rand_counts()
     # an all-zero feature and an all-zero cell contribute NO rows to the
     # aggregate, so a naive result would come back short
     mat[1, ] <- 0
@@ -364,7 +355,7 @@ test_that("margins match the in-memory matrix, zeros included", {
 })
 
 test_that("margins follow the logical orientation", {
-    pe <- .tp_store(.tiny_mat())
+    pe <- .tp_store(.rand_counts())
     tp <- t(pe)
     expect_equal(rowSums(tp),  colSums(pe))
     expect_equal(colSums(tp),  rowSums(pe))
@@ -374,7 +365,7 @@ test_that("margins follow the logical orientation", {
 
 test_that("margins see a queued op and refuse dims", {
     old <- .tp_big_caps(); on.exit(options(old), add = TRUE)
-    mat <- .tiny_mat()
+    mat <- .rand_counts()
     pe  <- .tp_store(mat)
     rec <- list(type = "multiply", axis = "cell",
                 factors = setNames(list(rep(2, ncol(mat))), pe@uid))

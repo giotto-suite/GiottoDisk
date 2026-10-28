@@ -1,14 +1,5 @@
 # Tests for gDirSource integration of parquetExpr (Phase 3 Layer 3)
 
-.tiny_mat <- function(n_genes = 12L, n_cells = 30L, density = 0.5, seed = 1L) {
-    set.seed(seed)
-    m <- Matrix::rsparsematrix(n_genes, n_cells, density = density,
-        rand.x = function(n) as.double(rpois(n, 5L) + 1L))
-    rownames(m) <- paste0("g", seq_len(n_genes))
-    colnames(m) <- paste0("c", seq_len(n_cells))
-    m
-}
-
 
 test_that("storeCreate('parquetExpr') builds a parquetExprStore", {
     s <- storeCreate(type = "parquetExpr")
@@ -27,7 +18,7 @@ test_that("sourceWrite(gDirSource, dgCMatrix, store_type = 'parquetExpr') works"
                             paste0("gd_pq_", as.integer(Sys.time())))
     src <- gDirSource(proj_dir)
 
-    mat <- .tiny_mat()
+    mat <- .rand_counts()
     written <- sourceWrite(src, mat, store_type = "parquetExpr")
 
     expect_s4_class(written, "parquetExprStore")
@@ -59,7 +50,7 @@ test_that("parquetExpr artifact path has the expected layout", {
     proj_dir <- file.path(tempdir(),
                             paste0("gd_layout_", as.integer(Sys.time())))
     src <- gDirSource(proj_dir)
-    mat <- .tiny_mat(seed = 11)
+    mat <- .rand_counts(seed = 11)
     written <- sourceWrite(src, mat, store_type = "parquetExpr")
 
     # Path is under proj_dir/artifacts/<uid>/  (use normalized real paths
