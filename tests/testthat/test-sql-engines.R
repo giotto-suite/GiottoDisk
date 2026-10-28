@@ -296,3 +296,26 @@ test_that("sedonadb: view is queryable via sd_sql", {
     )
     expect_equal(result$n, 5L)
 })
+
+# sedonadb only: CRS ####
+
+test_that("sedonadb: a store without a CRS reads in the planar engineering frame", {
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
+    # two distinct shapes: sedona reads a geom column whose statistics have
+    # min == max (one row, identical shapes) as plain binary
+    sq <- terra::vect(c("POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))",
+        "POLYGON ((20 0, 30 0, 30 10, 20 10, 20 0))"), crs = "")
+    sq$poly_ID <- c("a", "b")
+    for (s in list(parquetGeomStore() |> storeWrite(make_pts(5)),
+            parquetGeomStore() |> storeWrite(sq))) {
+        sedonadb::sd_to_view(storeRead(s, output = "sedona"), "gd_crs_t",
+            overwrite = TRUE)
+        crs <- sedonadb::sd_collect(sedonadb::sd_sql(
+            'SELECT ST_Crs(geom) AS crs FROM "gd_crs_t" LIMIT 1'))$crs
+        expect_match(crs, "EngineeringCRS", fixed = TRUE)
+    }
+    # planar area, in coordinate units
+    area <- expanse(parquetGeomStore() |> storeWrite(sq), engine = "sedona",
+        output = "vector")
+    expect_equal(area, c(100, 100))
+})

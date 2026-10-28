@@ -142,3 +142,62 @@ test_that("parquetGeomTileStore: split_geom IDs unique and tile-tagged", {
     # cell_poly_id preserves the pre-split cell_ids
     expect_setequal(unique(tbl$cell_poly_id), c("c1", "c2"))
 })
+
+# points: coordinates only, WKB on request ####
+
+.pt_files <- function(pgs) {
+    list.files(storePaths(pgs), pattern = "\\.parquet$", recursive = TRUE,
+        full.names = TRUE)
+}
+
+test_that("parquetGeomStore: points are written without WKB or GeoParquet", {
+    pgs <- parquetGeomStore() |> storeWrite(make_pts(5))
+    tab <- arrow::read_parquet(.pt_files(pgs)[[1L]], as_data_frame = FALSE)
+    expect_false("geom" %in% names(tab))
+    expect_null(tab$metadata$geo)
+    expect_equal(geomtype(pgs), "points")
+    sv <- storeRead(pgs, output = "terra")
+    expect_equal(unname(terra::crds(sv)[order(sv$cell_ID), ]),
+        cbind(as.numeric(1:5), as.numeric(1:5)))
+    expect_s3_class(storeRead(pgs, output = "sf"), "sf")
+})
+
+test_that("parquetGeomStore: data.frame points are written without WKB", {
+    df <- data.frame(feat_ID = letters[1:4], x = 1:4, y = 4:1)
+    pgs <- parquetGeomStore() |>
+        storeWrite(df, type = "points", id_col = "feat_ID",
+            sdimx = "x", sdimy = "y")
+    expect_false("geom" %in% names(arrow::read_parquet(.pt_files(pgs)[[1L]])))
+    sv <- storeRead(pgs, output = "terra")
+    expect_equal(nrow(sv), 4L)
+})
+
+test_that("parquetGeomStore: giottodisk.points_wkb writes a GeoParquet geom", {
+    pgs <- GiottoUtils::gwith_options(list(giottodisk.points_wkb = TRUE),
+        parquetGeomStore() |> storeWrite(make_pts(5)))
+    tab <- arrow::read_parquet(.pt_files(pgs)[[1L]], as_data_frame = FALSE)
+    expect_true("geom" %in% names(tab))
+    expect_false(is.null(tab$metadata$geo))
+    expect_equal(nrow(storeRead(pgs, output = "terra")), 5L)
+})
+
+test_that("parquetGeomStore: a points store reopened from its path is points", {
+    pgs <- parquetGeomStore() |> storeWrite(make_pts(5))
+    reopened <- parquetGeomStore(pgs@path)
+    expect_equal(geomtype(reopened), "points")
+    expect_equal(nrow(storeRead(reopened, output = "terra")), 5L)
+    # a store that never went through initialize() after its write
+    unread <- parquetGeomStore(tempfile())
+    storeWrite(unread, make_pts(5))
+    expect_equal(nrow(storeRead(unread, output = "terra")), 5L)
+})
+
+test_that("parquetGeomStore: points as.data.table builds XY and WKB from coords", {
+    pgs <- parquetGeomStore() |> storeWrite(make_pts(3))
+    xy <- data.table::as.data.table(pgs, geom = "XY")
+    expect_true(all(c("x", "y", "cell_ID") %in% names(xy)))
+    expect_equal(sort(xy$x), c(1, 2, 3))
+    wkb <- data.table::as.data.table(pgs, geom = "wkb")
+    expect_true("geom" %in% names(wkb))
+    expect_equal(nrow(terra::vect(wkb$geom)), 3L)
+})

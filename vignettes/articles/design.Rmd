@@ -61,7 +61,7 @@ are enforced via `specialCols()`.
 | `source_id` | all parquet | Stable sort key across rbind/union — hive partition (`source_id=<uid>/`) |
 | `x_index` | geom stores | Float centroid x coordinate for fast spatial filtering |
 | `y_index` | geom stores | Float centroid y coordinate for fast spatial filtering |
-| `geom` | geom stores | WKB geometry column (GeoParquet spec) |
+| `geom` | polygon stores | WKB geometry column (GeoParquet spec); on points only under `options(giottodisk.points_wkb = TRUE)`, never read |
 | `tile_index` | geom stores | Tile membership — hive partition (`tile_index=<n>/`) |
 
 Special cols are stripped from materialized outputs by default
@@ -537,9 +537,24 @@ enables:
 
 - Fast spatial extent filtering without deserializing WKB geometry
 - `terra::rasterize()` entirely in Arrow (no `SpatVector` materialization)
+- Points stores with no geometry column at all: a point *is* its `x_index`/`y_index`
 - `terra::centroids()` as a lazy flag (`store@params$use_xy_as_geom = TRUE`,
-  `store@geomtype = "points"`) with no store rewrite — at read time `x_index`/`y_index`
-  are used as point coordinates instead of parsing the `geom` WKB column
+  `store@geomtype = "points"`) with no store rewrite — the polygon store then reads
+  as a points store
+
+### Points have no geometry column
+
+A WKB copy of a point repeats `x_index`/`y_index`, so points stores do not write
+one. Every reader builds points from the coordinates: terra and sf in R, and the
+SQL engines through `ST_Point(x_index, y_index) AS geom` in the base view, so
+predicates, transforms and the overlap join see a `geom` column as before. The
+files are about 40% smaller and terra builds points ~6x faster from coordinates
+than from WKB. The cost is that points files are not GeoParquet; for tools
+outside the suite, `options(giottodisk.points_wkb = TRUE)` writes the `geom`
+column, which the suite still never reads. Points and polygons stay one class,
+`parquetGeomStore`, told apart by `@geomtype`: a centroid view is a points store
+over polygon files, which a separate class could not be without a conversion.
+See adr/0022.
 
 ### WKB direct path for terra output
 

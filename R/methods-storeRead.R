@@ -283,6 +283,7 @@ setMethod("storeRead", signature("unionParquetGeomStore"), function(store,
             arrangecols = c("source_id", "tile_index", "row_index"),
             source_order = source_order,
             crs = store@params$crs,
+            use_xy_as_geom = .pgeom_xy_points(store),
             omit_internals = omit_internals
         ),
         .pgstore_to_spatial(atab,
@@ -291,7 +292,7 @@ setMethod("storeRead", signature("unionParquetGeomStore"), function(store,
             arrangecols = c("source_id", "tile_index", "row_index"),
             source_order = source_order,
             crs = store@params$crs,
-            use_xy_as_geom = isTRUE(store@params$use_xy_as_geom),
+            use_xy_as_geom = .pgeom_xy_points(store),
             omit_internals = omit_internals
         )
     )
@@ -424,13 +425,14 @@ setMethod("storeRead", signature("parquetGeomStore"), function(store,
         "vertex_dt" = .pgstore_to_vertex_dt(atab,
             dropcols = dropcols,
             crs = store@params$crs,
+            use_xy_as_geom = .pgeom_xy_points(store),
             omit_internals = omit_internals
         ),
         .pgstore_to_spatial(atab,
             output = output,
             dropcols = dropcols,
             crs = store@params$crs,
-            use_xy_as_geom = isTRUE(store@params$use_xy_as_geom),
+            use_xy_as_geom = .pgeom_xy_points(store),
             omit_internals = omit_internals
         )
     )
@@ -501,6 +503,7 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
             dropcols = dropcols,
             arrangecols = c("source_id", "tile_index", "row_index"),
             crs = store@params$crs,
+            use_xy_as_geom = .pgeom_xy_points(store),
             omit_internals = omit_internals
         ),
         .pgstore_to_spatial(atab,
@@ -508,7 +511,7 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
             dropcols = dropcols,
             arrangecols = c("source_id", "tile_index", "row_index"),
             crs = store@params$crs,
-            use_xy_as_geom = isTRUE(store@params$use_xy_as_geom),
+            use_xy_as_geom = .pgeom_xy_points(store),
             omit_internals = omit_internals
         )
     )
@@ -561,8 +564,7 @@ setMethod("as.data.frame", "parquetGeomBase",
         return(as.data.frame(storeRead(x, output = "tibble", ...)))
     }
     geom <- match.arg(geom, c("XY"))
-    if (nzchar(x@geomtype) && x@geomtype != "points" &&
-            !isTRUE(x@params$use_xy_as_geom)) {
+    if (nzchar(x@geomtype) && !.pgeom_xy_points(x)) {
         stop("geom = \"XY\" requires a point geometry store")
     }
     xy_cols <- c("x_index", "y_index")
@@ -666,6 +668,61 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
     dplyr::tbl(a$conn, a$name)
 }
 
+# Points stores (and centroid views of polygon stores) take their geometry from
+# x_index/y_index; a `geom` column, if on disk, is never read for them.
+.pgeom_xy_points <- function(store) {
+    if (!inherits(store, "parquetGeomBase")) return(FALSE)
+    if (identical(store@geomtype, "points") ||
+            isTRUE(store@params$use_xy_as_geom)) {
+        return(TRUE)
+    }
+    # @geomtype unknown (store not initialized from disk): only points are
+    # written without WKB
+    !isTRUE(nzchar(store@geomtype)) && !"geom" %in% .pstore_get_fields(store)
+}
+
+# Base view of a geom store for the SQL engines. Points get `geom` built from
+# x_index/y_index, so predicates, transforms and joins on `geom` see points.
+# On sedona a store with no CRS (all Giotto data) is put in a planar
+# engineering frame -- see .SEDONA_PLANAR_CRS.
+.pgeom_view_sql <- function(store, base_sql, engine = c("duckdb", "sedona")) {
+    engine <- match.arg(engine)
+    if (!inherits(store, "parquetGeomBase")) return(base_sql)
+    crs <- if (engine == "sedona" && !nzchar(store@params$crs %||% "")) {
+        gsub("'", "''", .SEDONA_PLANAR_CRS)
+    }
+    on_disk <- "geom" %in% .pstore_get_fields(store)
+    geom_sql <- if (.pgeom_xy_points(store)) {
+        # 3-arg form: ST_SetCrs(ST_Point()) fails to plan over multi-file
+        # scans in sedonadb 0.4
+        if (is.null(crs)) "ST_Point(x_index, y_index)" else
+            sprintf("ST_Point(x_index, y_index, '%s')", crs)
+    } else if (!is.null(crs) && on_disk) {
+        sprintf("ST_SetCrs(geom, '%s')", crs)
+    }
+    if (is.null(geom_sql)) return(base_sql)
+    sel <- if (on_disk) "* EXCLUDE (geom)" else "*"
+    sprintf("SELECT %s, %s AS geom FROM (%s) AS _g", sel, geom_sql, base_sql)
+}
+
+# The CRS sedona queries give a store written without one. Files say
+# `crs: null` (unknown), which sedona reads as OGC:CRS84 or as no CRS
+# depending on version. Lng/lat would be wrong for spatial omics coordinates
+# and invite geographic math on them; a local engineering frame claims only
+# a planar Cartesian space. Set at read time so no artifact commits to it.
+# adr/0023.
+.SEDONA_PLANAR_CRS <- as.character(jsonlite::toJSON(list(
+    `$schema` = "https://proj.org/schemas/v0.7/projjson.schema.json",
+    type = "EngineeringCRS",
+    name = "Giotto planar",
+    datum = list(type = "EngineeringDatum", name = "Giotto planar"),
+    coordinate_system = list(subtype = "Cartesian", axis = list(
+        list(name = "x", abbreviation = "x", direction = "east",
+            unit = "metre"),
+        list(name = "y", abbreviation = "y", direction = "north",
+            unit = "metre")))
+), auto_unbox = TRUE))
+
 # should not be performed on the whole, only in chunks or tiles
 .pgstore_to_spatial <- function(atab,
     output = c("terra", "sf"),
@@ -677,13 +734,19 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
     output <- match.arg(output, choices = c("terra", "sf"))
 
     if (isTRUE(use_xy_as_geom)) {
-        # centroid path: build point geometries from x_index/y_index
-        dropcols <- unique(c("geom", dropcols))
+        # points: build point geometries from x_index/y_index
+        dropcols <- setdiff(unique(c("geom", dropcols)),
+            c("x_index", "y_index"))
         data <- .pstore_to_tibble(atab, dropcols = dropcols,
             omit_internals = omit_internals, ...)
+        if (output == "sf") {
+            sfdata <- sf::st_as_sf(data, coords = c("x_index", "y_index"))
+            if (!is.null(crs) && nzchar(crs)) {
+                sfdata <- sf::st_set_crs(sfdata, crs)
+            }
+            return(sfdata)
+        }
         sv <- terra::vect(data, geom = c("x_index", "y_index"))
-        data$x_index <- NULL
-        data$y_index <- NULL
         if (!is.null(crs) && nzchar(crs)) terra::crs(sv) <- crs
         return(sv)
     }
@@ -738,12 +801,27 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
     dropcols = character(0L),
     arrangecols = character(0L),
     crs = NULL,
+    use_xy_as_geom = FALSE,
     omit_internals = TRUE,
     ...) {
     if (!requireNamespace("wk", quietly = TRUE)) {
         stop("[storeRead][vertex_dt] package 'wk' is required for ",
             "vertex_dt output. Install via install.packages('wk').",
             call. = FALSE)
+    }
+
+    if (isTRUE(use_xy_as_geom)) {
+        # one vertex per point, in the shape wk_coords gives polygons
+        data <- .pstore_to_tibble(atab,
+            dropcols = setdiff(unique(c("geom", dropcols)),
+                c("x_index", "y_index")),
+            arrangecols = arrangecols,
+            omit_internals = omit_internals, ...)
+        v <- data.table::as.data.table(data)
+        data.table::setnames(v, c("x_index", "y_index"), c("x", "y"))
+        v[, c("feature_id", "part_id", "ring_id") :=
+            list(seq_len(.N), 1L, 0L)]
+        return(v)
     }
 
     # enforced drops (never drop geom; we need it to extract vertices)
@@ -865,7 +943,7 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
                 if (type == "int") "Int32" else "Utf8")
         })
     sedonadb::sd_to_view(
-        sedonadb::sd_sql(base_sql),
+        sedonadb::sd_sql(.pgeom_view_sql(store, base_sql, "sedona")),
         base_view_name, overwrite = TRUE
     )
 
@@ -998,7 +1076,7 @@ sd_view_ref <- function(sdf) {
         cast_fn = function(col, type) col)
     DBI::dbExecute(conn,
         sprintf('CREATE OR REPLACE TEMP VIEW "%s" AS %s',
-            base_view_name, base_sql))
+            base_view_name, .pgeom_view_sql(store, base_sql, "duckdb")))
 
     # --- 2. Build inner SQL via shared helper ---
     # DuckDB spatial's ST_GeomFromText takes (VARCHAR [, BOOLEAN]) — no
@@ -1569,7 +1647,8 @@ sd_view_ref <- function(sdf) {
     if (!output %in% c("query", "duckdb", "sedona")) { # if a materialized format...
         lazy <- unique(c("source_id", "row_index", lazy))
     }
-    if (output %in% c("terra", "sf", "vertex_dt")) {
+    if (output %in% c("terra", "sf", "vertex_dt") &&
+            !.pgeom_xy_points(store)) {
         lazy <- unique(c("geom", lazy))
     }
     attr(lazy, "lazy") <- TRUE

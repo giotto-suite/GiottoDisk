@@ -269,12 +269,18 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "giottoBinPoints"),
 
 ## internals ####
 
+# The special cols a point store holds: `geom` is absent unless written
+# under giottodisk.points_wkb.
+.y_special_cols <- function(y) {
+    intersect(specialCols(y), .pstore_effective_schema(y))
+}
+
 # `feat_count_column = FALSE` (as GiottoClass passes it) keeps `count` out of
 # the overlap, so its matrix counts rows as an in-memory overlap does. Every
 # engine path takes its columns from `colnames(y)`.
 .overlap_points_counts <- function(y, feat_count_column = NULL) {
     if (!isFALSE(feat_count_column) || !"count" %in% colnames(y)) return(y)
-    y[, c(setdiff(colnames(y), "count"), specialCols(y))]
+    y[, c(setdiff(colnames(y), "count"), .y_special_cols(y))]
 }
 
 # Engine for calculateOverlap: the shared spatial-engine resolver, except that
@@ -359,7 +365,7 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "giottoBinPoints"),
     }
     extra_cols <- intersect(extra_cols, feat_col_names)
     x_sub <- x[, poly_id_col]
-    y_sub <- y[, c(feat_id_col, extra_cols, specialCols(y))]
+    y_sub <- y[, c(feat_id_col, extra_cols, .y_special_cols(y))]
 
     if (isTRUE(prune_tiles)) {
         # Pre-filter: skip point tiles with no polygon centroids.
@@ -479,7 +485,7 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "giottoBinPoints"),
     extra_cols <- intersect(extra_cols, feat_col_names)
 
     x_sub <- x[, poly_id_col]
-    y_sub <- y[, c(feat_id_col, extra_cols, specialCols(y))]
+    y_sub <- y[, c(feat_id_col, extra_cols, .y_special_cols(y))]
 
     tile_overlap_fn <- function(poly_sv, .I) {
         if (is.null(poly_sv) || nrow(poly_sv) == 0L) return(NULL)

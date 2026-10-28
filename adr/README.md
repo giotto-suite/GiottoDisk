@@ -93,6 +93,8 @@ least one.
 | [0019](0019-overlap-carrier-is-a-queryable-store.md) | The overlap is a queryableStore carrier, built and aggregated in SQL engines | Accepted | 2026-10-06 |
 | [0020](0020-edge-statistics-contract-and-histogram-thresholds.md) | Edge statistics cross backends as sufficient statistics; order statistics come from streamed histograms | Accepted | 2026-10-16 |
 | [0021](0021-crop-selects-by-centroid-culls-are-optimizer-steps.md) | A crop selects by centroid; a cull is an optimizer step and never decides membership | Accepted | 2026-10-27 |
+| [0022](0022-points-are-their-coordinates.md) | A points store is its coordinates; WKB is an opt-in export column | Accepted | 2026-10-28 |
+| [0023](0023-sedona-planar-engineering-crs.md) | Sedona reads CRS-less stores in a planar engineering CRS; files stay `crs: null` | Accepted | 2026-10-28 |
 
 ## Backfill candidates
 
@@ -100,10 +102,6 @@ Decisions already argued out elsewhere in the repo or in commit messages, not
 yet written up. Not a queue — write one when it next comes up in conversation,
 so the ADR captures the argument while it is fresh.
 
-- **GeoParquet CRS is written as `crs: null` + `edges: planar`.** sedonadb
-  hardcodes `null` → `OGC:CRS84`, so the WKT side must emit
-  `ST_GeomFromText(wkt, 4326)` for predicates to match. Constrains anything
-  touching `.arrow_meta_add_geoparquet()`.
 - **`spat_relate` engine precedence** (per-call > option > auto sedona >
   duckdb > terra) and why the narrow path caches ids as an `id_filter` op
   rather than using a tuple-IN subquery (DataFusion does not support it).

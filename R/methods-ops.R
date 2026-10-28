@@ -309,6 +309,13 @@ as.data.table.parquetGeomBase <- function(x, keep.rownames = FALSE, ...,
     if (geom == "XY") {
         return(storeRead(x, output = "vertex_dt", fields = fields, ...))
     }
+    if (geom == "wkb" && .pgeom_xy_points(x)) {
+        # points hold no WKB to read; build it from the coordinates
+        dt <- data.table::as.data.table(as.data.frame(x, geom = "XY", ...))
+        dt[, geom := unclass(wk::as_wkb(wk::xy(x, y)))]
+        dt[, c("x", "y") := NULL]
+        return(dt)
+    }
     dt <- data.table::as.data.table(
         storeRead(x, output = "tibble", fields = fields, ...))
     if (geom == "" && "geom" %in% names(dt)) {
