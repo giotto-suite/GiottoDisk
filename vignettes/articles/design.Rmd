@@ -776,8 +776,8 @@ wraps either a `.zarr.zip` archive read in place — one long-lived
 connection, the zip central directory cached once, per-entry seek +
 local-header parse + raw read, valid because Xenium archives store
 entries uncompressed — or an unzipped directory tree. Chunk bytes go
-through `.zarr_blosc_decompress()`, the single wrapper around Rarr's
-internal decoder, and are reinterpreted per dtype (`uint32` above 2^31
+through `.zarr_blosc_decompress()` (blosc via the `blosc` package; zlib,
+bz2 and lzma via base R) and are reinterpreted per dtype (`uint32` above 2^31
 via a signed-read + 2^32 shift; `uint64` as exact-to-2^53 doubles).
 `.zarr_array(range =)` decodes only the chunks overlapping a requested
 row range — what keeps blockwise boundary reads linear —

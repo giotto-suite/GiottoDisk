@@ -9,27 +9,24 @@
 # chunk is already blosc-compressed) -- `.zarr_open()` refuses archives
 # that violate this.
 #
-# Blosc/zlib chunk decompression goes through `.zarr_blosc_decompress()`,
-# the single call site of the internal `Rarr:::.decompress_chunk`.
+# Chunk decompression goes through `.zarr_blosc_decompress()`: blosc via the
+# blosc package (CRAN), zlib/gzip, bz2 and lzma via base R.
 #
-# Rarr and zip live in Suggests; `.zarr_open()` is the gate.
+# blosc lives in Suggests; `.zarr_open()` is the gate.
 #
 # All functions here take zarr paths as forward-slash strings without a
 # leading slash, e.g. "polygon_sets/0/vertices" or "cell_features/indptr".
 
 # open / close ####
 
-# Verify the internal Rarr API this layer depends on. Tested against
-# Rarr 1.10.1; the signature is (compressed_chunk, metadata).
-.zarr_check_rarr <- function() {
-    GiottoUtils::package_check("Rarr", repository = "Bioc")
-    if (!is.function(get0(".decompress_chunk", envir = asNamespace("Rarr")))) {
-        stop("[zarr] installed Rarr (", utils::packageVersion("Rarr"),
-            ") does not provide the internal `.decompress_chunk` this ",
-            "reader was built against (tested with Rarr 1.10.1). ",
-            "Please report this to the GiottoDisk maintainers.",
-            call. = FALSE)
-    }
+# The blosc package decodes the archives' chunks. On Linux it builds against
+# the system c-blosc library.
+.zarr_check_blosc <- function() {
+    GiottoUtils::package_check("blosc", repository = "CRAN",
+        custom_msg = paste0(
+            "Reading zarr archives needs the 'blosc' package: ",
+            "install.packages(\"blosc\"). On Linux, install the c-blosc ",
+            "library first (libblosc-dev or blosc-devel)."))
     invisible(NULL)
 }
 
@@ -124,7 +121,7 @@
 }
 
 .zarr_open <- function(path) {
-    .zarr_check_rarr()
+    .zarr_check_blosc()
     meta_cache <- new.env(parent = emptyenv())
     if (grepl("\\.zip$", path, ignore.case = TRUE)) {
         if (!file.exists(path)) {
@@ -354,25 +351,20 @@
     out
 }
 
-# Decompress one chunk's raw bytes via Rarr's internal blosc/zlib decoder.
-# THE single call site of `Rarr:::.decompress_chunk` (internal API;
-# existence verified in `.zarr_open()`). Returns raw bytes ready for
-# readBin() reinterpretation.
+# Decompress one chunk's raw bytes by the array's compressor (numcodecs id).
+# Returns raw bytes ready for readBin() reinterpretation. `dt` is unused:
+# decompression does not depend on the element type.
 .zarr_blosc_decompress <- function(raw_bytes, meta, dt) {
-    base_type <- switch(dt$kind,
-        "f" = "float", "i" = "int", "u" = "uint", "b" = "uint",
-        "unknown")
-    rarr_meta <- list(
-        datatype = list(
-            nbytes = dt$size, base_type = base_type,
-            is_signed = (dt$kind == "i")
-        ),
-        compressor = meta$compressor,
-        chunks = meta$chunks,
-        order = meta$order %||% "C",
-        fill_value = meta$fill_value %||% 0
-    )
-    Rarr:::.decompress_chunk(raw_bytes, rarr_meta)
+    id <- meta$compressor$id
+    if (is.null(id)) return(raw_bytes)
+    switch(id,
+        blosc = blosc::blosc_decompress(raw_bytes),
+        zlib = ,
+        gzip = memDecompress(raw_bytes, type = "gzip"),
+        bz2 = memDecompress(raw_bytes, type = "bzip2"),
+        lzma = memDecompress(raw_bytes, type = "xz"),
+        stop("[zarr] unsupported chunk compressor '", id, "' (supported: ",
+            "blosc, zlib, gzip, bz2, lzma)", call. = FALSE))
 }
 
 # Reinterpret decompressed chunk bytes as an R vector per the dtype.

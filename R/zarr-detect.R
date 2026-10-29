@@ -2,7 +2,7 @@
 #
 # Each product archive is detected on its own against the layout specs
 # below; parsers dispatch on the returned layout id. When 10x ships a new
-# format (or zarr v3 / sharded stores, which Rarr cannot read), detection
+# format (or zarr v3 / sharded stores, which this reader cannot read), detection
 # is where the change lands.
 #
 #   xenium-zarr-v1  Xenium Onboard Analysis v1-v4 (grids/0 transcript
@@ -58,7 +58,7 @@
     on.exit(.zarr_close(src), add = TRUE)
     if (.zarr_exists(src, "zarr.json")) {
         stop("[detectZarrLayout] ", path, " is a zarr v3 store; only ",
-            "zarr v2 is supported. Rarr cannot read zarr v3 -- please ",
+            "zarr v2 is supported -- please ",
             "report the format so support can be added.", call. = FALSE)
     }
     for (id in names(specs)) {

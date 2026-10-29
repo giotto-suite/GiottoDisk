@@ -14,6 +14,13 @@
 - Snapshot names may not contain a path separator or start with `.`.
 
 ## changes
+- Zarr archives (Xenium and Atera `.zarr.zip`) are decoded with the
+  `blosc` package (CRAN) instead of Rarr (Bioconductor), which was used
+  through an internal function. One dependency with no R dependencies
+  replaces Rarr's ~50; the bytes decoded are the same, and decoding is no
+  slower (12% faster over the Xenium and Atera archives tested, up to 25%
+  for lz4). On Linux, `blosc` builds against the c-blosc system
+  library (`libblosc-dev` / `blosc-devel`).
 - A missing *sedonadb* or *smotif* now points at its r-universe
   (`install.packages(..., repos = ...)`), which serves binaries, instead of
   `devtools::install_github()`, which compiles Rust from source.

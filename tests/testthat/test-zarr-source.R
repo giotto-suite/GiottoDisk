@@ -22,12 +22,35 @@ test_that("zip source reads uint32 above 2^31 exactly", {
     expect_identical(cid[6L, 1L], 3000000000)
 })
 
-test_that("blosc-compressed chunks decode (Rarr internal path)", {
+test_that("blosc-compressed chunks decode (lz4, F order, padded edge chunk)", {
     src <- GiottoDisk:::.zarr_open(fx$paths$cells)
     on.exit(GiottoDisk:::.zarr_close(src))
     cs <- GiottoDisk:::.zarr_array(src, "cell_summary")
     expect_equal(cs[, 1L], seq_len(12L) * 10)
     expect_equal(cs[, 8L], rep(c(1, 2), 6))
+})
+
+test_that("chunks decompress by compressor id, as numcodecs writes them", {
+    bytes <- writeBin(as.double(seq_len(1000L)), raw(), size = 8L,
+        endian = "little")
+    dec <- function(x, compressor) {
+        GiottoDisk:::.zarr_blosc_decompress(x, list(compressor = compressor),
+            dt = NULL)
+    }
+    expect_identical(dec(bytes, NULL), bytes)
+    for (cname in c("blosclz", "lz4", "zstd")) {
+        for (shuffle in c("noshuffle", "shuffle")) {
+            z <- blosc::blosc_compress(bytes, compressor = cname,
+                typesize = 8L, shuffle = shuffle)
+            expect_identical(dec(z, list(id = "blosc", cname = cname)), bytes,
+                label = paste(cname, shuffle))
+        }
+    }
+    expect_identical(dec(memCompress(bytes, "gzip"), list(id = "zlib")), bytes)
+    expect_identical(dec(memCompress(bytes, "gzip"), list(id = "gzip")), bytes)
+    expect_identical(dec(memCompress(bytes, "bzip2"), list(id = "bz2")), bytes)
+    expect_identical(dec(memCompress(bytes, "xz"), list(id = "lzma")), bytes)
+    expect_error(dec(bytes, list(id = "lz4")), "unsupported chunk compressor 'lz4'")
 })
 
 test_that("zip and unzipped-dir sources read identically", {
