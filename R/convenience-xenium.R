@@ -614,6 +614,13 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
 
     fs <- fileStore(path = path, read_fun = read_fun)
     qs <- as(fs, "queryableStore")
+    # the same query for the Rust writer (GiottoIngest), if installed
+    qs@params$points_spec <- .ingest_points_spec(path, flip_y = flip,
+        filters = if (is.null(qv_thr)) list() else
+            list(list(col = "qv", op = ">=", value = qv_thr)),
+        to_string = intersect(c("transcript_id", "cell_id", "feature_name"),
+            names(arrow::schema(arrow::open_dataset(path)))),
+        drop = drop)
 
     tx_store <- sourceWrite(
         gsource, qs,

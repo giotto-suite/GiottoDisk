@@ -561,6 +561,17 @@ importMerscopeDisk <- function(merscope_dir = NULL,
 
     fs <- fileStore(path = path, read_fun = read_fun)
     qs <- as(fs, "queryableStore")
+    # the same query for the Rust writer (GiottoIngest), if installed:
+    # unnamed (pandas index) columns are named "" in the file
+    tx_cols <- names(arrow::open_dataset(path)$schema)
+    qs@params$points_spec <- .ingest_points_spec(path, flip_y = flip,
+        filters = c(
+            if (!is.null(score_thr) && "transcript_score" %in% tx_cols) {
+                list(list(col = "transcript_score", op = ">=", value = score_thr))
+            },
+            if (!is.null(fovs_)) list(list(col = "fov", op = "in", value = fovs_))
+        ),
+        to_string = "cell_id", drop = unique(c("", drop)))
 
     tx_store <- sourceWrite(
         gsource, qs,

@@ -284,6 +284,9 @@ setMethod(
         root <- .idpath(store@path, store@uid)
         # largest grid cells first, so they do not finish last
         cells <- names(sort(attr(plan, "rows"), decreasing = TRUE))
+        # sizes as asked, for the Rust path's own sizing below
+        window_arg <- window_rows
+        buffer_arg <- buffer_rows
         sz <- .atera_tx_sizes(workers, length(cells), window_rows,
             buffer_rows)
         workers <- sz$workers
@@ -295,9 +298,16 @@ setMethod(
                 window_rows = window_rows, buffer_rows = buffer_rows,
                 compression = compression, dropcols = as.character(dropcols))
         }
-        # on unix every grid cell runs in a forked child, also with one
-        # worker, so each cell's memory is returned when it finishes
-        res <- if (.Platform$OS.type == "unix") {
+        # Rust path (GiottoIngest): every grid cell on threads in this
+        # process; otherwise, on unix every grid cell runs in a forked child,
+        # also with one worker, so each cell's memory is returned when it
+        # finishes
+        res <- .atera_tx_cells_ingest(data@path, cells, plan, root,
+            qv_threshold = qv_threshold, flip = flip_vertical,
+            window_rows = window_arg, buffer_rows = buffer_arg,
+            compression = compression, dropcols = as.character(dropcols),
+            verbose = verbose)
+        if (is.null(res)) res <- if (.Platform$OS.type == "unix") {
             .mclapply_fresh(cells, run_one, workers)
         } else if (workers > 1L) {
             GiottoUtils::lapply_flex(cells, run_one, cores = workers,
