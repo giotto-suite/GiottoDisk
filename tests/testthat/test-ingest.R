@@ -165,6 +165,21 @@ test_that("a given plan with an empty tile, and an `i` subset, match", {
     }
 })
 
+test_that("points on one vertical line (zero-width extent) match", {
+    .skip_no_ingest()
+    f <- tempfile(fileext = ".parquet")
+    arrow::write_parquet(data.frame(feat_ID = 1:50, x = 5, y = seq(0, 49) + 0.5), f)
+    write <- function(src) {
+        qs <- as(fileStore(path = f, read_fun = .overlap_read_fun), "queryableStore")
+        qs@params$points_spec <- .ingest_points_spec(f)
+        sourceWrite(src, qs, store_type = "parquetGeomTile", type = "points",
+            id_col = "feat_ID", sdimx = "x", sdimy = "y")
+    }
+    b <- .both_paths(write)
+    expect_identical(nrow(b$rs@tiles@bounds), 1L)
+    .expect_same_store(b)
+})
+
 test_that("Atera v1 zarr transcripts: the Rust decoder writes the R store", {
     .skip_no_ingest()
     skip_if_not(.gd_ingest("points_atera_zarr"))
@@ -186,12 +201,10 @@ test_that("Atera v1 zarr transcripts: the Rust decoder writes the R store", {
 
 # gate ####
 
-test_that("a missing GiottoIngest is mentioned once and the R path runs", {
+test_that("a missing GiottoIngest is not installed, silently (private repo)", {
     fake <- paste0("NoIngest", sample.int(1e6, 1L))
-    expect_message(r1 <- .gd_ingest_installed(fake), "same stores, slower")
-    expect_false(r1)
-    expect_no_message(r2 <- .gd_ingest_installed(fake))
-    expect_false(r2)
+    expect_no_message(r <- .gd_ingest_installed(fake))
+    expect_false(r)
 })
 
 test_that("giottodisk.use_ingest = FALSE skips the install check", {

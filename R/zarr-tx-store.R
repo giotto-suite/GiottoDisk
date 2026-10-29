@@ -116,6 +116,7 @@ tenxZarrTxInput <- function(zarr_path) {
 
 # One worker: stream one grid cell into its tile partitions. Returns the
 # tile indices, row counts and bounds (y flipped when `flip`).
+# Mirrored in GiottoIngest (Rust): a change here needs its parity tests.
 #' @keywords internal
 #' @noRd
 .atera_tx_cell_worker <- function(zarr_path, tile, plan, root, uid,

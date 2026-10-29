@@ -490,7 +490,6 @@ setMethod(
             tiles = tiles, i = i, id_col = id_col, sdimx = sdimx,
             sdimy = sdimy, contiguous = contiguous, dry_run = dry_run,
             write_param = write_param, verbose = verbose)
-        if (is.list(fast) && isTRUE(fast$empty)) return(NULL)
         if (!is.null(fast)) return(fast)
 
         a <- storeRead(data)
@@ -1051,6 +1050,7 @@ setMethod(
 
 # Points straight from their coordinates, as the SpatVector method writes
 # them: the same WKB (wk builds it), extent and frame, without terra.
+# Mirrored in GiottoIngest (Rust): a change here needs its parity tests.
 .store_write_points <- function(store, x, y, meta, row_offset = 0,
                                 tile_idx = 0L, .arrow_meta = NULL,
                                 split_geom = FALSE, split_geom_fmt = NULL,
