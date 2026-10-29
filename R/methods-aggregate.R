@@ -454,7 +454,7 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "giottoBinPoints"),
         data_ext <- .dplyr_ext(poly_atab, sdimx = "x_index", sdimy = "y_index")
         terra::ext(tiles) <- data_ext
         erange <- range(data_ext)
-        length(tiles) <- round(max(erange) / min(erange)) * 4L
+        length(tiles) <- .seed_tile_count(erange)
     }
 
     fp <- tilework::quadtreePlan(x,
