@@ -220,6 +220,15 @@ setMethod("getTile", signature("queryableStore", "freeTilePlan"),
 
 # internals ####
 
+# Starting tiles for a quadtree plan over an extent with side lengths
+# `erange`: four per unit of aspect ratio, as tilework's default. A zero
+# width or height (one point, or every point on one line) makes the ratio
+# Inf or NaN; start from a single tile then.
+.seed_tile_count <- function(erange) {
+    n <- round(max(erange) / min(erange)) * 4L
+    if (is.finite(n)) n else 1L
+}
+
 # Convert a vector i index to ij matrix indexing. Note that when using
 # with {tilework} `[` subsetting, `expand_grid = FALSE` should be set.
 # `x` accepts a `tilePlan`

@@ -498,7 +498,7 @@ setMethod(
             data_ext <- .dplyr_ext(a, sdimx = sdimx, sdimy = sdimy)
             terra::ext(tiles) <- data_ext
             erange <- range(data_ext)
-            length(tiles) <- round(max(erange) / min(erange)) * 4L
+            length(tiles) <- .seed_tile_count(erange)
         }
         plans <- .tile_plan_quadtree(store, data,
             threshold = threshold,
@@ -644,7 +644,7 @@ setMethod(
             data_ext <- .dplyr_ext(a, sdimx = sdimx, sdimy = sdimy)
             terra::ext(tiles) <- data_ext
             erange <- range(data_ext)
-            length(tiles) <- round(max(erange) / min(erange)) * 4L
+            length(tiles) <- .seed_tile_count(erange)
         }
         plans <- .tile_plan_quadtree(store, data,
             threshold = threshold,

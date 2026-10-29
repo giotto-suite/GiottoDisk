@@ -100,6 +100,12 @@
   never fails the save. Requires GiottoClass >= 0.7.24.
 
 ## bug fixes
+- Tiled writes (`storeWrite()` of points or polygons into a
+  `parquetGeomTileStore`, and `calculateOverlap()`) failed when the data's
+  extent had zero width or height, such as a single point or points all on
+  one line: the starting grid's tile count was `Inf` or `NaN`. They now
+  start from one tile there. Other extents plan as before. Needs tilework
+  `dev` with the same fix (`fix/seed-grid-zero-extent`).
 - Xenium and Atera disk readers: genomic control probes named
   `Intergenic_Region_*` (Atera WTA panels) and `DeprecatedCodeword_*`
   features were loaded as `rna` transcripts. The defaults now put them in
