@@ -37,9 +37,10 @@ outside the suite; the suite still never reads it. Points stay a
 
 ## Consequences
 
-- Code that names `geom` must not assume it exists on a points store. The SQL
-  engines get it back from the base view (`.pgeom_view_sql()`); R code that
-  selects special columns intersects them with the schema first.
+- On points `geom` is a virtual column: callers may still name it, arrow reads
+  never fetch it (even one written under the option), and the SQL engines take
+  it from the base view (`.pgeom_view_sql()`). Reading the WKB into memory as an
+  attribute column, which arrow would otherwise do, is what this rules out.
 - Stores written before this still read, and so do stores written with the
   option: `geom` is ignored on both.
 - On sedona the built point needs the same CRS as the polygons it meets;

@@ -1614,8 +1614,20 @@ sd_view_ref <- function(sdf) {
 }
 
 .pstore_lazy_fields <- function(store, fields, output) {
-    if (is.null(fields)) return(NULL)
     if (isTRUE(attr(fields, "lazy"))) return(fields)
+    sql <- output %in% c("duckdb", "sedona")
+    xy_points <- .pgeom_xy_points(store)
+    if (is.null(fields)) {
+        # points: arrow reads never see an on-disk `geom` (adr/0022) -- not
+        # even when reading every column
+        if (sql || !xy_points ||
+                !"geom" %in% .pstore_disk_fields(store)) {
+            return(NULL)
+        }
+        lazy <- setdiff(.pstore_disk_fields(store), "geom")
+        attr(lazy, "lazy") <- TRUE
+        return(lazy)
+    }
 
     # Restrict user fields to upstream-available (on-disk) cols. Any
     # requested fields that come from queued join ops' y-stores will be
@@ -1623,6 +1635,10 @@ sd_view_ref <- function(sdf) {
     # select in `.pbase_storeread_processing` -- they must NOT appear in
     # the upstream parquet projection.
     disk <- .pstore_disk_fields(store) %||% character(0L)
+    if (xy_points) {
+        # points `geom` is virtual: the SQL view builds it, arrow never reads it
+        disk <- if (sql) union(disk, "geom") else setdiff(disk, "geom")
+    }
     lazy <- intersect(fields, disk)
 
     # Widen with cols referenced by queued ops -- arrow/dplyr's `select`
@@ -1647,8 +1663,7 @@ sd_view_ref <- function(sdf) {
     if (!output %in% c("query", "duckdb", "sedona")) { # if a materialized format...
         lazy <- unique(c("source_id", "row_index", lazy))
     }
-    if (output %in% c("terra", "sf", "vertex_dt") &&
-            !.pgeom_xy_points(store)) {
+    if (output %in% c("terra", "sf", "vertex_dt") && !xy_points) {
         lazy <- unique(c("geom", lazy))
     }
     attr(lazy, "lazy") <- TRUE
@@ -1698,6 +1713,8 @@ sd_view_ref <- function(sdf) {
 # manipulation (a supported pattern per AGENTS.md) stays correct.
 .pstore_effective_schema <- function(store) {
     base <- .pstore_disk_fields(store) %||% character(0L)
+    # points `geom` is virtual: always nameable, built where an engine needs it
+    if (.pgeom_xy_points(store)) base <- union(base, "geom")
     for (op in store@ops) {
         if (identical(op$type, "join")) {
             y_eff <- .pstore_effective_schema(op$y)

@@ -201,3 +201,15 @@ test_that("parquetGeomStore: points as.data.table builds XY and WKB from coords"
     expect_true("geom" %in% names(wkb))
     expect_equal(nrow(terra::vect(wkb$geom)), 3L)
 })
+
+test_that("parquetGeomStore: arrow reads of points never see an on-disk geom", {
+    pgs <- GiottoUtils::gwith_options(list(giottodisk.points_wkb = TRUE),
+        parquetGeomStore() |> storeWrite(make_pts(5)))
+    expect_true("geom" %in% names(arrow::read_parquet(.pt_files(pgs)[[1L]])))
+    expect_false("geom" %in% names(storeRead(pgs, output = "query")))
+    expect_false("geom" %in% names(storeRead(pgs, output = "tibble")))
+    # `geom` is virtual on points: nameable, never read from disk
+    sel <- pgs[, c("cell_ID", "geom")]
+    expect_false("geom" %in% names(storeRead(sel, output = "query")))
+    expect_equal(nrow(storeRead(sel, output = "terra")), 5L)
+})

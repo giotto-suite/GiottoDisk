@@ -195,8 +195,10 @@ during materialization as needed.
 `geom`: WKB geometry column (GeoParquet spec). Polygons only by default: a points
   store *is* its `x_index`/`y_index`, and `geom` is written for points only under
   `options(giottodisk.points_wkb = TRUE)`, for outside tools — never read back
-  (adr/0022). Select specials that must exist on disk with
-  `intersect(specialCols(x), .pstore_effective_schema(x))`.
+  (adr/0022). On points `geom` is a virtual column: it is in
+  `.pstore_effective_schema()` (so `[, j]` accepts it), `.pstore_lazy_fields()` drops it from
+  every arrow projection -- including the read-everything case -- so an on-disk WKB is never
+  read into memory, and SQL projections take it from the view.
 `tile_index`: tile membership — hive partition (`tile_index=<n>/`). Flat `parquetGeomStore`
   writes use `tile_index=000` so joins always work on a uniform `(tile_index, row_index)` key.
 
