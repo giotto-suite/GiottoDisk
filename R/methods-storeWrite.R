@@ -1012,7 +1012,7 @@ setMethod(
 # only when cross-tile Morton code comparability is needed (e.g. global LOD).
 .terra_to_parquet_format <- function(x, meta, row_offset = 0L, ext = NULL) {
     checkmate::assert_class(x, "SpatVector")
-    wkb <- terra::geom(x, wkb = TRUE)
+    wkb <- if (.writes_wkb(terra::geomtype(x))) terra::geom(x, wkb = TRUE)
     ctrs <- XY(centroids(x))
     if (!is.matrix(ctrs)) {
         ctrs <- t(as.matrix(ctrs))
@@ -1021,15 +1021,23 @@ setMethod(
         ext %||% .ext_to_num_vec(terra::ext(x)))
 }
 
-# The on-disk frame of a geometry store: row index, centroid, WKB and meta,
-# in Morton order of the centroids over `gext`.
+# Points are their x_index/y_index. The WKB `geom` copy is written only under
+# options(giottodisk.points_wkb = TRUE), for tools outside the suite; the
+# suite never reads it. adr/0022.
+.writes_wkb <- function(geomtype) {
+    !identical(geomtype, "points") ||
+        isTRUE(getOption("giottodisk.points_wkb", FALSE))
+}
+
+# The on-disk frame of a geometry store: row index, centroid, WKB (NULL for
+# none) and meta, in Morton order of the centroids over `gext`.
 .geom_parquet_frame <- function(ctrs, wkb, meta, row_offset, gext) {
     data <- data.frame(
         row_index = as.integer(seq_len(nrow(ctrs)) + row_offset),
         x_index = ctrs[, 1],
         y_index = ctrs[, 2]
     )
-    data$geom <- wkb
+    if (!is.null(wkb)) data$geom <- wkb
     if (ncol(meta) > 0L) {
         data <- cbind(data, meta)
     }
@@ -1037,7 +1045,7 @@ setMethod(
 }
 
 # Points straight from their coordinates, as the SpatVector method writes
-# them: the same WKB (wk builds it), extent and frame, without terra.
+# them: the same frame and extent (WKB, if any, built by wk), without terra.
 .store_write_points <- function(store, x, y, meta, row_offset = 0,
                                 tile_idx = 0L, .arrow_meta = NULL,
                                 split_geom = FALSE, split_geom_fmt = NULL,
@@ -1048,8 +1056,8 @@ setMethod(
     store@params$disk_extent <- gext
     store@geomtype <- "points"
     store@params$crs <- ""
-    data <- .geom_parquet_frame(cbind(x, y),
-        unclass(wk::as_wkb(wk::xy(x, y))), meta, row_offset, gext)
+    wkb <- if (.writes_wkb("points")) unclass(wk::as_wkb(wk::xy(x, y)))
+    data <- .geom_parquet_frame(cbind(x, y), wkb, meta, row_offset, gext)
     .arrow_meta <- .arrow_meta_add_geoparquet(store, .arrow_meta)
     store_write_next <- methods::getMethod(
         "storeWrite",
@@ -1063,7 +1071,7 @@ setMethod(
 }
 
 # .store_write_points for attributes held in an arrow Table: the same
-# on-disk frame (row index, centroid, WKB, attributes; Morton order)
+# on-disk frame (row index, centroid, WKB if any, attributes; Morton order)
 # without converting the attributes to R vectors. `meta` must not hold
 # the coordinate columns.
 .store_write_points_arrow <- function(store, x, y, meta, row_offset = 0,
@@ -1079,10 +1087,12 @@ setMethod(
         row_index = arrow::Array$create(
             as.integer(row_offset + o), type = arrow::int32()),
         x_index = x,
-        y_index = y,
-        geom = arrow::Array$create(unclass(wk::as_wkb(wk::xy(x, y))),
-            type = arrow::binary())
+        y_index = y
     )
+    if (.writes_wkb("points")) {
+        data$geom <- arrow::Array$create(unclass(wk::as_wkb(wk::xy(x, y))),
+            type = arrow::binary())
+    }
     meta <- meta$Take(o - 1L)
     for (nm in names(meta)) data[[nm]] <- meta[[nm]]
     data$metadata <- c(data$metadata,
@@ -1091,13 +1101,18 @@ setMethod(
     initialize(store)
 }
 
-# generate the geoparquet metadata for a geom store if needed
+# generate the geoparquet metadata for a geom store if needed. A store with
+# no `geom` column is not GeoParquet, so it carries none.
 .arrow_meta_add_geoparquet <- function(store, .arrow_meta = NULL, extent = NULL) {
     checkmate::assert_class(store, "parquetGeomStore")
     checkmate::assert_list(.arrow_meta, null.ok = TRUE)
     
     if (is.null(.arrow_meta)) {
         .arrow_meta <- list()
+    }
+    if (!.writes_wkb(store@geomtype)) {
+        .arrow_meta$geo <- NULL
+        return(.arrow_meta)
     }
     # append to existing metadata if any/modify if extent specified
     if (is.null(.arrow_meta$geo) || !is.null(extent)) {

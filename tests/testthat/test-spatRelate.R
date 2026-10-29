@@ -545,3 +545,25 @@ test_that(".combined_spatrelate_aabb: returns NULL for empty intersection", {
     # Disjoint extents — intersection yields NULL.
     expect_null(.combined_spatrelate_aabb(ops))
 })
+
+# centroid views and coordinate-only points ####
+
+test_that("spatRelate(): centroids of polygons relate as points on every engine", {
+    # triangle roi. The square reaches into it, but its centroid (2.75, 2.75)
+    # lies outside it -- though inside its bounding box, so the centroid
+    # pre-cull keeps it and the exact predicate decides.
+    tri <- terra::vect("POLYGON ((0 0, 4 0, 0 4, 0 0))", crs = "")
+    sq <- terra::vect(c("POLYGON ((1.5 1.5, 4 1.5, 4 4, 1.5 4, 1.5 1.5))",
+        "POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))"), crs = "")
+    sq$poly_ID <- c("reaches", "inside")
+    pgs <- parquetGeomStore() |> storeWrite(sq)
+    ctr <- terra::centroids(pgs)
+    engines <- "terra"
+    if (requireNamespace("duckdb", quietly = TRUE)) engines <- c(engines, "duckdb")
+    if (requireNamespace("sedonadb", quietly = TRUE)) engines <- c(engines, "sedona")
+    for (eng in engines) {
+        tbl <- storeRead(spatRelate(ctr, tri, "intersects", engine = eng),
+            output = "tibble")
+        expect_equal(tbl$poly_ID, "inside", info = eng)
+    }
+})

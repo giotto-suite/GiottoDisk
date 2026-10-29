@@ -178,8 +178,14 @@ setMethod("initialize", signature("parquetGeomStore"), function(.Object, ...) {
     .Object <- callNextMethod(.Object, ...)
     if (!storeExists(.Object)) return(.Object) # skip if not ready to read
     # disk_fields should be cached already in `parquetStore` method
-    check_cols <- c("x_index", "y_index", "geom")
-    missing_cols <- check_cols[!check_cols %in% .pstore_disk_fields(.Object)]
+    fields <- .pstore_disk_fields(.Object)
+    # only points are written without WKB (giottodisk.points_wkb)
+    if (!"geom" %in% fields && !isTRUE(nzchar(.Object@geomtype))) {
+        .Object@geomtype <- "points"
+    }
+    check_cols <- c("x_index", "y_index",
+        if (!identical(.Object@geomtype, "points")) "geom")
+    missing_cols <- check_cols[!check_cols %in% fields]
     if (length(missing_cols) > 0L) {
         warning(sprintf("[initialize] '%s' column(s) should be present",
             toString(missing_cols)), call. = FALSE)

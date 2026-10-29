@@ -27,6 +27,9 @@
     #    utils-arrow.R. Snappy default keeps reads fast; switch to
     #    "zstd" for ~30-40% smaller files at a small CPU cost.
     init_option("giottodisk.parquet_compression", "snappy")
+    # -- points are read from x_index/y_index; TRUE also writes a WKB `geom`
+    #    column (GeoParquet) for outside tools. Never read back.
+    init_option("giottodisk.points_wkb", FALSE)
     # -- dump management
     init_option("giottodisk.artifact_dump", file.path(tempdir(), "gdisk_dump"))
     init_option("giottodisk.adopt_external", FALSE)

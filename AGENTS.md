@@ -183,7 +183,8 @@ and never use `callNextMethod` — storeRead is NOT defined on parquetBase for t
 
 Enforced via `specialCols()`:
 - `parquetBase`: `row_index`, `source_id`
-- `parquetGeomBase`: `x_index`, `y_index`, `geom` (WKB), `tile_index`
+- `parquetGeomBase`: `x_index`, `y_index`, `geom` (WKB), `tile_index`. Points
+  stores have no `geom` on disk (see below).
 
 Special cols are hidden from `colnames()` but available in queries; injected and dropped
 during materialization as needed.
@@ -191,7 +192,13 @@ during materialization as needed.
 `row_index`: intrinsic row ordering within a source
 `source_id`: stable sort key across rbind/union stores — hive partition (`source_id=<uid>/`)
 `x_index`, `y_index`: float centroid coordinates for fast spatial extent filtering
-`geom`: WKB geometry column (GeoParquet spec)
+`geom`: WKB geometry column (GeoParquet spec). Polygons only by default: a points
+  store *is* its `x_index`/`y_index`, and `geom` is written for points only under
+  `options(giottodisk.points_wkb = TRUE)`, for outside tools — never read back
+  (adr/0022). On points `geom` is a virtual column: it is in
+  `.pstore_effective_schema()` (so `[, j]` accepts it), `.pstore_lazy_fields()` drops it from
+  every arrow projection -- including the read-everything case -- so an on-disk WKB is never
+  read into memory, and SQL projections take it from the view.
 `tile_index`: tile membership — hive partition (`tile_index=<n>/`). Flat `parquetGeomStore`
   writes use `tile_index=000` so joins always work on a uniform `(tile_index, row_index)` key.
 
@@ -360,11 +367,12 @@ runtime / live-query rationale and edge cases.
 | `@params$disk_extent` | `storeWrite(,SpatVector)` → `ext(data)`; tile stores → tile plan bounds | GeoParquet `bbox` metadata; `show()` fast path |
 | `@params$crs` | `storeWrite(,SpatVector)` → `terra::crs(data)`; tile stores → propagated from first written tile | `as.terra`/`as.sf` output; GeoParquet metadata |
 | `@params$max_poly_radius` | `storeWrite(,SpatVector)` polygons → `sqrt(max_expanse/pi)`; tile stores → max over tiles | `calculateOverlap` `pad_y` |
-| `@params$use_xy_as_geom` | `terra::centroids()` → `TRUE` | `storeRead` geom path selector; `as.data.frame(geom="XY")` guard |
+| `@params$use_xy_as_geom` | `terra::centroids()` → `TRUE` | `.pgeom_xy_points()` — makes a polygon store read as points |
 
 `@geomtype` slot — set by: `storeWrite(,SpatVector)`, `storeWrite(TileStore,*)` from `type` param,
-`storeWrite(,parquetGeomStore)` (copied), `terra::centroids()` (forced `"points"`).
-Consumed by: `as.data.frame(geom="XY")` guard, GeoParquet metadata, `show()`.
+`storeWrite(,parquetGeomStore)` (copied), `terra::centroids()` (forced `"points"`),
+`initialize()` (`"points"` when unset and no `geom` on disk — only points lack it).
+Consumed by: `.pgeom_xy_points()`, GeoParquet metadata, `show()`.
 
 ### @datatype — on-disk type overrides
 
@@ -383,8 +391,22 @@ is not yet wired; see roadmap.
 `output = "terra"` uses `terra::vect(as.list(geom_col))` directly — avoids sf intermediate
 (~6x faster at scale). `output = "sf"` still routes through sf.
 
-When `store@params$use_xy_as_geom = TRUE` (set by `terra::centroids()`), the read path builds
-point geometries from `x_index`/`y_index` and drops `geom` entirely — no store rewrite.
+### Points are their coordinates (`.pgeom_xy_points()`)
+A store reads as points when `@geomtype == "points"`, when `use_xy_as_geom` is set
+(`terra::centroids()`), or when `@geomtype` is unset and there is no `geom` on disk. Every
+reader then builds geometry from `x_index`/`y_index` and ignores any `geom` column:
+terra/sf/vertex_dt in R, the terra `spatRelate` engine, and the SQL engines, whose base
+view gains `ST_Point(x_index, y_index) AS geom` (`.pgeom_view_sql()`). That view is
+what lets `ST_<pred>(geom, …)`, `ST_Affine(geom, …)` and the overlap join run unchanged.
+
+### Sedona CRS: a planar engineering frame, set at read time
+Files of a store with no CRS say `crs: null`. The sedona base view
+(`.pgeom_view_sql()`) puts every such store in `.SEDONA_PLANAR_CRS`, a PROJJSON
+engineering CRS: `ST_SetCrs(geom, …)` for polygons, `ST_Point(x, y, …)` for points (the
+3-arg form — `ST_SetCrs(ST_Point())` fails to plan over multi-file scans). Query
+geometries copy it via `ST_Crs(geom)`. Do not write it into files, and do not make it
+per-row or per-side: a constant on both sides is what keeps the overlap a spatial join
+rather than a nested loop. A store with a real `@params$crs` is left alone. adr/0023.
 
 ### storeRead field injection: `.pstore_fields_requested` + `.pstore_lazy_fields`
 Dispatch chain changes `output` to `"query"` via `callNextMethod`, so special column
@@ -395,6 +417,7 @@ injection must happen at the **topmost** level before the first `callNextMethod`
   returns `NULL` if `fields = NULL` (fetch all)
 - Required injections: `x_index`/`y_index` always (geom stores); `tile_index` (tileStore);
   `source_id`/`row_index` for materialized outputs; `geom` for `"terra"`/`"sf"`
+  (not for points)
 
 ### [i, on] join op
 `x[y, on = c(...)]` records a join against `y` (`parquetBase`) as a `"join"` op
@@ -446,6 +469,7 @@ store@ops <- c(store@ops, list(list(type = "filter", expr = my_call)))
 ### GeoParquet metadata
 `.arrow_meta_add_geoparquet()` attaches GeoParquet-compliant `"geo"` metadata. Uses
 `store@params$disk_extent` as bounding box, `store@params$crs %||% ""` for CRS.
+A points store written without `geom` gets none (it strips any passed in).
 Tiled stores write the top-level extent to each tile file (intentional — files are internal).
 
 ## Output Formats
@@ -557,7 +581,7 @@ pulled into R. Returns `SpatRaster` with template extent and CRS.
 
 ### terra::centroids (parquetGeomBase)
 Sets `@geomtype = "points"` and `@params$use_xy_as_geom = TRUE`. No data read or rewritten.
-At read time, `x_index`/`y_index` are used as point coordinates instead of parsing `geom` WKB.
+The result is a points store over the polygon files (see *Points are their coordinates*).
 
 ## gsource / Project Directory System
 

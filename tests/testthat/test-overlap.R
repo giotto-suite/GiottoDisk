@@ -352,3 +352,25 @@ describe("overlapToMatrix with a count column", {
         expect_equal(R, cf$rows[rownames(R), colnames(R)])
     })
 })
+
+# feat_count_column = FALSE narrows the points with `[, j]`; the SQL engines
+# must still see the `geom` their view builds for coordinate-only points.
+test_that("calculateOverlap: column-selected points overlap on every engine", {
+    fx <- .ov_fx()
+    # rebuilt from plain columns: terra output still carries tile_index
+    g <- as.data.frame(storeRead(fx$pts_flat, output = "terra"),
+        geom = "XY")[, c("x", "y", "feat_ID")]
+    g$count <- 1L
+    pts <- parquetGeomStore() |>
+        storeWrite(terra::vect(g, geom = c("x", "y"), crs = ""))
+    want <- .ov_counts(fx$truth, fx$feats, fx$cells)
+    for (eng in c("terra", "duckdb", "sedona")) {
+        if (eng == "duckdb" && !requireNamespace("duckdb", quietly = TRUE)) next
+        if (eng == "sedona" && !requireNamespace("sedonadb", quietly = TRUE)) next
+        ov <- calculateOverlap(fx$polys, pts, engine = eng,
+            feat_count_column = FALSE)
+        d <- storeRead(ov@data, output = "tibble")
+        expect_false("count" %in% names(d), info = eng)
+        expect_equal(.ov_counts(d, fx$feats, fx$cells), want, info = eng)
+    }
+})

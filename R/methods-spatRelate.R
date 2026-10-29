@@ -77,10 +77,9 @@ NULL
 }
 
 # SedonaDB SQL for the query geometry of a spat_relate. SedonaDB requires both
-# sides of a predicate to share a CRS, and which CRS it gives a store written
-# without one (`crs: null`) depends on its version: `ogc:crs84` in older
-# releases, none in newer ones. The query geometry takes the CRS of the store's
-# own `geom` column, so the two always match.
+# sides of a predicate to share a CRS. The query geometry takes the CRS of the
+# store's `geom` column -- the planar frame the base view sets on a store
+# without one (.pgeom_view_sql()), or the store's own -- so the two match.
 .sedona_query_geom_sql <- function(wkt) {
     wkt_escaped <- gsub("'", "''", wkt, fixed = TRUE)
     sprintf("ST_SetCrs(ST_GeomFromText('%s'), ST_Crs(geom))", wkt_escaped)
@@ -509,6 +508,18 @@ setMethod(
 }
 
 
+# The x side of a terra relate: points from x_index/y_index, else the WKB.
+.relate_x_vect <- function(df, xy_points, where) {
+    if (isTRUE(xy_points)) {
+        return(terra::vect(cbind(df$x_index, df$y_index), type = "points"))
+    }
+    if (!"geom" %in% names(df)) {
+        stop("[spat_relate][terra] expected 'geom' col missing from ", where,
+            call. = FALSE)
+    }
+    terra::vect(as.list(df$geom))
+}
+
 # Terra engine for spat_relate narrowing (deps-free fallback).
 # Materializes the trim store's id_cols + geom via the arrow-output path,
 # decodes WKB to a SpatVector, runs `terra::relate` against the query
@@ -534,13 +545,10 @@ setMethod(
     # skip the `terra::values(sv) <- data` attribute attachment that
     # `.pgstore_to_spatial` does (we filter on geom only and pluck
     # id_cols from the source tibble).
+    xy_points <- .pgeom_xy_points(trim_store)
     eval_chunk <- function(df) {
         if (is.null(df) || nrow(df) == 0L) return(NULL)
-        if (!"geom" %in% names(df)) {
-            stop("[spat_relate][terra] expected 'geom' col missing from chunk",
-                call. = FALSE)
-        }
-        x_sv <- terra::vect(as.list(df$geom))
+        x_sv <- .relate_x_vect(df, xy_points, "chunk")
         y_sv <- terra::vect(y_wkt)
         rel <- terra::relate(x_sv, y_sv, relation = relation)
         keep <- if (is.matrix(rel)) {
@@ -563,11 +571,7 @@ setMethod(
         tile_id_cols <- setdiff(id_cols, "source_id")
         eval_tile <- function(df) {
             if (is.null(df) || nrow(df) == 0L) return(NULL)
-            if (!"geom" %in% names(df)) {
-                stop("[spat_relate][terra] expected 'geom' col missing from tile",
-                    call. = FALSE)
-            }
-            x_sv <- terra::vect(as.list(df$geom))
+            x_sv <- .relate_x_vect(df, xy_points, "tile")
             y_sv <- terra::vect(y_wkt)
             rel <- terra::relate(x_sv, y_sv, relation = relation)
             keep <- if (is.matrix(rel)) {

@@ -12,6 +12,13 @@
   older GiottoDisk errors until it is upgraded with `sourceUpdate()`.
   `options(giottodisk.schema_check = FALSE)` proceeds with a warning instead.
 - Snapshot names may not contain a path separator or start with `.`.
+- Points stores no longer write a WKB `geom` column, so their files are not
+  GeoParquet; points read from `x_index`/`y_index`. Files are about 40%
+  smaller and terra reads are faster. `options(giottodisk.points_wkb = TRUE)`
+  writes the column for tools outside the suite. Older stores still read.
+- SedonaDB queries put stores without a CRS (all Giotto data) in a planar
+  engineering CRS, whatever sedona version is installed, instead of the lng/lat
+  CRS sedona 0.4 assumes. Files are unchanged.
 
 ## changes
 - A missing *sedonadb* or *smotif* now points at its r-universe
@@ -100,6 +107,8 @@
   never fails the save. Requires GiottoClass >= 0.7.24.
 
 ## bug fixes
+- `spatRelate()` on `centroids()` of a polygon store tested the polygons
+  instead of their centroids.
 - Xenium and Atera disk readers: genomic control probes named
   `Intergenic_Region_*` (Atera WTA panels) and `DeprecatedCodeword_*`
   features were loaded as `rna` transcripts. The defaults now put them in
