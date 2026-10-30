@@ -20,7 +20,8 @@
   replaces Rarr's ~50; the bytes decoded are the same, and decoding is no
   slower (12% faster over the Xenium and Atera archives tested, up to 25%
   for lz4). On Linux, `blosc` builds against the c-blosc system
-  library (`libblosc-dev` / `blosc-devel`).
+  library (`libblosc-dev` / `blosc-devel`); `pak::pak("blosc")` installs
+  it, and a binary of the package, on every platform.
 - A missing *sedonadb* or *smotif* now points at its r-universe
   (`install.packages(..., repos = ...)`), which serves binaries, instead of
   `devtools::install_github()`, which compiles Rust from source.

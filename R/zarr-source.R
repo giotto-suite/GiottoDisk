@@ -20,13 +20,13 @@
 # open / close ####
 
 # The blosc package decodes the archives' chunks. On Linux it builds against
-# the system c-blosc library.
+# the system c-blosc library; pak installs that library and a binary package.
 .zarr_check_blosc <- function() {
     GiottoUtils::package_check("blosc", repository = "CRAN",
         custom_msg = paste0(
             "Reading zarr archives needs the 'blosc' package: ",
-            "install.packages(\"blosc\"). On Linux, install the c-blosc ",
-            "library first (libblosc-dev or blosc-devel)."))
+            "pak::pak(\"blosc\"). On Linux, pak also installs the ",
+            "c-blosc system library (libblosc-dev or blosc-devel)."))
     invisible(NULL)
 }
 
