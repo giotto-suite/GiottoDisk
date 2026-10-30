@@ -492,8 +492,8 @@ setMethod(
 #' stores. Other modalities (expression, featmeta, cellmeta, images)
 #' remain in-memory via the inherited `XeniumReader` closures.
 #'
-#' Zarr-only output directories are supported (requires `Rarr` and
-#' `zip`): transcripts, boundaries and cell metadata are converted from
+#' Zarr-only output directories are supported (requires the `blosc`
+#' package): transcripts, boundaries and cell metadata are converted from
 #' the `.zarr.zip` archives to 10x-schema parquet in a conversion cache
 #' under [getArtifactDumpDir()] (first import converts, later imports
 #' reuse), and expression streams from the zarr directly into the vault

@@ -13,11 +13,12 @@
 # ad-hoc archive in test-zarr-cfm-input.R.)
 #
 # Most arrays are hand-encoded with `"compressor": null` (raw chunks) so
-# every dtype path is exercised precisely; cell_summary is written
-# through Rarr with blosc so the real decompression path runs too.
+# every dtype path is exercised precisely; cell_summary is blosc-compressed
+# (lz4, byte shuffle, as Xenium writes) and F-ordered so the real
+# decompression path and the F-order read run too.
 
 skip_if_no_zarr_deps <- function() {
-    testthat::skip_if_not_installed("Rarr")
+    testthat::skip_if_not_installed("blosc")
     testthat::skip_if_not_installed("zip")
 }
 
@@ -60,23 +61,37 @@ skip_if_no_zarr_deps <- function() {
     .zf_write_json(root, rel, list(zarr_format = 2L))
 }
 
-# Write a 1D vector or 2D matrix as a raw-chunk (compressor null) zarr
-# array in C order, padding edge chunks with `fill` per the spec.
-.zf_write_array <- function(root, prefix, x, dtype, chunks, fill = 0) {
+# Write a 1D vector or 2D matrix as a zarr array, padding edge chunks with
+# `fill` per the spec. Chunks are raw (compressor null), or blosc-compressed
+# with `blosc_cname` ("lz4", "zstd", "blosclz") and byte shuffle; `order`
+# "C" (row-major) or "F" (column-major) within a 2D chunk.
+.zf_write_array <- function(root, prefix, x, dtype, chunks, fill = 0,
+    order = "C", blosc_cname = NULL) {
     adir <- file.path(root, prefix)
     dir.create(adir, recursive = TRUE, showWarnings = FALSE)
     shape <- if (is.matrix(x)) dim(x) else length(x)
     chunks <- as.integer(chunks)
+    compressor <- if (is.null(blosc_cname)) NULL else list(blocksize = 0L,
+        clevel = 5L, cname = blosc_cname, id = "blosc", shuffle = 1L)
     .zf_write_json(root, file.path(prefix, ".zarray"), list(
         chunks = as.list(chunks),
-        compressor = NULL,
+        compressor = compressor,
         dtype = dtype,
         fill_value = fill,
         filters = NULL,
-        order = "C",
+        order = order,
         shape = as.list(as.integer(shape)),
         zarr_format = 2L
     ))
+    put <- function(vals, chunk_file) {
+        bytes <- .zf_encode(vals, dtype)
+        if (!is.null(blosc_cname)) {
+            bytes <- blosc::blosc_compress(bytes, compressor = blosc_cname,
+                typesize = as.integer(sub("^\\D+", "", dtype)),
+                shuffle = "shuffle")
+        }
+        writeBin(bytes, file.path(adir, chunk_file))
+    }
     if (length(shape) == 1L) {
         n_chunks <- ceiling(shape / chunks)
         for (ci in seq_len(n_chunks) - 1L) {
@@ -84,7 +99,7 @@ skip_if_no_zarr_deps <- function() {
             e <- min(s + chunks[1L] - 1L, shape[1L])
             vals <- rep(fill, chunks[1L])
             vals[seq_len(e - s + 1L)] <- x[s:e]
-            writeBin(.zf_encode(vals, dtype), file.path(adir, ci))
+            put(vals, ci)
         }
     } else {
         for (ci in seq_len(ceiling(shape[1L] / chunks[1L])) - 1L) {
@@ -96,9 +111,9 @@ skip_if_no_zarr_deps <- function() {
                 ce <- min(cs + chunks[2L] - 1L, shape[2L])
                 block[seq_len(re - rs + 1L), seq_len(ce - cs + 1L)] <-
                     x[rs:re, cs:ce, drop = FALSE]
-                # C order = row-major
-                writeBin(.zf_encode(as.vector(t(block)), dtype),
-                    file.path(adir, paste0(ci, ".", cj)))
+                # C order = row-major, F order = column-major
+                put(if (order == "F") as.vector(block) else as.vector(t(block)),
+                    paste0(ci, ".", cj))
             }
         }
     }
@@ -155,15 +170,11 @@ make_zarr_fixture <- function(dir = file.path(tempdir(),
         z_level = rep(1, n_cells),
         nucleus_count = rep(c(1, 2), 6)
     )
-    # blosc-compressed via Rarr so the real decompression path runs.
-    # F order: Rarr's writer round-trips F correctly (its C-order write
-    # is transposed on disk); the reader under test handles both orders.
-    p_cs <- file.path(croot, "cell_summary")
-    Rarr::create_empty_zarr_array(p_cs, dim = dim(cs),
-        chunk_dim = c(7L, 8L), data_type = "double", order = "F",
-        compressor = Rarr::use_blosc(), fill_value = 0)
-    Rarr::update_zarr_array(p_cs, cs,
-        index = list(seq_len(nrow(cs)), seq_len(ncol(cs))))
+    # blosc-compressed (lz4, byte shuffle) so the real decompression path
+    # runs; F order and (7, 8) chunks on a 12 x 8 matrix so the F-order and
+    # padded-edge-chunk reads run too
+    .zf_write_array(croot, "cell_summary", cs, "<f8", chunks = c(7L, 8L),
+        order = "F", blosc_cname = "lz4")
 
     # polygon sets: 0 = nucleus (has a zero-vertex polygon), 1 = cell.
     # vertices (12 x 10) f4, chunked (5, 4): multi-chunk on BOTH axes so

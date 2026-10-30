@@ -47,6 +47,16 @@ that satisfies Giotto works. Note that Giotto's general integration branch is
 Why each pin exists, and what has to land upstream before it can be dropped,
 is in *Upstream branch pins* in `AGENTS.md`.
 
+Reading Xenium and Atera zarr archives (`.zarr.zip`) needs the optional
+`blosc` package. On Linux it builds against the c-blosc system library, so
+install it with pak, which installs that library too (as root or with
+sudo; otherwise it prints the command to run) and a prebuilt binary of the
+package. On macOS and Windows it installs the CRAN binary:
+
+```r
+pak::pak("blosc")
+```
+
 ## Quick Start
 
 ### Basic Usage
