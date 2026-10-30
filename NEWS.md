@@ -58,6 +58,19 @@
   on a backed object.
 
 ## new
+- Tiled transcript and bin point writes use GiottoIngest, an optional Rust
+  backend, when it is installed: Xenium, Atera (preview parquet and v1
+  zarr), MERSCOPE, VisiumHD and Stereo-seq bin points. The stores are the
+  same as the R writer's (plan, tiles, rows and their types, geoparquet
+  metadata); the R writer's row order within a tile was never reproducible.
+  Measured on an M2 Ultra against the R readers (8 workers): MERSCOPE colon
+  24 s and 10 GB instead of 5.7 min and 32 GB, Atera breast 3.7 min and
+  4.3 GB instead of 9.7 min and 34 GB, Atera kidney 2.6 min and 4 GB instead
+  of 4.2 min and 31 GB. `options(giottodisk.use_ingest = FALSE)` forces the
+  R path; a missing GiottoIngest is mentioned once per session. Writes the
+  Rust path does not reproduce (`write_param`, a `dry_run`, a compression
+  other than snappy, Atera `dropcols`) and inputs it reports as unsupported
+  stay in R.
 - `importMerscopeDisk()` reads Vizgen MERSCOPE region directories into a
   project: transcripts, cell boundaries and the cell by gene matrix are
   written as stores; cell metadata, cell centers and images stay in memory.

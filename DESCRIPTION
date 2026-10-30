@@ -44,6 +44,7 @@ Suggests:
     dbplyr,
     duckdb,
     filelock (>= 1.0.2),
+    GiottoIngest (>= 0.1.0),
     GiottoKernels (>= 0.3.0),
     HDF5Array,
     hdf5r,
@@ -136,6 +137,7 @@ Collate:
     'tilework.R'
     'utils-arrow.R'
     'utils-edge.R'
+    'utils-ingest.R'
     'utils-kernels.R'
     'utils-parquetExprStore.R'
     'zarr-array.R'

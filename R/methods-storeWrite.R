@@ -485,6 +485,13 @@ setMethod(
             sdimy = sdimy
         )
 
+        # Rust path (GiottoIngest) when the reader described its source
+        fast <- .store_write_points_ingest(store, data, threshold = threshold,
+            tiles = tiles, i = i, id_col = id_col, sdimx = sdimx,
+            sdimy = sdimy, contiguous = contiguous, dry_run = dry_run,
+            write_param = write_param, verbose = verbose)
+        if (!is.null(fast)) return(fast)
+
         a <- storeRead(data)
         .guard_lazy_access(a) # only permit lazy reading
         if (nrow(a) == 0L) {
@@ -494,11 +501,7 @@ setMethod(
         n <- .dplyr_nrow(a)
         threshold <- threshold %||% .auto_threshold(n, type = type)
         if (is.null(tiles)) {
-            tiles <- tilework::tilePlan("spatial")
-            data_ext <- .dplyr_ext(a, sdimx = sdimx, sdimy = sdimy)
-            terra::ext(tiles) <- data_ext
-            erange <- range(data_ext)
-            length(tiles) <- .seed_tile_count(erange)
+            tiles <- .points_seed_tiles(.dplyr_ext(a, sdimx = sdimx, sdimy = sdimy))
         }
         plans <- .tile_plan_quadtree(store, data,
             threshold = threshold,
@@ -980,7 +983,16 @@ setMethod(
     disk_ext <- as.numeric(c(min(b[, 1L]), max(b[, 2L]), min(b[, 3L]), max(b[, 4L])))
     store@tiles <- fp
     .pstore_disk_extent(store) <- disk_ext
-    list(tile_sel = tile_sel, store = store)
+    list(tile_sel = tile_sel, tile_indices = tile_indices, store = store)
+}
+
+# Starting grid of a points quadtree plan over the data extent: four tiles
+# per unit of aspect ratio (one for a zero width or height).
+.points_seed_tiles <- function(data_ext) {
+    tiles <- tilework::tilePlan("spatial")
+    terra::ext(tiles) <- data_ext
+    length(tiles) <- .seed_tile_count(range(data_ext))
+    tiles
 }
 
 .write_parquet <- function(store, data, uid_partition = TRUE, tile_idx = NULL, ...) {
@@ -1038,6 +1050,7 @@ setMethod(
 
 # Points straight from their coordinates, as the SpatVector method writes
 # them: the same WKB (wk builds it), extent and frame, without terra.
+# Mirrored in GiottoIngest (Rust): a change here needs its parity tests.
 .store_write_points <- function(store, x, y, meta, row_offset = 0,
                                 tile_idx = 0L, .arrow_meta = NULL,
                                 split_geom = FALSE, split_geom_fmt = NULL,
