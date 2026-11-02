@@ -56,11 +56,10 @@
     # written aside and renamed, so an interrupted conversion is never reused
     tmp <- paste0(savepath, ".writing.tif")
     on.exit(unlink(tmp), add = TRUE)
-    # A TIFF without a geotransform (MERSCOPE's) gets GDAL's default, which
-    # runs y downward, and terra flips it on reading. The COG is written
-    # north-up, so it must be read unflipped to keep the file's row order,
-    # which tile readers use, and Giotto's placement of it.
-    r <- suppressWarnings(terra::rast(src, noflip = TRUE)) # "unknown extent"
+    # Opened as Giotto opens images (noflip): a TIFF without a geotransform,
+    # like MERSCOPE's, is otherwise flipped by terra, and the north-up COG
+    # would then hold the source's rows reversed.
+    r <- suppressWarnings(.create_terra_spatraster(src)) # "unknown extent"
     terra::writeRaster(r, tmp, filetype = "COG", datatype = terra::datatype(r)[[1L]],
         NAflag = NA, overwrite = TRUE, progress = 0,
         gdal = c("COMPRESS=DEFLATE", "PREDICTOR=2", "BLOCKSIZE=512",
