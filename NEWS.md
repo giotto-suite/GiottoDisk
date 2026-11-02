@@ -14,6 +14,11 @@
 - Snapshot names may not contain a path separator or start with `.`.
 
 ## changes
+- MERSCOPE images (`importMerscopeDisk()`, `load_images`) are converted once to a
+  tiled COG with overviews in the project, so tile viewers such as GiottoLens
+  can show them; `convert_images = FALSE` keeps the mosaic. A 24139 x 23884
+  mosaic converts in about 8 s, to under half its size, and is reused on later
+  imports.
 - Zarr archives (Xenium and Atera `.zarr.zip`) are decoded with the
   `blosc` package (CRAN) instead of Rarr (Bioconductor), which was used
   through an internal function. One dependency with no R dependencies
@@ -121,6 +126,9 @@
   never fails the save. Requires GiottoClass >= 0.7.24.
 
 ## bug fixes
+- An image already in the project vault keeps its placement through a
+  snapshot save and load. Its extent was recorded only when the image was
+  first adopted, so a later `rescale()` or `spatShift()` was lost on load.
 - Tiled writes (`storeWrite()` of points or polygons into a
   `parquetGeomTileStore`, and `calculateOverlap()`) failed when the data's
   extent had zero width or height, such as a single point or points all on

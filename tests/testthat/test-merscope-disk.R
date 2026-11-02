@@ -136,6 +136,118 @@ test_that("load_image() works without an explicit transform_path", {
     expect_equal(unname(e), c(-2, 38, -17, 3))
 })
 
+# A mosaic like MERSCOPE's: too large to read whole, uncompressed, in strips,
+# with no geotransform (GDAL's baseline profile, its .aux.xml sidecar
+# removed); every row and column different, so a flip shows. Transform: 2
+# pixels per micron, offset 4 / 6 pixels.
+.mk_mosaic <- function(d, ncol = 4200L) {
+    dir.create(file.path(d, "images"), showWarnings = FALSE)
+    v <- outer(seq_len(64L) * 50L, seq_len(ncol) %% 37L, `+`)
+    r <- terra::rast(nrows = 64, ncols = ncol, xmin = 0, xmax = ncol,
+        ymin = 0, ymax = 64, vals = as.vector(t(v)))
+    f <- file.path(d, "images", "mosaic_DAPI_z0.tif")
+    terra::writeRaster(r, f, datatype = "INT2U", overwrite = TRUE,
+        gdal = c("PROFILE=BASELINE", "COMPRESS=NONE"))
+    unlink(paste0(f, ".aux.xml"))
+    utils::write.table(matrix(c(2, 0, 4, 0, 2, 6, 0, 0, 1), 3, byrow = TRUE),
+        file.path(d, "images", "micron_to_mosaic_pixel_transform.csv"),
+        sep = " ", row.names = FALSE, col.names = FALSE)
+    f
+}
+
+test_that("only large images without tiles or overviews need converting", {
+    .mer_skip()
+    d <- withr::local_tempdir()
+    f <- .mk_mosaic(d)
+    expect_false(.tif_tile_readable(f))
+    small <- file.path(d, "small.tif")
+    terra::writeRaster(terra::rast(nrows = 40, ncols = 80, vals = 1), small)
+    expect_true(.tif_tile_readable(small))
+    cog <- file.path(d, "cog.tif")
+    terra::writeRaster(suppressWarnings(terra::rast(f)), cog, filetype = "COG",
+        datatype = "INT2U", gdal = "BLOCKSIZE=512")
+    expect_true(.tif_tile_readable(cog))
+    expect_true(.tif_tile_readable(file.path(d, "not-an-image.tif")))
+})
+
+test_that("load_image() converts a mosaic once to a COG in the vault", {
+    .mer_skip()
+    d <- .mk_merscope_disk_dir()
+    f <- .mk_mosaic(d)
+    proj <- .proj()
+    x <- importMerscopeDisk(d, backend = proj)
+    img <- x$load_image(path = f)
+    cog <- img@file_path
+    expect_true(startsWith(cog, normalizePath(.gdsrc_vault_dir(proj))))
+    expect_true(.tif_tile_readable(cog))
+    expect_match(paste(terra::describe(cog), collapse = "\n"), "Overviews:")
+
+    # Placed as the mosaic itself: the same value at every point Giotto reads
+    plain <- x$load_image(path = f, convert = FALSE)
+    expect_identical(plain@file_path, f)
+    expect_equal(as.vector(terra::ext(img)), as.vector(terra::ext(plain)))
+    e <- as.vector(terra::ext(plain))
+    xy <- as.matrix(expand.grid(seq(e[1] + 1, e[2] - 1, length.out = 40),
+                                seq(e[3] + 0.1, e[4] - 0.1, length.out = 16)))
+    expect_identical(terra::extract(img@raster_object, xy)[, 1],
+                     terra::extract(plain@raster_object, xy)[, 1])
+    # and in the source's row order, which tile readers such as GiottoLens
+    # use: terra shows the source (no geotransform) upside down, the COG not
+    a <- suppressWarnings(terra::rast(f))
+    b <- terra::rast(cog)
+    expect_identical(terra::values(b, row = 1, nrows = 1),
+                     terra::values(a, row = nrow(a), nrows = 1))
+
+    # Reused while the mosaic is unchanged; converted again once it changes
+    mt <- file.mtime(cog)
+    again <- x$load_image(path = f)
+    expect_identical(again@file_path, cog)
+    expect_identical(file.mtime(cog), mt)
+    Sys.setFileTime(f, Sys.time() + 60)
+    expect_false(identical(x$load_image(path = f)@file_path, cog))
+})
+
+test_that("a georeferenced source keeps its orientation in the COG", {
+    .mer_skip()
+    d <- withr::local_tempdir()
+    v <- outer(seq_len(64L) * 50L, seq_len(4200L) %% 37L, `+`)
+    r <- terra::rast(nrows = 64, ncols = 4200, xmin = 0, xmax = 4200,
+        ymin = 0, ymax = 64, vals = as.vector(t(v)))
+    f <- file.path(d, "geo.tif")
+    terra::writeRaster(r, f, datatype = "INT2U")
+    expect_false(.tif_tile_readable(f))
+    cog <- .image_cog(f, gDirSource(path = .proj()))
+    a <- terra::rast(f)
+    b <- terra::rast(cog)
+    expect_identical(terra::datatype(b), "INT2U")
+    expect_equal(as.vector(terra::ext(b)), as.vector(terra::ext(a)))
+    expect_identical(terra::values(b), terra::values(a))
+})
+
+test_that("a snapshot keeps the converted image; convert_images = FALSE skips it", {
+    .mer_skip()
+    d <- .mk_merscope_disk_dir()
+    f <- .mk_mosaic(d)
+    x <- importMerscopeDisk(d, backend = .proj())
+    g <- suppressMessages(suppressWarnings(
+        x$create_gobject(load_images = "DAPI_z0", verbose = FALSE)))
+    cog <- g@images[[1L]]@file_path
+    expect_false(identical(normalizePath(cog), normalizePath(f)))
+    placed <- as.vector(terra::ext(g@images[[1L]]@raster_object))
+    suppressWarnings(snapshotSave(g@source, g, name = "with_image", verbose = FALSE))
+    sourcePrune(g@source)
+    expect_true(file.exists(cog))
+    # Loading rebuilds the raster from the file: it keeps its placement
+    loaded <- suppressMessages(suppressWarnings(snapshotLoad(g@source)))
+    img <- GiottoClass::reconnect(loaded@images[[1L]])
+    expect_equal(as.vector(terra::ext(img@raster_object)), placed)
+
+    g2 <- suppressMessages(suppressWarnings(
+        importMerscopeDisk(d, backend = .proj())$create_gobject(
+            load_images = "DAPI_z0", convert_images = FALSE, verbose = FALSE)))
+    expect_identical(normalizePath(g2@images[[1L]]@file_path), normalizePath(f))
+})
+
 test_that("csv transcripts are converted to parquet once and cached", {
     .mer_skip()
     withr::local_options(list(giottodisk.artifact_dump = withr::local_tempdir()))

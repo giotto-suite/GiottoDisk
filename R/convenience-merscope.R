@@ -2,8 +2,9 @@
 #
 # Laid out like the Xenium disk reader: class and init (loaders, then
 # create_gobject), the import function, then the modular loaders. Transcripts,
-# polygons and expression are written to the project as stores; cell metadata,
-# cell centers and images stay in memory. `create_gobject()` takes the same
+# polygons and expression are written to the project as stores; cell metadata
+# and cell centers stay in memory, and images are file-backed (a mosaic that
+# cannot be read by tile is converted to a COG in the project, image-cog.R). `create_gobject()` takes the same
 # arguments as Giotto's in-memory MERSCOPE reader, so
 # Giotto::createGiottoMerscopeObject(backend =) runs it unchanged.
 #
@@ -183,10 +184,12 @@ setMethod(
 
         ## images (in memory, file-backed) ####
         img_fun <- function(path, name = "image", transform_path = tf_path,
-                            negative_y = TRUE, verbose = NULL, ...) {
+                            negative_y = TRUE, convert = TRUE,
+                            verbose = NULL, ...) {
             .merscope_image(path = path, name = name,
                             transform_path = transform_path,
-                            negative_y = negative_y, verbose = verbose)
+                            negative_y = negative_y, convert = convert,
+                            gsource = gsrc, verbose = verbose)
         }
         .Object@calls$load_image <- img_fun
 
@@ -209,6 +212,7 @@ setMethod(
             load_cellmeta = FALSE,
             load_images = NULL,
             image_transform_path = tf_path,
+            convert_images = TRUE,
             instructions = NULL,
             verbose = NULL) {
 
@@ -309,6 +313,7 @@ setMethod(
                         path = img_paths[[img_i]],
                         name = names(img_paths)[[img_i]],
                         transform_path = image_transform_path,
+                        convert = convert_images,
                         verbose = verbose
                     )
                 })
@@ -363,8 +368,8 @@ setMethod("$<-", signature("MerscopeDiskReader"), function(x, name, value) {
 #' @description
 #' Disk-backed MERSCOPE reader. Produces a `MerscopeDiskReader` whose
 #' `load_transcripts()`, `load_polys()` and `load_expression()` calls write to a
-#' `gDirSource`-managed project vault; cell metadata, cell centers and images
-#' stay in memory. `$create_gobject()` takes the same arguments as
+#' `gDirSource`-managed project vault; cell metadata and cell centers stay in
+#' memory, and images are file-backed. `$create_gobject()` takes the same arguments as
 #' [Giotto::importMerscope()]'s, and [Giotto::createGiottoMerscopeObject()]
 #' with `backend =` uses this reader.
 #'
@@ -372,6 +377,11 @@ setMethod("$<-", signature("MerscopeDiskReader"), function(x, name, value) {
 #' converted to parquet once, cached by path, size and modification time.
 #' Cell boundaries may be `cell_boundaries.parquet` or (with
 #' `polygon_format = "hdf5"`) the per-FOV HDF5 files in `cell_boundaries/`.
+#' Images (`load_images`) are MERSCOPE's mosaics: large TIFFs without tiles or
+#' overviews, which tile viewers such as GiottoLens cannot read. Each is
+#' converted once to a COG (tiled, with overviews, same pixels) in the project
+#' vault and reused while the mosaic is unchanged; `convert_images = FALSE` in
+#' `$create_gobject()` (`convert = FALSE` in `$load_image()`) keeps the mosaic.
 #' `FOVs` applies to transcripts, polygons, expression, cell metadata and cell
 #' centers. The y coordinates are negated (`y` becomes `-y`).
 #' @param merscope_dir MERSCOPE region directory
@@ -1030,8 +1040,13 @@ To load a single plane, pass e.g. poly_z_indices = %s",
     stats::setNames(as.list(paths), nms)
 }
 
+# MERSCOPE mosaics are large uncompressed TIFFs in one strip, with no
+# overviews: with `convert`, one that cannot be read by tile is replaced by a
+# COG in the project vault (.image_cog()). The COG has the same pixels, so the
+# placement below is unchanged.
 .merscope_image <- function(path, name = "image", transform_path = NULL,
-                            negative_y = TRUE, verbose = NULL) {
+                            negative_y = TRUE, convert = TRUE, gsource = NULL,
+                            verbose = NULL) {
     if (missing(path)) {
         stop("[merscope_image] no image path provided", call. = FALSE)
     }
@@ -1043,6 +1058,11 @@ To load a single plane, pass e.g. poly_z_indices = %s",
     checkmate::assert_file_exists(transform_path)
     GiottoUtils::vmsg(.v = verbose,
         sprintf("[merscope_image] loading image as '%s'", name))
+
+    if (isTRUE(convert) && inherits(gsource, "gDirSource") &&
+        !.tif_tile_readable(path)) {
+        path <- .image_cog(path, gsource, verbose = verbose)
+    }
 
     tm <- as.matrix(data.table::fread(transform_path, header = FALSE))
     sx <- tm[1L, 1L]
