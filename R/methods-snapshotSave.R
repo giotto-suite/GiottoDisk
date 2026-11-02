@@ -248,7 +248,17 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
     for (img in img_list) {
         r <- img@raster_object
         if (is.null(r)) next
-        if (sourceContains(src, r)) next
+        if (sourceContains(src, r)) {
+            # Already in the vault (adopted earlier, or converted at ingest).
+            # Loading rebuilds the raster from @extent, which placement
+            # (rescale, spatShift) does not update: record where it is now.
+            e <- terra::ext(r)[]
+            if (!isTRUE(all.equal(unname(as.vector(img@extent)), unname(e)))) {
+                img@extent <- e
+                gobject <- GiottoClass::setGiotto(gobject, img, verbose = FALSE)
+            }
+            next
+        }
 
         f <- normalizePath(terra::sources(r), mustWork = FALSE)
         if (!export_image && nzchar(f)) next # skip external on-disk if not exporting

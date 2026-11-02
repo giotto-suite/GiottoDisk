@@ -12,14 +12,14 @@ importMerscopeDisk(
 )
 }
 \arguments{
-\item{merscope_dir}{MERSCOPE region directory (the one containing
-\code{detected_transcripts.parquet}). \code{experiment.json} is read from the parent
-directory.}
+\item{merscope_dir}{MERSCOPE region directory}
 
-\item{backend}{a \code{gsource} (typically \code{gDirSource}) project backend.}
+\item{backend}{a \code{gsource} (typically \code{gDirSource}) project backend, or a
+directory path for one}
 
 \item{score_threshold}{\code{numeric} or \code{NULL} (default). Minimum
-\code{transcript_score} retained; \code{NULL} keeps all transcripts.}
+\code{transcript_score} retained; \code{NULL} keeps all transcripts. Exports without
+a \code{transcript_score} column are not filtered.}
 
 \item{polygon_format}{\code{character}. \code{"parquet"} (default) or \code{"hdf5"}.}
 }
@@ -29,7 +29,28 @@ directory.}
 \description{
 Disk-backed MERSCOPE reader. Produces a \code{MerscopeDiskReader} whose
 \code{load_transcripts()}, \code{load_polys()} and \code{load_expression()} calls write to a
-\code{gDirSource}-managed project vault. Cell metadata remains in memory.
+\code{gDirSource}-managed project vault; cell metadata and cell centers stay in
+memory, and images are file-backed. \verb{$create_gobject()} takes the same arguments as
+\code{\link[Giotto:importMerscope]{Giotto::importMerscope()}}'s, and \code{\link[Giotto:createGiottoMerscopeObject]{Giotto::createGiottoMerscopeObject()}}
+with \verb{backend =} uses this reader.
+
+Transcripts may be \code{detected_transcripts.parquet} or \code{.csv}; a csv is
+converted to parquet once, cached by path, size and modification time.
+Cell boundaries may be \code{cell_boundaries.parquet} or (with
+\code{polygon_format = "hdf5"}) the per-FOV HDF5 files in \verb{cell_boundaries/}.
+Images (\code{load_images}) are MERSCOPE's mosaics: large TIFFs without tiles or
+overviews, which tile viewers such as GiottoLens cannot read. Each is
+converted once to a COG (tiled, with overviews, same pixels) in the project
+vault and reused while the mosaic is unchanged; \code{convert_images = FALSE} in
+\verb{$create_gobject()} (\code{convert = FALSE} in \verb{$load_image()}) keeps the mosaic.
+\code{FOVs} applies to transcripts, polygons, expression, cell metadata and cell
+centers. The y coordinates are negated (\code{y} becomes \code{-y}).
+}
+\examples{
+\dontrun{
+x <- importMerscopeDisk("path/to/region_0", backend = "path/to/project")
+g <- x$create_gobject()
+}
 }
 \seealso{
 \code{\link[=importXeniumDisk]{importXeniumDisk()}}
