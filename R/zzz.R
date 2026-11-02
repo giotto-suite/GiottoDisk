@@ -44,4 +44,7 @@
     # -- compiled kernels (GiottoKernels, Suggests). Used when installed;
     #    FALSE forces the R implementation.
     init_option("giottodisk.use_kernels", TRUE)
+    # -- Rust ingest backend (GiottoIngest, Suggests). Used when installed
+    #    for tiled transcript writes; FALSE forces the R implementation.
+    init_option("giottodisk.use_ingest", TRUE)
 }

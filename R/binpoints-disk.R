@@ -77,6 +77,8 @@ NULL
     # workers
     qs <- as(fileStore(path = f, read_fun = .overlap_read_fun),
         "queryableStore")
+    # the Rust writer (GiottoIngest), if installed, reads the file directly
+    qs@params$points_spec <- .ingest_points_spec(f)
     sourceWrite(gsource, qs,
         store_type = "parquetGeomTile",
         type = "points",
