@@ -17,7 +17,7 @@
 - MERSCOPE images (`importMerscopeDisk()`, `load_images`) are converted once to a
   tiled COG with overviews in the project, so tile viewers such as GiottoLens
   can show them; `convert_images = FALSE` keeps the mosaic. A 24139 x 23884
-  mosaic converts in about 15 s, to under half its size, and is reused on later
+  mosaic converts in about 8 s, to under half its size, and is reused on later
   imports.
 - Zarr archives (Xenium and Atera `.zarr.zip`) are decoded with the
   `blosc` package (CRAN) instead of Rarr (Bioconductor), which was used

@@ -22,11 +22,6 @@
     tiled && any(grepl("^\\s*Overviews:", d))
 }
 
-# TRUE when GDAL finds a geotransform; MERSCOPE's mosaics have none.
-.tif_georeferenced <- function(path) {
-    any(grepl("^Origin = ", tryCatch(terra::describe(path), error = function(e) "")))
-}
-
 # Path of a COG of `path` in the vault of `gsource`, written on first use:
 # deflate with a predictor, 512-pixel tiles, the source's pixel type and
 # values and row order. Keyed by the source's path, size and modification
@@ -61,16 +56,12 @@
     # written aside and renamed, so an interrupted conversion is never reused
     tmp <- paste0(savepath, ".writing.tif")
     on.exit(unlink(tmp), add = TRUE)
-    r <- suppressWarnings(terra::rast(src)) # no georeference: "unknown extent"
-    dtype <- terra::datatype(r)[[1L]]      # a flipped raster has none of its own
-    # terra shows a TIFF without a geotransform upside down (GDAL's default
-    # runs y downward) and writes the COG north-up, so written as is its rows
-    # would be the source's reversed. Flipping first keeps the file's row
-    # order, which tile readers use, and Giotto's placement, which reads it
-    # through terra.
-    if (!.tif_georeferenced(src))
-        r <- terra::flip(r, "vertical", wopt = list(progress = 0L))
-    terra::writeRaster(r, tmp, filetype = "COG", datatype = dtype,
+    # A TIFF without a geotransform (MERSCOPE's) gets GDAL's default, which
+    # runs y downward, and terra flips it on reading. The COG is written
+    # north-up, so it must be read unflipped to keep the file's row order,
+    # which tile readers use, and Giotto's placement of it.
+    r <- suppressWarnings(terra::rast(src, noflip = TRUE)) # "unknown extent"
+    terra::writeRaster(r, tmp, filetype = "COG", datatype = terra::datatype(r)[[1L]],
         NAflag = NA, overwrite = TRUE, progress = 0,
         gdal = c("COMPRESS=DEFLATE", "PREDICTOR=2", "BLOCKSIZE=512",
                  "NUM_THREADS=ALL_CPUS", "BIGTIFF=IF_SAFER"))
