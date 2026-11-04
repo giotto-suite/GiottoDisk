@@ -1,7 +1,7 @@
 Package: GiottoDisk
 Type: Package
 Title: Disk backed representations for Giotto
-Version: 0.0.0.6
+Version: 0.0.0.7
 Authors@R: c(
     person("Ruben", "Dries", email = "rubendries@gmail.com",
 		 role = c("aut", "cre"), comment = c(ORCID = "0000-0001-7650-7754")),
@@ -25,7 +25,7 @@ Imports:
     digest,
     dplyr,
     Giotto (>= 4.3.5),
-    GiottoClass (>= 0.7.24),
+    GiottoClass (>= 0.7.27),
     GiottoUtils (>= 0.2.9),
     igraph,
     jsonlite,
