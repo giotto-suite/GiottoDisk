@@ -438,7 +438,12 @@ importStereoSeqDisk <- function(
     attr(pe, "bin_coords") <- NULL
     xy <- data.table::data.table(row_id = xy$pos, sdimx = as.integer(xy$x),
         sdimy = if (isTRUE(negative_y)) -as.integer(xy$y) else as.integer(xy$y))
-    .binpoints_disk(pe, xy, gsource, feat_type = "rna", verbose = verbose)
+    # a DNB covers [x, x + 1) along both axes of the GEF; with negative_y the
+    # unit below its point. The cellbin GEF counts every DNB a cell covers
+    .binpoints_disk(pe, xy, gsource, feat_type = "rna", verbose = verbose,
+        bin_width = 1,
+        bin_offset = c(0.5, if (isTRUE(negative_y)) -0.5 else 0.5),
+        bin_overlap = "area")
 }
 
 

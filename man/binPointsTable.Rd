@@ -4,17 +4,19 @@
 \alias{binPointsTable}
 \title{Table of store-backed bin points}
 \usage{
-binPointsTable(x, geom = "")
+binPointsTable(x, geom = "", bin_id = FALSE)
 }
 \arguments{
 \item{x}{store-backed \code{giottoBinPoints}}
 
 \item{geom}{\code{"XY"} adds the bins' \code{x} and \code{y}; \code{""} (default) leaves them
 out}
+
+\item{bin_id}{\code{TRUE} adds the bin each row belongs to (\code{bin_ID})}
 }
 \value{
 a \code{data.table} with columns \code{feat_ID}, \code{count} and, for
-\code{geom = "XY"}, \code{x} and \code{y}
+\code{geom = "XY"}, \code{x} and \code{y}; for \code{bin_id = TRUE} also \code{bin_ID}
 }
 \description{
 The counts of a store-backed \code{giottoBinPoints}, one row per feature and

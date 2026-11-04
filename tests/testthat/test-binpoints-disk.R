@@ -153,3 +153,60 @@ test_that("subsetGiotto() narrows disk bin points by feature and extent", {
     expect_true(all(d$feat_ID %in% feats))
     expect_true(all(d$x <= xmid))
 })
+
+test_that("area bins on disk match memory in every engine, ties included", {
+    fx <- .write_visiumhd_fixture()
+    withr::local_options(list(giottodisk.dgc_max_rows = Inf,
+                              giottodisk.dgc_max_cols = Inf))
+    proj <- withr::local_tempdir()
+    g <- .q(importVisiumHDDisk(file.path(fx$root, "binned_outputs"),
+        backend = proj, bin = 2)$create_gobject(load_image = FALSE,
+                                                verbose = FALSE))
+    pe <- GiottoClass::getExpression(g, spat_unit = "bin002",
+                                     output = "exprObj")[]
+    sl <- GiottoClass::getSpatialLocations(g, spat_unit = "bin002",
+                                           output = "data.table")
+    ux <- sort(unique(sl$sdimx))
+    w <- stats::median(diff(ux))   # the grid's bin width
+    bp <- .q(.binpoints_disk(pe, sl, gDirSource(path = proj),
+        bin_width = w, bin_overlap = "area"))
+    expect_identical(bp@bin_overlap, "area")
+    mem <- GiottoClass::createGiottoBinPoints(
+        GiottoClass::createExprObj(fx$m2[pe@feat_ids, sl$cell_ID]),
+        GiottoClass::createSpatLocsObj(sl[, c("sdimx", "sdimy", "cell_ID")]),
+        bin_width = w, bin_overlap = "area")
+    plain <- function(d) {
+        d <- data.table::setorder(d[, c("bin_ID", "feat_ID", "count")],
+            bin_ID, feat_ID)
+        lapply(d, as.vector)
+    }
+    expect_identical(plain(binPointsTable(bp, bin_id = TRUE)),
+        plain(data.table::as.data.table(mem, bin_id = TRUE)))
+
+    # "b" before "a"; their shared edge runs through a column of bin centres,
+    # whose squares split in equal halves: ties go to "a"
+    e <- ux[ceiling(length(ux) / 2)]
+    yr <- range(sl$sdimy)
+    rects <- data.frame(poly_ID = c("b", "a"),
+        xmin = c(e, min(ux) + 0.3 * w), xmax = c(max(ux) - 0.3 * w, e),
+        ymin = yr[1] + 0.3 * w, ymax = yr[2] - 0.7 * w)
+    gp <- GiottoClass::createGiottoPolygon(.bp_rects(rects), name = "cell")
+    want <- GiottoClass::binOverlaps(GiottoClass::calculateOverlap(gp, mem),
+        mem)
+    expect_false(anyDuplicated(want$bin_ID) > 0L)
+    on_edge <- sl$cell_ID[sl$sdimx == e]
+    tied <- want[bin_ID %in% on_edge, poly_ID]
+    expect_gt(length(tied), 0L)
+    expect_true(all(tied == "a"))
+    g <- .q(GiottoClass::setPolygonInfo(g, gp))
+    sp <- GiottoClass::getPolygonInfo(g, name = "cell",
+        return_giottoPolygon = TRUE)[]
+    key <- function(d) as.list(data.table::setorder(
+        data.table::as.data.table(d), bin_ID, poly_ID))
+    engines <- c("terra", "duckdb",
+        if (requireNamespace("sedonadb", quietly = TRUE)) "sedona")
+    for (eng in engines) {
+        od <- .q(calculateOverlap(sp, bp, engine = eng))   # the slot's rule
+        expect_identical(key(binOverlapsTable(od)), key(want), label = eng)
+    }
+})

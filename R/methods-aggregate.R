@@ -120,6 +120,25 @@ setClass("overlapBinsDisk",
     slots = list(expr = "parquetExprStore")
 )
 
+#' @title Bins in polygons, store-backed
+#' @name binOverlapsTable
+#' @description The polygon each bin of a store-backed bins overlap lies in.
+#' `GiottoClass::binOverlaps()` calls this for store-backed bin points.
+#' @param x an `overlapBinsDisk` from `calculateOverlap()` of polygons with
+#'   store-backed `giottoBinPoints`
+#' @returns a `data.table` with `poly_ID` and `bin_ID`, one row per bin and
+#'   polygon
+#' @export
+binOverlapsTable <- function(x) {
+    checkmate::assert_class(x, "overlapBinsDisk")
+    d <- storeRead(x@data, output = "query") |>
+        dplyr::select(dplyr::all_of(c("poly_ID", "feat_ID"))) |>
+        dplyr::distinct() |>
+        dplyr::collect()
+    data.table::data.table(poly_ID = as.character(d$poly_ID),
+        bin_ID = x@expr@cell_ids[.pe_remap_row(as.integer(d$feat_ID), x@expr)])
+}
+
 # calculateOverlap #####
 
 #' @rdname calculateOverlap
@@ -233,31 +252,57 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "parquetGeomTileStor
 # Store-backed bin points: the polygons overlap the bins only, and the
 # overlap keeps the bins' counts store for overlapToMatrix(). GiottoClass's
 # calculateOverlap(giottoPolygon, giottoBinPoints) calls this for them.
+# "area" assigns each bin to one polygon by the rule of
+# GiottoClass::extract_bin_overlap(): see adr/0022.
 
 #' @rdname calculateOverlap
+#' @param bin_overlap,bin_width,bin_offset how a bin is assigned to a polygon
+#'   (see [GiottoClass::extract_bin_overlap()]); `NULL` takes the bin points'
+#'   own setting
 #' @export
 setMethod("calculateOverlap", signature("parquetGeomStore", "giottoBinPoints"),
     function(x, y,
         engine = NULL,
         path = .dump_tempfile(),
         poly_id_col = "poly_ID",
+        bin_overlap = NULL,
+        bin_width = NULL,
+        bin_offset = NULL,
         ...
     ) {
     if (!.gbp_store_backed(y)) {
         stop("[calculateOverlap] store-backed polygons need store-backed ",
             "bin points", call. = FALSE)
     }
+    bin_overlap <- match.arg(bin_overlap %||% y@bin_overlap,
+        c("inside", "area"))
+    bin_geom <- if (bin_overlap == "area") {
+        w <- bin_width %||% y@bin_width
+        checkmate::assert_number(w, lower = 0, finite = TRUE,
+            .var.name = "bin_width")
+        o <- bin_offset %||% y@bin_offset
+        checkmate::assert_numeric(o, len = 2L, finite = TRUE,
+            any.missing = FALSE, .var.name = "bin_offset")
+        list(width = w, offset = o)
+    }
     engine <- .resolve_overlap_engine(engine)
     result <- if (engine != "terra") {
         .calculate_overlap_sql(x, y@spatial,
             engine = engine,
             dir = path,
-            poly_id_col = poly_id_col
+            poly_id_col = poly_id_col,
+            bin_geom = bin_geom
         )
-    } else {
+    } else if (is.null(bin_geom)) {
         .calculate_overlap_terra_tiled(x, y@spatial,
             dir = path,
             poly_id_col = poly_id_col
+        )
+    } else {
+        .calculate_overlap_terra_bins(x, y@spatial,
+            dir = path,
+            poly_id_col = poly_id_col,
+            bin_geom = bin_geom
         )
     }
     ov <- .wrap_overlap(result, poly_id_col, "feat_ID",
@@ -430,6 +475,69 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "giottoBinPoints"),
     .overlap_store(dir)
 }
 
+.calculate_overlap_terra_bins <- function(x, y,
+    dir = file.path(tempdir(), .make_uid()),
+    poly_buf_factor = 0.15,
+    poly_id_col = "poly_ID",
+    feat_id_col = "feat_ID",
+    keep_cols = NULL,
+    bin_geom
+) {
+    tile_sel <- y@tiles
+    if (length(tile_sel) == 0L) {
+        warning("[calculateOverlap] no point tiles found", call. = FALSE)
+        return(.overlap_store(dir))
+    }
+    r <- .pgeom_max_poly_radius(x)
+    if (is.null(r) || is.na(r) || r <= 0) {
+        stop("[calculateOverlap] `x@params$max_poly_radius` is missing or ",
+            "zero; the polygon fetch pad cannot be derived", call. = FALSE)
+    }
+    # polygons are fetched by centroid (adr/0021): pad by the polygon radius
+    # and the reach of a bin's square from its point
+    pad <- r * (1 + poly_buf_factor) + bin_geom$width +
+        sum(abs(bin_geom$offset))
+    extra_cols <- keep_cols %||% character(0L)
+    if ("count" %in% colnames(y) && !"count" %in% c(feat_id_col, extra_cols)) {
+        extra_cols <- c(extra_cols, "count")
+    }
+    extra_cols <- intersect(extra_cols, colnames(y))
+    x_sub <- x[, poly_id_col]
+    y_sub <- y[, c(feat_id_col, extra_cols, specialCols(y))]
+
+    tile_bins_fn <- function(feat_sv, poly_sv, .I) {
+        if (is.null(feat_sv) || nrow(feat_sv) == 0L) return(NULL)
+        if (is.null(poly_sv) || nrow(poly_sv) == 0L) return(NULL)
+        extracted <- GiottoClass::extract_bin_overlap(poly_sv, feat_sv,
+            "area", bin_width = bin_geom$width,
+            bin_offset = bin_geom$offset, poly_id_col = poly_id_col)
+        extracted <- extracted[!is.na(extracted[[poly_id_col]]), , drop = FALSE]
+        if (nrow(extracted) == 0L) return(NULL)
+        result_df <- .build_overlap_df(
+            poly_id_vals = extracted[[poly_id_col]],
+            pt_vals = terra::values(feat_sv),
+            pt_idx = extracted[[1L]],
+            feat_id_col = feat_id_col,
+            keep_cols = keep_cols
+        )
+        if (!dir.exists(dir)) dir.create(dir, recursive = TRUE)
+        .write_parquet_file(result_df,
+            file.path(dir, sprintf("tile_%04d.parquet", .I)))
+        NULL
+    }
+    # each bin is read by exactly one tile (contiguous, no pad)
+    tilework::tileApply(
+        y_sub, x_sub,
+        tiles = tile_sel,
+        FUN = tile_bins_fn,
+        pad_y = pad,
+        get_params_x = list(output = "terra", contiguous = TRUE,
+            omit_internals = FALSE),
+        get_params_y = list(output = "terra")
+    )
+    .overlap_store(dir)
+}
+
 .calculate_overlap_terra <- function(x, y,
     dir = file.path(tempdir(), .make_uid()),
     threshold = NULL,
@@ -590,7 +698,8 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "giottoBinPoints"),
     dir = file.path(tempdir(), .make_uid()),
     poly_id_col = "poly_ID",
     feat_id_col = "feat_ID",
-    keep_cols = NULL
+    keep_cols = NULL,
+    bin_geom = NULL
 ) {
     engine <- match.arg(engine)
     if (!dir.exists(dir)) dir.create(dir, recursive = TRUE)
@@ -615,6 +724,7 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "giottoBinPoints"),
     join_sql <- function(poly_from, pt_from) sprintf(
         "SELECT %s FROM %s AS poly JOIN %s AS pt ON ST_Intersects(poly.geom, pt.geom)",
         paste(sel, collapse = ", "), poly_from, pt_from)
+    if (!is.null(bin_geom)) join_sql <- .bin_area_sql(sel, bin_geom, extra_cols)
 
     if (engine == "duckdb") {
         conn <- .duckdb_connect()
@@ -649,6 +759,42 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "giottoBinPoints"),
             dir)
     }
     .overlap_store(dir)
+}
+
+# "area" bins in SQL, the rule of GiottoClass::extract_bin_overlap(): a bin
+# is the square of side `width` around its point plus `offset`. Candidates are
+# the polygons sharing interior with it (intersecting, not only touching); the
+# bin goes to the one candidate holding its centre or, when none or several do,
+# to the one covering most of it, ties to the lowest poly_ID. Areas are only
+# computed for bins with several candidates.
+.bin_area_sql <- function(sel, bin_geom, extra_cols) {
+    h <- bin_geom$width / 2
+    px <- sprintf("(ST_X(pt.geom) + %.17g)", bin_geom$offset[[1L]])
+    py <- sprintf("(ST_Y(pt.geom) + %.17g)", bin_geom$offset[[2L]])
+    sq <- function(x, y) {
+        sprintf(paste0("ST_MakeEnvelope(%1$s - %3$.17g, %2$s - %3$.17g, ",
+            "%1$s + %3$.17g, %2$s + %3$.17g)"), x, y, h)
+    }
+    out <- paste(sprintf('"%s"', c("poly_ID", "feat_ID", extra_cols,
+        "pt_tile_index", "pt_row_index")), collapse = ", ")
+    by_bin <- 'PARTITION BY "feat_ID"'
+    function(poly_from, pt_from) paste(
+        sprintf("SELECT %s FROM (SELECT %s, ROW_NUMBER() OVER (%s ORDER BY",
+            out, out, by_bin),
+        "CASE WHEN ctr AND n_ctr = 1 THEN 1 ELSE 0 END DESC, area DESC,",
+        '"poly_ID") AS rn FROM (SELECT *, CASE WHEN n_all > 1 THEN',
+        sprintf("ST_Area(ST_Intersection(pg, %s)) ELSE 0 END AS area",
+            sq("px", "py")),
+        sprintf("FROM (SELECT *, COUNT(*) OVER (%s) AS n_all,", by_bin),
+        sprintf("SUM(CASE WHEN ctr THEN 1 ELSE 0 END) OVER (%s) AS n_ctr",
+            by_bin),
+        sprintf("FROM (SELECT %s, poly.geom AS pg, %s AS px, %s AS py,",
+            paste(sel, collapse = ", "), px, py),
+        sprintf("ST_Intersects(poly.geom, ST_Point(%s, %s)) AS ctr", px, py),
+        sprintf("FROM %s AS poly JOIN %s AS pt ON", poly_from, pt_from),
+        sprintf("ST_Intersects(poly.geom, %s) AND NOT %s",
+            sq(px, py), sprintf("ST_Touches(poly.geom, %s)", sq(px, py))),
+        ") c) w) a) r WHERE rn = 1")
 }
 
 # The overlap carrier: a queryableStore over the parquet files in `dir`.

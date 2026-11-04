@@ -93,6 +93,7 @@ least one.
 | [0019](0019-overlap-carrier-is-a-queryable-store.md) | The overlap is a queryableStore carrier, built and aggregated in SQL engines | Accepted | 2026-10-06 |
 | [0020](0020-edge-statistics-contract-and-histogram-thresholds.md) | Edge statistics cross backends as sufficient statistics; order statistics come from streamed histograms | Accepted | 2026-10-16 |
 | [0021](0021-crop-selects-by-centroid-culls-are-optimizer-steps.md) | A crop selects by centroid; a cull is an optimizer step and never decides membership | Accepted | 2026-10-27 |
+| [0022](0022-bins-go-to-the-polygon-covering-them.md) | A bin goes to one polygon: the one holding its centre, else the one covering most of it | Proposed | 2026-11-04 |
 
 ## Backfill candidates
 

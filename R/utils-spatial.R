@@ -180,13 +180,12 @@
     x_sv <- GiottoClass::createGiottoPolygon(x_geom,
         part_col = part_col,
         calc_centroids = FALSE,
-        make_valid = TRUE,
         ...
     )[] # drop to spatvector
 
-    # createGiottoPolygon may drop polygons (invalid geom under
-    # make_valid = TRUE, degenerate parts, etc.) — align meta to the
-    # surviving poly_IDs so `cbind(data, meta)` in
+    # createGiottoPolygon may drop polygons (degenerate geometries under
+    # make_valid, option `giotto.make_valid`; degenerate parts, etc.) —
+    # align meta to the surviving poly_IDs so `cbind(data, meta)` in
     # `.terra_to_parquet_format` doesn't mismatch row counts. SV's id
     # column is always "poly_ID" after createGiottoPolygon; x_meta still
     # uses the user-provided `id_col` name.
