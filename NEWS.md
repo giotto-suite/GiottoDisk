@@ -1,3 +1,20 @@
+# GiottoDisk 0.0.0.7
+
+Requires GiottoClass 0.7.27.
+
+## changes
+- `calculateOverlap()` on store-backed bin points takes `bin_overlap = "area"`
+  (with `bin_width`, `bin_offset`): each bin goes to the one polygon holding
+  its centre or, failing that, covering most of it. The terra, DuckDB and
+  SedonaDB engines give the same assignment as in memory. Without arguments
+  the bin points' own setting applies; the Stereo-seq disk reader sets `"area"`
+  and the DNB geometry. See adr/0022.
+- `binPointsTable(bin_id = TRUE)` adds each row's bin, and `binOverlapsTable()`
+  gives each bin's polygon; GiottoClass's `as.data.table()` and `binOverlaps()`
+  call them for store-backed bins.
+- Polygons written from tables follow GiottoClass's `giotto.make_valid` option
+  instead of always repairing invalid geometries.
+
 # GiottoDisk 0.0.0.6
 
 ## breaking changes

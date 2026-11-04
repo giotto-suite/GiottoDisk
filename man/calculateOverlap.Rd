@@ -46,6 +46,9 @@
   engine = NULL,
   path = .dump_tempfile(),
   poly_id_col = "poly_ID",
+  bin_overlap = NULL,
+  bin_width = NULL,
+  bin_offset = NULL,
   ...
 )
 }
@@ -115,6 +118,10 @@ each point tile extent when fetching points. Default \code{0.15}. Ignored when
 that contain no polygon centroids. Enable when polygons are coarsely
 distributed relative to the point tile plan to avoid spawning empty workers.
 (For example when coarsely binning)}
+
+\item{bin_overlap, bin_width, bin_offset}{how a bin is assigned to a polygon
+(see \code{\link[GiottoClass:extract_bin_overlap]{GiottoClass::extract_bin_overlap()}}); \code{NULL} takes the bin points'
+own setting}
 }
 \description{
 Calculate features \code{y} that are overlapped by polygons \code{x}. GiottoDisk

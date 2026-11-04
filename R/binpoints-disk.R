@@ -20,7 +20,9 @@ NULL
 # left out. `bins` reuses the points store of another feature type of the
 # same matrix instead of writing one.
 .binpoints_disk <- function(expr, xy, gsource, feat_type = "rna",
-                            bins = NULL, verbose = NULL) {
+                            bins = NULL, verbose = NULL,
+                            bin_width = NA_real_, bin_offset = c(0, 0),
+                            bin_overlap = "inside") {
     checkmate::assert_class(expr, "parquetExprStore")
     checkmate::assert_string(feat_type)
     if (is.null(bins)) bins <- .binpoints_store(expr, xy, gsource, verbose)
@@ -32,7 +34,10 @@ NULL
         bid = character(0L),
         pmap = integer(0L),
         feat_type = feat_type,
-        compact = TRUE
+        compact = TRUE,
+        bin_width = as.numeric(bin_width),
+        bin_offset = as.numeric(bin_offset),
+        bin_overlap = bin_overlap
     )
 }
 
@@ -115,10 +120,11 @@ NULL
 #' @param x store-backed `giottoBinPoints`
 #' @param geom `"XY"` adds the bins' `x` and `y`; `""` (default) leaves them
 #'   out
+#' @param bin_id `TRUE` adds the bin each row belongs to (`bin_ID`)
 #' @returns a `data.table` with columns `feat_ID`, `count` and, for
-#'   `geom = "XY"`, `x` and `y`
+#'   `geom = "XY"`, `x` and `y`; for `bin_id = TRUE` also `bin_ID`
 #' @export
-binPointsTable <- function(x, geom = "") {
+binPointsTable <- function(x, geom = "", bin_id = FALSE) {
     checkmate::assert_class(x, "giottoBinPoints")
     if (!.gbp_store_backed(x)) {
         stop("[binPointsTable] `x` is not store-backed", call. = FALSE)
@@ -133,13 +139,21 @@ binPointsTable <- function(x, geom = "") {
         col_id = .pe_orig_col(seq_along(pe@feat_ids), pe),
         feat_ID = pe@feat_ids))
     xy <- if (identical(geom, "XY")) ', b.x_index AS "x", b.y_index AS "y"'
+    if (isTRUE(bin_id)) {
+        xy <- paste0(xy %||% "", ', CAST(b.feat_ID AS INTEGER) AS "bin_row"')
+    }
     dt <- DBI::dbGetQuery(conn, sprintf(paste(
         'SELECT f.feat_ID AS "feat_ID", e.value AS "count"%s',
         "FROM (%s) AS b",
         "JOIN (%s) AS e ON e.row_id = CAST(b.feat_ID AS INTEGER)",
         "JOIN gd_bp_feat AS f ON e.col_id = f.col_id"),
         xy %||% "", scan(x@spatial), scan(pe)))
-    data.table::setDT(dt)[]
+    data.table::setDT(dt)
+    if (isTRUE(bin_id)) {
+        dt[, "bin_ID" := pe@cell_ids[.pe_remap_row(dt$bin_row, pe)]]
+        dt[, "bin_row" := NULL]
+    }
+    dt[]
 }
 
 #' @rdname sourceWrite-gDirSource
@@ -160,6 +174,9 @@ setMethod("sourceWrite", signature("gDirSource", "giottoBinPoints"),
             xy = data.frame(cell_ID = data@bid[data@pmap],
                             sdimx = xy[, 1L], sdimy = xy[, 2L]),
             gsource = src,
-            feat_type = data@feat_type)
+            feat_type = data@feat_type,
+            bin_width = data@bin_width,
+            bin_offset = data@bin_offset,
+            bin_overlap = data@bin_overlap)
     }
 )

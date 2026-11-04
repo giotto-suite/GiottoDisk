@@ -630,6 +630,10 @@ test_that("load_binpoints() keeps bin1 on disk and sums it per polygon", {
     expect_s4_class(bp, "giottoBinPoints")
     expect_true(.gbp_store_backed(bp))
     expect_equal(nrow(bp), sum(Matrix::colSums(m) > 0))
+    # a DNB is the unit square right of and below its point (y negated)
+    expect_identical(bp@bin_overlap, "area")
+    expect_identical(bp@bin_width, 1)
+    expect_identical(bp@bin_offset, c(0.5, -0.5))
 
     # y is negated (negative_y = TRUE); edges fall between bin positions
     rects <- data.frame(xmin = c(-0.5, 2.5), xmax = c(4.5, 9.5),
@@ -639,8 +643,9 @@ test_that("load_binpoints() keeps bin1 on disk and sums it per polygon", {
         rects$xmin, rects$xmax, rects$ymin, rects$ymax))
     sv$poly_ID <- c("p1", "p2")
     pstore <- sourceWrite(gDirSource(proj), sv)
+    # the expectation below tests the bins' points
     got <- storeRead(overlapToMatrix(calculateOverlap(pstore, bp,
-        engine = "duckdb")), output = "dgcmatrix")
+        engine = "duckdb", bin_overlap = "inside")), output = "dgcmatrix")
 
     exp <- vapply(seq_len(nrow(rects)), function(k) {
         inside <- coords$x > rects$xmin[k] & coords$x < rects$xmax[k] &
