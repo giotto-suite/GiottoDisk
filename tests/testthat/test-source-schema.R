@@ -54,7 +54,7 @@ describe("an outdated project", {
         expect_error(snapshotLoad(x$src), "sourceUpdate")
         expect_error(snapshotDelete(x$src, "qc"), "sourceUpdate")
         expect_error(sourcePrune(x$src), "sourceUpdate")
-        expect_error(x$src[x$a, "giottosave"] <- "x", "sourceUpdate")
+        expect_error(.gdsrc_json_add_tags(x$td, x$a, "x"), "sourceUpdate")
         n_vault <- length(list.dirs(.gdsrc_vault_dir(x$td), recursive = FALSE))
         expect_error(sourceWrite(x$src, data.frame(c = 1)), "sourceUpdate")
         expect_error(setArtifactDumpDir(x$src), "sourceUpdate")
@@ -70,7 +70,7 @@ describe("an outdated project", {
             expect_warning(.gdsrc_json_read(x$td, consolidate = TRUE),
                 "schema_check")
             # an older layout takes no writes, escape hatch or not
-            expect_error(suppressWarnings(x$src[x$a, "giottosave"] <- "x"),
+            expect_error(suppressWarnings(.gdsrc_json_add_tags(x$td, x$a, "x")),
                 "older layout")
         })
         expect_identical(sourceSchema(x$td)$version, 1L)

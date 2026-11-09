@@ -11,7 +11,7 @@
 .layout_artifact <- function(src, tags) {
     st <- sourceWrite(src, data.frame(a = 1:3))
     .gdsrc_json_consolidate(src@path)
-    src[st@uid, "giottosave"] <- tags
+    .gdsrc_json_add_tags(src@path, st@uid, tags)
     st@uid
 }
 
