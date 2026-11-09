@@ -26,4 +26,9 @@ if NULL, the most recent is selected}
 Delete a Giotto snapshot. By extension, also removes
 the protection of the associated giottosave tag for
 artifact pruning.
+
+Only the snapshot's object is removed. Its folder and the files that
+describe it stay, a few kilobytes, so the snapshots made from it still name
+an existing parent and \code{\link[=snapshotInfo]{snapshotInfo()}} can list it with
+\code{deleted = TRUE}.
 }

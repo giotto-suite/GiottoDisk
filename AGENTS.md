@@ -112,8 +112,9 @@ R/
   methods-snapshotSave.R # snapshotSave (giottosave snapshot lifecycle)
   methods-snapshotLoad.R # snapshotLoad
   methods-snapshotDelete.R # snapshotDelete
-  methods-snapshotSidecars.R # manifest.json / history.ndjson per snapshot;
-                         #   objManifest / objHistory methods for gDirSource
+  methods-snapshotSidecars.R # manifest.json / history.ndjson / snapshot.json
+                         #   per snapshot; objManifest / objHistory methods
+                         #   for gDirSource; snapshotInfo, snapshotMetadata
   stream-filter.R        # filterData(parquetExprStore, ...)
   stream-normalize.R     # processData(parquetExprStore, libraryNormParam/logNormParam)
   stream-markers.R       # analyzeData(parquetExprBase, markersParam) pairwise markers
@@ -575,9 +576,11 @@ rationale (manifest design, dump lifecycle, multi-analysis guarantees).
   artifacts/<uid>/...  # vault
   _pending/            # queued registry edits, one file per edit
   giottosave/<name>.<id>/  # one folder per snapshot; folder name = tag
-    gobject.RDS            # the object (or gobject.qs2)
+    gobject.RDS            # the object (or gobject.qs2); removed on delete
     manifest.json          # what it holds (giotto snapshots only)
     history.ndjson         # how it was produced (giotto snapshots only)
+    snapshot.json          # what the save records: creator, session, parent,
+                           #   keep, description, labels (adr/0024)
 ```
 
 Manifest access: `src["uid"]`, `src["uid", "field"]`, `src[, "field"]`,
@@ -609,9 +612,13 @@ No lock.
   (`<name>.<id>`, new every save) → adopt external images / matrices /
   stores, tagging what they adopt → queue tags for every referenced vault
   artifact (uid for stores, hash for BPCells/HDF5, vault path for images) →
-  write via a staging folder → drop older snapshots of the name. Tags are
-  queued before the folder appears. A tag whose folder is gone protects
-  nothing, and `sourcePrune` drops it. See design.Rmd "Snapshots and tags".
+  write via a staging folder (object, manifest, history, `snapshot.json`) →
+  drop older snapshots of the name. Tags are queued before the folder
+  appears. Deleting or dropping a snapshot removes only its object file
+  (`.gdsrc_snapshot_remove_object`), never the folder: a folder without an
+  object is not a snapshot, so its tag protects nothing and `sourcePrune`
+  drops it, while children keep a parent that exists. See design.Rmd
+  "Snapshots and tags".
 - **Schema version** (`methods-sourceSchema.R`): manifest writes, vault
   allocation and the snapshot verbs refuse a project outside
   `[.GDSRC_SCHEMA_MIN, .GDSRC_SCHEMA_VERSION]`. Only `sourceUpdate()` raises

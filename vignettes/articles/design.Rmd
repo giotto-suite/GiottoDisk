@@ -591,7 +591,9 @@ design choices follow from this:
   giottodir.json       # stub carrying the schema version
   artifacts/<uid>/data # vault — artifact subdirs named by uid
   _pending/            # queued registry edits, one file per edit
-  giottosave/<name>.<id>/gobject.RDS   # one folder per snapshot
+  giottosave/<name>.<id>/              # one folder per snapshot
+    gobject.RDS                        #   the object (removed on delete)
+    snapshot.json                      #   what the save records about itself
   dump/                # optional persistent staging area (see setArtifactDumpDir)
 ```
 
@@ -610,6 +612,14 @@ A snapshot is a folder, `giottosave/<name>.<id>/`, with the object under a
 fixed file name, so that files describing a snapshot can sit beside it under
 fixed names too. The folder name is the snapshot's tag, and the `<id>` is new
 on every save.
+
+What describes the save rather than the object lives in `snapshot.json`
+(adr/0024): creator, session, parent, `keep`, description, labels. It is a
+file per snapshot, not a section of the registry, so the folder stays the one
+record of a save and editing a description never contends with artifact
+writes. Deleting a snapshot removes only its object: the folder and its
+description files stay, so the snapshots made from it keep a parent that
+exists, with no need to repoint them.
 
 That makes protection end with the snapshot. Deleting or overwriting a
 snapshot removes no tags: its tag simply matches no folder. `sourcePrune()`

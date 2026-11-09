@@ -11,8 +11,17 @@
   adds tags instead of replacing the list; setting any other field errors.
 - `filelock` is no longer used, and the `giottodisk.use_locking` option is
   gone.
+- `snapshotDelete()` removes a snapshot's object but keeps its folder and
+  the files describing it, so snapshots made from it keep their parent.
+  Protection ends as before.
 
 ## changes
+- Each snapshot records what the save was: who made it, the session and the
+  snapshot it came from, whether to keep it, a description and labels
+  (`snapshotSave(keep =, creator =, session =, parent =, description =,
+  labels =, extra =)`). `snapshotInfo()` lists them without loading
+  anything; `snapshotMetadata()` changes `keep`, the description, labels and
+  `extra`. See adr/0024.
 - Sessions and workers saving into one project no longer lose each other's
   snapshot tags, which could let `sourcePrune()` delete artifacts a snapshot
   still used. Writers that fold edits into the manifest at the same time no
