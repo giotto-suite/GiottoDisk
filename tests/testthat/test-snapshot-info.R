@@ -107,7 +107,7 @@ describe("a deleted snapshot", {
         on.exit(unlink(x$td, recursive = TRUE), add = TRUE)
         tag <- .info_snapshot(x$td, "qc")
         u <- sourceWrite(x$src, data.frame(a = 1))@uid
-        x$src[u, "giottosave"] <- tag
+        .gdsrc_json_add_tags(x$td, u, tag)
         snapshotDelete(x$src, "qc")
         suppressMessages(sourcePrune(x$src))
         expect_false(dir.exists(.gdsrc_artifact_dir(x$td, u)))
