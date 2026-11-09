@@ -7,8 +7,10 @@
   older GiottoDisk refuses it, so upgrade every process sharing a project
   first. With `options(giottodisk.schema_check = FALSE)` an older project can
   still be read, but no longer written.
-- A manifest record is fixed once written. `src[uid, "giottosave"] <- tag`
-  adds tags instead of replacing the list; setting any other field errors.
+- The `[<-` methods for `gDirSource` are removed: manifest records can no
+  longer be assigned (`src[uid, field] <- value`); GiottoDisk writes them
+  itself. Reading with `src[uid]`,
+  `src[uid, field]` and `as.data.frame(src)` is unchanged.
 - `filelock` is no longer used, and the `giottodisk.use_locking` option is
   gone.
 - `snapshotDelete()` removes a snapshot's object but keeps its folder and

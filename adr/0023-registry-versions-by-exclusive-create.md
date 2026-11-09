@@ -29,8 +29,10 @@ Edits carry one of two operations: `create` (a record's fields, written once;
 on an existing record only missing fields are filled) and `add` (values
 joined into the set fields `giottosave` and `depends`). Each edit is its own
 uniquely named file. Edits then give the same result in any order and when
-applied twice. No field is changed after creation; `src[uid, field] <-`
-errors for anything but `giottosave`, which adds.
+applied twice. No field is changed after creation. The `[<-` methods are
+removed: R reads `src[uid, field] <- value` as "replace", and a replacement
+built from a stale read is the lost update this fixes. Tagging stays
+internal to GiottoDisk.
 
 The registry is a series of whole files, `giottodir.<n>.json`. A commit
 hard-links a complete temp file to the next number, which fails if that name

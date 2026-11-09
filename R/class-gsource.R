@@ -143,32 +143,10 @@ setMethod("[", signature("gDirSource", i = "missing", j = "character"), function
     lapply(data$content, function(art) art[[j]])
 })
 
-# A record's fields are fixed when it is created; only snapshot tags can be
-# added afterwards (adr/0023)
-.gdsrc_fixed_fields <- function() {
-    stop("[gDirSource] registry fields are fixed when an artifact is ",
-        "recorded; only snapshot tags can be added, with ",
-        "src[uid, \"giottosave\"] <- tag\n", call. = FALSE)
-}
-
-setMethod("[<-", signature("gDirSource", i = "character", j = "missing", value = "ANY"), function(x, i, j, ..., value) {
-    .gdsrc_fixed_fields()
-})
-
-setMethod("[<-", signature("gDirSource", i = "character", j = "character", value = "ANY"), function(x, i, j, ..., value) {
-    checkmate::assert_atomic(value)
-    if (!identical(j, "giottosave")) .gdsrc_fixed_fields()
-    .gdsrc_json_add_tags(x@path, uid = i, tag = value)
-    x
-})
-
-setMethod("[<-", signature("gDirSource", i = "missing", j = "character", value = "ANY"), function(x, i, j, ..., value) {
-    checkmate::assert_atomic(value)
-    if (!identical(j, "giottosave")) .gdsrc_fixed_fields()
-    uids <- names(.gdsrc_json_read(x@path, consolidate = TRUE)$content)
-    .gdsrc_json_add_tags(x@path, uid = uids, tag = value)
-    x
-})
+# No `[<-`: records are written only by GiottoDisk, as edits that create a
+# record or add tags (adr/0023). R reads `[<-` as "replace", and a
+# replacement built from a stale read is how concurrent saves lost each
+# other's tags. Tag through .gdsrc_json_add_tags().
 
 # source check ####
 

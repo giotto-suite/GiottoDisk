@@ -44,14 +44,14 @@ describe("edits", {
         expect_true(is.na(rec$giottosave))
     })
 
-    it("only add snapshot tags to a record once it exists", {
+    it("only add tags to a record once it exists; nothing assigns", {
         x <- .reg_src()
         on.exit(unlink(x$td, recursive = TRUE), add = TRUE)
         u <- sourceWrite(x$src, data.frame(a = 1:3))@uid
-        expect_error(x$src[u, "store"] <- "x", "fixed")
-        expect_error(x$src[u] <- list(store = "x"), "fixed")
-        x$src[u, "giottosave"] <- "qc.aaaaaaaa"
-        x$src[u, "giottosave"] <- "qc.bbbbbbbb"
+        expect_error(x$src[u, "giottosave"] <- "qc.aaaaaaaa")
+        expect_error(x$src[u] <- list(store = "x"))
+        .gdsrc_json_add_tags(x$td, u, "qc.aaaaaaaa")
+        .gdsrc_json_add_tags(x$td, u, "qc.bbbbbbbb")
         expect_setequal(x$src[u, "giottosave"], c("qc.aaaaaaaa", "qc.bbbbbbbb"))
         expect_identical(x$src[u, "store"], "parquet")
     })
@@ -171,7 +171,7 @@ describe("sourcePrune", {
         on.exit(unlink(x$td, recursive = TRUE), add = TRUE)
         tag <- basename(dirname(.write_snapshot_fixture(x$td, "qc", list(a = 1))))
         u <- sourceWrite(x$src, data.frame(a = 1))@uid
-        x$src[u, "giottosave"] <- c(tag, "gone.abcdefgh")
+        .gdsrc_json_add_tags(x$td, u, c(tag, "gone.abcdefgh"))
         suppressMessages(sourcePrune(x$src))
         expect_identical(x$src[u, "giottosave"], tag)
     })
