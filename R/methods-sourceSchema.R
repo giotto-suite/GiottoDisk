@@ -5,14 +5,21 @@ NULL
 # "Schema versions". A layout change bumps .GDSRC_SCHEMA_VERSION and adds its
 # upgrade to .GDSRC_SCHEMA_UPGRADES.
 
-.GDSRC_SCHEMA_VERSION <- 2L
-.GDSRC_SCHEMA_MIN <- 2L
+.GDSRC_SCHEMA_VERSION <- 3L
+.GDSRC_SCHEMA_MIN <- 3L
 
-# on-disk schema version, NA for a directory without a giottodir.json
+# On-disk schema version, NA for a directory without a giottodir.json. From
+# v3 giottodir.json is a stub carrying only this. A v3 stamp with no registry
+# versions beside it is an upgrade to v3 that was interrupted, reported as v2
+# so sourceUpdate() finishes it.
 .gdsrc_schema_ondisk <- function(p) {
     f <- .gdsrc_json_path(p)
     if (!file.exists(f)) return(NA_integer_)
-    as.integer(.json_read(f)$header$versions$manifest %||% NA_integer_)
+    v <- as.integer(.json_read(f)$header$versions$manifest %||% NA_integer_)
+    if (!is.na(v) && v >= 3L && !length(.gdsrc_registry_versions(p))) {
+        return(2L)
+    }
+    v
 }
 
 # Refuse a project whose layout this GiottoDisk does not read or write.
@@ -115,7 +122,14 @@ setMethod("sourceUpdate", signature("gDirSource"), function(src,
     verbose = NULL, ...) {
     p <- src@path
     v <- .gdsrc_schema_ondisk(p)
-    if (is.na(v) || v == .GDSRC_SCHEMA_VERSION) return(invisible(src))
+    if (is.na(v)) return(invisible(src))
+    if (v == .GDSRC_SCHEMA_VERSION) {
+        # an upgrade interrupted after its registry landed: finish the stub
+        if (length(.json_read(.gdsrc_json_path(p))$content)) {
+            .gdsrc_write_stub(p)
+        }
+        return(invisible(src))
+    }
     if (v > .GDSRC_SCHEMA_VERSION) {
         stop(sprintf(paste0(
             "[sourceUpdate] project directory schema v%d was written by a ",
@@ -146,7 +160,7 @@ setMethod("sourceUpdate", signature("gDirSource"), function(src,
 # stay protected from sourcePrune.
 .gdsrc_upgrade_1_to_2 <- function(p) {
     # pending edits carry v1 tags; fold them in before the rename
-    .gdsrc_json_consolidate(p, check = FALSE)
+    .gdsrc_legacy_consolidate(p)
 
     gsdir <- .gdsrc_giottosave_dir(p)
     if (dir.exists(gsdir)) {
@@ -174,7 +188,7 @@ setMethod("sourceUpdate", signature("gDirSource"), function(src,
     # rerun after an interruption still finishes the retag.
     snaps <- .gdsrc_snapshots(gsdir)
     retag <- stats::setNames(snaps$tag, snaps$name)
-    manifest <- .gdsrc_json_read(p)$content
+    manifest <- .gdsrc_legacy_read(p)$content
     for (uid in names(manifest)) {
         tags <- unlist(manifest[[uid]]$giottosave)
         hit <- !is.na(tags) & tags %in% names(retag)
@@ -182,10 +196,28 @@ setMethod("sourceUpdate", signature("gDirSource"), function(src,
         tags[hit] <- retag[tags[hit]]
         manifest[[uid]]$giottosave <- tags
     }
-    .gdsrc_json_write(p, manifest, version = 2L)
+    .gdsrc_legacy_write(p, manifest, version = 2L)
+    invisible(TRUE)
+}
+
+# v2 -> v3: the registry moves from giottodir.json to versioned files
+# (adr/0023). giottodir.json is stamped v3 before the content moves, so a
+# GiottoDisk that predates v3 refuses the project from then on, and becomes a
+# stub once the first version is in place. Rerunning after an interruption
+# picks up from giottodir.json, which keeps the content until the end.
+.gdsrc_upgrade_2_to_3 <- function(p) {
+    .gdsrc_legacy_consolidate(p)
+    manifest <- .gdsrc_legacy_read(p)$content
+    .gdsrc_legacy_write(p, manifest, version = 3L)
+    if (!length(.gdsrc_registry_versions(p))) {
+        .gdsrc_registry_commit(p, 0L,
+            manifest %||% structure(list(), names = character()))
+    }
+    .gdsrc_write_stub(p)
     invisible(TRUE)
 }
 
 .GDSRC_SCHEMA_UPGRADES <- list(
-    "1" = .gdsrc_upgrade_1_to_2
+    "1" = .gdsrc_upgrade_1_to_2,
+    "2" = .gdsrc_upgrade_2_to_3
 )

@@ -7,18 +7,16 @@
 \description{
 Extends \link{gsource}. Used to designate and manage a directory as a
 giotto project directory containing on-disk data artifacts.
-Contained artifacts are tracked via a manifest with editable
-metadata.
+Contained artifacts are tracked via a manifest (the registry) with a
+record per artifact.
 
-Edits to the \code{gDirSource} manifest are atomic. Additionally, a WAL
-pattern is used to ensure concurrency safety.
-Edits are only made as loose files specific to single artifacts
-(and by extension usually single-process).
-Loose edits are later consolidated into the main manifest on-read
-(preferably only from the main process). {filelock} integration
-is available for extra concurrency safety to avoid edge cases
-where two processes attempt consolidation at the same time but see
-different \verb{_pending} states.
+Writers queue edits as files in \verb{_pending/}, one file per edit, and a
+read folds them into the registry as its next version. A version is
+published by creating its file only if no other writer created it first,
+so processes sharing a project never overwrite each other's commits, and
+no lock is needed. A record's fields are written once, when it is
+created; its snapshot tags (\code{giottosave}) and dependencies (\code{depends})
+are only ever added to, and dead tags are dropped by \code{\link[=sourcePrune]{sourcePrune()}}.
 }
 \section{Slots}{
 
@@ -35,9 +33,9 @@ for the \code{gsource} class. The artifact is also assigned an
 
 \section{Directory Structure}{
 \itemize{
-\item \code{giottodir.json} - json file manifest of the contained artifacts.
-\item \code{giottodir.json.lock} - (optional) lockfile for {filelock} to control
-writes to \code{giottodir.json} for extra concurrency safety
+\item \verb{giottodir.<n>.json} - the registry, one file per version; the highest
+\code{n} is current and the one below it is kept.
+\item \code{giottodir.json} - stub carrying the project's schema version.
 \item \code{artifacts} - vault directory containing the actual data artifacts
 which are within subdirectories named by their \code{uid}.
 \item \verb{_pending} - directory containing pending edits to the manifest.

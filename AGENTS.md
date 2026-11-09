@@ -570,9 +570,10 @@ rationale (manifest design, dump lifecycle, multi-analysis guarantees).
 
 ```
 <project_dir>/
-  giottodir.json       # manifest (consolidated from _pending/ on read)
+  giottodir.<n>.json   # registry, one file per version (highest current, two kept)
+  giottodir.json       # stub: schema version only
   artifacts/<uid>/...  # vault
-  _pending/            # WAL-style pending manifest edits
+  _pending/            # queued registry edits, one file per edit
   giottosave/<name>.<id>/  # one folder per snapshot; folder name = tag
     gobject.RDS            # the object (or gobject.qs2)
     manifest.json          # what it holds (giotto snapshots only)
@@ -580,9 +581,10 @@ rationale (manifest design, dump lifecycle, multi-analysis guarantees).
 ```
 
 Manifest access: `src["uid"]`, `src["uid", "field"]`, `src[, "field"]`,
-`as.data.frame(src)`. Consolidation uses `.json_atomic_write` (temp →
-rename); pending writes are also atomic. `filelock` (Suggests) provides
-advisory locking for the consolidation step.
+`as.data.frame(src)`. Reads fold pending edits into the next registry version
+(adr/0023): commit = hard-link a complete temp file to `giottodir.<top+1>.json`,
+which fails if another writer got there first; the loser re-reads and retries.
+No lock.
 
 ### Implementation constraints (for code work)
 
@@ -605,18 +607,27 @@ advisory locking for the consolidation step.
   manifest entry if missing — no file movement.
 - **`snapshotSave` lifecycle**: session-reset → mint the tag
   (`<name>.<id>`, new every save) → adopt external images / matrices /
-  stores, tagging what they adopt → write via a staging folder → tag every
-  referenced vault artifact (uid for stores, hash for BPCells/HDF5, vault
-  path for images) → drop older snapshots of the name. Tags are never
-  removed; a tag whose folder is gone protects nothing. See design.Rmd
-  "Snapshots and tags".
+  stores, tagging what they adopt → queue tags for every referenced vault
+  artifact (uid for stores, hash for BPCells/HDF5, vault path for images) →
+  write via a staging folder → drop older snapshots of the name. Tags are
+  queued before the folder appears. A tag whose folder is gone protects
+  nothing, and `sourcePrune` drops it. See design.Rmd "Snapshots and tags".
 - **Schema version** (`methods-sourceSchema.R`): manifest writes, vault
   allocation and the snapshot verbs refuse a project outside
   `[.GDSRC_SCHEMA_MIN, .GDSRC_SCHEMA_VERSION]`. Only `sourceUpdate()` raises
   the stamped version. A layout change bumps `.GDSRC_SCHEMA_VERSION` and adds
   an entry to `.GDSRC_SCHEMA_UPGRADES`.
+- **Registry edits** (`.gdsrc_json_edit`): only `create` (fields written
+  once) and `add` (into `giottosave` / `depends`). Never write a field after
+  creation, and never queue a full tag list: both break the order- and
+  replay-independence commits rely on. One file per edit, never reused.
+- **Commits** go through `.gdsrc_registry_commit(p, reg$top, ...)`, with
+  `top` the highest version on disk when the content was read. Treat only a
+  read *error* as an unreadable version, never a warning: basing a commit on
+  the version below drops the newest's edits.
 - **`sourcePrune`**: removes untagged artifacts; protection transitive
-  via BFS over `depends`.
+  via BFS over `depends`. Commits first, deletes vault folders after, drops
+  dead tags. Not safe while another process saves (by discipline).
 
 ### Tiled geometry write planning
 `storeWrite(parquetGeomTileStore)` uses `tilework::quadtreePlan()`. `dry_run = TRUE` plots

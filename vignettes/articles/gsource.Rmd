@@ -73,17 +73,21 @@ g <- snapshotLoad(src2, "qc_pass")
 
 ```
 <project_dir>/
-  giottodir.json       # manifest of all tracked artifacts
+  giottodir.<n>.json   # manifest of all tracked artifacts, one file per version
+  giottodir.json       # stub carrying the layout version
   artifacts/<uid>/...  # vault — each artifact gets its own uid-named subdir
-  _pending/            # write-ahead-log staging area for manifest edits
+  _pending/            # queued manifest edits, one file per edit
   giottosave/<name>.<id>/gobject.RDS   # one folder per snapshot
   dump/                # (optional) persistent staging area
 ```
 
-The directory is created on first use. Concurrent writers are safe — each
-`sourceWrite` queues an atomic entry in `_pending/` rather than racing on
-`giottodir.json` directly; the next read consolidates pending entries
-into the manifest.
+The directory is created on first use. Concurrent writers are safe, from
+one session or several: each `sourceWrite` or save queues its edit as a file
+of its own in `_pending/`, and the next read folds pending edits into the
+manifest as its next version. If two processes fold at once, one publishes
+the version and the other reads again and retries; neither overwrites the
+other. An artifact's record is fixed once written; snapshot tags are only
+ever added to it.
 
 You can inspect the manifest at any time:
 
@@ -188,6 +192,10 @@ X and Y are kept (BFS over the manifest's `depends` graph).
 sourcePrune(src)  # safe — only deletes things no snapshot needs
 ```
 
+It also drops tags whose snapshot is gone, which protect nothing. Run it
+while no other session or worker is saving into the project: a snapshot
+saved while pruning runs can lose artifacts that only it protects.
+
 # Snapshot verbs
 
 A snapshot is a serialized giotto object (`gobject.RDS` or `gobject.qs2`)
@@ -221,13 +229,15 @@ Six-step lifecycle, in order:
 3. **Adopt external expression matrices** — `IterableMatrix` /
    `HDF5Array` not in the vault are adopted (sharing the session cache
    so shared leaves move once).
-4. **Write snapshot atomically** — the object is written into a staging
+4. **Tag artifacts** — every vault artifact the gobject references gets
+   the snapshot's tag added to its `giottosave` manifest field,
+   whether or not this save adopted it. Stores are matched by uid; BPCells
+   and HDF5 matrices by content hash; images by their vault path. The tags
+   are queued before the snapshot folder is renamed in, so the folder never
+   exists ahead of its tags.
+5. **Write snapshot atomically** — the object is written into a staging
    folder inside `giottosave/`, which is renamed to
    `giottosave/<name>.<id>/` once complete.
-5. **Tag artifacts** — every vault artifact the gobject references gets
-   the snapshot's tag appended to its `giottosave` manifest field,
-   whether or not this save adopted it. Stores are matched by uid; BPCells
-   and HDF5 matrices by content hash; images by their vault path.
 6. **Drop older snapshots of the same name** — on `overwrite = TRUE`,
    only after the new one is in place.
 
@@ -304,11 +314,12 @@ setArtifactDumpDir(src)   # dump = artifacts/
 
 ## What survives a crash?
 
-- `_pending/<uid>.json` writes are atomic (write to temp → rename). A
-  crashed writer leaves nothing behind.
-- `giottodir.json` consolidation is atomic (write to temp → rename
-  over the old file). Either the old manifest or the new manifest is
-  always intact, never a partial write.
+- Edit files in `_pending/` are written atomically (write to temp →
+  rename). A crashed writer leaves nothing behind.
+- A manifest version appears whole, by a hard link from a complete temp
+  file. A version cut short by a crash or power loss gives way to the one
+  below it, and edit files are deleted one version after they are applied,
+  so the fallback loses nothing.
 - Snapshot writes are atomic (staging folder → rename to
   `giottosave/<name>.<id>/`). A folder without its object file is not a
   snapshot.
@@ -332,7 +343,12 @@ sourceUpdate("/projects/visium_exp1")  # migrate in place, then re-stamp
 ```
 
 `options(giottodisk.schema_check = FALSE)` downgrades the refusal to a
-warning, as a last resort for reaching data.
+warning, as a last resort for reaching data: an older project can then be
+read, but not written.
+
+Layout v3 moves the manifest from `giottodir.json` into versioned files.
+After `sourceUpdate()`, a GiottoDisk older than v3 refuses the project, so
+upgrade every process that uses a shared project first.
 
 # Further reading
 

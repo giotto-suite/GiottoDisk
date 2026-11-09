@@ -1,7 +1,7 @@
 Package: GiottoDisk
 Type: Package
 Title: Disk backed representations for Giotto
-Version: 0.0.0.7
+Version: 0.0.0.8
 Authors@R: c(
     person("Ruben", "Dries", email = "rubendries@gmail.com",
 		 role = c("aut", "cre"), comment = c(ORCID = "0000-0001-7650-7754")),
@@ -43,7 +43,6 @@ Suggests:
     DBI,
     dbplyr,
     duckdb,
-    filelock (>= 1.0.2),
     GiottoIngest (>= 0.1.0),
     GiottoKernels (>= 0.3.0),
     HDF5Array,

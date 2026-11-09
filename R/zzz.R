@@ -20,7 +20,9 @@
     init_option("giottodisk.uid_include_node", FALSE)
     init_option("giottodisk.uid_include_pid", TRUE)
     # -- gDirSource
-    init_option("giottodisk.use_locking", TRUE)
+    # commits publish by hard link; TRUE renames instead, on filesystems
+    # without hard links, safe only while one process writes (adr/0023)
+    init_option("giottodisk.commit_by_rename", FALSE)
     # -- arrow schema
     init_option("giottodisk.arrow_timestamp_locale", "us")
     # -- parquet writer compression. See .parquet_compression() in

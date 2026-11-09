@@ -86,23 +86,17 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
         verbose = verbose
     )
   
+    # tagging --------------------------------------------------- #
+    # Queued before the folder exists: a tag protects nothing until its
+    # folder is in place, so a save cut short leaves only dead tags, and the
+    # folder never appears ahead of its tags (adr/0023).
+    vmsg(.v = verbose, "[GiottoDisk] tagging snapshot artifacts...")
+    .gdsrc_json_add_tags(src@path, uid = .ss_gdsrc_detect_uid(x), tag = tag)
+
     vmsg(.v = verbose, "[GiottoDisk] writing snapshot")
     .ss_gdsrc_write_snapshot(x, gsdir = gsdir, tag = tag,
         method = method, method_params = method_params
     )
-  
-    # tagging --------------------------------------------------- #
-    vmsg(.v = verbose, "[GiottoDisk] tagging snapshot artifacts...")
-    uids <- .ss_gdsrc_detect_uid(x)
-    if (length(uids) > 0L) {
-        manifest <- as.data.frame(src)
-        for (uid_to_tag in uids) {
-            content <- manifest[uid == uid_to_tag, giottosave]
-            content <- c(content, tag)
-            content <- unique(content[!is.na(content)])
-            src[uid_to_tag, "giottosave"] <- content
-        }
-    }
 
     # an overwrite: older snapshots of this name go once this one is in place
     .ss_gdsrc_drop_older(gsdir, name = name, keep = tag)
@@ -177,6 +171,13 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
         verbose    = verbose
     )
 
+    # Tag multi-level artifacts only — child-level uids were tagged in
+    # their respective child snapshotSave calls above. Queued before the
+    # folder exists, as for a giotto snapshot.
+    vmsg(.v = verbose, "[GiottoDisk] tagging multi-level artifacts...")
+    .gdsrc_json_add_tags(src@path,
+        uid = .ss_gdsrc_detect_uid_matrices(x, as.data.frame(src)), tag = tag)
+
     # Write the multi-level .rds. Children are embedded with their
     # (post-adoption) file handles; loading the multi .rds reconstitutes
     # the whole federation without needing a separate manifest.
@@ -184,20 +185,6 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
     .ss_gdsrc_write_snapshot(x, gsdir = gsdir, tag = tag,
         method = method, method_params = method_params
     )
-
-    # Tag multi-level artifacts only — child-level uids were tagged in
-    # their respective child snapshotSave calls above.
-    vmsg(.v = verbose, "[GiottoDisk] tagging multi-level artifacts...")
-    uids <- .ss_gdsrc_detect_uid_matrices(x, as.data.frame(src))
-    if (length(uids) > 0L) {
-        manifest <- as.data.frame(src)
-        for (uid_to_tag in uids) {
-            content <- manifest[uid == uid_to_tag, giottosave]
-            content <- c(content, tag)
-            content <- unique(content[!is.na(content)])
-            src[uid_to_tag, "giottosave"] <- content
-        }
-    }
 
     # an overwrite: older snapshots of this name go once this one is in place
     .ss_gdsrc_drop_older(gsdir, name = name, keep = tag)

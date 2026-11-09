@@ -5,10 +5,10 @@
 \alias{.json_atomic_write}
 \alias{.json_read}
 \alias{.gdsrc_json_header}
-\alias{.gdsrc_json_write}
 \alias{.gdsrc_json_read}
 \alias{.gdsrc_json_edit}
 \alias{.gdsrc_json_add_artifact}
+\alias{.gdsrc_json_add_tags}
 \alias{.gdsrc_json_consolidate}
 \title{Giotto Directory JSON}
 \usage{
@@ -21,13 +21,16 @@
 
 .json_read(file)
 
-.gdsrc_json_header(version = .GDSRC_SCHEMA_VERSION)
-
-.gdsrc_json_write(p, x, version = NULL, check = TRUE)
+.gdsrc_json_header(
+  version = .GDSRC_SCHEMA_VERSION,
+  seq = NULL,
+  hash = NULL,
+  applied = NULL
+)
 
 .gdsrc_json_read(p, consolidate = FALSE)
 
-.gdsrc_json_edit(p, uid, x)
+.gdsrc_json_edit(p, uid, create = NULL, add = NULL)
 
 .gdsrc_json_add_artifact(
   p,
@@ -39,14 +42,16 @@
   depends = NULL
 )
 
+.gdsrc_json_add_tags(p, uid, tag)
+
 .gdsrc_json_consolidate(p, check = TRUE)
 }
 \arguments{
+\item{hash}{character. Hash of the in-memory store object to track changes}
+
 \item{uid}{character. Unique ID for artifact tracking}
 
 \item{store_type}{character. Type of file format storage (e.g. \"h5\")}
-
-\item{hash}{character. Hash of the in-memory store object to track changes}
 
 \item{meta}{list (optional). Additional list of atomic object(s) that can}
 
@@ -54,8 +59,8 @@
 be attached as further metadata to the particular uid}
 }
 \description{
-Internal utilities for editing the \link{gDirSource} managed
-\code{giottodir.json}.
+Internal utilities for reading and editing the \link{gDirSource} registry
+(\verb{giottodir.<n>.json}).
 }
 \section{Functions}{
 \itemize{
@@ -73,29 +78,30 @@ files from GiottoDisk. Stamps with information for:
 \item schema version of the project directory (see \code{\link[=sourceSchema]{sourceSchema()}})
 }
 
-\item \code{.gdsrc_json_write()}: Write function for the main
-\code{giottodir.json}. The schema version already on disk is kept; a new
-project is stamped with the current one. Only \code{\link[=sourceUpdate]{sourceUpdate()}} passes
-\code{version}, which stamps it without the schema check.
+A registry version also carries its number (\code{seq}), a hash of its
+content, and the pending edit files it applied (\code{applied}).
 
-\item \code{.gdsrc_json_read()}: Read function for the main
-\code{giottodir.json}. This function does not check or consolidate
-pending edits by default.
+\item \code{.gdsrc_json_read()}: Read the registry as list(header, content), with
+pending edits applied when \code{consolidate = TRUE}. A project in an older
+layout is read only with the schema check turned off.
 
-\item \code{.gdsrc_json_edit()}: Queue an edit to the manifest by
-generating a pending edit that is written to disk as a
-loose json. This can later be consolidated into the main
-\code{giottodir.json}.
+\item \code{.gdsrc_json_edit()}: Queue an edit as its own file in \verb{_pending/},
+written whole and renamed in, so no two writers share one. \code{create}: the
+fields of a new record; on an existing record only the fields it lacks are
+filled. \code{add}: values joined into the set fields (\code{giottosave},
+\code{depends}), for one or more \code{uid}s. The result depends neither on the
+order edits are applied in nor on applying one twice (adr/0023).
 
 \item \code{.gdsrc_json_add_artifact()}: Add a tracked artifact to the directory. This adds
 the tracking metadata for the object and places it in a location specified
-by \code{.gdsrc_json_pending_dir()} to await consolidation into the main
-\code{giottodir.json}.
+by \code{.gdsrc_json_pending_dir()} to await consolidation into the registry.
 
-\item \code{.gdsrc_json_consolidate()}: Consolidate pending edits into central
-\code{giottodir.json} manifest. Scans for pending edits then applies
-the changes in a for loop on the manifest content before
-writing back out.
+\item \code{.gdsrc_json_add_tags()}: Tag artifacts with a snapshot tag
+
+\item \code{.gdsrc_json_consolidate()}: Apply pending edits and commit the result as the
+next registry version, retrying when another writer commits first.
+Returns the registry as \code{.gdsrc_json_read()} does. A project that cannot
+be written is returned with the edits applied, uncommitted.
 
 }}
 \keyword{internal}
