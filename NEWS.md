@@ -7,8 +7,9 @@
   older GiottoDisk refuses it, so upgrade every process sharing a project
   first. With `options(giottodisk.schema_check = FALSE)` an older project can
   still be read, but no longer written.
-- Manifest records can no longer be assigned (`src[uid, field] <- value`
-  errors); GiottoDisk writes them itself. Reading with `src[uid]`,
+- The `[<-` methods for `gDirSource` are removed: manifest records can no
+  longer be assigned (`src[uid, field] <- value`); GiottoDisk writes them
+  itself. Reading with `src[uid]`,
   `src[uid, field]` and `as.data.frame(src)` is unchanged.
 - `filelock` is no longer used, and the `giottodisk.use_locking` option is
   gone.

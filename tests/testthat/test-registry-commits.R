@@ -44,14 +44,12 @@ describe("edits", {
         expect_true(is.na(rec$giottosave))
     })
 
-    it("only add tags to a record once it exists; assigning is refused", {
+    it("only add tags to a record once it exists; nothing assigns", {
         x <- .reg_src()
         on.exit(unlink(x$td, recursive = TRUE), add = TRUE)
         u <- sourceWrite(x$src, data.frame(a = 1:3))@uid
-        expect_error(x$src[u, "store"] <- "x", "cannot be assigned")
-        expect_error(x$src[u, "giottosave"] <- "qc.aaaaaaaa", "cannot be assigned")
-        expect_error(x$src[u] <- list(store = "x"), "cannot be assigned")
-        expect_error(x$src[, "giottosave"] <- "qc.aaaaaaaa", "cannot be assigned")
+        expect_error(x$src[u, "giottosave"] <- "qc.aaaaaaaa")
+        expect_error(x$src[u] <- list(store = "x"))
         .gdsrc_json_add_tags(x$td, u, "qc.aaaaaaaa")
         .gdsrc_json_add_tags(x$td, u, "qc.bbbbbbbb")
         expect_setequal(x$src[u, "giottosave"], c("qc.aaaaaaaa", "qc.bbbbbbbb"))

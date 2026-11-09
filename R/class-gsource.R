@@ -143,27 +143,10 @@ setMethod("[", signature("gDirSource", i = "missing", j = "character"), function
     lapply(data$content, function(art) art[[j]])
 })
 
-# Records are written only by GiottoDisk, as edits that create a record or
-# add tags (adr/0023). Assigning would replace a value from a read that may be
-# stale, which is how concurrent saves used to lose each other's tags, so
-# `[<-` refuses rather than replace; read with `src[uid]`, `src[uid, field]`.
-.gdsrc_no_assign <- function() {
-    stop("[gDirSource] registry records cannot be assigned: GiottoDisk ",
-        "writes them itself (snapshotSave() tags artifacts). Read them with ",
-        "src[uid] or src[uid, field].\n", call. = FALSE)
-}
-
-setMethod("[<-", signature("gDirSource", i = "character", j = "missing", value = "ANY"), function(x, i, j, ..., value) {
-    .gdsrc_no_assign()
-})
-
-setMethod("[<-", signature("gDirSource", i = "character", j = "character", value = "ANY"), function(x, i, j, ..., value) {
-    .gdsrc_no_assign()
-})
-
-setMethod("[<-", signature("gDirSource", i = "missing", j = "character", value = "ANY"), function(x, i, j, ..., value) {
-    .gdsrc_no_assign()
-})
+# No `[<-`: records are written only by GiottoDisk, as edits that create a
+# record or add tags (adr/0023). R reads `[<-` as "replace", and a
+# replacement built from a stale read is how concurrent saves lost each
+# other's tags. Tag through .gdsrc_json_add_tags().
 
 # source check ####
 

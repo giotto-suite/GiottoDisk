@@ -621,8 +621,8 @@ No lock.
   once) and `add` (into `giottosave` / `depends`). Never write a field after
   creation, and never queue a full tag list: both break the order- and
   replay-independence commits rely on. One file per edit, never reused.
-  `src[uid, field] <-` refuses on purpose (R reads it as "replace"); tag
-  through `.gdsrc_json_add_tags()`.
+  There is no `[<-` on purpose (R reads it as "replace"); tag through
+  `.gdsrc_json_add_tags()`. Do not add one back.
 - **Commits** go through `.gdsrc_registry_commit(p, reg$top, ...)`, with
   `top` the highest version on disk when the content was read. Treat only a
   read *error* as an unreadable version, never a warning: basing a commit on
