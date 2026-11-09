@@ -625,7 +625,10 @@ No lock.
   the stamped version. A layout change bumps `.GDSRC_SCHEMA_VERSION` and adds
   an entry to `.GDSRC_SCHEMA_UPGRADES`.
 - **Registry edits** (`.gdsrc_json_edit`): only `create` (fields written
-  once) and `add` (into `giottosave` / `depends`). Never write a field after
+  once) and `add` (into `giottosave` / `depends`). An artifact must mean the
+  same thing to every snapshot referencing it, so records are fixed for
+  users: no public setter, ever; a replace operation, if one is ever needed,
+  is internal bookkeeping invisible to snapshots (adr/0023). Never write a field after
   creation, and never queue a full tag list: both break the order- and
   replay-independence commits rely on. One file per edit, never reused.
   There is no `[<-` on purpose (R reads it as "replace"); tag through

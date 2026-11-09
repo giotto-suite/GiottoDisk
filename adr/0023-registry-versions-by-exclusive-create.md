@@ -60,8 +60,16 @@ gone.
   folder renamed in after pruning listed the folders can lose artifacts only
   it protects, and dropping dead tags makes that worse. This is left to
   discipline (do not prune while saving), not closed with grace periods.
-- A field cannot change after creation. A feature that needs to update one
-  must add last-writer-wins with a stored time per field, and bump the schema.
+- An artifact means the same thing to every snapshot that references it. A
+  snapshot names its artifacts by uid, so if a record's fields could be
+  changed later, an older snapshot would find the same artifact described
+  differently from when it was saved. Records are therefore fixed for users:
+  there is no public way to replace a field, only additions made by
+  GiottoDisk itself (tags from saves, `depends` at creation). Facts that
+  should change belong to the save, not the artifact.
+- Any future replace operation is for internal bookkeeping that does not
+  change what a snapshot sees, and needs last-writer-wins with a stored time
+  per field and a schema bump.
 - Old-format pending edits are refused after the upgrade; `sourceUpdate()`
   folds them in first.
 
