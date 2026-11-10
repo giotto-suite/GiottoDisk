@@ -626,10 +626,16 @@ No lock.
   replay-independence commits rely on. One file per edit, never reused.
   There is no `[<-` on purpose (R reads it as "replace"); tag through
   `.gdsrc_json_add_tags()`. Do not add one back.
-- **Commits** go through `.gdsrc_registry_commit(p, reg$top, ...)`, with
-  `top` the highest version on disk when the content was read. Treat only a
-  read *error* as an unreadable version, never a warning: basing a commit on
-  the version below drops the newest's edits.
+- **Commits** go through `.gdsrc_registry_update(p, step)`: `step(reg,
+  edits)` returns the content to commit, and the loop owns retries, backoff
+  and read-only projects. Do not write a second loop. It commits above
+  `reg$top`, the highest version on disk when the content was read. Treat
+  only a read *error* as an unreadable version, never a warning: basing a
+  commit on the version below drops the newest's edits.
+- **Registry I/O** goes only through `.gdsrc_store_list/read/create/delete`
+  (keys relative to the project), the seam a remote backend replaces. No
+  `list.files()` / `file.exists()` / `unlink()` on registry or `_pending`
+  files elsewhere.
 - **`sourcePrune`**: removes untagged artifacts; protection transitive
   via BFS over `depends`. Commits first, deletes vault folders after, drops
   dead tags. Not safe while another process saves (by discipline).

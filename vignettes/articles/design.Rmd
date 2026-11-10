@@ -679,8 +679,9 @@ of artifacts (JSON parse overhead at consolidation time).
 
 For S3/cloud deployments, the commit is the same create-if-absent, as a
 conditional PUT (`If-None-Match: *`, or GCS generation 0), with a listing to
-find the newest version. Only the functions that publish and list versions
-differ; the registry format stays as it is.
+find the newest version. Registry and edit files are only touched through
+four storage functions (list, read, create-if-absent, delete); a remote
+backend replaces those, and the registry format stays as it is.
 
 ### Dump directory and artifact lifecycle
 
