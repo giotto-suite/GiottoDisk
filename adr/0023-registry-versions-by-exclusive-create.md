@@ -109,8 +109,10 @@ and cleanup and pending edits follow that chain, so an edit can be applied
 twice but never lost; a writer reads again after committing, in case its
 version was skipped. That is roughly 50 lines in the storage layer and the
 commit loop, plus a race test for a skipped claim, and
-`commit_by_rename` goes. Worth doing if multi-writer use off hard-link
-filesystems is asked for. Base R offers no one-step alternative:
+`commit_by_rename` goes. The files stay readable by this version, but its
+writers would miss claims and ignore `base`, so it needs schema v4 to keep
+them out; the upgrade only restamps the stub. Worth doing if multi-writer
+use off hard-link filesystems is asked for. Base R offers no one-step alternative:
 `file(open = "wx")` is undocumented and shows a file while it is written,
 symlinks need admin rights on Windows, and a rename that refuses an existing
 target needs compiled code per OS and is not on NFS.
