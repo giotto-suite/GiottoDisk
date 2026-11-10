@@ -22,7 +22,8 @@ if \code{NULL}.}
 }
 \value{
 \code{data.frame}, one row per snapshot, oldest first: \code{name}, \code{tag},
-\code{created}, \code{creator}, \code{session}, \code{object}, \code{parent} (a tag), \code{keep},
+\code{created}, \code{creator}, \code{session}, \code{object}, \code{parents} (list column of
+tags, the main line first; several where objects were combined), \code{keep},
 \code{description}, \code{labels} (list column), \code{extra} (list column),
 \code{deleted}.
 }
@@ -30,8 +31,8 @@ if \code{NULL}.}
 List a project's snapshots with what each save recorded about itself,
 without loading any of them: who made it ("creator", such as \code{"user"} or
 the package that saved it), the session it came from, which object it saved
-(\code{object}, see \code{\link[GiottoClass:objUID]{GiottoClass::objUID()}}), the snapshot it was made from
-(\code{parent}), whether it is to be kept, a description and labels.
+(\code{object}, see \code{\link[GiottoClass:objUID]{GiottoClass::objUID()}}), the snapshots it was made from
+(\code{parents}), whether it is to be kept, a description and labels.
 Set those when saving (see \code{\link[=snapshotSave]{snapshotSave()}}) or later with
 \code{\link[=snapshotMetadata]{snapshotMetadata()}}.
 

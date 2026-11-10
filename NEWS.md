@@ -20,13 +20,14 @@
 ## changes
 - Each snapshot records what the save was: who made it, the session and the
   snapshot it came from, whether to keep it, a description and labels
-  (`snapshotSave(keep =, creator =, session =, parent =, description =,
+  (`snapshotSave(keep =, creator =, session =, parents =, description =,
   labels =, extra =)`). `snapshotInfo()` lists them without loading
   anything; `snapshotMetadata()` changes `keep`, the description, labels and
   `extra`. See adr/0024.
 - A snapshot records the uid of the object it saved (`object`), and its
-  `parent` defaults to the snapshot the object was last loaded from or saved
-  as: `snapshotLoad()` and `snapshotSave()` set `@versions$snapshot`. Save as
+  `parents` default to the snapshots the object was last loaded from or saved
+  as: `snapshotLoad()` and `snapshotSave()` set `@versions$snapshot`, and a
+  joined object or `giottoMulti` carries all of its inputs'. Save as
   `g <- saveGiotto(g)` to keep the chain. Requires GiottoClass 0.7.28.
 - Sessions and workers saving into one project no longer lose each other's
   snapshot tags, which could let `sourcePrune()` delete artifacts a snapshot

@@ -19,12 +19,12 @@ folder, so a child's link to it would dangle unless every child were rewritten.
 
 Each snapshot folder holds `snapshot.json`, written in the staging folder with
 the object: fixed at save (`schema`, `name`, `tag`, `created`, `creator`,
-`session`, `object`, `parent`) and changeable with `snapshotMetadata()` (`keep`,
-`description`, `labels`, `extra`). `snapshotInfo()` lists them without loading
-anything. Deleting a snapshot, or dropping an overwritten one, removes only its
-object file; the folder and its description files stay. A folder without an
-object file was already not a snapshot, so protection is released exactly as
-before.
+`session`, `object`, `parents`) and changeable with `snapshotMetadata()`
+(`keep`, `description`, `labels`, `extra`). `snapshotInfo()` lists them without
+loading anything. Deleting a snapshot, or dropping an overwritten one, removes
+only its object file; the folder and its description files stay. A folder
+without an object file was already not a snapshot, so protection is released
+exactly as before.
 
 ## Consequences
 
@@ -38,9 +38,10 @@ before.
   record of a save, and editing a description never contends with artifact
   writes. Concurrent edits of one save's `snapshot.json` resolve as last write
   wins.
-- `parent` is passed by the caller. Recording it automatically on
-  `snapshotLoad()` needs a field on the object (GiottoClass) and is left for
-  then.
+- `parents` default to the object's `@versions$snapshot`, the snapshots it
+  was last loaded from or saved as, which loads and saves set and joins
+  combine. A list rather than one tag, so a combined object's first save shows
+  the merge; the main line is first. A caller can name them instead.
 
 ## Alternatives considered
 

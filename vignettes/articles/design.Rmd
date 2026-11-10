@@ -615,7 +615,7 @@ fixed names too. The folder name is the snapshot's tag, and the `<id>` is new
 on every save.
 
 What describes the save rather than the object lives in `snapshot.json`
-(adr/0024): creator, session, object, parent, `keep`, description, labels.
+(adr/0024): creator, session, object, parents, `keep`, description, labels.
 It is a file per snapshot, not a section of the registry, so the folder stays
 the one record of a save and editing a description never contends with
 artifact writes. Deleting a snapshot removes only its object: the folder and its

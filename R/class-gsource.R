@@ -782,9 +782,10 @@ NULL
     as.list(snaps[which.max(snaps$mtime), , drop = FALSE])
 }
 
-# The tag of the snapshot an object was last loaded from or saved as, kept in
-# its `@versions$snapshot` (GiottoClass documents the field): NULL until a
-# load or save sets it. A save records it as the new snapshot's parent.
+# Tags of the snapshots an object last passed, kept in its
+# `@versions$snapshot` (GiottoClass documents the field): NULL until a load or
+# save sets one, several for an object combined from others. A save records
+# them as the new snapshot's parents and leaves its own tag.
 .gdsrc_obj_snapshot <- function(x) {
     v <- x@versions
     if (is.list(v)) v$snapshot

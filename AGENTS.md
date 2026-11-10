@@ -581,7 +581,7 @@ rationale (manifest design, dump lifecycle, multi-analysis guarantees).
     manifest.json          # what it holds (giotto snapshots only)
     history.ndjson         # how it was produced (giotto snapshots only)
     snapshot.json          # what the save records: creator, session, object,
-                           #   parent, keep, description, labels (adr/0024)
+                           #   parents, keep, description, labels (adr/0024)
 ```
 
 Manifest access: `src["uid"]`, `src["uid", "field"]`, `src[, "field"]`,
@@ -613,7 +613,7 @@ No lock.
   (`<name>.<id>`, new every save) → adopt external images / matrices /
   stores, tagging what they adopt → queue tags for every referenced vault
   artifact (uid for stores, hash for BPCells/HDF5, vault path for images) →
-  set `@versions$snapshot` to the new tag, the old value being `parent` →
+  set `@versions$snapshot` to the new tag, the old value(s) being `parents` →
   write via a staging folder (object, manifest, history, `snapshot.json`) →
   drop older snapshots of the name. Tags are queued before the folder
   appears. Deleting or dropping a snapshot removes only its object file

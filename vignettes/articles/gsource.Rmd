@@ -211,10 +211,12 @@ Beside the object, a `giotto` snapshot's folder holds `manifest.json` (what
 the object contains) and `history.ndjson` (how it was produced). Every
 snapshot's folder also holds `snapshot.json`, what the save records about
 itself: who made it (`creator`), the session, which object it saved
-(`object`, its `objUID()`) and the snapshot it came from (`parent`), whether
-it is to be kept, a description and labels. A loaded or saved object records
-the snapshot it last passed in `@versions$snapshot`, and the next save takes
-that as its `parent`, so save as `g <- saveGiotto(g)`.
+(`object`, its `objUID()`) and the snapshots it came from (`parents`),
+whether it is to be kept, a description and labels. A loaded or saved object
+records the snapshot it last passed in `@versions$snapshot`, and the next save
+takes that as its parent, so save as `g <- saveGiotto(g)`. An object combined
+from others, by `joinGiottoObjects()` or `createGiottoMulti()`, carries all of
+theirs, so its first save has several parents.
 `snapshotInfo(src)` lists them for every snapshot without loading any, and
 `snapshotMetadata(src, name, keep =, description =, labels =)` changes what
 can change; the rest is fixed at save time.

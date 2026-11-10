@@ -22,14 +22,14 @@ describe("snapshotInfo", {
         on.exit(unlink(x$td, recursive = TRUE), add = TRUE)
         t1 <- .info_snapshot(x$td, "raw")
         t2 <- .info_snapshot(x$td, "work", keep = FALSE, creator = "GiottoLens",
-            session = "s1", parent = t1, labels = c("qc", "draft"),
+            session = "s1", parents = t1, labels = c("qc", "draft"),
             extra = list(GiottoLens = list(step = "cluster")))
         info <- snapshotInfo(x$src)
         expect_identical(info$tag, c(t1, t2))
         w <- info[info$name == "work", ]
         expect_identical(w$creator, "GiottoLens")
         expect_identical(w$session, "s1")
-        expect_identical(w$parent, t1)
+        expect_identical(w$parents[[1]], t1)
         expect_false(w$keep)
         expect_identical(w$labels[[1]], c("qc", "draft"))
         expect_identical(w$extra[[1]]$GiottoLens$step, "cluster")
@@ -52,13 +52,13 @@ describe("snapshotInfo", {
         x <- .info_src()
         on.exit(unlink(x$td, recursive = TRUE), add = TRUE)
         t1 <- .info_snapshot(x$td, "raw")
-        t2 <- .info_snapshot(x$td, "work", parent = t1)
+        t2 <- .info_snapshot(x$td, "work", parents = t1)
         snapshotDelete(x$src, "raw")
         expect_identical(snapshotInfo(x$src)$tag, t2)
         all <- snapshotInfo(x$src, deleted = TRUE)
         expect_identical(all$deleted, c(TRUE, FALSE))
         # the child still names a folder that exists
-        expect_true(dir.exists(file.path(.snap_gsdir(x$td), all$parent[2])))
+        expect_true(dir.exists(file.path(.snap_gsdir(x$td), all$parents[[2]])))
     })
 })
 
@@ -77,8 +77,8 @@ describe("snapshotMetadata", {
         expect_identical(row$labels[[1]], "final")
         expect_identical(names(row$extra[[1]]), c("GiottoLens", "note"))
         expect_identical(row[c("name", "tag", "created", "creator", "session",
-            "parent")], before[c("name", "tag", "created", "creator", "session",
-            "parent")])
+            "parents")], before[c("name", "tag", "created", "creator", "session",
+            "parents")])
         # left NULL: unchanged
         row <- snapshotMetadata(x$td, "work", labels = c("final", "v2"))
         expect_identical(row$description, "leiden at 0.5")
@@ -138,22 +138,38 @@ describe("the snapshot an object last passed", {
         first <- .row(x$src, "first")
         expect_identical(.gdsrc_obj_snapshot(g), first$tag)
         expect_identical(first$object, GiottoClass::objUID(g0))
-        expect_true(is.na(first$parent))
+        expect_length(first$parents[[1]], 0L)
 
         g <- .save(x$src, g, "second")
-        expect_identical(.row(x$src, "second")$parent, first$tag)
+        expect_identical(.row(x$src, "second")$parents[[1]], first$tag)
 
         loaded <- suppressMessages(snapshotLoad(x$src, name = "first"))
         expect_identical(.gdsrc_obj_snapshot(loaded), first$tag)
     })
 
-    it("gives way to a parent the caller names", {
+    it("records every snapshot a combined object came from, then only its own", {
+        x <- .info_src()
+        on.exit(unlink(x$td, recursive = TRUE), add = TRUE)
+        g <- g0
+        g@source <- x$src
+        .gdsrc_obj_snapshot(g) <- c("a.aaaaaaaa", "b.bbbbbbbb")
+        g <- .save(x$src, g, "joined")
+        expect_identical(.row(x$src, "joined")$parents[[1]],
+            c("a.aaaaaaaa", "b.bbbbbbbb"))
+        expect_identical(.gdsrc_obj_snapshot(g), .row(x$src, "joined")$tag)
+        g <- .save(x$src, g, "next")
+        expect_identical(.row(x$src, "next")$parents[[1]],
+            .row(x$src, "joined")$tag)
+    })
+
+    it("gives way to parents the caller names", {
         x <- .info_src()
         on.exit(unlink(x$td, recursive = TRUE), add = TRUE)
         g <- g0
         g@source <- x$src
         g <- .save(x$src, g, "first")
-        .save(x$src, g, "second", parent = "other.abcdefgh")
-        expect_identical(.row(x$src, "second")$parent, "other.abcdefgh")
+        .save(x$src, g, "second", parents = c("a.abcdefgh", "b.abcdefgh"))
+        expect_identical(.row(x$src, "second")$parents[[1]],
+            c("a.abcdefgh", "b.abcdefgh"))
     })
 })
