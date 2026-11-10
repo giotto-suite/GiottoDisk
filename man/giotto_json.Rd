@@ -44,7 +44,7 @@
 
 .gdsrc_json_add_tags(p, uid, tag)
 
-.gdsrc_json_consolidate(p, check = TRUE)
+.gdsrc_json_consolidate(p)
 }
 \arguments{
 \item{hash}{character. Hash of the in-memory store object to track changes}
@@ -86,11 +86,11 @@ pending edits applied when \code{consolidate = TRUE}. A project in an older
 layout is read only with the schema check turned off.
 
 \item \code{.gdsrc_json_edit()}: Queue an edit as its own file in \verb{_pending/},
-written whole and renamed in, so no two writers share one. \code{create}: the
-fields of a new record; on an existing record only the fields it lacks are
-filled. \code{add}: values joined into the set fields (\code{giottosave},
-\code{depends}), for one or more \code{uid}s. The result depends neither on the
-order edits are applied in nor on applying one twice (adr/0023).
+created whole under a name no other writer uses. \code{create}: the fields of a
+new record; on an existing record only the fields it lacks are filled.
+\code{add}: values joined into the set fields (\code{giottosave}, \code{depends}), for
+one or more \code{uid}s. The result depends neither on the order edits are
+applied in nor on applying one twice (adr/0023).
 
 \item \code{.gdsrc_json_add_artifact()}: Add a tracked artifact to the directory. This adds
 the tracking metadata for the object and places it in a location specified

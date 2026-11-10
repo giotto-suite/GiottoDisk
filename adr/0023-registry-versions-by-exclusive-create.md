@@ -53,9 +53,16 @@ gone.
   folders) commits fail with an explanation;
   `options(giottodisk.commit_by_rename = TRUE)` commits by rename, safe only
   for a single writer.
-- A remote backend needs the same two primitives, create-if-absent (S3
-  `If-None-Match: *`, GCS generation 0) and a listing, in place of
-  `.gdsrc_publish()` and `.gdsrc_registry_versions()`; the format is unchanged.
+- All registry I/O, versions and edit files alike, goes through four storage
+  functions: list, read, create-if-absent and delete (`.gdsrc_store_*`). A
+  remote backend replaces those four, with create-if-absent as S3
+  `If-None-Match: *` or GCS generation 0; the format and the commit loop are
+  unchanged. The `giottodir.json` stub is written plainly and the vault
+  folders are outside the seam.
+- Consolidation and pruning share one commit loop
+  (`.gdsrc_registry_update()`), so they cannot drift apart in how they retry
+  or read. Pruning applies the pending edits and drops records in the same
+  commit.
 - `sourcePrune()` is still not safe against a save running alongside it: a
   folder renamed in after pruning listed the folders can lose artifacts only
   it protects, and dropping dead tags makes that worse. This is left to

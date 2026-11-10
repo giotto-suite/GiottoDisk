@@ -103,7 +103,7 @@ describe("commits", {
         on.exit(unlink(x$td, recursive = TRUE), add = TRUE)
         u <- sourceWrite(x$src, data.frame(a = 1))@uid
         .gdsrc_json_consolidate(x$td)
-        writeLines("{\"header\":", .gdsrc_registry_file(x$td, 2L))
+        writeLines("{\"header\":", file.path(x$td, .gdsrc_registry_key(2L)))
         expect_identical(.gdsrc_registry_load(x$td)$n, 1L)
         # the edit file is still there, so the next read restores the record
         reg <- .gdsrc_json_consolidate(x$td)
@@ -174,6 +174,20 @@ describe("sourcePrune", {
         .gdsrc_json_add_tags(x$td, u, c(tag, "gone.abcdefgh"))
         suppressMessages(sourcePrune(x$src))
         expect_identical(x$src[u, "giottosave"], tag)
+    })
+
+    it("applies pending edits and prunes in one commit", {
+        x <- .reg_src()
+        on.exit(unlink(x$td, recursive = TRUE), add = TRUE)
+        tag <- basename(dirname(.write_snapshot_fixture(x$td, "qc", list(a = 1))))
+        kept <- sourceWrite(x$src, data.frame(a = 1))@uid
+        gone <- sourceWrite(x$src, data.frame(b = 1))@uid
+        .gdsrc_json_add_tags(x$td, kept, tag)
+        before <- max(.gdsrc_registry_versions(x$td))
+        pruned <- suppressMessages(sourcePrune(x$src))
+        expect_identical(pruned, gone)
+        expect_identical(max(.gdsrc_registry_versions(x$td)), before + 1L)
+        expect_identical(names(as.list(x$src)), kept)
     })
 
     it("that loses the race to a save keeps what the save protects", {
