@@ -96,6 +96,25 @@ gone.
 - **Per-save protection entries in the registry:** write cost was not the
   problem; folders stay the record of which saves exist.
 
+## Left open
+
+**Claims with version bases**, for several writers on filesystems without
+hard links (FAT, exFAT, many SMB shares). A writer claims version n with
+`dir.create("giottodir.<n>.json.claim")`, exclusive wherever `mkdir()` is,
+then renames its content in. A claim is visible before its content, so a
+writer that skips an in-progress claim builds on an older version, and
+cleanup would delete the claimant's edit files though no version holds
+them. Each version therefore records the version it was built on (`base`),
+and cleanup and pending edits follow that chain, so an edit can be applied
+twice but never lost; a writer reads again after committing, in case its
+version was skipped. That is roughly 50 lines in the storage layer and the
+commit loop, plus a race test for a skipped claim, and
+`commit_by_rename` goes. Worth doing if multi-writer use off hard-link
+filesystems is asked for. Base R offers no one-step alternative:
+`file(open = "wx")` is undocumented and shows a file while it is written,
+symlinks need admin rights on Windows, and a rename that refuses an existing
+target needs compiled code per OS and is not on NFS.
+
 ## References
 
 `R/class-gsource.R` (registry versions, edits, pruning),
