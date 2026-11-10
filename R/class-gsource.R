@@ -782,6 +782,22 @@ NULL
     as.list(snaps[which.max(snaps$mtime), , drop = FALSE])
 }
 
+# The tag of the snapshot an object was last loaded from or saved as, kept in
+# its `@versions$snapshot` (GiottoClass documents the field): NULL until a
+# load or save sets it. A save records it as the new snapshot's parent.
+.gdsrc_obj_snapshot <- function(x) {
+    v <- x@versions
+    if (is.list(v)) v$snapshot
+}
+
+`.gdsrc_obj_snapshot<-` <- function(x, value) {
+    v <- x@versions
+    if (!is.list(v)) v <- list()
+    v$snapshot <- value
+    x@versions <- v
+    x
+}
+
 # A name becomes part of a folder name, so it must stay one path component
 .gdsrc_assert_snapshot_name <- function(name, site = "[snapshotSave]") {
     checkmate::assert_string(name, min.chars = 1L)

@@ -19,7 +19,7 @@ folder, so a child's link to it would dangle unless every child were rewritten.
 
 Each snapshot folder holds `snapshot.json`, written in the staging folder with
 the object: fixed at save (`schema`, `name`, `tag`, `created`, `creator`,
-`session`, `parent`) and changeable with `snapshotMetadata()` (`keep`,
+`session`, `object`, `parent`) and changeable with `snapshotMetadata()` (`keep`,
 `description`, `labels`, `extra`). `snapshotInfo()` lists them without loading
 anything. Deleting a snapshot, or dropping an overwritten one, removes only its
 object file; the folder and its description files stay. A folder without an

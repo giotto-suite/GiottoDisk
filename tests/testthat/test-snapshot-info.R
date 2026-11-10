@@ -116,3 +116,44 @@ describe("a deleted snapshot", {
         expect_identical(snapshotInfo(x$src)$tag, tag2)
     })
 })
+
+describe("the snapshot an object last passed", {
+    g0 <- GiottoUtils::gwith_options(list(giotto.use_conda = FALSE),
+        GiottoData::loadGiottoMini("visium", verbose = FALSE)
+    )
+    .save <- function(src, g, name, ...) {
+        suppressMessages(snapshotSave(src, g, name = name, verbose = FALSE,
+            ...))
+    }
+    .row <- function(src, name) snapshotInfo(src, name = name)
+
+    it("is set by a save, recorded as the next save's parent, and by a load", {
+        x <- .info_src()
+        on.exit(unlink(x$td, recursive = TRUE), add = TRUE)
+        g <- g0
+        g@source <- x$src
+        expect_null(.gdsrc_obj_snapshot(g))
+
+        g <- .save(x$src, g, "first")
+        first <- .row(x$src, "first")
+        expect_identical(.gdsrc_obj_snapshot(g), first$tag)
+        expect_identical(first$object, GiottoClass::objUID(g0))
+        expect_true(is.na(first$parent))
+
+        g <- .save(x$src, g, "second")
+        expect_identical(.row(x$src, "second")$parent, first$tag)
+
+        loaded <- suppressMessages(snapshotLoad(x$src, name = "first"))
+        expect_identical(.gdsrc_obj_snapshot(loaded), first$tag)
+    })
+
+    it("gives way to a parent the caller names", {
+        x <- .info_src()
+        on.exit(unlink(x$td, recursive = TRUE), add = TRUE)
+        g <- g0
+        g@source <- x$src
+        g <- .save(x$src, g, "first")
+        .save(x$src, g, "second", parent = "other.abcdefgh")
+        expect_identical(.row(x$src, "second")$parent, "other.abcdefgh")
+    })
+})

@@ -26,7 +26,8 @@ or reading giotto object}
 }
 \value{
 \code{giotto} object (possibly with additional downstream load
-steps needed)
+steps needed), with \verb{@versions$snapshot} set to the loaded snapshot's
+tag
 }
 \description{
 Load a gobject snapshot. If no name is provided, the most recent

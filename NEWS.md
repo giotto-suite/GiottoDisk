@@ -24,6 +24,10 @@
   labels =, extra =)`). `snapshotInfo()` lists them without loading
   anything; `snapshotMetadata()` changes `keep`, the description, labels and
   `extra`. See adr/0024.
+- A snapshot records the uid of the object it saved (`object`), and its
+  `parent` defaults to the snapshot the object was last loaded from or saved
+  as: `snapshotLoad()` and `snapshotSave()` set `@versions$snapshot`. Save as
+  `g <- saveGiotto(g)` to keep the chain. Requires GiottoClass 0.7.28.
 - Sessions and workers saving into one project no longer lose each other's
   snapshot tags, which could let `sourcePrune()` delete artifacts a snapshot
   still used. Writers that fold edits into the manifest at the same time no

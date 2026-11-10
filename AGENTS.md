@@ -39,7 +39,7 @@ GiottoDisk builds against **development branches** of the suite. `Remotes:` in
 
 | Package | Branch | Required because | Drop the pin when |
 |---|---|---|---|
-| `GiottoClass` | `gsource` | `analyzeData`, `reduceData`, `filterData` generics (all in `NAMESPACE` imports) and `labelProportionsParam` (`R/stream-labelProportions.R`) are gsource-only, as are `cellStatsParam` / `featStatsParam` (moved down from Giotto in 0.7.4). Floored at `>= 0.7.27`, which exports `extract_bin_overlap()` (`R/methods-aggregate.R` runs it on bin tiles) and gives `giottoBinPoints` the bin geometry slots `.binpoints_disk()` fills. | those six are exported on `dev`. |
+| `GiottoClass` | `gsource` | `analyzeData`, `reduceData`, `filterData` generics (all in `NAMESPACE` imports) and `labelProportionsParam` (`R/stream-labelProportions.R`) are gsource-only, as are `cellStatsParam` / `featStatsParam` (moved down from Giotto in 0.7.4). Floored at `>= 0.7.27`, which exports `extract_bin_overlap()` (`R/methods-aggregate.R` runs it on bin tiles) and gives `giottoBinPoints` the bin geometry slots `.binpoints_disk()` fills; `>= 0.7.28` for `objUID()`, which `snapshotSave()` records per snapshot. | those six are exported on `dev`. |
 | `Giotto` | `gsource` | The whole param layer dispatched on: `pcaParam` / `autoPcaParam` / `randomPcaParam` / `irlbaPcaParam` / `exactPcaParam`, `varParam`, `covLoessParam`, `covGroupsParam`, `scranMarkersParam`, `logNormParam`, `filterParam`, `smotifParam`. Also the `backend =` argument on `importStereoSeq()` / `createGiottoStereoSeqObjectBin()` / `createGiottoStereoSeqObjectCell()`, which `tests/testthat/test-stereoseq-gef.R` calls — its `skip_if_not_installed("Giotto")` skips on an absent Giotto but *errors* on one predating that argument. Floored at `>= 4.3.1` in `Imports:` for `smotifParam`, which `R/stream-motif.R` dispatches on: the motif layer landed after `gsource` reached 4.3.0, so a 4.3.0 install may lack it, and loading then fails with an S4 import error rather than a version message. (The floor also covers the `AteraReader` class `R/convenience-atera.R` subclasses, added in 4.2.4, which fails the same way.) | `suite_dev` exports them. |
 | `GiottoUtils` | `dev` | Suite convention; `dev` carries everything used. | `main` catches up. |
 | `tilework` | default | Hard `Imports:` dependency, `drieslab/tilework`, not on CRAN. | it ships to CRAN. |
@@ -580,8 +580,8 @@ rationale (manifest design, dump lifecycle, multi-analysis guarantees).
     gobject.RDS            # the object (or gobject.qs2); removed on delete
     manifest.json          # what it holds (giotto snapshots only)
     history.ndjson         # how it was produced (giotto snapshots only)
-    snapshot.json          # what the save records: creator, session, parent,
-                           #   keep, description, labels (adr/0024)
+    snapshot.json          # what the save records: creator, session, object,
+                           #   parent, keep, description, labels (adr/0024)
 ```
 
 Manifest access: `src["uid"]`, `src["uid", "field"]`, `src[, "field"]`,
@@ -613,6 +613,7 @@ No lock.
   (`<name>.<id>`, new every save) → adopt external images / matrices /
   stores, tagging what they adopt → queue tags for every referenced vault
   artifact (uid for stores, hash for BPCells/HDF5, vault path for images) →
+  set `@versions$snapshot` to the new tag, the old value being `parent` →
   write via a staging folder (object, manifest, history, `snapshot.json`) →
   drop older snapshots of the name. Tags are queued before the folder
   appears. Deleting or dropping a snapshot removes only its object file

@@ -12,7 +12,8 @@
 #' @param verbose verbosity
 #' @param ... additional params to pass (none implemented)
 #' @returns `giotto` object (possibly with additional downstream load
-#'   steps needed)
+#'   steps needed), with `@versions$snapshot` set to the loaded snapshot's
+#'   tag
 NULL
 
 #' @rdname snapshotLoad
@@ -51,6 +52,10 @@ setMethod("snapshotLoad", signature("gDirSource"), function(src,
 
     gobject <- .load_serialized(snap$file, load_params = load_params)
     gobject <- .drop_legacy_overlaps(gobject)
+    # the snapshot it came from, which the next save records as its parent
+    if (methods::is(gobject, "giotto") || methods::is(gobject, "giottoMulti")) {
+        .gdsrc_obj_snapshot(gobject) <- basename(dirname(snap$file))
+    }
     return(gobject)
     
     # to be completed by GiottoClass::loadGiotto
