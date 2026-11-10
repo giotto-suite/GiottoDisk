@@ -672,9 +672,7 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
 # files that describe it, so the snapshots made from it still name an
 # existing parent (adr/0024).
 .gdsrc_snapshot_remove_object <- function(dir) {
-    obj <- list.files(dir, pattern = .GDSRC_SNAPSHOT_OBJ, ignore.case = TRUE,
-        full.names = TRUE)
-    unlink(obj, force = TRUE)
+    unlink(.gdsrc_snapshot_objfiles(dir), force = TRUE)
     invisible(dir)
 }
 

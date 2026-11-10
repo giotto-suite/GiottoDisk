@@ -715,6 +715,20 @@ NULL
     switch(tolower(method), "rds" = "gobject.RDS", paste0("gobject.", method))
 }
 
+# Snapshot folders in a giottosave dir, live or deleted, by tag; dot-prefixed
+# folders are staging.
+.gdsrc_snapshot_dirs <- function(gsdir) {
+    if (!dir.exists(gsdir)) return(character())
+    tags <- list.dirs(gsdir, full.names = FALSE, recursive = FALSE)
+    tags[!startsWith(tags, ".") & grepl(.GDSRC_SNAPSHOT_DIR, tags)]
+}
+
+# the object file(s) in a snapshot folder; none once deleted
+.gdsrc_snapshot_objfiles <- function(dir) {
+    list.files(dir, pattern = .GDSRC_SNAPSHOT_OBJ, ignore.case = TRUE,
+        full.names = TRUE)
+}
+
 # every snapshot in a giottosave dir: tag, name, object file, and mtime. A
 # folder counts only once its object file is in place, so a half-written save
 # protects nothing; dot-prefixed folders are staging.
@@ -722,13 +736,9 @@ NULL
     none <- data.frame(tag = character(), name = character(),
         file = character(), mtime = as.POSIXct(character())
     )
-    if (!dir.exists(gsdir)) return(none)
-    tags <- list.dirs(gsdir, full.names = FALSE, recursive = FALSE)
-    tags <- tags[!startsWith(tags, ".") & grepl(.GDSRC_SNAPSHOT_DIR, tags)]
+    tags <- .gdsrc_snapshot_dirs(gsdir)
     files <- vapply(tags, function(tg) {
-        f <- list.files(file.path(gsdir, tg), pattern = .GDSRC_SNAPSHOT_OBJ,
-            ignore.case = TRUE, full.names = TRUE
-        )
+        f <- .gdsrc_snapshot_objfiles(file.path(gsdir, tg))
         if (length(f) == 0L) NA_character_ else f[[1L]]
     }, character(1L), USE.NAMES = FALSE)
     keep <- !is.na(files)

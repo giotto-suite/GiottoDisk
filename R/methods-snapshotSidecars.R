@@ -118,7 +118,9 @@ setMethod("objHistory", signature("gDirSource"), function(
 
 .GDSRC_SNAPSHOT_INFO <- "snapshot.json"
 .GDSRC_INFO_SCHEMA <- 1L
+.GDSRC_INFO_TIME <- "%Y-%m-%dT%H:%M:%OS3Z"
 
+# A new save's description, as snapshot.json holds it
 .ss_gdsrc_info <- function(name, tag, keep = TRUE, creator = "user",
     session = NULL, parent = NULL, description = NULL, labels = NULL,
     extra = NULL) {
@@ -129,18 +131,34 @@ setMethod("objHistory", signature("gDirSource"), function(
     checkmate::assert_string(description, null.ok = TRUE)
     checkmate::assert_character(labels, any.missing = FALSE, null.ok = TRUE)
     checkmate::assert_list(extra, names = "unique", null.ok = TRUE)
+    .gdsrc_info_fill(list(name = name, creator = creator, session = session,
+        parent = parent, keep = keep, description = description,
+        labels = labels, extra = extra
+    ), tag = tag, created = format(Sys.time(), .GDSRC_INFO_TIME, tz = "UTC"))
+}
+
+# A save's description with every field present, in the form snapshot.json
+# holds; a field `info` lacks takes its default. `created` is used only when
+# `info` has none.
+.gdsrc_info_fill <- function(info, tag, created) {
+    scalar <- function(x, default) {
+        x <- unlist(x)
+        if (length(x) == 0L || is.na(x[[1L]])) default else x[[1L]]
+    }
+    extra <- info$extra
     list(
         schema = .GDSRC_INFO_SCHEMA,
-        name = name,
+        name = scalar(info$name, sub(.GDSRC_SNAPSHOT_DIR, "\\1", tag)),
         tag = tag,
-        created = format(Sys.time(), "%Y-%m-%dT%H:%M:%OS3Z", tz = "UTC"),
-        creator = creator,
-        session = session %||% NA_character_,
-        parent = parent %||% NA_character_,
-        keep = keep,
-        description = description %||% "",
-        labels = as.character(labels %||% character()),
-        extra = extra %||% structure(list(), names = character())
+        created = scalar(info$created, created),
+        creator = scalar(info$creator, NA_character_),
+        session = scalar(info$session, NA_character_),
+        parent = scalar(info$parent, NA_character_),
+        keep = as.logical(scalar(info$keep, TRUE)),
+        description = scalar(info$description, ""),
+        labels = as.character(unlist(info$labels)),
+        extra = if (is.list(extra) && length(extra)) extra else
+            structure(list(), names = character())
     )
 }
 
@@ -148,37 +166,26 @@ setMethod("objHistory", signature("gDirSource"), function(
     .json_atomic_write(info, file.path(dir, .GDSRC_SNAPSHOT_INFO))
 }
 
-# The description of the save in folder `dir` (tag = folder name). A save
-# written before snapshot.json existed reads as kept, by an unknown creator.
-.gdsrc_read_info <- function(dir) {
-    tag <- basename(dir)
-    obj <- list.files(dir, pattern = .GDSRC_SNAPSHOT_OBJ, ignore.case = TRUE,
-        full.names = TRUE)
+# The snapshot.json of the save in folder `dir` (tag = folder name), filled.
+# A save written before snapshot.json existed reads as kept, by an unknown
+# creator, created when its object was written.
+.gdsrc_stored_info <- function(dir) {
     f <- file.path(dir, .GDSRC_SNAPSHOT_INFO)
     info <- if (file.exists(f)) .json_read(f) else list()
-    scalar <- function(x, default) {
-        x <- unlist(x)
-        if (length(x) == 0L || is.na(x[[1L]])) default else x[[1L]]
-    }
-    created <- scalar(info$created, NA_character_)
-    created <- if (is.na(created)) {
-        file.info(c(obj, dir)[[1L]])$mtime
-    } else {
-        as.POSIXct(created, format = "%Y-%m-%dT%H:%M:%OSZ", tz = "UTC")
-    }
-    list(
-        name = scalar(info$name, sub(.GDSRC_SNAPSHOT_DIR, "\\1", tag)),
-        tag = tag,
-        created = created,
-        creator = scalar(info$creator, NA_character_),
-        session = scalar(info$session, NA_character_),
-        parent = scalar(info$parent, NA_character_),
-        keep = as.logical(scalar(info$keep, TRUE)),
-        description = scalar(info$description, ""),
-        labels = as.character(unlist(info$labels)),
-        extra = if (is.list(info$extra)) info$extra else list(),
-        deleted = length(obj) == 0L
-    )
+    .gdsrc_info_fill(info, tag = basename(dir), created = format(
+        file.info(c(.gdsrc_snapshot_objfiles(dir), dir)[[1L]])$mtime,
+        .GDSRC_INFO_TIME, tz = "UTC"
+    ))
+}
+
+# The description of the save in folder `dir`, as snapshotInfo() lists it
+.gdsrc_read_info <- function(dir) {
+    info <- .gdsrc_stored_info(dir)
+    info$schema <- NULL
+    info$created <- as.POSIXct(info$created, format = "%Y-%m-%dT%H:%M:%OSZ",
+        tz = "UTC")
+    info$deleted <- !length(.gdsrc_snapshot_objfiles(dir))
+    info
 }
 
 #' @name snapshotInfo
@@ -223,12 +230,7 @@ setMethod("snapshotInfo", signature("gDirSource"), function(src, name = NULL,
     checkmate::assert_string(name, null.ok = TRUE)
     checkmate::assert_flag(deleted)
     gsdir <- .gdsrc_giottosave_dir(src@path)
-    tags <- if (dir.exists(gsdir)) {
-        list.dirs(gsdir, full.names = FALSE, recursive = FALSE)
-    } else {
-        character()
-    }
-    tags <- tags[!startsWith(tags, ".") & grepl(.GDSRC_SNAPSHOT_DIR, tags)]
+    tags <- .gdsrc_snapshot_dirs(gsdir)
     infos <- lapply(file.path(gsdir, tags), .gdsrc_read_info)
     keep <- vapply(infos, function(i) {
         (deleted || !i$deleted) && (is.null(name) || identical(i$name, name))
@@ -299,22 +301,12 @@ setMethod("snapshotMetadata", signature("gDirSource", "character"),
             call. = FALSE)
     }
     dir <- dirname(snap$file)
-    f <- file.path(dir, .GDSRC_SNAPSHOT_INFO)
-    info <- if (file.exists(f)) .json_read(f) else {
-        # a save from before snapshot.json: record what the folder tells
-        cur <- .gdsrc_read_info(dir)
-        list(schema = .GDSRC_INFO_SCHEMA, name = cur$name, tag = cur$tag,
-            created = format(cur$created, "%Y-%m-%dT%H:%M:%OS3Z", tz = "UTC"),
-            creator = NA_character_, session = NA_character_,
-            parent = NA_character_, keep = TRUE, description = "",
-            labels = character(), extra = structure(list(), names = character()))
-    }
+    info <- .gdsrc_stored_info(dir)
     if (!is.null(keep)) info$keep <- keep
     if (!is.null(description)) info$description <- description
     if (!is.null(labels)) info$labels <- labels
     if (!is.null(extra)) {
-        merged <- utils::modifyList(if (is.list(info$extra)) info$extra else list(),
-            extra)
+        merged <- utils::modifyList(info$extra, extra)
         info$extra <- if (length(merged)) merged else
             structure(list(), names = character())
     }
