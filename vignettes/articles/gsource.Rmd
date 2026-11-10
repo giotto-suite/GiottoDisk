@@ -77,6 +77,7 @@ g <- snapshotLoad(src2, "qc_pass")
   giottodir.json       # stub carrying the layout version
   artifacts/<uid>/...  # vault — each artifact gets its own uid-named subdir
   _pending/            # queued manifest edits, one file per edit
+  _tmp/                # temp files before they are moved into place
   giottosave/<name>.<id>/gobject.RDS   # one folder per snapshot
   dump/                # (optional) persistent staging area
 ```
@@ -331,8 +332,9 @@ setArtifactDumpDir(src)   # dump = artifacts/
 
 ## What survives a crash?
 
-- Edit files in `_pending/` are written atomically (write to temp →
-  rename). A crashed writer leaves nothing behind.
+- Edit files in `_pending/` are written atomically (a temp file is
+  written, then linked into place). A crashed writer leaves at most a
+  stray temp file in `_tmp/`, which nothing reads.
 - A manifest version appears whole, by a hard link from a complete temp
   file. A version cut short by a crash or power loss gives way to the one
   below it, and edit files are deleted one version after they are applied,

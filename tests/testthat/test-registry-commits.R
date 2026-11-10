@@ -98,6 +98,19 @@ describe("commits", {
         expect_identical(reg$n, 2L) # the loser's content was never committed
     })
 
+    it("write their temp files in _tmp/, and ignore one left behind", {
+        x <- .reg_src()
+        on.exit(unlink(x$td, recursive = TRUE), add = TRUE)
+        tmp <- file.path(x$td, .GDSRC_TMP_DIR)
+        writeLines("{\"header\":", file.path(tmp, "giottodisk_stray.tmp"))
+        u <- sourceWrite(x$src, data.frame(a = 1))@uid
+        reg <- .gdsrc_json_consolidate(x$td)
+        expect_identical(names(reg$content), u)
+        expect_length(list.files(x$td, pattern = "\\.tmp$", recursive = TRUE,
+            all.files = TRUE), 1L)
+        expect_identical(list.files(tmp), "giottodisk_stray.tmp")
+    })
+
     it("fall back to the version below when the newest is cut short", {
         x <- .reg_src()
         on.exit(unlink(x$td, recursive = TRUE), add = TRUE)

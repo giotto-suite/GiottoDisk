@@ -575,6 +575,7 @@ rationale (manifest design, dump lifecycle, multi-analysis guarantees).
   giottodir.json       # stub: schema version only
   artifacts/<uid>/...  # vault
   _pending/            # queued registry edits, one file per edit
+  _tmp/                # temp files before they are linked or renamed in
   giottosave/<name>.<id>/  # one folder per snapshot; folder name = tag
     gobject.RDS            # the object (or gobject.qs2); removed on delete
     manifest.json          # what it holds (giotto snapshots only)
