@@ -113,7 +113,8 @@ setMethod("objHistory", signature("gDirSource"), function(
 
 # giottosave/<tag>/snapshot.json describes the save rather than the object:
 # who made it, from which save, whether to keep it (adr/0024). Fixed when the
-# save is written: schema, name, tag, created, creator, session, parent.
+# save is written: schema, name, tag, created, creator, session, object (the
+# saved object's uid), parents.
 # Changeable with snapshotMetadata(): keep, description, labels, extra.
 
 .GDSRC_SNAPSHOT_INFO <- "snapshot.json"
@@ -122,17 +123,20 @@ setMethod("objHistory", signature("gDirSource"), function(
 
 # A new save's description, as snapshot.json holds it
 .ss_gdsrc_info <- function(name, tag, keep = TRUE, creator = "user",
-    session = NULL, parent = NULL, description = NULL, labels = NULL,
-    extra = NULL) {
+    session = NULL, object = NULL, parents = NULL, description = NULL,
+    labels = NULL, extra = NULL) {
     checkmate::assert_flag(keep)
     checkmate::assert_string(creator, min.chars = 1L)
     checkmate::assert_string(session, null.ok = TRUE)
-    checkmate::assert_string(parent, null.ok = TRUE)
+    checkmate::assert_string(object, null.ok = TRUE)
+    checkmate::assert_character(parents, any.missing = FALSE, unique = TRUE,
+        null.ok = TRUE)
     checkmate::assert_string(description, null.ok = TRUE)
     checkmate::assert_character(labels, any.missing = FALSE, null.ok = TRUE)
     checkmate::assert_list(extra, names = "unique", null.ok = TRUE)
     .gdsrc_info_fill(list(name = name, creator = creator, session = session,
-        parent = parent, keep = keep, description = description,
+        object = object, parents = parents, keep = keep,
+        description = description,
         labels = labels, extra = extra
     ), tag = tag, created = format(Sys.time(), .GDSRC_INFO_TIME, tz = "UTC"))
 }
@@ -153,7 +157,8 @@ setMethod("objHistory", signature("gDirSource"), function(
         created = scalar(info$created, created),
         creator = scalar(info$creator, NA_character_),
         session = scalar(info$session, NA_character_),
-        parent = scalar(info$parent, NA_character_),
+        object = scalar(info$object, NA_character_),
+        parents = as.character(unlist(info$parents)),
         keep = as.logical(scalar(info$keep, TRUE)),
         description = scalar(info$description, ""),
         labels = as.character(unlist(info$labels)),
@@ -193,8 +198,9 @@ setMethod("objHistory", signature("gDirSource"), function(
 #' @description
 #' List a project's snapshots with what each save recorded about itself,
 #' without loading any of them: who made it ("creator", such as `"user"` or
-#' the package that saved it), the session it came from, the snapshot it was
-#' made from (`parent`), whether it is to be kept, a description and labels.
+#' the package that saved it), the session it came from, which object it saved
+#' (`object`, see [GiottoClass::objUID()]), the snapshots it was made from
+#' (`parents`), whether it is to be kept, a description and labels.
 #' Set those when saving (see [snapshotSave()]) or later with
 #' [snapshotMetadata()].
 #'
@@ -208,7 +214,8 @@ setMethod("objHistory", signature("gDirSource"), function(
 #' @param deleted `logical`. Whether to include deleted snapshots.
 #' @param ... additional params to pass (none implemented)
 #' @returns `data.frame`, one row per snapshot, oldest first: `name`, `tag`,
-#'   `created`, `creator`, `session`, `parent` (a tag), `keep`,
+#'   `created`, `creator`, `session`, `object`, `parents` (list column of
+#'   tags, the main line first; several where objects were combined), `keep`,
 #'   `description`, `labels` (list column), `extra` (list column),
 #'   `deleted`.
 #' @examples
@@ -243,17 +250,18 @@ setMethod("snapshotInfo", signature("gDirSource"), function(src, name = NULL,
             tz = "UTC"),
         creator = vapply(infos, `[[`, "", "creator"),
         session = vapply(infos, `[[`, "", "session"),
-        parent = vapply(infos, `[[`, "", "parent"),
+        object = vapply(infos, `[[`, "", "object"),
         keep = vapply(infos, `[[`, NA, "keep"),
         description = vapply(infos, `[[`, "", "description"),
         deleted = vapply(infos, `[[`, NA, "deleted"),
         stringsAsFactors = FALSE
     )
+    out$parents <- lapply(infos, `[[`, "parents")
     out$labels <- lapply(infos, `[[`, "labels")
     out$extra <- lapply(infos, `[[`, "extra")
     out <- out[order(out$created), c("name", "tag", "created", "creator",
-        "session", "parent", "keep", "description", "labels", "extra",
-        "deleted")]
+        "session", "object", "parents", "keep", "description", "labels",
+        "extra", "deleted")]
     rownames(out) <- NULL
     out
 })

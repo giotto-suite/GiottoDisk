@@ -17,7 +17,7 @@
   keep = TRUE,
   creator = "user",
   session = NULL,
-  parent = NULL,
+  parents = NULL,
   description = NULL,
   labels = NULL,
   extra = NULL,
@@ -36,7 +36,7 @@
   keep = TRUE,
   creator = "user",
   session = NULL,
-  parent = NULL,
+  parents = NULL,
   description = NULL,
   labels = NULL,
   extra = NULL,
@@ -70,8 +70,10 @@ the package that saved it.}
 
 \item{session}{\code{character} (optional). Id of the session that saved it.}
 
-\item{parent}{\code{character} (optional). Tag of the snapshot this one was
-made from (see \code{\link[=snapshotInfo]{snapshotInfo()}}).}
+\item{parents}{\code{character} (optional). Tags of the snapshots this one was
+made from, the main line first (see \code{\link[=snapshotInfo]{snapshotInfo()}}). By default, the
+snapshots \code{x} was last loaded from or saved as (\verb{@versions$snapshot}):
+one, or several for an object combined from others.}
 
 \item{description}{\code{character} (optional) free text.}
 
@@ -85,10 +87,10 @@ saved the snapshot.}
 \item{...}{additional params to pass (none implemented)}
 }
 \value{
-the modified gobject (invisible). Mutated by the internal
-adoption pass — captured by \code{snapshotSave(gDirSource, giottoMulti)}
-so the multi-level \code{.rds} sees post-adoption file handles in each
-child.
+the modified gobject (invisible): data adopted into the project,
+and \verb{@versions$snapshot} set to the new snapshot's tag, so the next
+save records this one as its parent. Save as \code{g <- snapshotSave(src, g)}. \code{snapshotSave(gDirSource, giottoMulti)} captures each child's so the
+multi-level object sees post-adoption file handles.
 }
 \description{
 Register a gobject snapshot into the source

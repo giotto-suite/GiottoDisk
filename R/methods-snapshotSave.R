@@ -16,8 +16,10 @@
 #' @param creator `character`. Who made the snapshot: `"user"` (default), or
 #'   the package that saved it.
 #' @param session `character` (optional). Id of the session that saved it.
-#' @param parent `character` (optional). Tag of the snapshot this one was
-#'   made from (see [snapshotInfo()]).
+#' @param parents `character` (optional). Tags of the snapshots this one was
+#'   made from, the main line first (see [snapshotInfo()]). By default, the
+#'   snapshots `x` was last loaded from or saved as (`@versions$snapshot`):
+#'   one, or several for an object combined from others.
 #' @param description `character` (optional) free text.
 #' @param labels `character` (optional) labels.
 #' @param extra named `list` (optional) of fields for the package that
@@ -26,10 +28,11 @@
 #' @param ... additional params to pass (none implemented)
 #' @details What the save records about itself (all but the object) is
 #'   written beside it as `snapshot.json` and listed by [snapshotInfo()].
-#' @returns the modified gobject (invisible). Mutated by the internal
-#'   adoption pass — captured by `snapshotSave(gDirSource, giottoMulti)`
-#'   so the multi-level `.rds` sees post-adoption file handles in each
-#'   child.
+#' @returns the modified gobject (invisible): data adopted into the project,
+#'   and `@versions$snapshot` set to the new snapshot's tag, so the next
+#'   save records this one as its parent. Save as `g <- snapshotSave(src,
+#'   g)`. `snapshotSave(gDirSource, giottoMulti)` captures each child's so the
+#'   multi-level object sees post-adoption file handles.
 NULL
 
 #' @rdname snapshotSave
@@ -45,7 +48,7 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     keep = TRUE,
     creator = "user",
     session = NULL,
-    parent = NULL,
+    parents = NULL,
     description = NULL,
     labels = NULL,
     extra = NULL,
@@ -75,8 +78,12 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     }
     # the tag is minted before adoption, which records it on what it adopts
     tag <- .gdsrc_snapshot_tag(name)
+    # the snapshots this object last passed are the new one's parents,
+    # unless the caller names them
     info <- .ss_gdsrc_info(name = name, tag = tag, keep = keep,
-        creator = creator, session = session, parent = parent,
+        creator = creator, session = session,
+        object = GiottoClass::objUID(x),
+        parents = parents %||% .gdsrc_obj_snapshot(x),
         description = description, labels = labels, extra = extra)
   
     vmsg(.v = verbose, "[GiottoDisk] checking images...")
@@ -118,6 +125,7 @@ setMethod("snapshotSave", signature("gDirSource", "giotto"), function(src, x,
     .gdsrc_json_add_tags(src@path, uid = .ss_gdsrc_detect_uid(x), tag = tag)
 
     vmsg(.v = verbose, "[GiottoDisk] writing snapshot")
+    .gdsrc_obj_snapshot(x) <- tag
     .ss_gdsrc_write_snapshot(x, gsdir = gsdir, tag = tag,
         method = method, method_params = method_params, info = info
     )
@@ -139,7 +147,7 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
     keep = TRUE,
     creator = "user",
     session = NULL,
-    parent = NULL,
+    parents = NULL,
     description = NULL,
     labels = NULL,
     extra = NULL,
@@ -171,8 +179,12 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
     }
     # the tag is minted before adoption, which records it on what it adopts
     tag <- .gdsrc_snapshot_tag(name)
+    # the snapshots this object last passed are the new one's parents,
+    # unless the caller names them
     info <- .ss_gdsrc_info(name = name, tag = tag, keep = keep,
-        creator = creator, session = session, parent = parent,
+        creator = creator, session = session,
+        object = GiottoClass::objUID(x),
+        parents = parents %||% .gdsrc_obj_snapshot(x),
         description = description, labels = labels, extra = extra)
 
     # Recurse into sourced children. Per-child snapshots in each child's
@@ -220,6 +232,7 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
     # (post-adoption) file handles; loading the multi .rds reconstitutes
     # the whole federation without needing a separate manifest.
     vmsg(.v = verbose, "[GiottoDisk] writing multi snapshot")
+    .gdsrc_obj_snapshot(x) <- tag
     .ss_gdsrc_write_snapshot(x, gsdir = gsdir, tag = tag,
         method = method, method_params = method_params, info = info
     )
