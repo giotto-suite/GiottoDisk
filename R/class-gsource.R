@@ -194,6 +194,17 @@ NULL
     file.path(p, .GDSRC_PENDING_DIR)
 }
 
+# Temp files are written in the project's `_tmp/`, on the project's
+# filesystem so they can be linked or renamed into place, and out of the way
+# when a crash leaves one behind.
+.GDSRC_TMP_DIR <- "_tmp"
+
+.gdsrc_tmpfile <- function(p) {
+    d <- file.path(p, .GDSRC_TMP_DIR)
+    if (!dir.exists(d)) dir.create(d, recursive = TRUE, showWarnings = FALSE)
+    tempfile("giottodisk_", tmpdir = d, fileext = ".tmp")
+}
+
 .gdsrc_vault_dir <- function(p) {
     file.path(p, "artifacts")
 }
@@ -297,8 +308,10 @@ NULL
     target <- file.path(p, key)
     d <- dirname(target)
     if (!dir.exists(d)) dir.create(d, recursive = TRUE, showWarnings = FALSE)
-    if (file.access(d, mode = 2L) != 0L) stop(.gdsrc_readonly(p))
-    temp <- tempfile("giottodisk_", tmpdir = d, fileext = ".tmp")
+    temp <- .gdsrc_tmpfile(p)
+    if (any(file.access(c(d, dirname(temp)), mode = 2L) != 0L)) {
+        stop(.gdsrc_readonly(p))
+    }
     on.exit(unlink(temp, force = TRUE), add = TRUE)
     jsonlite::write_json(x, temp)
     .gdsrc_publish(temp, target)
@@ -493,7 +506,7 @@ NULL
         header = .gdsrc_json_header(),
         content = structure(list(), names = character()),
         note = "The registry is giottodir.<n>.json, the highest n."
-    ), .gdsrc_json_path(p))
+    ), .gdsrc_json_path(p), temp_file = .gdsrc_tmpfile(p))
 }
 
 ## reading ####
@@ -694,7 +707,7 @@ NULL
     if (!dir.exists(p)) dir.create(p, recursive = TRUE)
     .json_atomic_write(
         list(header = .gdsrc_json_header(version), content = x),
-        .gdsrc_json_path(p)
+        .gdsrc_json_path(p), temp_file = .gdsrc_tmpfile(p)
     )
 }
 

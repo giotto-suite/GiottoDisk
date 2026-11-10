@@ -591,6 +591,7 @@ design choices follow from this:
   giottodir.json       # stub carrying the schema version
   artifacts/<uid>/data # vault — artifact subdirs named by uid
   _pending/            # queued registry edits, one file per edit
+  _tmp/                # temp files before they are linked or renamed in
   giottosave/<name>.<id>/gobject.RDS   # one folder per snapshot
   dump/                # optional persistent staging area (see setArtifactDumpDir)
 ```
@@ -668,10 +669,11 @@ This is an intentional choice:
   existing catalog on upgrade. JSON has no equivalent risk.
 - **Human-readable and portable**: inspectable with any tool; the format is stable
   across all versions of the package.
-- **Crash recovery**: pending file writes are atomic (write to temp → rename into
-  `_pending/`), so a crashed writer leaves nothing behind. A registry version
-  appears whole, by a hard link, and a version that fails to parse or whose
-  header disagrees with its name gives way to the one below. Edit files are
+- **Crash recovery**: pending file writes are atomic (written to a temp file
+  in `_tmp/`, then linked into `_pending/`), so a crashed writer leaves at
+  most a stray temp file, which nothing reads. A registry version appears
+  whole, by a hard link, and a version that fails to parse or whose header
+  disagrees with its name gives way to the one below. Edit files are
   deleted one version after they were applied, so falling back loses nothing.
 
 The only meaningful gap vs a database catalog is query performance at thousands
