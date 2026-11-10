@@ -24,18 +24,16 @@ setClass("gsource",
 #' @description
 #' Extends [gsource]. Used to designate and manage a directory as a
 #' giotto project directory containing on-disk data artifacts.
-#' Contained artifacts are tracked via a manifest with editable
-#' metadata.
+#' Contained artifacts are tracked via a manifest (the registry) with a
+#' record per artifact.
 #' 
-#' Edits to the `gDirSource` manifest are atomic. Additionally, a WAL
-#' pattern is used to ensure concurrency safety.
-#' Edits are only made as loose files specific to single artifacts 
-#' (and by extension usually single-process).
-#' Loose edits are later consolidated into the main manifest on-read
-#' (preferably only from the main process). {filelock} integration
-#' is available for extra concurrency safety to avoid edge cases
-#' where two processes attempt consolidation at the same time but see
-#' different `_pending` states.
+#' Writers queue edits as files in `_pending/`, one file per edit, and a
+#' read folds them into the registry as its next version. A version is
+#' published by creating its file only if no other writer created it first,
+#' so processes sharing a project never overwrite each other's commits, and
+#' no lock is needed. A record's fields are written once, when it is
+#' created; its snapshot tags (`giottosave`) and dependencies (`depends`)
+#' are only ever added to, and dead tags are dropped by [sourcePrune()].
 #' 
 #' # Artifact tracking
 #' 
@@ -46,9 +44,9 @@ setClass("gsource",
 #' 
 #' # Directory Structure
 #' 
-#' * `giottodir.json` - json file manifest of the contained artifacts.
-#' * `giottodir.json.lock` - (optional) lockfile for {filelock} to control
-#' writes to `giottodir.json` for extra concurrency safety
+#' * `giottodir.<n>.json` - the registry, one file per version; the highest
+#' `n` is current and the one below it is kept.
+#' * `giottodir.json` - stub carrying the project's schema version.
 #' * `artifacts` - vault directory containing the actual data artifacts
 #' which are within subdirectories named by their `uid`.
 #' * `_pending` - directory containing pending edits to the manifest.
@@ -100,7 +98,7 @@ setMethod("initialize", signature("gDirSource"), function(.Object, ...) {
         )
     }
     if (!file.exists(.gdsrc_json_path(p))) {
-        .gdsrc_json_write(p, list()) # initialize with empty list
+        .gdsrc_registry_init(p)
     }
     # normalize only once the directory exists: normalizePath() returns a
     # missing path unchanged, which would leave a new project relative to
@@ -145,34 +143,10 @@ setMethod("[", signature("gDirSource", i = "missing", j = "character"), function
     lapply(data$content, function(art) art[[j]])
 })
 
-setMethod("[<-", signature("gDirSource", i = "character", j = "missing", value = "ANY"), function(x, i, j, ..., value) {
-    checkmate::assert_list(value)
-    .gdsrc_json_edit(x@path, uid = i, x = value)
-    x
-})
-
-setMethod("[<-", signature("gDirSource", i = "character", j = "character", value = "ANY"), function(x, i, j, ..., value) {
-    checkmate::assert_atomic(value)
-    entry <- list()
-    entry[[j]] <- value
-    lapply(i, function(uid) {
-        .gdsrc_json_edit(x@path, uid = uid, x = entry)
-    })
-    x
-})
-
-setMethod("[<-", signature("gDirSource", i = "missing", j = "character", value = "ANY"), function(x, i, j, ..., value) {
-    checkmate::assert_atomic(value)
-    entry <- list()
-    entry[[j]] <- value
-  
-    manifest <- .gdsrc_json_read(x@path, consolidate = TRUE)$content
-    all_uids <- names(manifest)
-    lapply(all_uids, function(uid) {
-        .gdsrc_json_edit(x@path, uid = uid, x = entry)
-    })
-    x
-})
+# No `[<-`: records are written only by GiottoDisk, as edits that create a
+# record or add tags (adr/0023). R reads `[<-` as "replace", and a
+# replacement built from a stale read is how concurrent saves lost each
+# other's tags. Tag through .gdsrc_json_add_tags().
 
 # source check ####
 
@@ -200,20 +174,35 @@ resolveSource <- function(path) {
 #' @name giotto_json
 #' @title Giotto Directory JSON
 #' @description
-#' Internal utilities for editing the [gDirSource] managed
-#' `giottodir.json`.
+#' Internal utilities for reading and editing the [gDirSource] registry
+#' (`giottodir.<n>.json`).
 #' @keywords internal
 NULL
 
 ## path setting ####
 
-# p is giotto directory
+# p is giotto directory. `giottodir.json` is a stub carrying only the schema
+# version, so a GiottoDisk that predates schema v3 refuses the project; the
+# registry itself is giottodir.<n>.json (adr/0023).
 .gdsrc_json_path <- function(p) {
     file.path(p, "giottodir.json")
 }
 
+.GDSRC_PENDING_DIR <- "_pending"
+
 .gdsrc_json_pending_dir <- function(p) {
-    file.path(p, "_pending")
+    file.path(p, .GDSRC_PENDING_DIR)
+}
+
+# Temp files are written in the project's `_tmp/`, on the project's
+# filesystem so they can be linked or renamed into place, and out of the way
+# when a crash leaves one behind.
+.GDSRC_TMP_DIR <- "_tmp"
+
+.gdsrc_tmpfile <- function(p) {
+    d <- file.path(p, .GDSRC_TMP_DIR)
+    if (!dir.exists(d)) dir.create(d, recursive = TRUE, showWarnings = FALSE)
+    tempfile("giottodisk_", tmpdir = d, fileext = ".tmp")
 }
 
 .gdsrc_vault_dir <- function(p) {
@@ -266,106 +255,336 @@ NULL
 #' 
 #' * GiottoDisk version
 #' * schema version of the project directory (see [sourceSchema()])
-.gdsrc_json_header <- function(version = .GDSRC_SCHEMA_VERSION) {
-    list(
+#' 
+#' A registry version also carries its number (`seq`), a hash of its
+#' content, and the pending edit files it applied (`applied`).
+.gdsrc_json_header <- function(version = .GDSRC_SCHEMA_VERSION, seq = NULL,
+    hash = NULL, applied = NULL) {
+    header <- list(
         "description" = "[GiottoDisk] Artifacts Manifest",
         "versions" = list(
             "package" = as.character(packageVersion("GiottoDisk")),
             "manifest" = as.integer(version)
         )
     )
+    if (!is.null(seq)) {
+        header$seq <- as.integer(seq)
+        header$hash <- hash
+        header$applied <- as.character(applied)
+    }
+    header
 }
 
-#' @describeIn giotto_json Write function for the main
-#' `giottodir.json`. The schema version already on disk is kept; a new
-#' project is stamped with the current one. Only [sourceUpdate()] passes
-#' `version`, which stamps it without the schema check.
-.gdsrc_json_write <- function(p, x, version = NULL, check = TRUE) {
-    checkmate::assert_list(x)
-    if (!dir.exists(p)) { # first creation
+# test seam: tests interleave another writer at a named point
+.gdsrc_hook <- function(point) {
+    h <- getOption("giottodisk.test_hook")
+    if (is.function(h)) h(point)
+    invisible()
+}
+
+## storage ####
+
+# All registry I/O goes through these four, keyed by paths relative to the
+# project: list, read, create-if-absent and delete. They are what a remote
+# backend replaces (create-if-absent: S3 `If-None-Match: *`, GCS generation
+# 0); nothing above them touches registry files (adr/0023).
+
+# names in `dir` matching `pattern`
+.gdsrc_store_list <- function(p, dir = ".", pattern = NULL) {
+    list.files(file.path(p, dir), pattern = pattern)
+}
+
+# A JSON file, or NULL when it cannot be read. Only a read error counts: a
+# warning raised mid-read (R closing an unused connection, say) must not,
+# since basing a commit on an older version would drop the newest's edits.
+.gdsrc_store_read <- function(p, key) {
+    tryCatch(.json_read(file.path(p, key)), error = function(e) NULL)
+}
+
+# Write `x` as JSON at `key` unless something is there already: TRUE when
+# written, FALSE when not. The file appears whole. Signals a `gdsrc_readonly`
+# condition when the project cannot be written.
+.gdsrc_store_create <- function(p, key, x) {
+    target <- file.path(p, key)
+    d <- dirname(target)
+    if (!dir.exists(d)) dir.create(d, recursive = TRUE, showWarnings = FALSE)
+    temp <- .gdsrc_tmpfile(p)
+    if (any(file.access(c(d, dirname(temp)), mode = 2L) != 0L)) {
+        stop(.gdsrc_readonly(p))
+    }
+    on.exit(unlink(temp, force = TRUE), add = TRUE)
+    jsonlite::write_json(x, temp)
+    .gdsrc_publish(temp, target)
+}
+
+.gdsrc_store_delete <- function(p, keys) {
+    unlink(file.path(p, keys), force = TRUE)
+    invisible()
+}
+
+.gdsrc_readonly <- function(p) {
+    structure(class = c("gdsrc_readonly", "error", "condition"), list(
+        message = paste0("[gDirSource] project directory is not writable:\n  ",
+            p),
+        call = NULL
+    ))
+}
+
+# Hard-link `from` to `to`; FALSE if `to` exists. On a filesystem without
+# hard links (FAT, some network shares and synced folders), option
+# giottodisk.commit_by_rename publishes by rename, which is safe only while a
+# single process writes the project.
+.gdsrc_publish <- function(from, to) {
+    if (isTRUE(getOption("giottodisk.commit_by_rename", FALSE))) {
+        if (file.exists(to)) return(FALSE)
+        return(file.rename(from, to))
+    }
+    ok <- .gdsrc_link(from, to)
+    if (ok || file.exists(to)) return(ok)
+    stop("[gDirSource] could not commit the registry in:\n  ", dirname(to),
+        "\nThe filesystem may not support hard links, which commits rely on.",
+        "\noptions(giottodisk.commit_by_rename = TRUE) commits by rename",
+        " instead, which is safe only while one process writes the project.",
+        call. = FALSE
+    )
+}
+
+# file.link(), apart so tests can stand in a filesystem without hard links
+.gdsrc_link <- function(from, to) suppressWarnings(file.link(from, to))
+
+## registry versions ####
+
+# The registry is a series of whole files, giottodir.<n>.json. A commit
+# creates version n + 1 only if that name is free: of writers that read
+# version n, one commits and the others re-read and retry. A reader takes the
+# highest number whose header agrees with its name. Two versions are kept
+# (adr/0023).
+
+.GDSRC_REGISTRY_RE <- "^giottodir\\.([0-9]{8,})\\.json$"
+.GDSRC_COMMIT_ATTEMPTS <- 50L
+
+.gdsrc_registry_key <- function(n) {
+    sprintf("giottodir.%08d.json", as.integer(n))
+}
+
+# version numbers on disk, ascending
+.gdsrc_registry_versions <- function(p) {
+    f <- .gdsrc_store_list(p, pattern = .GDSRC_REGISTRY_RE)
+    sort(as.integer(sub(.GDSRC_REGISTRY_RE, "\\1", f)))
+}
+
+# Version n, or NULL when it cannot be read or its header disagrees with its
+# name (a write cut short by a crash)
+.gdsrc_registry_read <- function(p, n) {
+    reg <- .gdsrc_store_read(p, .gdsrc_registry_key(n))
+    if (identical(as.integer(reg$header$seq), as.integer(n))) reg
+}
+
+# The newest readable version as list(n, top, header, content); one that
+# cannot be read gives way to the one below. `top` is the highest number on
+# disk, readable or not, which the next commit goes above. A version listed
+# and then removed by another writer's cleanup is read again from a fresh
+# listing.
+.gdsrc_registry_load <- function(p) {
+    for (attempt in 1:3) {
+        ns <- .gdsrc_registry_versions(p)
+        for (n in rev(ns)) {
+            reg <- .gdsrc_registry_read(p, n)
+            if (!is.null(reg)) {
+                return(list(n = n, top = max(ns), header = reg$header,
+                    content = reg$content %||% list()))
+            }
+        }
+    }
+    stop("[gDirSource] no readable registry (giottodir.<n>.json) in:\n  ", p,
+        call. = FALSE)
+}
+
+# edit files the versions on disk record as applied
+.gdsrc_registry_applied <- function(p) {
+    unlist(lapply(.gdsrc_registry_versions(p), function(n) {
+        unlist(.gdsrc_registry_read(p, n)$header$applied)
+    }))
+}
+
+.gdsrc_content_hash <- function(content) {
+    digest::digest(jsonlite::toJSON(content), algo = "xxhash64",
+        serialize = FALSE
+    )
+}
+
+# Write `content` as version n + 1, recording the edit files it applied; `n`
+# is the highest version on disk when the content was read. TRUE when
+# committed, FALSE when another writer took n + 1 first. Signals a
+# `gdsrc_readonly` condition when the directory cannot be written.
+.gdsrc_registry_commit <- function(p, n, content, applied = character()) {
+    data <- list(
+        header = .gdsrc_json_header(seq = n + 1L,
+            hash = .gdsrc_content_hash(content), applied = applied
+        ),
+        content = content
+    )
+    .gdsrc_hook("commit")
+    if (!.gdsrc_store_create(p, .gdsrc_registry_key(n + 1L), data)) {
+        return(FALSE)
+    }
+    .gdsrc_registry_cleanup(p, n + 1L)
+    TRUE
+}
+
+# The one commit loop. `step(reg, edits)` gets the newest version and the
+# pending edits, and returns list(content, applied) to commit `content` as
+# the next version, recording the edit files in `applied`, or NULL to commit
+# nothing. A writer that loses the race reads again and runs `step` again.
+# Returns the registry as committed or, when nothing was, as read: read
+# again if a version appeared meanwhile, since edits applied by it could be
+# missing from both. When the project cannot be written, `readonly = "memory"`
+# returns the content uncommitted, and `"error"` refuses.
+.gdsrc_registry_update <- function(p, step, readonly = c("memory", "error"),
+    site = "[gDirSource]") {
+    readonly <- match.arg(readonly)
+    for (attempt in seq_len(.GDSRC_COMMIT_ATTEMPTS)) {
+        reg <- .gdsrc_registry_load(p)
+        out <- step(reg, .gdsrc_pending_edits(p))
+        if (is.null(out)) {
+            if (reg$top < max(.gdsrc_registry_versions(p))) next
+            return(reg)
+        }
+        .gdsrc_check_schema(p, site = site)
+        committed <- tryCatch(
+            .gdsrc_registry_commit(p, reg$top, out$content, out$applied),
+            gdsrc_readonly = function(e) if (readonly == "error") stop(e) else NA
+        )
+        if (is.na(committed)) {
+            reg$content <- out$content
+            return(reg)
+        }
+        if (committed) return(.gdsrc_registry_load(p))
+        .gdsrc_backoff(attempt)
+    }
+    stop(site, " could not commit the registry in ", .GDSRC_COMMIT_ATTEMPTS,
+        " attempts: other processes kept committing first\n", call. = FALSE)
+}
+
+.gdsrc_backoff <- function(attempt) {
+    Sys.sleep(stats::runif(1L, 0, min(0.5, 0.005 * 2^min(attempt, 7L))))
+}
+
+# After version m is in place: the edit files applied by the versions below
+# it are in m too, so they go, then those versions, keeping m - 1 for a
+# reader that listed it a moment ago. Edit files go before their version, so
+# an interruption leaves them still listed as applied.
+.gdsrc_registry_cleanup <- function(p, m) {
+    ns <- .gdsrc_registry_versions(p)
+    for (n in ns[ns < m]) {
+        applied <- unlist(.gdsrc_registry_read(p, n)$header$applied)
+        if (length(applied)) {
+            .gdsrc_store_delete(p, file.path(.GDSRC_PENDING_DIR, applied))
+        }
+        if (n < m - 1L) .gdsrc_store_delete(p, .gdsrc_registry_key(n))
+    }
+    invisible()
+}
+
+# A new project: version 1, empty, then the stub. An interrupted setup is
+# finished by the next one.
+.gdsrc_registry_init <- function(p) {
+    if (!dir.exists(p)) {
         message("Setting up Giotto project directory at: \n", p)
         dir.create(path = p)
     }
-
-    if (is.null(version)) {
-        if (check) .gdsrc_check_schema(p)
-        version <- .gdsrc_schema_ondisk(p)
-        if (is.na(version)) version <- .GDSRC_SCHEMA_VERSION
+    if (!length(.gdsrc_registry_versions(p))) {
+        .gdsrc_registry_commit(p, 0L, structure(list(), names = character()))
     }
-
-    content <- list(
-        "header" = .gdsrc_json_header(version),
-        "content" = x
-    )
-
-    .json_atomic_write(x = content, file = .gdsrc_json_path(p))
-    invisible(TRUE)
+    .gdsrc_write_stub(p)
 }
 
-#' @describeIn giotto_json Read function for the main
-#' `giottodir.json`. This function does not check or consolidate
-#' pending edits by default.
+# giottodir.json as a stub: the schema version and nothing else. Written
+# plainly, outside the storage seam: it changes only at setup and upgrades.
+.gdsrc_write_stub <- function(p) {
+    .json_atomic_write(list(
+        header = .gdsrc_json_header(),
+        content = structure(list(), names = character()),
+        note = "The registry is giottodir.<n>.json, the highest n."
+    ), .gdsrc_json_path(p), temp_file = .gdsrc_tmpfile(p))
+}
+
+## reading ####
+
+#' @describeIn giotto_json Read the registry as list(header, content), with
+#' pending edits applied when `consolidate = TRUE`. A project in an older
+#' layout is read only with the schema check turned off.
 .gdsrc_json_read <- function(p, consolidate = FALSE) {
-    if (isTRUE(consolidate)) {
-        .gdsrc_json_consolidate(p)
-    }
-  
-    etag <- "[gDirSource]" # tag source of error
     if (!dir.exists(p)) {
-        stop(etag,
-            " Path to Giotto project directory does not exist\n",
+        stop("[gDirSource] Path to Giotto project directory does not exist\n",
             call. = FALSE
         )
     }
-    json_path <- .gdsrc_json_path(p)
-    if (!file.exists(json_path)) {
-        stop(sprintf("%s giottodir.json not found in:\n%s\n", etag, p),
-                call. = FALSE)
+    if (!length(.gdsrc_registry_versions(p))) {
+        .gdsrc_check_schema(p)
+        return(.gdsrc_legacy_read(p, consolidate = consolidate))
     }
-    .json_read(json_path)
+    if (consolidate) return(.gdsrc_json_consolidate(p))
+    .gdsrc_registry_load(p)
 }
 
-#' @describeIn giotto_json Queue an edit to the manifest by
-#' generating a pending edit that is written to disk as a
-#' loose json. This can later be consolidated into the main
-#' `giottodir.json`.
-.gdsrc_json_edit <- function(p, uid, x) {
-    checkmate::assert_character(uid)
-    checkmate::assert_list(x)
+## edits ####
+
+# Fields holding sets; edits only add to them. Every other field is written
+# once, when the record is created.
+.GDSRC_SET_FIELDS <- c("giottosave", "depends")
+.GDSRC_EDIT_RE <- "^edit_.+\\.json$"
+
+# A set field's value: its distinct values without NA. An empty giottosave
+# is NA, since every record has one; an empty depends is dropped (NULL).
+.gdsrc_set_value <- function(field, values) {
+    v <- unique(as.character(unlist(values)))
+    v <- v[!is.na(v)]
+    if (length(v)) v else if (field == "giottosave") NA
+}
+
+#' @describeIn giotto_json Queue an edit as its own file in `_pending/`,
+#' created whole under a name no other writer uses. `create`: the fields of a
+#' new record; on an existing record only the fields it lacks are filled.
+#' `add`: values joined into the set fields (`giottosave`, `depends`), for
+#' one or more `uid`s. The result depends neither on the order edits are
+#' applied in nor on applying one twice (adr/0023).
+.gdsrc_json_edit <- function(p, uid, create = NULL, add = NULL) {
+    checkmate::assert_character(uid, min.len = 1L, any.missing = FALSE)
+    checkmate::assert_list(create, null.ok = TRUE)
+    checkmate::assert_list(add, null.ok = TRUE)
+    if (!is.null(create) && length(uid) != 1L) {
+        stop("[gDirSource] a record is created for one uid at a time\n",
+            call. = FALSE)
+    }
+    bad <- setdiff(names(add), .GDSRC_SET_FIELDS)
+    if (length(bad)) {
+        stop("[gDirSource] only ", paste(.GDSRC_SET_FIELDS, collapse = ", "),
+            " can be added to; not: ", paste(bad, collapse = ", "), "\n",
+            call. = FALSE)
+    }
     .gdsrc_check_schema(p)
-    pending_dir <- .gdsrc_json_pending_dir(p)
-    file <- file.path(pending_dir, sprintf("%s.json", uid))
-  
-    if (!dir.exists(pending_dir)) { # first creation
-        dir.create(path = pending_dir)
+    if (!length(.gdsrc_registry_versions(p))) {
+        stop("[gDirSource] project directory is in an older layout; ",
+            "run sourceUpdate(\"", p, "\") before writing to it\n",
+            call. = FALSE)
     }
-    
-    if (file.exists(file)) {
-        # warning to discourage multiple worker edits on pending entries
-        warning("[GiottoDisk] modifying artifact metadata before ",
-            "consolidation is not well supported")
-        data <- .json_read(file)
-      
-        # !!! future version catching !!!
-      
-        data <- data$content
-        x <- modifyList(data, x)
+    host <- substr(gsub("[^A-Za-z0-9-]", "-", Sys.info()[["nodename"]]), 1, 16)
+    key <- file.path(.GDSRC_PENDING_DIR, sprintf("edit_%s_%s_%s.json", host,
+        Sys.getpid(), .make_uid(n = 10L, include_pid = FALSE)
+    ))
+    entry <- list(header = .gdsrc_json_header(), uid = uid, create = create,
+        add = add)
+    if (!.gdsrc_store_create(p, key, entry[!vapply(entry, is.null, NA)])) {
+        stop("[gDirSource] edit file already exists: ", key, "\n",
+            call. = FALSE)
     }
-  
-    # package edit entry
-    entry <- list(
-        "header" = .gdsrc_json_header(),
-        "content" = x
-    )
-  
-    .json_atomic_write(entry, file)
     invisible(TRUE)
 }
 
 #' @describeIn giotto_json Add a tracked artifact to the directory. This adds
 #' the tracking metadata for the object and places it in a location specified
-#' by `.gdsrc_json_pending_dir()` to await consolidation into the main
-#' `giottodir.json`.
+#' by `.gdsrc_json_pending_dir()` to await consolidation into the registry.
 #' @param store_type character. Type of file format storage (e.g. \"h5\")
 #' @param uid character. Unique ID for artifact tracking
 #' @param hash character. Hash of the in-memory store object to track changes
@@ -381,84 +600,115 @@ NULL
     checkmate::assert_character(giottosave)
     checkmate::assert_character(depends, null.ok = TRUE)
 
-    content <- list(
+    create <- c(list(
         "time" = .timestamp(),
         "store" = store_type,
-        "giottosave" = giottosave,
         "hash" = hash
-    )
-    if (length(depends) > 0L) content[["depends"]] <- depends
-    content <- c(content, meta)
-    .gdsrc_json_edit(p = p, uid = uid, x = content)
+    ), meta)
+    # giottosave is always present on a record, NA while untagged
+    add <- list("giottosave" = giottosave)
+    if (length(depends) > 0L) add[["depends"]] <- depends
+    .gdsrc_json_edit(p = p, uid = uid, create = create, add = add)
 }
 
-#' @describeIn giotto_json Consolidate pending edits into central
-#' `giottodir.json` manifest. Scans for pending edits then applies
-#' the changes in a for loop on the manifest content before
-#' writing back out.
-.gdsrc_json_consolidate <- function(p, check = TRUE) {
-    pending_dir <- .gdsrc_json_pending_dir(p)
-    scan_pending <- function() {
-        list.files(pending_dir, full.names = TRUE, pattern = "\\.json")
-    }
-    edits <- scan_pending()
-    if (!dir.exists(pending_dir) || 
-        length(edits) == 0L) {
-        #  no pending edits to giottodir.json
-        return(invisible(TRUE))
-    }
-    
-    # optional: locking for safer consolidate
-    use_locking <- getOption("giottodisk.use_locking", TRUE)
-    if (use_locking && requireNamespace("filelock", quietly = TRUE)) {
-        lock <- filelock::lock(paste0(.gdsrc_json_path(p), ".lock"), 
-            timeout = 10000)
-        on.exit(filelock::unlock(lock), add = TRUE)
-        # rescan after getting lock (in case of changes during timeout)
-        edits <- scan_pending()
-        if (length(edits) == 0L) {
-            # early return if other process already consolidated
-            return(invisible(TRUE))
+#' @describeIn giotto_json Tag artifacts with a snapshot tag
+.gdsrc_json_add_tags <- function(p, uid, tag) {
+    if (!length(uid)) return(invisible(FALSE))
+    .gdsrc_json_edit(p = p, uid = unique(uid), add = list(giottosave = tag))
+}
+
+# one edit applied to the registry content
+.gdsrc_apply_edit <- function(content, edit) {
+    for (uid in unlist(edit$uid)) {
+        rec <- content[[uid]] %||% list()
+        for (f in names(edit$create)) {
+            if (is.null(rec[[f]])) rec[[f]] <- edit$create[[f]]
         }
-    } else if (use_locking) {
-        # Optional: warn once per session
-        if (!getOption("giottodisk.lock_warning_shown", FALSE)) {
-            message("[GiottoDisk] Install 'filelock' for safer concurrent access")
-            options(giottodisk.lock_warning_shown = TRUE)
+        for (f in names(edit$add)) {
+            rec[[f]] <- .gdsrc_set_value(f, c(rec[[f]], edit$add[[f]]))
         }
+        content[[uid]] <- rec
     }
-    
-    uids <- gsub("\\.json$", "", basename(edits)) # artifact uids
-    names(edits) <- uids
-  
-    # append to giottodir.json
-    json_data <- .gdsrc_json_read(p, consolidate = FALSE)
-    manifest <- json_data$content
-    
-    for (artifact in uids) {
-        edit <- .json_read(edits[[artifact]])
-        
-        # !!! future version catching !!!
-        
-        edit <- edit$content
-      
-        manifest[[artifact]] <-
-            modifyList(manifest[[artifact]] %||% list(), edit)
+    content
+}
+
+# Pending edits not yet in the registry, named by file. One gone between
+# listing and reading was applied and removed by a newer version, and is
+# left out.
+.gdsrc_pending_edits <- function(p) {
+    f <- .gdsrc_store_list(p, .GDSRC_PENDING_DIR, pattern = "\\.json$")
+    legacy <- f[!grepl(.GDSRC_EDIT_RE, f)]
+    if (length(legacy)) {
+        stop("[gDirSource] pending edits written by an older GiottoDisk in:\n  ",
+            .gdsrc_json_pending_dir(p), "\nRun sourceUpdate(\"", p,
+            "\") with no other process using the project.\n", call. = FALSE)
     }
-  
-    data <- list(
-        "header" = .gdsrc_json_header(),
-        "content" = manifest
-    )
-  
-    if (check) .gdsrc_check_schema(p)
-    data$header <- .gdsrc_json_header(json_data$header$versions$manifest %||%
-        .GDSRC_SCHEMA_VERSION)
-    .json_atomic_write(data, .gdsrc_json_path(p))
-    for (efile in edits) { # remove known edit files
-        unlink(efile, recursive = TRUE, force = TRUE)
+    f <- setdiff(f, .gdsrc_registry_applied(p))
+    edits <- lapply(file.path(.GDSRC_PENDING_DIR, f), .gdsrc_store_read, p = p)
+    names(edits) <- f
+    edits[!vapply(edits, is.null, NA)]
+}
+
+#' @describeIn giotto_json Apply pending edits and commit the result as the
+#' next registry version, retrying when another writer commits first.
+#' Returns the registry as `.gdsrc_json_read()` does. A project that cannot
+#' be written is returned with the edits applied, uncommitted.
+.gdsrc_json_consolidate <- function(p) {
+    .gdsrc_registry_update(p, step = function(reg, edits) {
+        if (!length(edits)) return(NULL)
+        list(content = Reduce(.gdsrc_apply_edit, edits, reg$content),
+            applied = names(edits))
+    })
+}
+
+## older layouts ####
+
+# Before schema v3 the registry was giottodir.json itself, with pending edits
+# as `<uid>.json` merged field by field. Kept for sourceUpdate() and for
+# reading with the schema check off.
+
+.gdsrc_legacy_read <- function(p, consolidate = FALSE) {
+    f <- .gdsrc_json_path(p)
+    if (!file.exists(f)) {
+        stop("[gDirSource] giottodir.json not found in:\n", p, "\n",
+            call. = FALSE)
     }
+    data <- .json_read(f)
+    if (consolidate) data$content <- .gdsrc_legacy_apply(p, data$content)
+    data
+}
+
+.gdsrc_legacy_apply <- function(p, content) {
+    d <- .gdsrc_json_pending_dir(p)
+    edits <- list.files(d, pattern = "\\.json$", full.names = TRUE)
+    edits <- edits[!grepl(.GDSRC_EDIT_RE, basename(edits))]
+    for (f in edits) {
+        uid <- sub("\\.json$", "", basename(f))
+        content[[uid]] <- utils::modifyList(content[[uid]] %||% list(),
+            .json_read(f)$content)
+    }
+    content
+}
+
+# fold `<uid>.json` edits into giottodir.json; run by sourceUpdate() only
+.gdsrc_legacy_consolidate <- function(p) {
+    d <- .gdsrc_json_pending_dir(p)
+    edits <- list.files(d, pattern = "\\.json$", full.names = TRUE)
+    edits <- edits[!grepl(.GDSRC_EDIT_RE, basename(edits))]
+    if (!length(edits)) return(invisible(TRUE))
+    data <- .json_read(.gdsrc_json_path(p))
+    .gdsrc_legacy_write(p, .gdsrc_legacy_apply(p, data$content),
+        version = data$header$versions$manifest %||% .GDSRC_SCHEMA_MIN)
+    unlink(edits, force = TRUE)
     invisible(TRUE)
+}
+
+.gdsrc_legacy_write <- function(p, x, version) {
+    if (!dir.exists(p)) dir.create(p, recursive = TRUE)
+    .json_atomic_write(
+        list(header = .gdsrc_json_header(version), content = x),
+        .gdsrc_json_path(p), temp_file = .gdsrc_tmpfile(p)
+    )
 }
 
 ## snapshot layout ####
@@ -478,6 +728,20 @@ NULL
     switch(tolower(method), "rds" = "gobject.RDS", paste0("gobject.", method))
 }
 
+# Snapshot folders in a giottosave dir, live or deleted, by tag; dot-prefixed
+# folders are staging.
+.gdsrc_snapshot_dirs <- function(gsdir) {
+    if (!dir.exists(gsdir)) return(character())
+    tags <- list.dirs(gsdir, full.names = FALSE, recursive = FALSE)
+    tags[!startsWith(tags, ".") & grepl(.GDSRC_SNAPSHOT_DIR, tags)]
+}
+
+# the object file(s) in a snapshot folder; none once deleted
+.gdsrc_snapshot_objfiles <- function(dir) {
+    list.files(dir, pattern = .GDSRC_SNAPSHOT_OBJ, ignore.case = TRUE,
+        full.names = TRUE)
+}
+
 # every snapshot in a giottosave dir: tag, name, object file, and mtime. A
 # folder counts only once its object file is in place, so a half-written save
 # protects nothing; dot-prefixed folders are staging.
@@ -485,13 +749,9 @@ NULL
     none <- data.frame(tag = character(), name = character(),
         file = character(), mtime = as.POSIXct(character())
     )
-    if (!dir.exists(gsdir)) return(none)
-    tags <- list.dirs(gsdir, full.names = FALSE, recursive = FALSE)
-    tags <- tags[!startsWith(tags, ".") & grepl(.GDSRC_SNAPSHOT_DIR, tags)]
+    tags <- .gdsrc_snapshot_dirs(gsdir)
     files <- vapply(tags, function(tg) {
-        f <- list.files(file.path(gsdir, tg), pattern = .GDSRC_SNAPSHOT_OBJ,
-            ignore.case = TRUE, full.names = TRUE
-        )
+        f <- .gdsrc_snapshot_objfiles(file.path(gsdir, tg))
         if (length(f) == 0L) NA_character_ else f[[1L]]
     }, character(1L), USE.NAMES = FALSE)
     keep <- !is.na(files)
@@ -562,62 +822,59 @@ as.data.frame.gDirSource <- function(x, ...) {
 
 ## pruning ####
 
-# protecting tags:
-# - giottosave
-# - depends
-.gdsrc_artifact_prune <- function(p) {
-    .gdsrc_check_schema(p, site = "[sourcePrune]")
-    gsave_dir <- .gdsrc_giottosave_dir(p)
-    gsave_ids <- .gdsrc_snapshot_tags(gsave_dir)
-  
-    manifest <- .gdsrc_json_read(p, consolidate = TRUE)$content
+# Artifacts reachable from a live snapshot: tagged by one, or depended on,
+# transitively, by one that is
+.gdsrc_protected <- function(manifest, live_tags) {
     art_ids <- names(manifest)
-  
-    # find directly protected artifacts
-    # (tagged with existing giottosave)
-    is_direct_protect <- vapply(manifest, function(art) {
-        any(art$giottosave %in% gsave_ids)
+    tagged <- vapply(manifest, function(art) {
+        any(unlist(art$giottosave) %in% live_tags)
     }, FUN.VALUE = logical(1L))
-    protected <- art_ids[is_direct_protect]
-  
-    # recursively protect dependencies
-    # BFS: walk `depends` tags to find all transitively protected
-    # artifacts
-    queue <- protected
+    queue <- art_ids[tagged]
     visited <- character(0L)
     while (length(queue) > 0L) {
         current <- queue[[1L]]
         queue <- queue[-1L]
         if (current %in% visited) next
         visited <- c(visited, current)
-      
-        deps <- manifest[[current]]$depends
-        if (!is.null(deps) && length(deps) > 0L) {
-            # only follow deps that exist in the manifest
-            new_deps <- intersect(deps, art_ids)
-            new_deps <- setdiff(new_deps, visited)
-            queue <- c(queue, new_deps)
-        }
+        deps <- intersect(unlist(manifest[[current]]$depends), art_ids)
+        queue <- c(queue, setdiff(deps, visited))
     }
-    protected <- visited
-  
-    # prune unprotected artifacts
-    vdir <- .gdsrc_vault_dir(p)
-    all_ids <- list.files(vdir, recursive = FALSE, full.names = FALSE)
-    to_prune <- setdiff(all_ids, protected)
-    
+    visited
+}
+
+# Drop artifacts no live snapshot protects, and tags whose snapshot is gone,
+# in one commit with the pending edits applied. The registry change is
+# committed first and the vault folders removed after, so an interruption
+# leaves stray folders, never records of missing data. An artifact with an
+# edit queued since the registry was read is left alone. Not safe against a
+# snapshot being saved while it runs (adr/0023).
+.gdsrc_artifact_prune <- function(p) {
+    .gdsrc_check_schema(p, site = "[sourcePrune]")
+    gsave_dir <- .gdsrc_giottosave_dir(p)
+    to_prune <- character()
+    .gdsrc_registry_update(p, readonly = "error", site = "[sourcePrune]",
+        step = function(reg, edits) {
+            content <- Reduce(.gdsrc_apply_edit, edits, reg$content)
+            live <- .gdsrc_snapshot_tags(gsave_dir)
+            vault_ids <- list.files(.gdsrc_vault_dir(p), recursive = FALSE,
+                full.names = FALSE)
+            to_prune <<- setdiff(vault_ids, .gdsrc_protected(content, live))
+            kept <- lapply(content[setdiff(names(content), to_prune)],
+                function(art) {
+                    tags <- unlist(art$giottosave)
+                    art$giottosave <- .gdsrc_set_value("giottosave",
+                        tags[tags %in% live])
+                    art
+                })
+            if (!length(edits) && identical(kept, reg$content)) return(NULL)
+            .gdsrc_hook("prune")
+            list(content = kept, applied = names(edits))
+        })
+    queued <- unlist(lapply(.gdsrc_pending_edits(p), `[[`, "uid"))
+    to_prune <- setdiff(to_prune, queued)
     for (uid in to_prune) {
-        art_dir <- .gdsrc_artifact_dir(p, uid)
-        if (dir.exists(art_dir)) {
-            unlink(art_dir, recursive = TRUE, force = TRUE)
-        }
+        unlink(.gdsrc_artifact_dir(p, uid), recursive = TRUE, force = TRUE)
     }
-  
-    # update manifest
-    manifest[to_prune] <- NULL
-    .gdsrc_json_write(p, manifest)
-  
-    message("[GiottoDisk] Pruned ", length(to_prune), 
-        " unprotected artifacts")
+    message("[GiottoDisk] Pruned ", length(to_prune), " unprotected artifacts")
     invisible(to_prune)
 }

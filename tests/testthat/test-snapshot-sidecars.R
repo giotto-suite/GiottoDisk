@@ -79,7 +79,7 @@ test_that("the most recent snapshot is used when no name is given", {
     expect_true("scaled" %in% .expr_names(objManifest(g@source, "older")))
 })
 
-test_that("snapshotDelete removes the sidecars with the snapshot", {
+test_that("snapshotDelete removes the object and keeps the sidecars", {
     td <- tempfile("sidecars_"); dir.create(td)
     on.exit(unlink(td, recursive = TRUE), add = TRUE)
 
@@ -88,7 +88,12 @@ test_that("snapshotDelete removes the sidecars with the snapshot", {
     snapdir <- dirname(.snap_file(td, "snap1"))
     snapshotDelete(g@source, "snap1")
 
-    expect_false(dir.exists(snapdir))
+    expect_true(dir.exists(snapdir))
+    expect_length(list.files(snapdir, pattern = .GDSRC_SNAPSHOT_OBJ,
+        ignore.case = TRUE), 0L)
+    expect_true(all(file.exists(file.path(snapdir,
+        c("manifest.json", "history.ndjson", "snapshot.json")))))
+    expect_null(.snap_file(td, "snap1"))
 })
 
 test_that("a snapshot written without a manifest reports that clearly", {

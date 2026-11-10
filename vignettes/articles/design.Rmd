@@ -587,17 +587,22 @@ design choices follow from this:
 
 ```
 <project_dir>/
-  giottodir.json       # manifest of all tracked artifacts
+  giottodir.<n>.json   # registry of all tracked artifacts, one file per version
+  giottodir.json       # stub carrying the schema version
   artifacts/<uid>/data # vault — artifact subdirs named by uid
-  _pending/            # WAL-style pending manifest edits
-  giottosave/<name>.<id>/gobject.RDS   # one folder per snapshot
+  _pending/            # queued registry edits, one file per edit
+  _tmp/                # temp files before they are linked or renamed in
+  giottosave/<name>.<id>/              # one folder per snapshot
+    gobject.RDS                        #   the object (removed on delete)
+    snapshot.json                      #   what the save records about itself
   dump/                # optional persistent staging area (see setArtifactDumpDir)
 ```
 
 Artifacts are written via `sourceWrite()`: allocate uid → write → hash → queue
-pending edit. Pending edits are consolidated into `giottodir.json` on-read,
-optionally with `filelock` for concurrent access safety. Consolidation is atomic:
-new JSON is written to a temp file then renamed to the final path.
+pending edit. A read folds pending edits into the registry as its next version,
+`giottodir.<n+1>.json`, published by hard-linking a complete temp file to that
+name; the link fails if another writer published that version first, and the
+loser reads again and retries. No lock is involved (adr/0023).
 
 `sourcePrune()` removes artifacts not referenced by any snapshot, using a BFS
 walk over a `depends` graph for transitive protection.
@@ -609,8 +614,18 @@ fixed file name, so that files describing a snapshot can sit beside it under
 fixed names too. The folder name is the snapshot's tag, and the `<id>` is new
 on every save.
 
-That makes protection end with the snapshot. Tags are never removed from
-artifacts: a deleted or overwritten snapshot's tag simply matches no folder.
+What describes the save rather than the object lives in `snapshot.json`
+(adr/0024): creator, session, parent, `keep`, description, labels. It is a
+file per snapshot, not a section of the registry, so the folder stays the one
+record of a save and editing a description never contends with artifact
+writes. Deleting a snapshot removes only its object: the folder and its
+description files stay, so the snapshots made from it keep a parent that
+exists, with no need to repoint them.
+
+That makes protection end with the snapshot. Deleting or overwriting a
+snapshot removes no tags: its tag simply matches no folder. `sourcePrune()`
+later drops such dead tags, which protect nothing, so records do not keep
+every tag ever written.
 Removing tags on delete and overwrite was the alternative, and was rejected
 because it is only as safe as reference detection is complete (an artifact
 the new snapshot references but tagging misses loses its protection), and
@@ -639,37 +654,46 @@ on disk:
   it, after migrating the contents.
 
 Versions: 1 had flat snapshot files tagged by bare name; 2 has snapshot
-folders tagged `<name>.<id>`. The 1 → 2 upgrade moves `.qs` snapshots too,
-though qs is no longer read, so their artifacts stay protected.
+folders tagged `<name>.<id>`; 3 moves the registry from `giottodir.json` into
+versioned files (adr/0023), leaving `giottodir.json` as a stub stamped v3 so
+an older GiottoDisk refuses the project. The 1 → 2 upgrade moves `.qs`
+snapshots too, though qs is no longer read, so their artifacts stay
+protected. A project in an older layout can still be read with the escape
+hatch, but takes no writes.
 
 ### Manifest design
 
 The manifest uses JSON + a `_pending/` write-ahead log rather than a database.
 This is an intentional choice:
 
-- **Zero-serialization concurrent writes**: each process creates its own
-  `_pending/<uid>.json` via an atomic file creation — writers never block or
-  coordinate with each other. A database (DuckDB, SQLite in WAL mode) serializes
-  writers; the file-per-writer pattern has no serialization at all.
+- **Zero-serialization concurrent writes**: each edit is its own file in
+  `_pending/`, written whole and renamed in — writers never block or
+  coordinate with each other. An edit either creates a record (its fields are
+  then fixed) or adds snapshot tags or dependencies, so edits give the same
+  result in any order and applied twice. A database (DuckDB, SQLite in WAL
+  mode) serializes writers; the file-per-edit pattern has no serialization at
+  all, and only the fold into a new registry version is contended.
 - **No binary dependency**: `duckdb` is in `Suggests`. The manifest must work
   with base R file I/O only. Embedded database backends also carry binary format
   stability risk — storage format changes across versions can silently break an
   existing catalog on upgrade. JSON has no equivalent risk.
 - **Human-readable and portable**: inspectable with any tool; the format is stable
   across all versions of the package.
-- **Crash recovery**: pending file writes are atomic (write to temp → rename into
-  `_pending/`), so a crashed writer leaves nothing behind. Consolidation is also
-  atomic (write to temp → rename over `giottodir.json`). No partial writes reach
-  either the pending queue or the main manifest.
+- **Crash recovery**: pending file writes are atomic (written to a temp file
+  in `_tmp/`, then linked into `_pending/`), so a crashed writer leaves at
+  most a stray temp file, which nothing reads. A registry version appears
+  whole, by a hard link, and a version that fails to parse or whose header
+  disagrees with its name gives way to the one below. Edit files are
+  deleted one version after they were applied, so falling back loses nothing.
 
 The only meaningful gap vs a database catalog is query performance at thousands
 of artifacts (JSON parse overhead at consolidation time).
 
-For S3/cloud deployments, file-based locking and atomic rename are unavailable.
-A future `gCloudSource` would need either S3 conditional PUT (Delta Lake pattern)
-or an external catalog service (DuckLake/Iceberg pattern) for atomic pointer
-updates. The JSON manifest itself could remain unchanged — only the catalog
-coordination layer differs.
+For S3/cloud deployments, the commit is the same create-if-absent, as a
+conditional PUT (`If-None-Match: *`, or GCS generation 0), with a listing to
+find the newest version. Registry and edit files are only touched through
+four storage functions (list, read, create-if-absent, delete); a remote
+backend replaces those, and the registry format stays as it is.
 
 ### Dump directory and artifact lifecycle
 
@@ -752,9 +776,10 @@ enough to get deduplication benefits across related analyses, small enough that
 | SLURM array jobs | Independent gsource per sample | No shared-manifest contention; each job manages its own vault |
 | Multi-analysis | Single shared gsource | All gobjects share one project dir; shared artifacts deduplicated automatically |
 
-`filelock` (Suggests) provides advisory locking for `_pending/` consolidation.
-On NFS, `flock` is unreliable — the `_pending/` design mitigates this by making
-each write an independent atomic file creation rather than a shared-file update.
+Commits need hard links, which are atomic on local filesystems and NFS. On a
+filesystem without them (FAT, some SMB shares and synced folders),
+`options(giottodisk.commit_by_rename = TRUE)` commits by rename instead, which
+is safe only while one process writes the project.
 
 ### Overlap Provenance
 

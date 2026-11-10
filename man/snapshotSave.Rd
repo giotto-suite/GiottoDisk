@@ -14,6 +14,13 @@
   method_params = list(),
   overwrite = FALSE,
   export_image = TRUE,
+  keep = TRUE,
+  creator = "user",
+  session = NULL,
+  parent = NULL,
+  description = NULL,
+  labels = NULL,
+  extra = NULL,
   verbose = NULL,
   ...
 )
@@ -26,6 +33,13 @@
   method_params = list(),
   overwrite = FALSE,
   export_image = TRUE,
+  keep = TRUE,
+  creator = "user",
+  session = NULL,
+  parent = NULL,
+  description = NULL,
+  labels = NULL,
+  extra = NULL,
   verbose = NULL,
   ...
 )
@@ -47,6 +61,25 @@ snapshot of the same name exists.}
 \item{export_image}{\code{logical} (default = TRUE) Whether to make a copy of
 external images in the project directory}
 
+\item{keep}{\code{logical} (default = TRUE). Whether the snapshot is to be kept
+long-term. A tool saving working states it may clean up later saves
+them with \code{FALSE}. Change it later with \code{\link[=snapshotMetadata]{snapshotMetadata()}}.}
+
+\item{creator}{\code{character}. Who made the snapshot: \code{"user"} (default), or
+the package that saved it.}
+
+\item{session}{\code{character} (optional). Id of the session that saved it.}
+
+\item{parent}{\code{character} (optional). Tag of the snapshot this one was
+made from (see \code{\link[=snapshotInfo]{snapshotInfo()}}).}
+
+\item{description}{\code{character} (optional) free text.}
+
+\item{labels}{\code{character} (optional) labels.}
+
+\item{extra}{named \code{list} (optional) of fields for the package that
+saved the snapshot.}
+
 \item{verbose}{verbosity}
 
 \item{...}{additional params to pass (none implemented)}
@@ -59,4 +92,8 @@ child.
 }
 \description{
 Register a gobject snapshot into the source
+}
+\details{
+What the save records about itself (all but the object) is
+written beside it as \code{snapshot.json} and listed by \code{\link[=snapshotInfo]{snapshotInfo()}}.
 }

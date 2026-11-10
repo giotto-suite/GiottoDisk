@@ -4,6 +4,11 @@
 #' Delete a Giotto snapshot. By extension, also removes
 #' the protection of the associated giottosave tag for
 #' artifact pruning.
+#'
+#' Only the snapshot's object is removed. Its folder and the files that
+#' describe it stay, a few kilobytes, so the snapshots made from it still name
+#' an existing parent and [snapshotInfo()] can list it with
+#' `deleted = TRUE`.
 #' @param src `gsource` object or `character` filepath to project dir if
 #'   `gDirSource` controlled.
 #' @param name `character` (optional) name of specific snapshot to delete.
@@ -65,11 +70,12 @@ setMethod("snapshotDelete", signature("gDirSource", "character"), function(src, 
         }
     }
 
-    # every folder of this name: its tag then matches nothing, which is what
-    # releases its artifacts to sourcePrune
+    # every snapshot of this name loses its object, so its tag matches no
+    # snapshot, which is what releases its artifacts to sourcePrune; the
+    # folder and its description stay (adr/0024)
     snaps <- .gdsrc_snapshots(gsdir)
-    unlink(file.path(gsdir, snaps$tag[snaps$name == name]),
-        recursive = TRUE, force = TRUE
-    )
+    for (tag in snaps$tag[snaps$name == name]) {
+        .gdsrc_snapshot_remove_object(file.path(gsdir, tag))
+    }
     invisible(TRUE)
 })

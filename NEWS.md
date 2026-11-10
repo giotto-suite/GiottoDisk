@@ -1,3 +1,41 @@
+# GiottoDisk 0.0.0.8
+
+## breaking changes
+- Project directories move to schema v3: the manifest is a series of
+  versioned files, `giottodir.<n>.json`, and `giottodir.json` only carries the
+  layout version. Run `sourceUpdate()` on an existing project; afterwards an
+  older GiottoDisk refuses it, so upgrade every process sharing a project
+  first. With `options(giottodisk.schema_check = FALSE)` an older project can
+  still be read, but no longer written.
+- The `[<-` methods for `gDirSource` are removed: manifest records can no
+  longer be assigned (`src[uid, field] <- value`); GiottoDisk writes them
+  itself. Reading with `src[uid]`,
+  `src[uid, field]` and `as.data.frame(src)` is unchanged.
+- `filelock` is no longer used, and the `giottodisk.use_locking` option is
+  gone.
+- `snapshotDelete()` removes a snapshot's object but keeps its folder and
+  the files describing it, so snapshots made from it keep their parent.
+  Protection ends as before.
+
+## changes
+- Each snapshot records what the save was: who made it, the session and the
+  snapshot it came from, whether to keep it, a description and labels
+  (`snapshotSave(keep =, creator =, session =, parent =, description =,
+  labels =, extra =)`). `snapshotInfo()` lists them without loading
+  anything; `snapshotMetadata()` changes `keep`, the description, labels and
+  `extra`. See adr/0024.
+- Sessions and workers saving into one project no longer lose each other's
+  snapshot tags, which could let `sourcePrune()` delete artifacts a snapshot
+  still used. Writers that fold edits into the manifest at the same time no
+  longer overwrite each other either. See adr/0023.
+- `sourcePrune()` drops tags left by deleted snapshots, and removes vault
+  folders only after the manifest no longer lists them. Run it while no other
+  session is saving into the project.
+- On a filesystem without hard links (FAT, some network shares), manifest
+  writes stop with an explanation; `options(giottodisk.commit_by_rename =
+  TRUE)` lets a single process write anyway.
+- A project that cannot be written can still be read.
+
 # GiottoDisk 0.0.0.7
 
 Requires GiottoClass 0.7.27.

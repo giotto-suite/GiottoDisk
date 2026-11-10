@@ -1,0 +1,125 @@
+# 0023. The registry is committed as numbered versions by exclusive create; edits only create records or add tags
+
+- **Status:** Proposed
+- **Date:** 2026-11-09
+- **Supersedes:** —
+- **Superseded by:** —
+
+## Context
+
+`giottodir.json` was one file, rewritten whole at each consolidation under an
+advisory `filelock`. Pending edits were `_pending/<uid>.json`, merged into a
+record field by field with `modifyList()`. Snapshot tagging read an
+artifact's tag list, appended its tag and wrote the whole list back.
+
+Two writers saving into one project lost tags: each wrote a list built from
+its own, possibly stale, read, and `modifyList()` replaces a vector instead of
+merging it. With `filelock` installed, two processes adding 20 tags each to
+one artifact kept 37, 40 and 22 of 40 in three runs. A tag lost from an
+artifact that only that snapshot protects lets `sourcePrune()` delete data the
+snapshot still references. The lock could not help: it serialized
+consolidations, not the stale reads. Besides, `sourcePrune()` rewrote the
+registry without taking the lock, a lock timeout carried on unlocked, and
+`filelock` was only suggested. The viewer's working states, jobs and second
+sessions will save into shared projects far more often than before.
+
+## Decision
+
+Edits carry one of two operations: `create` (a record's fields, written once;
+on an existing record only missing fields are filled) and `add` (values
+joined into the set fields `giottosave` and `depends`). Each edit is its own
+uniquely named file. Edits then give the same result in any order and when
+applied twice. No field is changed after creation. The `[<-` methods are
+removed: R reads `src[uid, field] <- value` as "replace", and a replacement
+built from a stale read is the lost update this fixes. Tagging stays
+internal to GiottoDisk.
+
+The registry is a series of whole files, `giottodir.<n>.json`. A commit
+hard-links a complete temp file to the next number, which fails if that name
+exists, so of writers that read the same version one commits and the others
+re-read and retry. Readers take the highest number whose header (`seq`)
+agrees with its name, falling back to the one below. Each version records the
+edit files it applied; those are deleted one version later, and two versions
+are kept. `giottodir.json` becomes a stub stamped with schema v3, so an older
+GiottoDisk refuses the project. `filelock` is gone. `snapshotSave()` queues its
+tags before renaming its folder in, and `sourcePrune()` commits the same way,
+deletes vault folders only after its commit, and drops tags whose folder is
+gone.
+
+## Consequences
+
+- No lock: correctness rests on create-if-absent, which hard links give on
+  local filesystems and NFS. Without hard links (FAT, some SMB shares, synced
+  folders) commits fail with an explanation;
+  `options(giottodisk.commit_by_rename = TRUE)` commits by rename, safe only
+  for a single writer.
+- All registry I/O, versions and edit files alike, goes through four storage
+  functions: list, read, create-if-absent and delete (`.gdsrc_store_*`). A
+  remote backend replaces those four, with create-if-absent as S3
+  `If-None-Match: *` or GCS generation 0; the format and the commit loop are
+  unchanged. The `giottodir.json` stub is written plainly and the vault
+  folders are outside the seam.
+- Consolidation and pruning share one commit loop
+  (`.gdsrc_registry_update()`), so they cannot drift apart in how they retry
+  or read. Pruning applies the pending edits and drops records in the same
+  commit.
+- `sourcePrune()` is still not safe against a save running alongside it: a
+  folder renamed in after pruning listed the folders can lose artifacts only
+  it protects, and dropping dead tags makes that worse. This is left to
+  discipline (do not prune while saving), not closed with grace periods.
+- An artifact means the same thing to every snapshot that references it. A
+  snapshot names its artifacts by uid, so if a record's fields could be
+  changed later, an older snapshot would find the same artifact described
+  differently from when it was saved. Records are therefore fixed for users:
+  there is no public way to replace a field, only additions made by
+  GiottoDisk itself (tags from saves, `depends` at creation). Facts that
+  should change belong to the save, not the artifact.
+- Any future replace operation is for internal bookkeeping that does not
+  change what a snapshot sees, and needs last-writer-wins with a stored time
+  per field and a schema bump.
+- Old-format pending edits are refused after the upgrade; `sourceUpdate()`
+  folds them in first.
+
+## Alternatives considered
+
+- **Keep the lock, make tags additive:** fixes the tag race but not two
+  consolidations dropping each other's edits, nor unlocked pruning, and locks
+  are no-ops on some network filesystems.
+- **Fixed file name with a check before rename:** the check and the rename are
+  separate steps, so a writer can still overwrite another's commit. Safe only
+  with a conditional write, which local filesystems do not offer.
+- **Delta-style log of changes with checkpoints:** more files, replay and
+  checkpoint policy for no gain while full versions stay small.
+- **SQLite, DuckDB, DuckLake, Iceberg/Delta, a Rust `object_store` commit
+  layer:** each gave up something major (network filesystems, a single
+  writer, tables only, or Rust on the core path).
+- **Per-save protection entries in the registry:** write cost was not the
+  problem; folders stay the record of which saves exist.
+
+## Left open
+
+**Claims with version bases**, for several writers on filesystems without
+hard links (FAT, exFAT, many SMB shares). A writer claims version n with
+`dir.create("giottodir.<n>.json.claim")`, exclusive wherever `mkdir()` is,
+then renames its content in. A claim is visible before its content, so a
+writer that skips an in-progress claim builds on an older version, and
+cleanup would delete the claimant's edit files though no version holds
+them. Each version therefore records the version it was built on (`base`),
+and cleanup and pending edits follow that chain, so an edit can be applied
+twice but never lost; a writer reads again after committing, in case its
+version was skipped. That is roughly 50 lines in the storage layer and the
+commit loop, plus a race test for a skipped claim, and
+`commit_by_rename` goes. The files stay readable by this version, but its
+writers would miss claims and ignore `base`, so it needs schema v4 to keep
+them out; the upgrade only restamps the stub. Worth doing if multi-writer
+use off hard-link filesystems is asked for. Base R offers no one-step alternative:
+`file(open = "wx")` is undocumented and shows a file while it is written,
+symlinks need admin rights on Windows, and a rename that refuses an existing
+target needs compiled code per OS and is not on NFS.
+
+## References
+
+`R/class-gsource.R` (registry versions, edits, pruning),
+`R/methods-sourceSchema.R` (`.gdsrc_upgrade_2_to_3`),
+`R/methods-snapshotSave.R`; `tests/testthat/test-registry-commits.R`;
+design.Rmd "Manifest design".
