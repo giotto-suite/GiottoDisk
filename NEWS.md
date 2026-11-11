@@ -16,6 +16,12 @@
 - `snapshotDelete()` removes a snapshot's object but keeps its folder and
   the files describing it, so snapshots made from it keep their parent.
   Protection ends as before.
+- `sourcePrune()` returns a `data.frame` of the artifacts it removed (uid,
+  store, created, bytes), not a vector of uids.
+- `sourcePrune()` keeps what a snapshot reached for 24 hours after the
+  snapshot is deleted or replaced, so another session using it does not lose
+  its data. `sourcePrune(grace = FALSE)` frees the space at once; the
+  `giottodisk.grace` option sets the period. See adr/0025.
 
 ## changes
 - Each snapshot records what the save was: who made it, the session and the
@@ -40,6 +46,10 @@
   writes stop with an explanation; `options(giottodisk.commit_by_rename =
   TRUE)` lets a single process write anyway.
 - A project that cannot be written can still be read.
+- `sourcePrune(dry_run = TRUE)` reports what a prune would remove, and its
+  size, without changing anything.
+- `snapshotInfo(deleted = TRUE)` shows when each snapshot was deleted
+  (`deleted_at`).
 
 # GiottoDisk 0.0.0.7
 

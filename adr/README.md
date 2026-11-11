@@ -96,6 +96,7 @@ least one.
 | [0022](0022-bins-go-to-the-polygon-covering-them.md) | A bin goes to one polygon: the one holding its centre, else the one covering most of it | Proposed | 2026-11-04 |
 | [0023](0023-registry-versions-by-exclusive-create.md) | The registry is committed as numbered versions by exclusive create; edits only create records or add tags | Proposed | 2026-11-09 |
 | [0024](0024-save-described-beside-it-delete-keeps-folder.md) | A save is described in a file beside it; deleting one keeps its folder | Proposed | 2026-11-09 |
+| [0025](0025-prune-keeps-recently-deleted-snapshots.md) | A prune keeps what recently deleted snapshots reached | Proposed | 2026-11-11 |
 
 ## Backfill candidates
 

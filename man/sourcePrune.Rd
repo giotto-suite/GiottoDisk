@@ -5,13 +5,30 @@
 \alias{sourcePrune,giotto-method}
 \title{Prune a project source}
 \usage{
-\S4method{sourcePrune}{gDirSource}(src, ...)
+\S4method{sourcePrune}{gDirSource}(src, grace = TRUE, dry_run = FALSE, ...)
 
 \S4method{sourcePrune}{giotto}(src, ...)
 }
 \arguments{
 \item{src}{\code{gsource} object. Used to provide default save locations
 and save formats for a managed Giotto backend.}
+
+\item{grace}{\code{TRUE} (default) to keep what snapshots deleted within the
+grace period reached; the period is \code{getOption("giottodisk.grace")}, in
+seconds or a \code{difftime}, 24 hours if unset. \code{FALSE} or \code{0} for none, or
+a number of seconds or a \code{difftime} for this call.}
+
+\item{dry_run}{\code{logical}. If \code{TRUE}, report what would be pruned and change
+nothing.}
+
+\item{...}{additional params to pass (none implemented)}
+}
+\value{
+\code{data.frame}, invisibly unless \code{dry_run}, one row per artifact
+no live snapshot protects: \code{uid}, \code{store} (its store type), \code{created},
+\code{bytes}, and \code{kept_by}, the tag of the deleted snapshot whose grace
+period kept it, or \code{NA} for an artifact that was (or would be) removed.
+Artifacts removed first.
 }
 \description{
 On-disk processing can generate many intermediate
@@ -19,4 +36,14 @@ artifacts. Manually call this function in order to
 drop artifacts that are not tagged with a
 giottosave that depends on them (the giottosave .rds
 file must also exist).
+
+What a deleted snapshot reached is kept for a grace period after it was
+deleted, 24 hours by default, so that another session still using it does
+not lose its data to a prune. This covers a save that replaces a snapshot
+of the same name, which deletes the older one. Artifacts no snapshot ever
+reached get no grace period: save work as a snapshot to keep it.
+}
+\examples{
+src <- gDirSource(file.path(tempdir(), "prune_example"))
+sourcePrune(src, dry_run = TRUE)
 }

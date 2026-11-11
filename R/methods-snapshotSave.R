@@ -683,8 +683,10 @@ setMethod("snapshotSave", signature("gDirSource", "giottoMulti"), function(src, 
 # Delete a snapshot in folder `dir`: remove its object, which is what makes a
 # folder a snapshot and its tag protect anything; keep the folder, with the
 # files that describe it, so the snapshots made from it still name an
-# existing parent (adr/0024).
+# existing parent (adr/0024). The time is recorded first: sourcePrune() keeps
+# what a snapshot reached for a grace period after it (adr/0025).
 .gdsrc_snapshot_remove_object <- function(dir) {
+    .gdsrc_info_mark_deleted(dir)
     unlink(.gdsrc_snapshot_objfiles(dir), force = TRUE)
     invisible(dir)
 }

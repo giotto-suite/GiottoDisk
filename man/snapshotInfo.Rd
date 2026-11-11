@@ -25,7 +25,8 @@ if \code{NULL}.}
 \code{created}, \code{creator}, \code{session}, \code{object}, \code{parents} (list column of
 tags, the main line first; several where objects were combined), \code{keep},
 \code{description}, \code{labels} (list column), \code{extra} (list column),
-\code{deleted}.
+\code{deleted}, \code{deleted_at} (when it was deleted; \code{NA} for a live snapshot
+or one deleted before GiottoDisk recorded the time).
 }
 \description{
 List a project's snapshots with what each save recorded about itself,
@@ -37,8 +38,8 @@ Set those when saving (see \code{\link[=snapshotSave]{snapshotSave()}}) or later
 \code{\link[=snapshotMetadata]{snapshotMetadata()}}.
 
 A deleted snapshot keeps its folder and description: only its object is
-removed, which is what releases its artifacts to \code{\link[=sourcePrune]{sourcePrune()}}. List
-those too with \code{deleted = TRUE}.
+removed, which is what releases its artifacts to \code{\link[=sourcePrune]{sourcePrune()}} once its
+grace period has passed. List those too with \code{deleted = TRUE}.
 }
 \examples{
 src <- gDirSource(file.path(tempdir(), "info_example"))

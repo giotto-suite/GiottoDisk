@@ -116,6 +116,7 @@ setMethod("objHistory", signature("gDirSource"), function(
 # save is written: schema, name, tag, created, creator, session, object (the
 # saved object's uid), parents.
 # Changeable with snapshotMetadata(): keep, description, labels, extra.
+# Written once when the snapshot is deleted: deleted_at (adr/0025).
 
 .GDSRC_SNAPSHOT_INFO <- "snapshot.json"
 .GDSRC_INFO_SCHEMA <- 1L
@@ -155,6 +156,7 @@ setMethod("objHistory", signature("gDirSource"), function(
         name = scalar(info$name, sub(.GDSRC_SNAPSHOT_DIR, "\\1", tag)),
         tag = tag,
         created = scalar(info$created, created),
+        deleted_at = scalar(info$deleted_at, NA_character_),
         creator = scalar(info$creator, NA_character_),
         session = scalar(info$session, NA_character_),
         object = scalar(info$object, NA_character_),
@@ -187,10 +189,26 @@ setMethod("objHistory", signature("gDirSource"), function(
 .gdsrc_read_info <- function(dir) {
     info <- .gdsrc_stored_info(dir)
     info$schema <- NULL
-    info$created <- as.POSIXct(info$created, format = "%Y-%m-%dT%H:%M:%OSZ",
-        tz = "UTC")
+    info$created <- .gdsrc_info_time(info$created)
     info$deleted <- !length(.gdsrc_snapshot_objfiles(dir))
+    # a delete cut short between recording the time and removing the object
+    # leaves a time on a snapshot that is still there
+    info$deleted_at <- if (info$deleted) .gdsrc_info_time(info$deleted_at) else
+        .POSIXct(NA_real_, tz = "UTC")
     info
+}
+
+.gdsrc_info_time <- function(x) {
+    as.POSIXct(x, format = "%Y-%m-%dT%H:%M:%OSZ", tz = "UTC")
+}
+
+# Record in `dir`'s snapshot.json that the snapshot is being deleted now.
+# Called before its object is removed, so a deleted snapshot always has a
+# deletion time, which sourcePrune()'s grace period counts from.
+.gdsrc_info_mark_deleted <- function(dir) {
+    info <- .gdsrc_stored_info(dir)
+    info$deleted_at <- format(Sys.time(), .GDSRC_INFO_TIME, tz = "UTC")
+    .ss_gdsrc_write_info(info, dir)
 }
 
 #' @name snapshotInfo
@@ -205,8 +223,8 @@ setMethod("objHistory", signature("gDirSource"), function(
 #' [snapshotMetadata()].
 #'
 #' A deleted snapshot keeps its folder and description: only its object is
-#' removed, which is what releases its artifacts to [sourcePrune()]. List
-#' those too with `deleted = TRUE`.
+#' removed, which is what releases its artifacts to [sourcePrune()] once its
+#' grace period has passed. List those too with `deleted = TRUE`.
 #' @param src `gsource` object or `character` filepath to a project
 #'   directory.
 #' @param name `character` (optional) snapshot name to describe; all of them
@@ -217,7 +235,8 @@ setMethod("objHistory", signature("gDirSource"), function(
 #'   `created`, `creator`, `session`, `object`, `parents` (list column of
 #'   tags, the main line first; several where objects were combined), `keep`,
 #'   `description`, `labels` (list column), `extra` (list column),
-#'   `deleted`.
+#'   `deleted`, `deleted_at` (when it was deleted; `NA` for a live snapshot
+#'   or one deleted before GiottoDisk recorded the time).
 #' @examples
 #' src <- gDirSource(file.path(tempdir(), "info_example"))
 #' snapshotInfo(src)
@@ -254,6 +273,8 @@ setMethod("snapshotInfo", signature("gDirSource"), function(src, name = NULL,
         keep = vapply(infos, `[[`, NA, "keep"),
         description = vapply(infos, `[[`, "", "description"),
         deleted = vapply(infos, `[[`, NA, "deleted"),
+        deleted_at = .POSIXct(vapply(infos, function(i)
+            as.numeric(i$deleted_at), 0), tz = "UTC"),
         stringsAsFactors = FALSE
     )
     out$parents <- lapply(infos, `[[`, "parents")
@@ -261,7 +282,7 @@ setMethod("snapshotInfo", signature("gDirSource"), function(src, name = NULL,
     out$extra <- lapply(infos, `[[`, "extra")
     out <- out[order(out$created), c("name", "tag", "created", "creator",
         "session", "object", "parents", "keep", "description", "labels",
-        "extra", "deleted")]
+        "extra", "deleted", "deleted_at")]
     rownames(out) <- NULL
     out
 })

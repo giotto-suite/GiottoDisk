@@ -859,28 +859,142 @@ as.data.frame.gDirSource <- function(x, ...) {
     visited
 }
 
+# The grace period in seconds, from sourcePrune(grace =): TRUE for the
+# default (`giottodisk.grace`, 24 hours), FALSE for none, or a number of
+# seconds or a difftime.
+.GDSRC_GRACE_DEFAULT <- 86400
+.gdsrc_grace_secs <- function(grace) {
+    if (isTRUE(grace)) {
+        grace <- getOption("giottodisk.grace", .GDSRC_GRACE_DEFAULT)
+    }
+    if (isFALSE(grace)) return(0)
+    if (inherits(grace, "difftime")) grace <- as.numeric(grace, units = "secs")
+    checkmate::assert_number(grace, lower = 0, finite = TRUE,
+        .var.name = "grace")
+    grace
+}
+
+# Tags of the snapshots deleted less than `grace` seconds ago, the most
+# recent first. A snapshot deleted before GiottoDisk recorded the time has
+# none and is not among them.
+.gdsrc_graced_tags <- function(gsdir, grace) {
+    if (grace <= 0) return(character())
+    tags <- .gdsrc_snapshot_dirs(gsdir)
+    infos <- lapply(file.path(gsdir, tags), .gdsrc_read_info)
+    at <- vapply(infos, function(i) as.numeric(i$deleted_at), 0)
+    age <- as.numeric(Sys.time()) - at
+    in_grace <- !is.na(at) & age <= grace
+    tags[in_grace][order(at[in_grace], decreasing = TRUE)]
+}
+
+# What a prune of registry `content` would remove. Artifacts no live
+# snapshot reaches go, unless a snapshot deleted within the grace period
+# reaches them: `kept_by` names that snapshot (the most recently deleted, if
+# several), NA for the artifacts that go. `keep_tags` are the tags records
+# keep: those of live snapshots and of the graced ones, so the next prune
+# still sees what the graced snapshots reach.
+.gdsrc_prune_plan <- function(p, content, grace) {
+    gsdir <- .gdsrc_giottosave_dir(p)
+    live <- .gdsrc_snapshot_tags(gsdir)
+    graced <- .gdsrc_graced_tags(gsdir, grace)
+    vault_ids <- list.files(.gdsrc_vault_dir(p), recursive = FALSE,
+        full.names = FALSE)
+    unprotected <- setdiff(vault_ids, .gdsrc_protected(content, live))
+    kept_by <- stats::setNames(rep(NA_character_, length(unprotected)),
+        unprotected)
+    for (tag in graced) {
+        reached <- intersect(.gdsrc_protected(content, tag), unprotected)
+        reached <- reached[is.na(kept_by[reached])]
+        kept_by[reached] <- tag
+    }
+    list(kept_by = kept_by, keep_tags = c(live, graced))
+}
+
+# One row per artifact in `kept_by` (see .gdsrc_prune_plan()), read before
+# anything is deleted. A vault folder with no record has no store or time.
+.gdsrc_prune_table <- function(p, content, kept_by) {
+    uids <- names(kept_by)
+    field <- function(u, f) {
+        v <- content[[u]][[f]]
+        if (length(v)) as.character(v[[1L]]) else NA_character_
+    }
+    out <- data.frame(
+        uid = uids,
+        store = vapply(uids, field, "", f = "store", USE.NAMES = FALSE),
+        created = as.POSIXct(vapply(uids, field, "", f = "time",
+            USE.NAMES = FALSE)),
+        bytes = vapply(uids, function(u)
+            .gdsrc_dir_bytes(.gdsrc_artifact_dir(p, u)), 0, USE.NAMES = FALSE),
+        kept_by = unname(kept_by),
+        stringsAsFactors = FALSE
+    )
+    out <- out[order(!is.na(out$kept_by), out$created), , drop = FALSE]
+    rownames(out) <- NULL
+    out
+}
+
+.gdsrc_dir_bytes <- function(dir) {
+    f <- list.files(dir, recursive = TRUE, full.names = TRUE, all.files = TRUE)
+    sum(file.info(f)$size, na.rm = TRUE)
+}
+
+# "1 day", "36 hours", "90 seconds"
+.gdsrc_duration <- function(secs) {
+    unit <- c(day = 86400, hour = 3600, minute = 60, second = 1)
+    k <- names(unit)[which(secs >= unit)[1L]]
+    if (is.na(k)) k <- "second"
+    n <- signif(secs / unit[[k]], 3L)
+    sprintf("%s %s%s", format(n), k, if (n == 1) "" else "s")
+}
+
+.gdsrc_prune_message <- function(tab, dry_run, grace) {
+    size <- function(b) format(structure(b, class = "object_size"),
+        units = "auto", standard = "SI")
+    gone <- is.na(tab$kept_by)
+    msg <- sprintf("[GiottoDisk] %s %d unprotected artifact%s (%s)",
+        if (dry_run) "Would prune" else "Pruned", sum(gone),
+        if (sum(gone) == 1L) "" else "s", size(sum(tab$bytes[gone])))
+    if (any(!gone)) {
+        msg <- paste0(msg, sprintf(
+            "; %d (%s) kept for snapshots deleted in the last %s",
+            sum(!gone), size(sum(tab$bytes[!gone])), .gdsrc_duration(grace)))
+    }
+    message(msg)
+}
+
 # Drop artifacts no live snapshot protects, and tags whose snapshot is gone,
-# in one commit with the pending edits applied. The registry change is
-# committed first and the vault folders removed after, so an interruption
-# leaves stray folders, never records of missing data. An artifact with an
-# edit queued since the registry was read is left alone. Not safe against a
-# snapshot being saved while it runs (adr/0023).
-.gdsrc_artifact_prune <- function(p) {
+# in one commit with the pending edits applied; what a snapshot deleted
+# within the grace period reaches stays, with its tags (adr/0025). The
+# registry change is committed first and the vault folders removed after, so
+# an interruption leaves stray folders, never records of missing data. An
+# artifact with an edit queued since the registry was read is left alone.
+# Not safe against a snapshot being saved while it runs (adr/0023).
+# `dry_run` commits and deletes nothing. Returns the table of
+# .gdsrc_prune_table(): the artifacts removed (or that would be) and those
+# the grace period kept.
+.gdsrc_artifact_prune <- function(p, grace = 0, dry_run = FALSE) {
     .gdsrc_check_schema(p, site = "[sourcePrune]")
-    gsave_dir <- .gdsrc_giottosave_dir(p)
-    to_prune <- character()
+    if (dry_run) {
+        reg <- .gdsrc_registry_load(p)
+        content <- Reduce(.gdsrc_apply_edit, .gdsrc_pending_edits(p),
+            reg$content)
+        plan <- .gdsrc_prune_plan(p, content, grace)
+        tab <- .gdsrc_prune_table(p, content, plan$kept_by)
+        .gdsrc_prune_message(tab, dry_run = TRUE, grace = grace)
+        return(tab)
+    }
+    plan <- NULL
+    content <- NULL
     .gdsrc_registry_update(p, readonly = "error", site = "[sourcePrune]",
         step = function(reg, edits) {
-            content <- Reduce(.gdsrc_apply_edit, edits, reg$content)
-            live <- .gdsrc_snapshot_tags(gsave_dir)
-            vault_ids <- list.files(.gdsrc_vault_dir(p), recursive = FALSE,
-                full.names = FALSE)
-            to_prune <<- setdiff(vault_ids, .gdsrc_protected(content, live))
+            content <<- Reduce(.gdsrc_apply_edit, edits, reg$content)
+            plan <<- .gdsrc_prune_plan(p, content, grace)
+            to_prune <- names(plan$kept_by)[is.na(plan$kept_by)]
             kept <- lapply(content[setdiff(names(content), to_prune)],
                 function(art) {
                     tags <- unlist(art$giottosave)
                     art$giottosave <- .gdsrc_set_value("giottosave",
-                        tags[tags %in% live])
+                        tags[tags %in% plan$keep_tags])
                     art
                 })
             if (!length(edits) && identical(kept, reg$content)) return(NULL)
@@ -888,10 +1002,11 @@ as.data.frame.gDirSource <- function(x, ...) {
             list(content = kept, applied = names(edits))
         })
     queued <- unlist(lapply(.gdsrc_pending_edits(p), `[[`, "uid"))
-    to_prune <- setdiff(to_prune, queued)
-    for (uid in to_prune) {
+    kept_by <- plan$kept_by[!names(plan$kept_by) %in% queued]
+    tab <- .gdsrc_prune_table(p, content, kept_by)
+    for (uid in tab$uid[is.na(tab$kept_by)]) {
         unlink(.gdsrc_artifact_dir(p, uid), recursive = TRUE, force = TRUE)
     }
-    message("[GiottoDisk] Pruned ", length(to_prune), " unprotected artifacts")
-    invisible(to_prune)
+    .gdsrc_prune_message(tab, dry_run = FALSE, grace = grace)
+    invisible(tab)
 }
