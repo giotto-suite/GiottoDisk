@@ -198,7 +198,7 @@ describe("sourcePrune", {
         .gdsrc_json_add_tags(x$td, kept, tag)
         before <- max(.gdsrc_registry_versions(x$td))
         pruned <- suppressMessages(sourcePrune(x$src))
-        expect_identical(pruned, gone)
+        expect_identical(pruned$uid, gone)
         expect_identical(max(.gdsrc_registry_versions(x$td)), before + 1L)
         expect_identical(names(as.list(x$src)), kept)
     })
@@ -217,7 +217,7 @@ describe("sourcePrune", {
         ), {
             pruned <- suppressMessages(sourcePrune(x$src))
         })
-        expect_length(pruned, 0L)
+        expect_identical(nrow(pruned), 0L)
         expect_true(dir.exists(.gdsrc_artifact_dir(x$td, u)))
     })
 })

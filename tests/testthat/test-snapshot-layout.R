@@ -15,8 +15,8 @@
     st@uid
 }
 
-.layout_pruned <- function(src, uid) {
-    suppressMessages(sourcePrune(src))
+.layout_pruned <- function(src, uid, ...) {
+    suppressMessages(sourcePrune(src, ...))
     !dir.exists(.gdsrc_artifact_dir(src@path, uid))
 }
 
@@ -71,7 +71,7 @@ describe("snapshot tags", {
         uid <- .layout_artifact(x$src, basename(dirname(f)))
         snapshotDelete(x$src, "qc")
         expect_length(.gdsrc_snapshot_names(.snap_gsdir(x$td)), 0L)
-        expect_true(.layout_pruned(x$src, uid))
+        expect_true(.layout_pruned(x$src, uid, grace = FALSE))
     })
 
     it("are not revived by a new snapshot of the same name", {
@@ -81,7 +81,7 @@ describe("snapshot tags", {
         uid <- .layout_artifact(x$src, basename(dirname(f)))
         snapshotDelete(x$src, "qc")
         .write_snapshot_fixture(x$td, "qc", list(a = 2))
-        expect_true(.layout_pruned(x$src, uid))
+        expect_true(.layout_pruned(x$src, uid, grace = FALSE))
     })
 })
 

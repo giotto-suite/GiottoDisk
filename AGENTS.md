@@ -581,7 +581,8 @@ rationale (manifest design, dump lifecycle, multi-analysis guarantees).
     manifest.json          # what it holds (giotto snapshots only)
     history.ndjson         # how it was produced (giotto snapshots only)
     snapshot.json          # what the save records: creator, session, object,
-                           #   parents, keep, description, labels (adr/0024)
+                           #   parents, keep, description, labels (adr/0024);
+                           #   deleted_at once deleted (adr/0025)
 ```
 
 Manifest access: `src["uid"]`, `src["uid", "field"]`, `src[, "field"]`,
@@ -647,7 +648,12 @@ No lock.
   files elsewhere.
 - **`sourcePrune`**: removes untagged artifacts; protection transitive
   via BFS over `depends`. Commits first, deletes vault folders after, drops
-  dead tags. Not safe while another process saves (by discipline).
+  dead tags. A snapshot deleted within the grace period (`grace =`,
+  `giottodisk.grace`, 24 h) counts as live, and its tags stay
+  (adr/0025): `.gdsrc_snapshot_remove_object` records `deleted_at` before
+  removing the object, so every deletion goes through it. Returns a table
+  (`dry_run = TRUE` commits and deletes nothing). Not safe while another
+  process saves (by discipline).
 
 ### Tiled geometry write planning
 `storeWrite(parquetGeomTileStore)` uses `tilework::quadtreePlan()`. `dry_run = TRUE` plots

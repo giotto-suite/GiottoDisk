@@ -109,7 +109,7 @@ describe("a deleted snapshot", {
         u <- sourceWrite(x$src, data.frame(a = 1))@uid
         .gdsrc_json_add_tags(x$td, u, tag)
         snapshotDelete(x$src, "qc")
-        suppressMessages(sourcePrune(x$src))
+        suppressMessages(sourcePrune(x$src, grace = FALSE))
         expect_false(dir.exists(.gdsrc_artifact_dir(x$td, u)))
         tag2 <- .info_snapshot(x$td, "qc")
         expect_false(identical(tag2, tag))

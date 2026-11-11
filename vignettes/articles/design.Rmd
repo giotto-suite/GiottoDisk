@@ -622,16 +622,23 @@ artifact writes. Deleting a snapshot removes only its object: the folder and its
 description files stay, so the snapshots made from it keep a parent that
 exists, with no need to repoint them.
 
-That makes protection end with the snapshot. Deleting or overwriting a
-snapshot removes no tags: its tag simply matches no folder. `sourcePrune()`
-later drops such dead tags, which protect nothing, so records do not keep
-every tag ever written.
+That makes protection end with the snapshot, after a grace period.
+Deleting or overwriting a snapshot removes no tags: its tag simply matches no
+folder. `sourcePrune()` later drops such dead tags, which protect nothing, so
+records do not keep every tag ever written.
 Removing tags on delete and overwrite was the alternative, and was rejected
 because it is only as safe as reference detection is complete (an artifact
 the new snapshot references but tagging misses loses its protection), and
 because a bare-name tag left behind by a deleted snapshot would protect again
 whenever a later snapshot reused the name. Stamping an id in a file inside
 the folder would work too, at the cost of more machinery than a name.
+
+The grace period is for several processes sharing a project (adr/0025). A
+deleted snapshot records when it was deleted, and for 24 hours after that
+`sourcePrune()` treats it as live and keeps its tags, so a session that
+loaded it before another replaced or deleted it keeps its data. Artifacts
+that no snapshot reached get no grace period: without a snapshot, nothing
+refers to them.
 
 Tagging is not adoption. Adoption (`sourceAdopt`) brings something into the
 vault once, and only what may be moved or copied there. Tagging runs on every

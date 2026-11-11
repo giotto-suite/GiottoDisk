@@ -197,6 +197,16 @@ It also drops tags whose snapshot is gone, which protect nothing. Run it
 while no other session or worker is saving into the project: a snapshot
 saved while pruning runs can lose artifacts that only it protects.
 
+What a deleted or replaced snapshot reached is kept for 24 hours after the
+deletion, in case another session still uses it (adr/0025). Preview a prune,
+or free that space at once:
+
+```r
+sourcePrune(src, dry_run = TRUE)  # what would go, its size, and what is kept
+sourcePrune(src, grace = FALSE)   # no grace period
+options(giottodisk.grace = 3600)  # or a shorter one, in seconds
+```
+
 # Snapshot verbs
 
 A snapshot is a serialized giotto object (`gobject.RDS` or `gobject.qs2`)
@@ -276,15 +286,17 @@ spatPlot(g)
 
 ## `snapshotDelete(src, name)`
 
-Removes the snapshot's object. Its tag then matches no snapshot, so
-artifacts that were tagged *only* by this snapshot become prune-eligible.
+Removes the snapshot's object and records when. Its tag then matches no
+snapshot, so artifacts that were tagged *only* by this snapshot become
+prune-eligible once the grace period (24 hours) has passed.
 The folder stays, with the files that describe it (a few kilobytes), so the
 snapshots made from it still name an existing parent;
 `snapshotInfo(src, deleted = TRUE)` lists it.
 
 ```r
 snapshotDelete(src, "old_attempt")
-sourcePrune(src)
+sourcePrune(src)                 # its artifacts go after the grace period
+sourcePrune(src, grace = FALSE)  # or now
 ```
 
 # Common patterns
