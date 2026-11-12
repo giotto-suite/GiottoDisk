@@ -938,6 +938,43 @@ as.data.frame.gDirSource <- function(x, ...) {
     sum(file.info(f)$size, na.rm = TRUE)
 }
 
+# The registry's content with the queued edits applied: what a commit now
+# would hold. Read only.
+.gdsrc_current_content <- function(p) {
+    Reduce(.gdsrc_apply_edit, .gdsrc_pending_edits(p),
+        .gdsrc_registry_load(p)$content)
+}
+
+# Bytes of each vault folder, named by uid; computed, never stored
+.gdsrc_vault_bytes <- function(p) {
+    uids <- list.files(.gdsrc_vault_dir(p), recursive = FALSE)
+    stats::setNames(vapply(uids, function(u)
+        .gdsrc_dir_bytes(.gdsrc_artifact_dir(p, u)), 0, USE.NAMES = FALSE), uids)
+}
+
+# Per snapshot folder in `tags`: `object_bytes`, its folder (object file and
+# sidecars); `own_bytes`, the artifacts only it reaches among the live
+# snapshots, which deleting it and pruning frees; `shared_bytes`, those it
+# reaches that other live snapshots reach too. A deleted snapshot reaches
+# what still carries its tag (within its grace period, or until a prune).
+.gdsrc_snapshot_sizes <- function(p, tags) {
+    content <- .gdsrc_current_content(p)
+    bytes <- .gdsrc_vault_bytes(p)
+    gsdir <- .gdsrc_giottosave_dir(p)
+    live <- .gdsrc_snapshot_tags(gsdir)
+    all_tags <- union(tags, live)
+    reach <- stats::setNames(lapply(all_tags, function(t)
+        intersect(.gdsrc_protected(content, t), names(bytes))), all_tags)
+    sizes <- vapply(tags, function(t) {
+        others <- unique(unlist(reach[setdiff(live, t)]))
+        r <- reach[[t]]
+        c(.gdsrc_dir_bytes(file.path(gsdir, t)),
+            sum(bytes[setdiff(r, others)]), sum(bytes[intersect(r, others)]))
+    }, numeric(3L), USE.NAMES = FALSE)
+    data.frame(object_bytes = sizes[1L, ], own_bytes = sizes[2L, ],
+        shared_bytes = sizes[3L, ])
+}
+
 # "1 day", "36 hours", "90 seconds"
 .gdsrc_duration <- function(secs) {
     unit <- c(day = 86400, hour = 3600, minute = 60, second = 1)
@@ -975,9 +1012,7 @@ as.data.frame.gDirSource <- function(x, ...) {
 .gdsrc_artifact_prune <- function(p, grace = 0, dry_run = FALSE) {
     .gdsrc_check_schema(p, site = "[sourcePrune]")
     if (dry_run) {
-        reg <- .gdsrc_registry_load(p)
-        content <- Reduce(.gdsrc_apply_edit, .gdsrc_pending_edits(p),
-            reg$content)
+        content <- .gdsrc_current_content(p)
         plan <- .gdsrc_prune_plan(p, content, grace)
         tab <- .gdsrc_prune_table(p, content, plan$kept_by)
         .gdsrc_prune_message(tab, dry_run = TRUE, grace = grace)

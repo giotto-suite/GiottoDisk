@@ -230,16 +230,25 @@ setMethod("objHistory", signature("gDirSource"), function(
 #' @param name `character` (optional) snapshot name to describe; all of them
 #'   if `NULL`.
 #' @param deleted `logical`. Whether to include deleted snapshots.
+#' @param sizes `logical`. Whether to add the bytes each snapshot uses:
+#'   `object_bytes`, its folder (object file and sidecars); `own_bytes`, the
+#'   artifacts no other live snapshot reaches, which deleting it and then
+#'   [sourcePrune()] would free; `shared_bytes`, the artifacts it reaches
+#'   that other live snapshots reach too. Computed from the files when asked,
+#'   so slower on a large project. A deleted snapshot reaches what still
+#'   carries its tag: until a prune, or through its grace period.
 #' @param ... additional params to pass (none implemented)
 #' @returns `data.frame`, one row per snapshot, oldest first: `name`, `tag`,
 #'   `created`, `creator`, `session`, `object`, `parents` (list column of
 #'   tags, the main line first; several where objects were combined), `keep`,
 #'   `description`, `labels` (list column), `extra` (list column),
 #'   `deleted`, `deleted_at` (when it was deleted; `NA` for a live snapshot
-#'   or one deleted before GiottoDisk recorded the time).
+#'   or one deleted before GiottoDisk recorded the time), and with `sizes`,
+#'   `object_bytes`, `own_bytes` and `shared_bytes`.
 #' @examples
 #' src <- gDirSource(file.path(tempdir(), "info_example"))
 #' snapshotInfo(src)
+#' snapshotInfo(src, sizes = TRUE)
 #' @export
 setMethod("snapshotInfo", signature("character"), function(src, ...) {
     if (!dir.exists(src)) {
@@ -252,9 +261,10 @@ setMethod("snapshotInfo", signature("character"), function(src, ...) {
 #' @rdname snapshotInfo
 #' @export
 setMethod("snapshotInfo", signature("gDirSource"), function(src, name = NULL,
-    deleted = FALSE, ...) {
+    deleted = FALSE, sizes = FALSE, ...) {
     checkmate::assert_string(name, null.ok = TRUE)
     checkmate::assert_flag(deleted)
+    checkmate::assert_flag(sizes)
     gsdir <- .gdsrc_giottosave_dir(src@path)
     tags <- .gdsrc_snapshot_dirs(gsdir)
     infos <- lapply(file.path(gsdir, tags), .gdsrc_read_info)
@@ -283,6 +293,7 @@ setMethod("snapshotInfo", signature("gDirSource"), function(src, name = NULL,
     out <- out[order(out$created), c("name", "tag", "created", "creator",
         "session", "object", "parents", "keep", "description", "labels",
         "extra", "deleted", "deleted_at")]
+    if (sizes) out <- cbind(out, .gdsrc_snapshot_sizes(src@path, out$tag))
     rownames(out) <- NULL
     out
 })

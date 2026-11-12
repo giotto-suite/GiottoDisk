@@ -110,6 +110,7 @@ Collate:
     'methods-snapshotSidecars.R'
     'methods-sourceWrite.R'
     'methods-sourceAdopt.R'
+    'methods-sourceInfo.R'
     'methods-sourcePrune.R'
     'methods-sourceSchema.R'
     'methods-spatRelate.R'
