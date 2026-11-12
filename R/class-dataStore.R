@@ -147,11 +147,13 @@ fileStore <- function(path = .dump_tempfile(), read_fun, ...) {
 #' @name arrayStore
 #' @title Array Storage
 #' @param path storage directory
-#' @param name `character` Remote naming used by some storage types,
-#'   for example HDF5Array and TileDB.
+#' @param name `character` Name of the matrix inside its storage: the HDF5
+#'   dataset, or the TileDB attribute. An HDF5 artifact is its own file
+#'   holding one matrix, so its dataset is `"data"`; what the matrix is lives
+#'   in the object and the project's registry.
 #' @export
 h5ArrayStore <- function(
-    path = .dump_tempfile(), name = HDF5Array::getHDF5DumpName(), ...) {
+    path = .dump_tempfile(), name = "data", ...) {
     package_check("HDF5Array", repository = "Bioc")
     new("h5ArrayStore",
         path = path, 

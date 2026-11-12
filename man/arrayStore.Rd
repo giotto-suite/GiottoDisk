@@ -7,7 +7,7 @@
 \alias{bpcMatrixStore}
 \title{Array Storage}
 \usage{
-h5ArrayStore(path = .dump_tempfile(), name = HDF5Array::getHDF5DumpName(), ...)
+h5ArrayStore(path = .dump_tempfile(), name = "data", ...)
 
 tileDBArrayStore(
   path = file.path(tempdir(), .make_uid()),
@@ -20,8 +20,10 @@ bpcMatrixStore(path = file.path(tempdir(), .make_uid()), ...)
 \arguments{
 \item{path}{storage directory}
 
-\item{name}{\code{character} Remote naming used by some storage types,
-for example HDF5Array and TileDB.}
+\item{name}{\code{character} Name of the matrix inside its storage: the HDF5
+dataset, or the TileDB attribute. An HDF5 artifact is its own file
+holding one matrix, so its dataset is \code{"data"}; what the matrix is lives
+in the object and the project's registry.}
 }
 \description{
 Array Storage
