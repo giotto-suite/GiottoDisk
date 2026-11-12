@@ -7,7 +7,7 @@
 \usage{
 \S4method{snapshotInfo}{character}(src, ...)
 
-\S4method{snapshotInfo}{gDirSource}(src, name = NULL, deleted = FALSE, ...)
+\S4method{snapshotInfo}{gDirSource}(src, name = NULL, deleted = FALSE, sizes = FALSE, ...)
 }
 \arguments{
 \item{src}{\code{gsource} object or \code{character} filepath to a project
@@ -19,6 +19,14 @@ directory.}
 if \code{NULL}.}
 
 \item{deleted}{\code{logical}. Whether to include deleted snapshots.}
+
+\item{sizes}{\code{logical}. Whether to add the bytes each snapshot uses:
+\code{object_bytes}, its folder (object file and sidecars); \code{own_bytes}, the
+artifacts no other live snapshot reaches, which deleting it and then
+\code{\link[=sourcePrune]{sourcePrune()}} would free; \code{shared_bytes}, the artifacts it reaches
+that other live snapshots reach too. Computed from the files when asked,
+so slower on a large project. A deleted snapshot reaches what still
+carries its tag: until a prune, or through its grace period.}
 }
 \value{
 \code{data.frame}, one row per snapshot, oldest first: \code{name}, \code{tag},
@@ -26,7 +34,8 @@ if \code{NULL}.}
 tags, the main line first; several where objects were combined), \code{keep},
 \code{description}, \code{labels} (list column), \code{extra} (list column),
 \code{deleted}, \code{deleted_at} (when it was deleted; \code{NA} for a live snapshot
-or one deleted before GiottoDisk recorded the time).
+or one deleted before GiottoDisk recorded the time), and with \code{sizes},
+\code{object_bytes}, \code{own_bytes} and \code{shared_bytes}.
 }
 \description{
 List a project's snapshots with what each save recorded about itself,
@@ -44,4 +53,5 @@ grace period has passed. List those too with \code{deleted = TRUE}.
 \examples{
 src <- gDirSource(file.path(tempdir(), "info_example"))
 snapshotInfo(src)
+snapshotInfo(src, sizes = TRUE)
 }

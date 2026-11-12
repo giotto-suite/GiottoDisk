@@ -24,6 +24,12 @@
   `giottodisk.grace` option sets the period. See adr/0025.
 
 ## changes
+- `sourceInfo()` summarizes a project's disk use: bytes in the vault, in
+  images and in snapshot folders, snapshot counts, and what `sourcePrune()`
+  would free now or keeps for recently deleted snapshots.
+- `snapshotInfo(sizes = TRUE)` adds each snapshot's bytes: its folder, the
+  artifacts only it keeps (what deleting it and pruning frees) and those it
+  shares with other snapshots.
 - Each snapshot records what the save was: who made it, the session and the
   snapshot it came from, whether to keep it, a description and labels
   (`snapshotSave(keep =, creator =, session =, parents =, description =,
