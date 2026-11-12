@@ -525,8 +525,7 @@ setMethod("storeRead", signature("parquetGeomTileStore"), function(store,
 setMethod("storeRead", signature("h5ArrayStore"), function(store, ...) {
     HDF5Array::HDF5Array(
         filepath = store@path,
-        # .store_nostate() clears @params; every artifact's dataset is "data"
-        name = store@params$name %||% "data",
+        name = store@params$name,
         ...
     )
 })

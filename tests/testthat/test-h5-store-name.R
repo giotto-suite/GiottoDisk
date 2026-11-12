@@ -1,14 +1,17 @@
-# A dense matrix is written to an h5ArrayStore whose dataset is "data", and
-# read back after .store_nostate() has cleared the store's params (#157).
+# An h5ArrayStore keeps its dataset name through .store_nostate(), so a dense
+# matrix written to a project can be read back for its hash (#157).
 
 describe("h5ArrayStore", {
     skip_if_not_installed("HDF5Array")
 
-    it("names its dataset data", {
-        expect_identical(h5ArrayStore()@params$name, "data")
+    it("keeps its dataset name, and only that, when its state is cleared", {
+        s <- h5ArrayStore()
+        s@params$scratch <- 1
+        ns <- .store_nostate(s)
+        expect_identical(ns@params, list(name = s@params$name))
     })
 
-    it("reads back after its params are cleared", {
+    it("reads back after its state is cleared", {
         m <- matrix(as.numeric(1:12), 3, dimnames = list(letters[1:3], LETTERS[1:4]))
         s <- storeWrite(h5ArrayStore(), m)
         on.exit(unlink(s@path), add = TRUE)
