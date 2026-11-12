@@ -50,6 +50,8 @@
   size, without changing anything.
 - `snapshotInfo(deleted = TRUE)` shows when each snapshot was deleted
   (`deleted_at`).
+- `sourceContains(src, <giotto>)` tells whether a `snapshotSave()` would move
+  any of the object's stores into the project, and names them if so.
 
 # GiottoDisk 0.0.0.7
 
