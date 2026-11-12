@@ -58,6 +58,8 @@
   ...
 )
 
+\S4method{storeWrite}{parquetGeomTileStore,SpatVector}(store, data, threshold = NULL, ...)
+
 \S4method{storeWrite}{parquetGeomTileStore,tenxZarrTxInput}(
   store,
   data,
@@ -173,6 +175,12 @@ class. Computes geometries from vertices which requires row ordering.
 \item \code{parquetGeomStore}-inheriting - Simple write to a new tiled store.
 }
 }
+
+For a \code{SpatVector} of points or polygons, the geometries go
+to a temporary \code{parquetGeomStore} first, which is tiled and then removed.
+This is what lets \code{\link[=sourceWrite]{sourceWrite()}} write geometries tiled, with
+\code{store_type = "parquetGeomTile"} or
+\code{options(giotto.gdsrc_spatvector_format = "parquetGeomTile")}.
 }
 \seealso{
 Other storeWrite methods:

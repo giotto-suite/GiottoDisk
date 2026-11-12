@@ -50,6 +50,9 @@
   size, without changing anything.
 - `snapshotInfo(deleted = TRUE)` shows when each snapshot was deleted
   (`deleted_at`).
+- `storeWrite(parquetGeomTileStore(), <SpatVector>)` tiles points or polygons
+  held in memory, so `sourceWrite()` can write a giotto object's geometries
+  tiled: `options(giotto.gdsrc_spatvector_format = "parquetGeomTile")`.
 
 # GiottoDisk 0.0.0.7
 

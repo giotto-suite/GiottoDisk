@@ -827,6 +827,28 @@ setMethod(
     }
 )
 
+#' @name storeWrite-parquetGeomTileStore
+#' @description For a `SpatVector` of points or polygons, the geometries go
+#'   to a temporary `parquetGeomStore` first, which is tiled and then removed.
+#'   This is what lets [sourceWrite()] write geometries tiled, with
+#'   `store_type = "parquetGeomTile"` or
+#'   `options(giotto.gdsrc_spatvector_format = "parquetGeomTile")`.
+#' @export
+setMethod(
+    "storeWrite",
+    signature("parquetGeomTileStore", "SpatVector"),
+    function(store, data, threshold = NULL, ...) {
+        vmsg(.is_debug = TRUE, "[storeWrite] parquetGeomTileStore,SpatVector")
+        if (nrow(data) == 0L) {
+            return(NULL)
+        }
+        geoms <- parquetGeomStore()
+        on.exit(unlink(geoms@path, recursive = TRUE, force = TRUE), add = TRUE)
+        geoms <- storeWrite(geoms, data)
+        storeWrite(store, geoms, threshold = threshold, ...)
+    }
+)
+
 # * h5ArrayStore ####
 #' @rdname storeWrite
 #' @export
