@@ -84,6 +84,20 @@ setMethod("sourceContains", signature("gDirSource", "unionParquetStore"),
         FUN.VALUE = logical(1L)))
 })
 
+#' @rdname sourceContains
+#' @details For a `giotto` object: whether all the stores it holds are in the
+#'   vault (expression matrices, points, polygons, overlaps and networks), so
+#'   that [snapshotSave()] would move none of them into it. In-memory data is
+#'   written into the snapshot's object file and images are copied, so neither
+#'   counts. When `FALSE`, the attribute `external` names the stores outside.
+#' @export
+setMethod("sourceContains", signature("gDirSource", "giotto"),
+    function(src, store, ...) {
+    external <- .gdsrc_external_stores(src, store)
+    if (!length(external)) return(TRUE)
+    structure(FALSE, external = external)
+})
+
 #' @name sourceAdopt
 #' @title Adopt a Store into a Source
 #' @description
@@ -278,4 +292,38 @@ setMethod("sourceAdopt", signature("gDirSource", "ANY"),
         call. = FALSE
     )
     FALSE
+}
+
+# The stores of giotto object `x` that snapshotSave() would adopt into
+# `src`, named by kind and object. Mirrors the .ss_gdsrc_register_external_*
+# steps: keep the two in step.
+.gdsrc_external_stores <- function(src, x) {
+    out <- character()
+    outside <- function(store) !sourceContains(src, store)
+    name <- function(kind, obj) sprintf("%s '%s'", kind, GiottoClass::objName(obj))
+    for (e in x[["expression"]]) {
+        if (inherits(e[], "IterableMatrix") && outside(e[]))
+            out <- c(out, name("expression", e))
+    }
+    for (p in x[["feat_info"]]) {
+        stores <- .feat_info_stores(p)
+        if (length(stores) && any(vapply(stores, outside, logical(1L))))
+            out <- c(out, name("points", p))
+    }
+    for (p in x[["spatial_info"]]) {
+        if (inherits(p[], "dataStore") && outside(p[]))
+            out <- c(out, name("polygons", p))
+        for (f in setdiff(names(p@overlaps), "intensity")) {
+            o <- p@overlaps[[f]]
+            if (inherits(o, "overlapPointDisk") && outside(o@data))
+                out <- c(out, sprintf("overlaps '%s/%s'", GiottoClass::objName(p), f))
+        }
+    }
+    for (slot in c("nn_network", "spatial_network")) {
+        for (n in x[[slot]]) {
+            if (inherits(n@network, "dataStore") && outside(n@network))
+                out <- c(out, name("network", n))
+        }
+    }
+    out
 }

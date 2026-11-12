@@ -4,6 +4,7 @@
 \alias{sourceContains}
 \alias{sourceContains,gDirSource,SpatRaster-method}
 \alias{sourceContains,gDirSource,unionParquetStore-method}
+\alias{sourceContains,gDirSource,giotto-method}
 \alias{sourceContains,gDirSource,ANY-method}
 \title{Test if a Store is Managed by a Source}
 \usage{
@@ -12,6 +13,8 @@
 \S4method{sourceContains}{gDirSource,SpatRaster}(src, store, ...)
 
 \S4method{sourceContains}{gDirSource,unionParquetStore}(src, store, ...)
+
+\S4method{sourceContains}{gDirSource,giotto}(src, store, ...)
 
 \S4method{sourceContains}{gDirSource,ANY}(src, store, ...)
 }
@@ -34,4 +37,11 @@ of a \link{gsource}.
 directory. In-memory rasters always return \code{FALSE}.
 \item Union stores: \code{TRUE} only if all substores are contained.
 }
+}
+\details{
+For a \code{giotto} object: whether all the stores it holds are in the
+vault (expression matrices, points, polygons, overlaps and networks), so
+that \code{\link[=snapshotSave]{snapshotSave()}} would move none of them into it. In-memory data is
+written into the snapshot's object file and images are copied, so neither
+counts. When \code{FALSE}, the attribute \code{external} names the stores outside.
 }
