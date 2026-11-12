@@ -5,7 +5,8 @@ NULL
 # Returns the identity-bearing projection of a store: the same object
 # stripped of all view-state (lazy @ops, crop/window/post_ops, subset
 # @cell_idx / @gene_idx, tile_filter, etc.) and of @params (treated as
-# opaque scratch space — never identity-bearing). The result represents
+# opaque scratch space), except a param a store cannot be read without,
+# such as the dataset name of an h5ArrayStore. The result represents
 # what a fresh-from-disk handle to the same on-disk artifact would be.
 #
 # Use sites: .hash, sourceAdopt, sourceContains, snapshotSave artifact
@@ -32,6 +33,24 @@ setMethod(".store_nostate", "dataStore", function(x, ...) x)
 setMethod(".store_nostate", "fileStore", function(x, ...) {
     x <- callNextMethod()
     x@params <- list()
+    x
+})
+
+# h5ArrayStore, tileDBArrayStore: keep the name of the matrix in the file
+# (HDF5 dataset, TileDB attribute). It says which data the store is, so it
+# belongs to the store's identity, not to its scratch params; without it the
+# store cannot be read (#157).
+setMethod(".store_nostate", "h5ArrayStore", function(x, ...) {
+    name <- x@params$name
+    x <- callNextMethod()
+    x@params$name <- name
+    x
+})
+
+setMethod(".store_nostate", "tileDBArrayStore", function(x, ...) {
+    name <- x@params$name
+    x <- callNextMethod()
+    x@params$name <- name
     x
 })
 

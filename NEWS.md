@@ -46,6 +46,8 @@
   writes stop with an explanation; `options(giottodisk.commit_by_rename =
   TRUE)` lets a single process write anyway.
 - A project that cannot be written can still be read.
+- A dense matrix writes to a project again: an `h5ArrayStore` keeps the name
+  of its dataset when read for its hash (#157).
 - `sourcePrune(dry_run = TRUE)` reports what a prune would remove, and its
   size, without changing anything.
 - `snapshotInfo(deleted = TRUE)` shows when each snapshot was deleted
