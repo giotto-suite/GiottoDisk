@@ -39,9 +39,9 @@ of a \link{gsource}.
 \item \code{fileStore}: checks whether the store's uid is present in the manifest.
 \item \code{SpatRaster}: checks whether all source file paths are inside the vault
 directory. In-memory rasters always return \code{FALSE}.
-\item \code{giottoLargeImage}: as \code{SpatRaster}, for the file the image reads its
-pixels from. For a JPEG-2000 image that is \verb{@file_path}, not the VRT
-GiottoClass reads it through.
+\item \code{giottoLargeImage}: as \code{SpatRaster}, for \verb{@file_path} (for a JPEG-2000
+image, the \code{.ome.tif} rather than the VRT GiottoClass reads it through).
+An image made from a \code{SpatRaster} has no \verb{@file_path}; its raster is used.
 \item Union stores: \code{TRUE} only if all substores are contained.
 }
 }

@@ -45,12 +45,13 @@ partition references remain valid. Store must already be written to disk.
 \item \code{SpatRaster}: in-memory rasters are written as COG; on-disk rasters are
 copied into the vault. A fresh uid is assigned. Returns the updated
 \code{SpatRaster} pointing to the vault path. A raster read through a VRT
-errors: the VRT points at the image rather than holding it, so adopt the
-\code{giottoLargeImage} instead.
-\item \code{giottoLargeImage}: copies the file the image reads its pixels from, so a
-JPEG-2000 image is copied as the original \code{.ome.tif}. Returns the image
+errors: the VRT points at image files rather than holding them.
+\item \code{giottoLargeImage}: copies \verb{@file_path}, so a JPEG-2000 image is copied
+as the original \code{.ome.tif}, not the VRT it is read through. An image made
+from a \code{SpatRaster} (no \verb{@file_path}) adopts the raster. Returns the image
 with \verb{@file_path} naming the vault copy, reopened through
-\code{\link[GiottoClass:reconnect]{GiottoClass::reconnect()}}.
+\code{\link[GiottoClass:reconnect]{GiottoClass::reconnect()}}. Errors when \verb{@file_path} is a VRT outside the
+vault.
 \item Union stores: each substore is adopted independently.
 }
 }

@@ -1,6 +1,6 @@
-# Adopting images into a gDirSource vault. GiottoClass reads a JPEG-2000 TIFF
-# through a VRT under tempdir() (GiottoClass adr/0005), so terra::sources()
-# names the VRT, not the image: the vault must copy @file_path instead.
+# Adopting images into a gDirSource vault. The image is its @file_path.
+# GiottoClass reads a JPEG-2000 TIFF through a VRT under tempdir() (GiottoClass
+# adr/0005), so terra::sources() names the VRT, not the image.
 
 # a JPEG-2000 giottoLargeImage over a private copy of the GiottoClass fixture,
 # so a test can delete the original
@@ -82,6 +82,39 @@ describe("sourceAdopt(gDirSource, giottoLargeImage)", {
         ha <- x$src[.img_uid(a), "hash"]
         expect_identical(ha, GiottoClass::fingerprint_data(a@raster_object))
         expect_false(identical(ha, x$src[.img_uid(b), "hash"]))
+    })
+
+    it("refuses an image whose @file_path is a VRT", {
+        x <- .img_src()
+        on.exit(unlink(x$td, recursive = TRUE), add = TRUE)
+        d <- tempfile("mosaic_")
+        dir.create(d)
+        on.exit(unlink(d, recursive = TRUE), add = TRUE)
+        tiles <- file.path(d, c("t1.tif", "t2.tif"))
+        terra::writeRaster(terra::rast(nrows = 10, ncols = 10,
+            xmin = 0, xmax = 10, ymin = 0, ymax = 10, vals = 1), tiles[[1L]])
+        terra::writeRaster(terra::rast(nrows = 10, ncols = 10,
+            xmin = 10, xmax = 20, ymin = 0, ymax = 10, vals = 2), tiles[[2L]])
+        v <- file.path(d, "mosaic.vrt")
+        terra::vrt(tiles, filename = v)
+        img <- GiottoClass::createGiottoLargeImage(v, name = "mosaic",
+            verbose = FALSE)
+
+        expect_error(sourceAdopt(x$src, img), "VRT as its @file_path")
+        expect_length(list.dirs(.gdsrc_vault_dir(x$td), recursive = FALSE), 0L)
+    })
+
+    it("adopts the raster of an image made from a SpatRaster", {
+        x <- .img_src()
+        on.exit(unlink(x$td, recursive = TRUE), add = TRUE)
+        r <- terra::rast(nrows = 10, ncols = 10, vals = seq_len(100))
+        img <- GiottoClass::createGiottoLargeImage(r, verbose = FALSE)
+        expect_null(img@file_path)
+
+        out <- sourceAdopt(x$src, img)
+        expect_true(sourceContains(x$src, out))
+        expect_identical(unname(terra::values(out@raster_object)),
+            unname(terra::values(img@raster_object)))
     })
 })
 
