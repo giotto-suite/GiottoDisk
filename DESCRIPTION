@@ -24,7 +24,7 @@ Imports:
     data.table (>= 1.12.2),
     digest,
     dplyr,
-    Giotto (>= 4.3.5),
+    Giotto (>= 4.3.6),
     GiottoClass (>= 0.7.28),
     GiottoUtils (>= 0.2.9),
     igraph,
@@ -87,6 +87,7 @@ Collate:
     'convenience-stereoseq.R'
     'reader-shared.R'
     'convenience-xenium.R'
+    'convenience-visium.R'
     'convenience-visiumhd.R'
     'image-cog.R'
     'methods-accessors.R'
