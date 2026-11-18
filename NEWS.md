@@ -68,6 +68,14 @@
   and spot polygons come from Giotto's `load_micron_scale()` /
   `load_polygon()`. Requires `Giotto (>= 4.3.6)`.
 
+## bug fixes
+- Spatial queries on SedonaDB found nothing when the store's geometry has no
+  CRS, which current sedonadb releases report for stores written without one:
+  the query geometry was given `ST_Crs(geom)`, a CRS the column itself lacks.
+  It now takes the store's CRS only when there is one. This affected
+  `spatRelate()`, polygon crops (`crop(geom = "poly")`, views) and the zoomed
+  windows of `spatInSituPlotPoints()`.
+
 # GiottoDisk 0.0.0.7
 
 Requires GiottoClass 0.7.27.
