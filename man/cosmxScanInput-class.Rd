@@ -9,6 +9,10 @@ Wraps a gzipped CosMx \code{exprMat_file}, read by the \code{cosmxscan} Rust
 scanner. \code{cell_ids} are only known during the stream -- the matrix's own
 \code{cell_ID} column is FOV-local -- so the iterator composes the global
 \verb{c_<slide>_<fov>_<cell_ID>} form as it advances.
+
+The scanner reads every row; rows outside \code{fovs} and background rows
+(\code{cell_ID == 0}) are dropped from each chunk before it is emitted, and the
+kept rows are renumbered, so the store holds only the selected cells.
 }
 \section{Slots}{
 
@@ -17,7 +21,11 @@ scanner. \code{cell_ids} are only known during the stream -- the matrix's own
 
 \item{\code{skip_cols}}{integer. Leading non-feature columns (\code{fov}, \code{cell_ID}).}
 
-\item{\code{batch_rows}}{integer. Cells emitted per batch.}
+\item{\code{batch_rows}}{integer. Rows scanned per batch.}
+
+\item{\code{fovs}}{integer. FOVs to keep; empty keeps all.}
+
+\item{\code{drop_background}}{logical. Drop rows with \code{cell_ID == 0}.}
 }}
 
 \seealso{

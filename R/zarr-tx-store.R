@@ -34,23 +34,27 @@ tenxZarrTxInput <- function(zarr_path) {
     new("tenxZarrTxInput", path = normalizePath(zarr_path))
 }
 
-# Tile slots for every grid cell: s x s per cell, s from the cell's row
-# count. `tile_index` is the row number; bounds are filled in by the
-# workers, which cut them from the data.
+# Tile slots for every grid cell, see `.slot_tile_plan()`.
 .atera_tx_tile_plan <- function(src, threshold) {
     tiles <- .atera_tx_tiles(src)
     n <- vapply(tiles, function(t) {
         unlist(.zarr_meta(src, paste0("grid/", t, "/location"))$shape)[1L]
     }, numeric(1L))
-    s <- if (is.finite(threshold)) pmax(1, ceiling(sqrt(n / threshold)))
-        else rep(1, length(n))
+    .slot_tile_plan(stats::setNames(n, tiles), threshold)
+}
+
+# Tile slots for groups of points (Atera grid cells, CosMx FOVs): s x s per
+# group from its row count; the workers fill in the bounds.
+.slot_tile_plan <- function(rows, threshold) {
+    s <- if (is.finite(threshold)) pmax(1, ceiling(sqrt(rows / threshold)))
+        else rep(1, length(rows))
     plan <- data.frame(
-        tile = rep(tiles, s^2),
+        tile = rep(names(rows), s^2),
         s = rep(s, s^2),
         slot = unlist(lapply(s, function(k) seq_len(k^2)))
     )
     plan$tile_index <- seq_len(nrow(plan))
-    attr(plan, "rows") <- stats::setNames(n, tiles)
+    attr(plan, "rows") <- rows
     plan
 }
 
@@ -258,12 +262,13 @@ tenxZarrTxInput <- function(zarr_path) {
 #' @rdname storeWrite-parquetGeomTileStore
 #' @param qv_threshold minimum quality score kept (`NULL` keeps all)
 #' @param flip_vertical negate y, as the Xenium/Atera readers do
-#' @param workers parallel workers, one grid cell each
+#' @param workers parallel workers, one grid cell (Atera) or FOV (CosMx)
+#'   each
 #' @param window_rows transcripts decoded per read. Default: derived
 #'   from the memory budget (`giottodisk.chunk_ram_frac`) and `workers`
 #' @param buffer_rows transcripts buffered per worker before writing; a
-#'   grid cell is written as about (cell rows / `buffer_rows`) files per
-#'   tile. Default: derived like `window_rows`
+#'   grid cell or FOV is written as about (its rows / `buffer_rows`) files
+#'   per tile. Default: derived like `window_rows`
 #' @param dropcols attribute columns not to write
 #' @export
 setMethod(
@@ -323,28 +328,36 @@ setMethod(
                 call. = FALSE)
         }
 
-        counts <- numeric(nrow(plan))
-        bounds <- matrix(NA_real_, nrow(plan), 4L,
-            dimnames = list(NULL, c("xmin", "xmax", "ymin", "ymax")))
-        for (r in res) {
-            counts[r$tile_index] <- r$counts
-            bounds[r$tile_index, ] <- r$bounds
-        }
-        # an empty slot (fewer distinct cuts than planned) takes a
-        # degenerate box at the store origin; it holds no rows
-        bounds[is.na(bounds)] <- 0
-        if (!any(counts > 0)) return(NULL)
-        fp <- methods::new("freeTilePlan", bounds = bounds)
-        fp@metadata <- data.frame(tile = seq_along(counts), n_records = counts)
-        store@tiles <- fp
-        nz <- bounds[counts > 0, , drop = FALSE]
-        .pstore_disk_extent(store) <- c(min(nz[, 1L]), max(nz[, 2L]),
-            min(nz[, 3L]), max(nz[, 4L]))
-        store@geomtype <- "points"
-        store@params$crs <- ""
+        store <- .slot_tiles_store(store, res, nrow(plan))
+        if (is.null(store)) return(NULL)
+        counts <- store@tiles@metadata$n_records
         vmsg(.v = verbose, sprintf(
             "[storeWrite] %.0f transcripts into %d tiles (%d grid cells)",
             sum(counts), sum(counts > 0), length(cells)))
         initialize(store)
     }
 )
+
+# `NULL` when the slot workers wrote no rows.
+.slot_tiles_store <- function(store, res, n_tiles) {
+    counts <- numeric(n_tiles)
+    bounds <- matrix(NA_real_, n_tiles, 4L,
+        dimnames = list(NULL, c("xmin", "xmax", "ymin", "ymax")))
+    for (r in res) {
+        counts[r$tile_index] <- r$counts
+        bounds[r$tile_index, ] <- r$bounds
+    }
+    # an empty slot (fewer distinct cuts than planned) takes a
+    # degenerate box at the store origin; it holds no rows
+    bounds[is.na(bounds)] <- 0
+    if (!any(counts > 0)) return(NULL)
+    fp <- methods::new("freeTilePlan", bounds = bounds)
+    fp@metadata <- data.frame(tile = seq_along(counts), n_records = counts)
+    store@tiles <- fp
+    nz <- bounds[counts > 0, , drop = FALSE]
+    .pstore_disk_extent(store) <- c(min(nz[, 1L]), max(nz[, 2L]),
+        min(nz[, 3L]), max(nz[, 4L]))
+    store@geomtype <- "points"
+    store@params$crs <- ""
+    store
+}

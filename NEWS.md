@@ -24,6 +24,47 @@
   `giottodisk.grace` option sets the period. See adr/0025.
 
 ## changes
+- `importCosMxDisk(protein_dir =)` reads the protein export of a CosMx
+  multiomic run: `$load_protein()` stores the raw intensities as
+  `"protein"` (targets) and `"protein_neg"` (isotype controls, from the plex
+  file) without the `Channel-*` columns, and `$create_gobject()` loads RNA,
+  protein and polygons for the cells present in all three
+  (`keep_cells = "intersect"`), in one cell order, with the protein metadata
+  renamed (`nCount_protein`, ...) under the protein feat_type.
+- CosMx disk reader: `load_transcripts()` writes the `tx_file` into the
+  vault as a tiled points store, split into `rna`, `negprobes` and
+  `falsecode`; `create_gobject(load_transcripts = TRUE)` adds them. The CSV
+  is converted once to parquet split by FOV, in a cache under
+  `getArtifactDumpDir()` that later imports reuse, and each FOV is written by
+  one worker, cut into tiles of about `threshold` detections (1 M by default)
+  and read in windows, so memory follows one FOV instead of the whole slide.
+  The number of workers, the window and the write buffer come from the free
+  memory (`giottodisk.chunk_ram_frac`), as for Atera transcripts; on a
+  358 M-detection breast slide the largest worker used 4.7 GB. Detections
+  outside any cell (`cell_ID == 0`) and the vendor's own cell assignment are
+  kept. With fewer than 2 arrow IO threads, which hang parquet reads, the
+  write raises them to 2 for its duration.
+- CosMx disk reader: `create_gobject()` takes the in-memory reader's
+  arguments, in the same order, so `createGiottoCosMxObject(backend =)`
+  passes them unchanged. Images load through `load_images` /
+  `image_negative_y` as in memory (read lazily from the image files); image
+  folders that are not found are skipped with a warning. Mask polygons
+  (`CellLabels`) are not read on disk: `cell_labels_dir` must be the
+  polygons CSV.
+- `importCosMxDisk(fovs =)` is applied to every input: the `cosmxscan` route
+  (which read the whole slide before), polygons and cell metadata as well as
+  the CSV route and transcripts. The `cosmxscan` route also drops background
+  rows (`cell_ID == 0`) as the CSV route does.
+- A gzipped CosMx matrix whose first data row holds a decimal value (e.g. the
+  protein export) goes through the CSV reader instead of stopping in
+  `cosmxscan`; a decimal after the first row stops with a message to read the
+  file with `scanner = "csv"`.
+- The CosMx CSV route leaves out a cell with NA values in the matrix (RNA or
+  protein) as a cell missing from it, with a warning naming it, instead of
+  reading the NA as 0.
+- With `fovs`, the CosMx polygon CSV is filtered line by line, in file order,
+  before it is converted, so only the selected FOVs' polygons are written to
+  the vault (the whole file was converted and then subset).
 - 10x expression split by feature type names repeated features within each
   type, as Giotto's readers do: a gene keeps its name when an antibody shares
   it (CytAssist protein runs gave `CD4--1` for the gene). Inputs record their
@@ -78,7 +119,11 @@
 - CosMx disk reader: polygons of cells with no expression (cells removed by
   the vendor's QC, with no row in the expression matrix or metadata) made
   `create_gobject()` fail the gobject check ("Number of entries ... != number
-  of gobject IDs"). They are now dropped, with a warning giving their count.
+  of gobject IDs"). They are now dropped, with one warning giving the count
+  and examples of the cells left out per reason.
+- CosMx expression splits: a split keyword that matches no feature no longer
+  shifts the later feature types (one became `""` and its features were
+  lost).
 
 # GiottoDisk 0.0.0.7
 
