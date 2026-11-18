@@ -594,12 +594,22 @@ No lock.
 ### Implementation constraints (for code work)
 
 - **`sourceContains` dispatch**: uid-based for `fileStore`; path-prefix
-  for `SpatRaster`; all-substores for union; path-prefix over
+  for `SpatRaster`; path-prefix over `@file_path` (`.img_source_file()`)
+  for `giottoLargeImage`; all-substores for union; path-prefix over
   `.im_leaf_dirs(x)` for `IterableMatrix` (ANY fallback).
 - **`sourceAdopt` dispatch**: `fileStore` preserves `@uid` + moves
   files; `SpatRaster` fresh uid (`file.copy` on-disk, COG write
-  in-memory); union delegates per substore; `IterableMatrix` walks
-  leaves via `.im_map_leaves(x, f)`.
+  in-memory, error on a VRT source); `giottoLargeImage` copies
+  `@file_path` then `reconnect()`s (no `@file_path`: adopts the raster;
+  a `.vrt` `@file_path` outside the vault errors); union delegates per substore;
+  `IterableMatrix` walks leaves via `.im_map_leaves(x, f)`.
+- **Images: `@file_path` is the image, never `terra::sources()`.** A
+  JPEG-2000 image is read through a VRT under `tempdir()` (GiottoClass
+  adr/0005), so `sources()` names a pointer, not the image. Image code that
+  copies, tags or tests containment goes through `.img_source_file()`
+  (`@file_path`; the raster's file only when there is none), and
+  `snapshotSave()` adopts the `giottoLargeImage`, never its raster. A VRT
+  in the vault is already broken: redo the image, do not repair around it.
 - **External-path guard**: adoption only proceeds for dump-resident
   paths or when `giottodisk.adopt_external = TRUE`.
 - **Session cache** (`.adopt_session_map`): records old → new path per

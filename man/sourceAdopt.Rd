@@ -4,6 +4,7 @@
 \alias{sourceAdopt}
 \alias{sourceAdopt,gDirSource,parquetEdgeStore-method}
 \alias{sourceAdopt,gDirSource,SpatRaster-method}
+\alias{sourceAdopt,gDirSource,giottoLargeImage-method}
 \alias{sourceAdopt,gDirSource,unionParquetStore-method}
 \alias{sourceAdopt,gDirSource,ANY-method}
 \title{Adopt a Store into a Source}
@@ -14,6 +15,8 @@
 
 \S4method{sourceAdopt}{gDirSource,SpatRaster}(src, store, meta = NULL, giottosave = NULL, ...)
 
+\S4method{sourceAdopt}{gDirSource,giottoLargeImage}(src, store, meta = NULL, giottosave = NULL, ...)
+
 \S4method{sourceAdopt}{gDirSource,unionParquetStore}(src, store, meta = NULL, giottosave = NULL, ...)
 
 \S4method{sourceAdopt}{gDirSource,ANY}(src, store, meta = NULL, giottosave = NULL, ...)
@@ -21,7 +24,8 @@
 \arguments{
 \item{src}{\code{gsource} object}
 
-\item{store}{object to adopt (\code{fileStore}, \code{SpatRaster}, or union store)}
+\item{store}{object to adopt (\code{fileStore}, \code{SpatRaster}, \code{giottoLargeImage},
+or union store)}
 
 \item{meta}{\code{list} (optional). Additional metadata to attach to the artifact entry.}
 
@@ -39,8 +43,15 @@ registering it in the manifest.
 \item \code{fileStore}: the store's \verb{@uid} is preserved so existing \code{source_id}
 partition references remain valid. Store must already be written to disk.
 \item \code{SpatRaster}: in-memory rasters are written as COG; on-disk rasters are
-moved into the vault. A fresh uid is assigned. Returns the updated
-\code{SpatRaster} pointing to the vault path.
+copied into the vault. A fresh uid is assigned. Returns the updated
+\code{SpatRaster} pointing to the vault path. A raster read through a VRT
+errors: the VRT points at image files rather than holding them.
+\item \code{giottoLargeImage}: copies \verb{@file_path}, so a JPEG-2000 image is copied
+as the original \code{.ome.tif}, not the VRT it is read through. An image made
+from a \code{SpatRaster} (no \verb{@file_path}) adopts the raster. Returns the image
+with \verb{@file_path} naming the vault copy, reopened through
+\code{\link[GiottoClass:reconnect]{GiottoClass::reconnect()}}. Errors when \verb{@file_path} is a VRT outside the
+vault.
 \item Union stores: each substore is adopted independently.
 }
 }
