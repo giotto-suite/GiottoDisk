@@ -24,6 +24,10 @@
   `giottodisk.grace` option sets the period. See adr/0025.
 
 ## changes
+- 10x expression split by feature type names repeated features within each
+  type, as Giotto's readers do: a gene keeps its name when an antibody shares
+  it (CytAssist protein runs gave `CD4--1` for the gene). Inputs record their
+  names before disambiguation in `params$raw_feat_ids`.
 - Each snapshot records what the save was: who made it, the session and the
   snapshot it came from, whether to keep it, a description and labels
   (`snapshotSave(keep =, creator =, session =, parents =, description =,

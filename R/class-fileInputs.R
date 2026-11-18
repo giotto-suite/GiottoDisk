@@ -169,20 +169,21 @@ mtxInput <- function(
                  ") exceeds number of columns in ", features_path,
                  " (", ncol(features), ").", call. = FALSE)
         }
-        feat_ids <- .disambiguate_feat_ids(
-            as.character(features[[feature_id_col]])
-        )
+        raw_feat_ids <- as.character(features[[feature_id_col]])
         features_path <- normalizePath(features_path)
     } else {
-        feat_ids <- .disambiguate_feat_ids(as.character(feat_ids))
+        raw_feat_ids <- as.character(feat_ids)
         features_path <- NA_character_
     }
+    feat_ids <- .disambiguate_feat_ids(raw_feat_ids)
 
     new("mtxInput",
         path           = normalizePath(mtx_path),
         params         = list(
             barcodes_path = barcodes_path,
-            features_path = features_path
+            features_path = features_path,
+            # before disambiguation, for per-feature-type names after a split
+            raw_feat_ids  = raw_feat_ids
         ),
         cell_ids       = cell_ids,
         feat_ids       = feat_ids,
@@ -279,14 +280,13 @@ tenxH5Input <- function(
     cell_ids  <- as.character(h5[[paste0(root, "/barcodes")]][])
     feat_id   <- as.character(h5[[paste0(root, "/features/id")]][])
     feat_name <- as.character(h5[[paste0(root, "/features/name")]][])
-    feat_ids  <- .disambiguate_feat_ids(
-        if (feature_id_col == 1L) feat_id else feat_name
-    )
+    raw_feat_ids <- if (feature_id_col == 1L) feat_id else feat_name
+    feat_ids  <- .disambiguate_feat_ids(raw_feat_ids)
     shape     <- as.integer(h5[[paste0(root, "/shape")]][])
 
     new("tenxH5Input",
         path           = normalizePath(h5_path),
-        params         = list(root = root),
+        params         = list(root = root, raw_feat_ids = raw_feat_ids),
         cell_ids       = cell_ids,
         feat_ids       = feat_ids,
         n_cells        = shape[2L],
@@ -738,7 +738,8 @@ tenxZarrInput <- function(
         params          = list(
             indptr = indptr,
             keep = keep,
-            col_remap = col_remap
+            col_remap = col_remap,
+            raw_feat_ids = feat_ids_all[keep]
         ),
         cell_ids        = cell_ids,
         feat_ids        = .disambiguate_feat_ids(feat_ids_all[keep]),
