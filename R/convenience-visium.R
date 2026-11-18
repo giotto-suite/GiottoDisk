@@ -5,8 +5,8 @@ NULL
 #
 # Disk-backed counterpart to Giotto's `VisiumReader`. Expression goes through
 # the shared 10x path (`.tenx_expression_disk`) into a `parquetExprStore`.
-# Spot locations, spot metadata, scalefactors, the image and the circular
-# spot polygons are the inherited in-memory loaders: a Visium run has a few
+# Spot locations, spot metadata, scalefactors, the micron scale, the image and
+# the circular spot polygons are the inherited in-memory loaders: a Visium run has a few
 # thousand spots. Polygons are written to the vault by the backed object's
 # setter when attached.
 
@@ -122,20 +122,20 @@ setMethod(
                 g <- GiottoClass::setGiotto(g, img, verbose = FALSE)
             }
 
-            if (!is.null(json)) {
-                if (load_polygons) {
-                    poly <- funs$load_polygon(spatlocs = sl, scalefactors = json)
-                    g <- GiottoClass::setPolygonInfo(
-                        gobject = g,
-                        x = poly,
-                        centroids_to_spatlocs = FALSE,
-                        verbose = FALSE,
-                        initialize = TRUE
-                    )
-                }
-                GiottoClass::instructions(g, "micron_scale") <-
-                    65 / json$spot_diameter_fullres
+            ms <- funs$load_micron_scale(
+                path = tissue_positions_path, scalefactors = json
+            )
+            if (load_polygons) {
+                poly <- funs$load_polygon(spatlocs = sl, micron_scale = ms)
+                g <- GiottoClass::setPolygonInfo(
+                    gobject = g,
+                    x = poly,
+                    centroids_to_spatlocs = FALSE,
+                    verbose = FALSE,
+                    initialize = TRUE
+                )
             }
+            GiottoClass::instructions(g, "micron_scale") <- ms
 
             g
         }
