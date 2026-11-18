@@ -2,19 +2,26 @@
 NULL
 
 
-# Disambiguate duplicate feature IDs the 10x way (suffix `--N`).
-# Matches the convention used by Giotto::get10Xmatrix so the
-# parquet path produces the same feat_ids as the in-memory dgCMatrix
-# path. No-op when all names are already unique.
-.disambiguate_feat_ids <- function(feat_ids) {
+# Disambiguate duplicate feature IDs the 10x way (suffix `--N` on every
+# copy). Matches Giotto::get10Xmatrix / get10Xmatrix_h5 so the parquet path
+# produces the same feat_ids as the in-memory path. With `feat_types`,
+# repeats are counted within each feature type (a gene and an antibody may
+# share a name); without, across the whole list. No-op when all names are
+# already unique.
+.disambiguate_feat_ids <- function(feat_ids, feat_types = NULL) {
     feat_ids <- as.character(feat_ids)
-    counts <- table(feat_ids)
+    key <- if (is.null(feat_types)) {
+        feat_ids
+    } else {
+        paste(feat_types, feat_ids, sep = "\r")
+    }
+    counts <- table(key)
     dups   <- names(counts)[counts > 1L]
     if (length(dups) == 0L) return(feat_ids)
     out <- feat_ids
-    for (nm in dups) {
-        idx <- which(feat_ids == nm)
-        out[idx] <- paste0(nm, "--", seq_along(idx))
+    for (k in dups) {
+        idx <- which(key == k)
+        out[idx] <- paste0(feat_ids[idx], "--", seq_along(idx))
     }
     out
 }

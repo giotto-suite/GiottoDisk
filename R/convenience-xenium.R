@@ -916,6 +916,16 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
     # internally consumes the iterator returned by storeRead(inp).
     pe <- sourceWrite(gsource, inp, store_type = "parquetExpr",
                       verbose = verbose, ...)
+    # names unique within each feature type, applied to the split stores;
+    # `feat_pos` tracks each row's position in the full feature list. An
+    # input that does not record its raw names keeps its own.
+    raw_ids <- inp@params$raw_feat_ids
+    typed_ids <- if (is.null(raw_ids)) {
+        inp@feat_ids
+    } else {
+        .disambiguate_feat_ids(raw_ids, feat_classes_vec)
+    }
+    feat_pos <- seq_along(feat_classes_vec)
 
     # remove_zero_rows: streaming Arrow distinct on col_id to find
     # detected features; subset the store positionally.
@@ -930,6 +940,7 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
             length(keep_idx) < length(feat_classes_vec)) {
             pe <- pe[keep_idx, , drop = FALSE]
             feat_classes_vec <- feat_classes_vec[keep_idx]
+            feat_pos <- feat_pos[keep_idx]
         }
     }
 
@@ -952,7 +963,9 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
     if (length(uniq_classes) > 1L && isTRUE(split_by_type)) {
         store_list <- lapply(uniq_classes, function(fc) {
             idx <- which(feat_classes_vec == fc)
-            pe[idx, , drop = FALSE]
+            st <- pe[idx, , drop = FALSE]
+            rownames(st) <- typed_ids[feat_pos[idx]]
+            st
         })
         names(store_list) <- vapply(uniq_classes, feat_class_to_name,
                                     character(1L))
