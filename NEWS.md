@@ -58,6 +58,15 @@
   (`deleted_at`).
 - `sourceContains(src, <giotto>)` tells whether a `snapshotSave()` would move
   any of the object's stores into the project, and names them if so.
+## new
+- `importVisiumDisk()` reads standard Visium Space Ranger `outs` directories
+  into a project: the feature-barcode matrix (mtx directory or `.h5`) is
+  written as a store; spot locations, spot metadata, the image and the
+  circular spot polygons come from Giotto's in-memory `VisiumReader`.
+  `$create_gobject()` takes the same arguments as Giotto's in-memory reader,
+  so `Giotto::createGiottoVisiumObject(backend =)` uses it. The micron scale
+  and spot polygons come from Giotto's `load_micron_scale()` /
+  `load_polygon()`. Requires `Giotto (>= 4.3.6)`.
 
 # GiottoDisk 0.0.0.7
 
