@@ -87,6 +87,7 @@ setMethod(
             part_col = NULL,
             flip_vertical = FALSE,
             calc_centroids = TRUE,
+            keep_ids = NULL,
             output = c("giottoPolygon", "store"),
             verbose = NULL,
             ...
@@ -97,6 +98,7 @@ setMethod(
                 name = name,
                 part_col = part_col,
                 flip_vertical = flip_vertical,
+                keep_ids = keep_ids,
                 output = output,
                 verbose = verbose,
                 ...
@@ -130,20 +132,12 @@ setMethod(
                 instructions = instructions
             )
 
-            # polygons (disk; overridden closure)
-            allowed_ids <- NULL
-            if (isTRUE(load_polygons)) {
-                polys <- funs$load_polys(
-                    path = polygon_path, name = "cell",
-                    read_fun = poly_read_fun, verbose = verbose
-                )
-                allowed_ids <- GiottoClass::spatIDs(polys)
-                g <- GiottoClass::setGiotto(
-                    g, polys, centroids_to_spatlocs = TRUE, verbose = FALSE
-                )
-            }
-
-            # expression (disk; overridden closure)
+            # expression (disk; overridden closure). Read before the
+            # polygons so that polygons of cells the export has no
+            # expression for (cells removed by the vendor's QC) are dropped
+            # as they are written: a cell with a polygon but no expression
+            # fails the gobject init check.
+            exlist <- NULL
             if (isTRUE(load_expression)) {
                 exlist <- funs$load_expression(
                     path = expression_path,
@@ -151,6 +145,25 @@ setMethod(
                     split_keyword = split_keyword,
                     verbose = verbose
                 )
+            }
+
+            # polygons (disk; overridden closure)
+            allowed_ids <- NULL
+            if (isTRUE(load_polygons)) {
+                polys <- funs$load_polys(
+                    path = polygon_path, name = "cell",
+                    read_fun = poly_read_fun,
+                    keep_ids = if (length(exlist)) colnames(exlist[[1L]][]),
+                    verbose = verbose
+                )
+                allowed_ids <- GiottoClass::spatIDs(polys)
+                g <- GiottoClass::setGiotto(
+                    g, polys, centroids_to_spatlocs = TRUE, verbose = FALSE
+                )
+            }
+
+            # cells with expression but no polygon are dropped here
+            if (length(exlist)) {
                 for (ex in exlist) {
                     if (!is.null(allowed_ids)) {
                         bool <- colnames(ex[]) %in% allowed_ids
@@ -412,22 +425,29 @@ importCosMxDisk <- function(cosmx_dir = NULL,
 # a `parquetStore` intermediate first (polygons need `row_index` for stable
 # vertex ordering), then a `parquetGeomTileStore`.
 #
-# Two CosMx-specific points:
+# Three CosMx-specific points:
 #   - `id_col` / `group_col` are `cell` (the global `c_<slide>_<fov>_<cellID>`
 #     form). The file also carries `cellID`, which restarts per FOV; keying on
 #     it silently mis-groups vertices.
-#   - the double cast in read_fun IS required, and is the one mutation this
-#     loader performs. CosMx ships pixel coordinates as int64 and the geometry
-#     tile writer identifies the x/y columns BY TYPE: with integer coords it
-#     picks the wrong pair, coerces the string ids ("NAs introduced by
-#     coercion"), never creates `poly_ID`, and dies inside tileApply with
-#     "setcolorder: non-existing column(s): cols[6]='poly_ID'".
+#   - the coordinates must be read as double. The geometry tile writer
+#     identifies the x/y columns BY TYPE: with integer coords it picks the
+#     wrong pair, coerces the string ids ("NAs introduced by coercion"),
+#     never creates `poly_ID`, and dies inside tileApply with
+#     "setcolorder: non-existing column(s): cols[6]='poly_ID'". For CSV the
+#     types are set in the reader rather than cast afterwards: AtoMx writes
+#     round coordinates in scientific notation (`1e+05`), and a column arrow
+#     has inferred as int64 fails on them ("CSV conversion error to int64").
+#   - `keep_ids` drops the polygons of cells outside that set (the vendor's
+#     QC-removed cells, which have a polygon but no expression or metadata
+#     row). The filter is a subset() op on the parquet intermediate, after
+#     `row_index` is locked in, so vertex order is kept.
 .cosmx_poly_disk <- function(
     path,
     gsource,
     name = "cell",
     part_col = NULL,
     flip_vertical = FALSE,
+    keep_ids = NULL,
     output = c("giottoPolygon", "store"),
     read_fun = NULL,
     verbose = NULL,
@@ -455,19 +475,39 @@ importCosMxDisk <- function(cosmx_dir = NULL,
     # arrow into a threaded scan that delivers batches out of source order,
     # which scatters a cell's vertices and breaks ring construction.
     if (is.null(read_fun)) {
-        read_fun <- function(x, ...) {
-            a <- arrow::open_dataset(sources = x, format = fmt)
-            # the two global columns are the ones that matter; fov / cellID /
-            # x_local / y_local are cast only to keep parquetStore from
-            # warning that int64 is poorly supported
-            dplyr::mutate(a,
-                x_global_px = as.double(x_global_px),
-                y_global_px = as.double(y_global_px),
-                x_local_px  = as.double(x_local_px),
-                y_local_px  = as.double(y_local_px),
-                fov         = as.integer(fov),
-                cellID      = as.integer(cellID)
-            )
+        # the two global columns are the ones that matter; fov / cellID /
+        # x_local / y_local are typed only to keep parquetStore from warning
+        # that int64 is poorly supported
+        types <- list(
+            x_global_px = arrow::float64(),
+            y_global_px = arrow::float64(),
+            x_local_px  = arrow::float64(),
+            y_local_px  = arrow::float64(),
+            fov         = arrow::int32(),
+            cellID      = arrow::int32()
+        )
+        if (fmt == "csv") {
+            hdr <- names(data.table::fread(path, nrows = 0L))
+            col_types <- do.call(arrow::schema, types[names(types) %in% hdr])
+            read_fun <- function(x, ...) {
+                arrow::open_dataset(sources = x, format = "csv",
+                                    col_types = col_types)
+            }
+        } else {
+            # NSE bindings
+            x_global_px <- y_global_px <- x_local_px <- y_local_px <- NULL
+            fov <- cellID <- NULL
+            read_fun <- function(x, ...) {
+                a <- arrow::open_dataset(sources = x, format = fmt)
+                dplyr::mutate(a,
+                    x_global_px = as.double(x_global_px),
+                    y_global_px = as.double(y_global_px),
+                    x_local_px  = as.double(x_local_px),
+                    y_local_px  = as.double(y_local_px),
+                    fov         = as.integer(fov),
+                    cellID      = as.integer(cellID)
+                )
+            }
         }
     }
 
@@ -476,6 +516,11 @@ importCosMxDisk <- function(cosmx_dir = NULL,
 
     poly_intermediate <- sourceWrite(gsource, qs, store_type = "parquet",
                                      verbose = verbose)
+
+    if (!is.null(keep_ids)) {
+        poly_intermediate <- .cosmx_poly_keep(poly_intermediate,
+                                              keep_ids = keep_ids)
+    }
 
     # part_col = NULL: CosMx emits one ring per cell, so there is nothing to
     # detect -- and a detector's regex could latch onto `cellID`.
@@ -498,4 +543,28 @@ importCosMxDisk <- function(cosmx_dir = NULL,
     # Centroids are computed lazily from the parquetGeomBase by
     # setGiotto(centroids_to_spatlocs = TRUE) at attach time.
     GiottoClass::createGiottoPolygon(x = poly_store, name = name)
+}
+
+# Restrict the polygon parquet intermediate to the cells in `keep_ids`, and
+# warn with the number of cells dropped. The restriction is recorded with
+# subset() as a filter op on the intermediate, so it is folded in wherever
+# the store is read -- safe for ring construction because `row_index` is
+# already baked in and every tile is re-sorted on it.
+.cosmx_poly_keep <- function(x, keep_ids) {
+    cell <- NULL # NSE binding
+    keep_ids <- as.character(keep_ids)
+    all_ids <- dplyr::collect(dplyr::distinct(storeRead(x), cell))$cell
+    drop_ids <- setdiff(all_ids, keep_ids)
+    if (!length(drop_ids)) return(x)
+
+    warning(GiottoUtils::wrap_txt(sprintf(
+        "[cosmx_poly_disk] %d of %d polygons belong to cells with no
+        expression (for example %s) and are not loaded.",
+        length(drop_ids), length(all_ids),
+        paste(utils::head(sort(drop_ids), 3L), collapse = ", ")
+    )), call. = FALSE)
+
+    # a filter op through subset(): on the dropped ids, usually far fewer
+    # than the kept ones
+    subset(x, cell %in% drop_ids, negate = TRUE)
 }

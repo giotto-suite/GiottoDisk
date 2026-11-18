@@ -68,6 +68,18 @@
   and spot polygons come from Giotto's `load_micron_scale()` /
   `load_polygon()`. Requires `Giotto (>= 4.3.6)`.
 
+## bug fixes
+- CosMx disk reader: a polygon CSV with a round coordinate written in
+  scientific notation (`1e+05`) after the first megabyte failed to read
+  ("CSV conversion error to int64"), because arrow typed the coordinate
+  columns from the head of the file. They are now read as double. AtoMx
+  writes such values; the breast multiomic export has 82, the colon WTx
+  export 205.
+- CosMx disk reader: polygons of cells with no expression (cells removed by
+  the vendor's QC, with no row in the expression matrix or metadata) made
+  `create_gobject()` fail the gobject check ("Number of entries ... != number
+  of gobject IDs"). They are now dropped, with a warning giving their count.
+
 # GiottoDisk 0.0.0.7
 
 Requires GiottoClass 0.7.27.
