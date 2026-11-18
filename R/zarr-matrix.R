@@ -49,12 +49,12 @@ setClass("tenxZarrCsrInput",
     } else {
         feat_name
     }
+    raw_feat_ids <- if (feature_id_col == 1L) feat_id else feat_name
     new("tenxZarrCsrInput",
         path = normalizePath(zarr_path),
+        params = list(raw_feat_ids = raw_feat_ids),
         cell_ids = .zarr_array(src, "obs/barcode"),
-        feat_ids = .disambiguate_feat_ids(
-            if (feature_id_col == 1L) feat_id else feat_name
-        ),
+        feat_ids = .disambiguate_feat_ids(raw_feat_ids),
         n_cells = length(indptr) - 1L,
         n_genes = length(feat_name),
         feat_types = .zarr_categorical(src, "var/feature_type"),

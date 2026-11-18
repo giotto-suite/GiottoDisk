@@ -917,9 +917,14 @@ importXeniumDisk <- function(xenium_dir = NULL, backend, qv_threshold = 20) {
     pe <- sourceWrite(gsource, inp, store_type = "parquetExpr",
                       verbose = verbose, ...)
     # names unique within each feature type, applied to the split stores;
-    # `feat_pos` tracks each row's position in the full feature list
-    typed_ids <- .disambiguate_feat_ids(inp@params$raw_feat_ids,
-                                        feat_classes_vec)
+    # `feat_pos` tracks each row's position in the full feature list. An
+    # input that does not record its raw names keeps its own.
+    raw_ids <- inp@params$raw_feat_ids
+    typed_ids <- if (is.null(raw_ids)) {
+        inp@feat_ids
+    } else {
+        .disambiguate_feat_ids(raw_ids, feat_classes_vec)
+    }
     feat_pos <- seq_along(feat_classes_vec)
 
     # remove_zero_rows: streaming Arrow distinct on col_id to find

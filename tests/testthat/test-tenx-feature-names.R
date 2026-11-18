@@ -46,3 +46,15 @@ test_that("disk names match Giotto's in-memory readers", {
     expect_identical(rownames(st[["Antibody_Capture"]]),
                      rownames(mem[["Antibody Capture"]]))
 })
+
+test_that("Atera's cell-major zarr keeps its feature names after the split", {
+    skip_if_no_zarr_deps()
+    zz <- test_path("fixtures", "atera_v6", "cell_feature_matrix.zarr.zip")
+    inp <- tenxZarrInput(zz)
+    expect_false(is.null(inp@params$raw_feat_ids))
+    st <- .tenx_expression_disk(zz, gsource = gDirSource(withr::local_tempdir()),
+                                output = "store")
+    nms <- unlist(lapply(st, rownames), use.names = FALSE)
+    expect_false(any(grepl("^NA--", nms)))
+    expect_true(all(nms %in% inp@feat_ids))
+})
