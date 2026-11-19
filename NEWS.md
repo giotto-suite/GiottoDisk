@@ -110,6 +110,14 @@
   `load_polygon()`. Requires `Giotto (>= 4.3.6)`.
 
 ## bug fixes
+- `snapshotSave()` put a small VRT pointer into the vault instead of the image
+  for JPEG-2000 OME-TIFFs (every vendor-original Xenium and Atera morphology
+  image), so the project broke once the original files moved. It now copies
+  the image file; with `export_image = FALSE` the image keeps pointing at the
+  original. Vaulted images now record a content fingerprint, where every image
+  used to record the same hash. An image whose file is itself a VRT (such as a
+  tile mosaic) cannot be copied and errors; save it with
+  `export_image = FALSE` or create it from an image file.
 - CosMx disk reader: a polygon CSV with a round coordinate written in
   scientific notation (`1e+05`) after the first megabyte failed to read
   ("CSV conversion error to int64"), because arrow typed the coordinate

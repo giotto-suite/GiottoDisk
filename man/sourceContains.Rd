@@ -3,6 +3,7 @@
 \name{sourceContains}
 \alias{sourceContains}
 \alias{sourceContains,gDirSource,SpatRaster-method}
+\alias{sourceContains,gDirSource,giottoLargeImage-method}
 \alias{sourceContains,gDirSource,unionParquetStore-method}
 \alias{sourceContains,gDirSource,giotto-method}
 \alias{sourceContains,gDirSource,ANY-method}
@@ -11,6 +12,8 @@
 \S4method{sourceContains}{gDirSource,fileStore}(src, store, ...)
 
 \S4method{sourceContains}{gDirSource,SpatRaster}(src, store, ...)
+
+\S4method{sourceContains}{gDirSource,giottoLargeImage}(src, store, ...)
 
 \S4method{sourceContains}{gDirSource,unionParquetStore}(src, store, ...)
 
@@ -21,7 +24,8 @@
 \arguments{
 \item{src}{\code{gsource} object}
 
-\item{store}{object to test (\code{fileStore}, \code{SpatRaster}, or union store)}
+\item{store}{object to test (\code{fileStore}, \code{SpatRaster}, \code{giottoLargeImage},
+or union store)}
 
 \item{...}{additional params (unused)}
 }
@@ -35,6 +39,9 @@ of a \link{gsource}.
 \item \code{fileStore}: checks whether the store's uid is present in the manifest.
 \item \code{SpatRaster}: checks whether all source file paths are inside the vault
 directory. In-memory rasters always return \code{FALSE}.
+\item \code{giottoLargeImage}: as \code{SpatRaster}, for \verb{@file_path} (for a JPEG-2000
+image, the \code{.ome.tif} rather than the VRT GiottoClass reads it through).
+An image made from a \code{SpatRaster} has no \verb{@file_path}; its raster is used.
 \item Union stores: \code{TRUE} only if all substores are contained.
 }
 }
