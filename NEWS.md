@@ -69,6 +69,14 @@
   `load_polygon()`. Requires `Giotto (>= 4.3.6)`.
 
 ## bug fixes
+- `snapshotSave()` put a small VRT pointer into the vault instead of the image
+  for JPEG-2000 OME-TIFFs (every vendor-original Xenium and Atera morphology
+  image), so the project broke once the original files moved. It now copies
+  the image file; with `export_image = FALSE` the image keeps pointing at the
+  original. Vaulted images now record a content fingerprint, where every image
+  used to record the same hash. An image whose file is itself a VRT (such as a
+  tile mosaic) cannot be copied and errors; save it with
+  `export_image = FALSE` or create it from an image file.
 - Spatial queries on SedonaDB found nothing when the store's geometry has no
   CRS, which current sedonadb releases report for stores written without one:
   the query geometry was given `ST_Crs(geom)`, a CRS the column itself lacks.
