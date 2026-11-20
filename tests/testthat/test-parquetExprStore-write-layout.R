@@ -77,3 +77,15 @@ test_that("a view with no stored values still writes a readable store", {
     out <- .write_pe(.write_pe(m)[, 1:10])
     expect_equal(sum(.as_dense(out)), 0)
 })
+
+test_that("an all-zero matrix writes a readable empty store", {
+    m <- Matrix::sparseMatrix(i = integer(), j = integer(), x = numeric(),
+        dims = c(3, 4), dimnames = list(paste0("g", 1:3), paste0("c", 1:4)))
+    pe <- .write_pe(m)
+    expect_identical(dim(pe), c(3, 4))
+    expect_identical(nrow(storeRead(pe, output = "tibble")), 0L)
+    out <- storeRead(pe, output = "dgcmatrix", max_rows = Inf, max_cols = Inf)
+    expect_identical(dim(out), c(3L, 4L))
+    expect_identical(Matrix::nnzero(out), 0L)
+    expect_identical(dimnames(out), dimnames(m))
+})
