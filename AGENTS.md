@@ -78,7 +78,9 @@ R/
   class-parquetEdgeStore.R  # parquetEdgeStore (graph edges) + edgeInput hierarchy
   class-fileInputs.R     # exprInput, mtxInput, tenxH5Input, cellbinGefInput, etc.
   h5ad.R                 # AnnData .h5ad: h5adInput, h5adEdgeInput (obsp ->
-                         # parquetEdgeStore) and per-slot loaders (h5ad*)
+                         # parquetEdgeStore) and per-slot loaders (h5ad*);
+                         # loaders are temporary, see "Importers vs inputs"
+  convenience-h5ad.R     # importH5adDisk() / H5adDiskReader (temporary)
   class-gsource.R        # gsource, gDirSource
   methods-accessors.R    # [,j] indexing, [i, on] join, colnames, nrow, dim, ext, window
   methods-ops.R          # subset, rowSample, head, tail, unique, crop, window<-; .ptabular_apply_op()
@@ -199,6 +201,20 @@ during materialization as needed.
   writes use `tile_index=000` so joins always work on a uniform `(tile_index, row_index)` key.
 
 ## Key Design Decisions
+
+### Importers vs inputs: raw technology output only
+`import*Disk()` readers read a spatial technology's raw output (Xenium,
+CosMx, MERSCOPE, Visium, Stereo-seq, Atera). Objects processed in another
+ecosystem -- AnnData `.h5ad`, Seurat, SCE, SpatialData -- are interoperability
+and belong to GiottoConnect's mapping engine (one adapter + mapping per
+ecosystem). GiottoDisk's part is the file-format **inputs** that stream a
+matrix or graph into a store (`h5adInput`, `h5adEdgeInput`, like
+`tenxH5Input`), which the engine calls when it builds a backed object.
+
+`importH5adDisk()`, `H5adDiskReader` and the `h5adCellMeta` /
+`h5adFeatMeta` / `h5adSpatLocs` / `h5adDimReds` / `h5adNetworks` loaders
+are temporary: remove them once GiottoConnect's `anndataToGiotto()` runs on
+the engine, and before the next release. Do not build new features on them.
 
 ### No row indexing
 Positional row indexing not supported — parquet is not row-addressable, and a 2B-row index
