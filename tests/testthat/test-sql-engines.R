@@ -98,14 +98,25 @@ for (eng in names(.sql_engines)) {
     test_that(sprintf("%s: pending affine applies via ST_Affine (shear, off-diagonal)", eng), {
         e$skip()
         pgs <- parquetGeomStore() |> storeWrite(make_pts(5))
-        # Row-vector post-mult M = [[1, 0.5], [0, 1]]:
-        #   x' = x*M[1,1] + y*M[2,1] = x
-        #   y' = x*M[1,2] + y*M[2,2] = 0.5*x + y
-        # So (n, n) -> (n, 1.5*n). Buggy transpose would give (1.5*n, n).
+        # Pre-mult M = [[1, 0.5], [0, 1]]:
+        #   x' = x*M[1,1] + y*M[1,2] = x + 0.5*y
+        #   y' = x*M[2,1] + y*M[2,2] = y
+        # So (n, n) -> (1.5*n, n). Buggy transpose would give (n, 1.5*n).
         aff <- GiottoClass::affine(matrix(c(1, 0, 0.5, 1), nrow = 2L))
         xy <- e$xy(storeRead(affine(pgs, aff), output = e$output))
-        expect_equal(sort(xy[, "x"]), as.numeric(seq_len(5)),       tolerance = 1e-6)
-        expect_equal(sort(xy[, "y"]), as.numeric(seq_len(5)) * 1.5, tolerance = 1e-6)
+        expect_equal(sort(xy[, "x"]), as.numeric(seq_len(5)) * 1.5, tolerance = 1e-6)
+        expect_equal(sort(xy[, "y"]), as.numeric(seq_len(5)),       tolerance = 1e-6)
+    })
+
+    test_that(sprintf("%s: pending affine applies its translation", eng), {
+        e$skip()
+        pgs <- parquetGeomStore() |> storeWrite(make_pts(5))
+        m <- diag(3L)
+        m[1:2, 3L] <- c(10, -3)
+        aff <- GiottoClass::affine(m)
+        xy <- e$xy(storeRead(affine(pgs, aff), output = e$output))
+        expect_equal(sort(xy[, "x"]), seq_len(5) + 10, tolerance = 1e-6)
+        expect_equal(sort(xy[, "y"]), seq_len(5) - 3,  tolerance = 1e-6)
     })
 
 

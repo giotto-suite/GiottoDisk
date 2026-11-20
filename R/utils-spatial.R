@@ -44,21 +44,21 @@
     ext(c(ranges$x_min, ranges$x_max), c(ranges$y_min, ranges$y_max))
 }
 
-# Extent of affine-transformed coordinates computed directly in Arrow (post-multiply).
+# Extent of affine-transformed coordinates computed directly in Arrow (pre-multiply).
 # Must always query -- disk_extent is in intrinsic space.
 .dplyr_ext_affine <- function(data, aff,
         sdimx = "x_index",
         sdimy = "y_index") {
     m <- aff@affine  # 3x3 homogeneous
-    a11 <- m[1L, 1L]; a21 <- m[2L, 1L]; tx <- m[1L, 3L]
-    a12 <- m[1L, 2L]; a22 <- m[2L, 2L]; ty <- m[2L, 3L]
+    a11 <- m[1L, 1L]; a12 <- m[1L, 2L]; tx <- m[1L, 3L]
+    a21 <- m[2L, 1L]; a22 <- m[2L, 2L]; ty <- m[2L, 3L]
 
     x_sym <- as.name(sdimx)
     y_sym <- as.name(sdimy)
 
     # inline coefficients so Arrow sees numeric literals, not R env vars
-    xout <- rlang::expr(!!x_sym * !!a11 + !!y_sym * !!a21 + !!tx)
-    yout <- rlang::expr(!!x_sym * !!a12 + !!y_sym * !!a22 + !!ty)
+    xout <- rlang::expr(!!x_sym * !!a11 + !!y_sym * !!a12 + !!tx)
+    yout <- rlang::expr(!!x_sym * !!a21 + !!y_sym * !!a22 + !!ty)
 
     ranges <- data |>
         dplyr::summarize(
@@ -371,13 +371,12 @@
                 },
                 "tibble" = {
                     if (all(c("x_index", "y_index") %in% names(result))) {
-                        # post-multiply convention (pre_multiply = FALSE),
-                        # matching GiottoClass .affine_matrix() default
+                        # pre-multiply convention, as affine2d stores it
                         m <- aff@affine          # 3x3 homogeneous
                         A <- m[seq(2L), seq(2L)] # 2x2 linear
                         t_vec <- m[seq(2L), 3L]  # translation
                         xy <- as.matrix(result[, c("x_index", "y_index")])
-                        xy_new <- xy %*% A
+                        xy_new <- xy %*% t(A)
                         xy_new[, 1L] <- xy_new[, 1L] + t_vec[1L]
                         xy_new[, 2L] <- xy_new[, 2L] + t_vec[2L]
                         result$x_index <- xy_new[, 1L]

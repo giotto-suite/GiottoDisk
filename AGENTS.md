@@ -340,7 +340,7 @@ rotation/shear is pending — a plain Arrow filter op injected by
 `affine(store, affine2d)` records the transform lazily; `.apply_post_ops()`
 applies it at `storeRead(output = "tibble"/"terra"/"sf")`. `output = "query"`
 is unaffected. Composition auto-collapses to one `affine2d`; convention is
-post-multiply (`xy_out = xy_in %*% A + t`). When a transform is pending,
+pre-multiply, as GiottoClass stores it (`xy_out = xy_in %*% t(A) + t`). When a transform is pending,
 `crop()`/`window<-` back-project the query extent through the inverse affine
 into intrinsic space and inject a half-plane filter op for rotation/shear.
 

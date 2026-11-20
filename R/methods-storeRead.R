@@ -1440,16 +1440,16 @@ sd_view_ref <- function(sdf) {
     schema_df <- schema_probe_fn(inner_sql)
     other_cols <- setdiff(names(schema_df), "geom")
     m <- aff@affine
-    # Post-multiply convention: [x, y, 1] %*% M
-    #   x' = x*M[1,1] + y*M[2,1] + M[3,1],  y' = x*M[1,2] + y*M[2,2] + M[3,2]
+    # Pre-multiply convention: M %*% c(x, y, 1)
+    #   x' = x*M[1,1] + y*M[1,2] + M[1,3],  y' = x*M[2,1] + y*M[2,2] + M[2,3]
     coefs <- if (engine == "sedona") {
         # transposed arg order: ST_Affine(geom, a, b, d, e, ...) with
-        # x' = a*x + d*y, so we feed (M[1,1], M[1,2], M[2,1], M[2,2]).
-        c(m[1L, 1L], m[1L, 2L], m[2L, 1L], m[2L, 2L], m[3L, 1L], m[3L, 2L])
+        # x' = a*x + d*y, so we feed (M[1,1], M[2,1], M[1,2], M[2,2]).
+        c(m[1L, 1L], m[2L, 1L], m[1L, 2L], m[2L, 2L], m[1L, 3L], m[2L, 3L])
     } else {
         # PostGIS / duckdb: ST_Affine(geom, a, b, d, e, ...) with
-        # x' = a*x + b*y, so (M[1,1], M[2,1], M[1,2], M[2,2]).
-        c(m[1L, 1L], m[2L, 1L], m[1L, 2L], m[2L, 2L], m[3L, 1L], m[3L, 2L])
+        # x' = a*x + b*y, so (M[1,1], M[1,2], M[2,1], M[2,2]).
+        c(m[1L, 1L], m[1L, 2L], m[2L, 1L], m[2L, 2L], m[1L, 3L], m[2L, 3L])
     }
     affine_expr <- sprintf(
         "ST_Affine(geom, %.17g, %.17g, %.17g, %.17g, %.17g, %.17g) AS geom",
