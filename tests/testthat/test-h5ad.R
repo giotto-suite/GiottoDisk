@@ -31,22 +31,12 @@ test_that("CSC X is reordered to the same cell-major store", {
 
 test_that("the session option pins the batch size; the argument wins", {
     fx <- make_h5ad(seed = 3L)
-    withr::local_options(giottodisk.ingest_batch_records = 40)
+    withr::local_options(giottodisk.h5_batch_rows = 40)
     pe <- sourceWrite(gsrc, h5adInput(fx$path), store_type = "parquetExpr")
     expect_true(.parts_cell_major(pe))                      # several parts
     expect_equal(.store_triplets(pe), .source_triplets(fx$M))
     expect_identical(.h5ad_max_rows(NULL), 40)
     expect_identical(.h5ad_max_rows(1e3), 1e3)
-})
-
-test_that("the GEF-era option name still pins the batch, with a warning", {
-    withr::local_options(giottodisk.ingest_batch_records = NULL,
-                         giottodisk.gef_batch_rows = 40,
-                         rlib_warning_verbosity = "verbose")
-    expect_warning(expect_identical(.ingest_batch_records(), 40),
-                   "giottodisk.ingest_batch_records")
-    withr::local_options(giottodisk.ingest_batch_records = 50)
-    expect_identical(.ingest_batch_records(), 50)          # new name wins
 })
 
 test_that("layers and raw resolve; dense layers are refused", {

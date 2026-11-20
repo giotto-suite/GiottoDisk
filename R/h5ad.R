@@ -14,9 +14,9 @@ NULL
 #   loaders          h5adCellMeta, h5adFeatMeta, h5adSpatLocs, h5adDimReds,
 #                    h5adNetworks: one per slot
 #
-# Tuning: batches are sized in records (stored non-zeros) by
-# `.ingest_batch_records()`. Per call with `batch_records`; per session with
-# options(giottodisk.ingest_batch_records) or options(giottodisk.chunk_ram_frac).
+# Tuning: batches are sized in records (stored non-zeros), as for a 10x .h5:
+# per call with `batch_records`; per session with
+# options(giottodisk.h5_batch_rows) or options(giottodisk.chunk_ram_frac).
 #
 # Orientation: AnnData is obs x var, row-major. hdf5r reports dims in R order,
 # reversed from the on-disk shape, so a (n_obs, k) array reads as k x n_obs
@@ -146,10 +146,11 @@ NULL
          feat_group = feat_group)
 }
 
-# A call's `batch_records`, else the session pin or budget.
+# A call's `batch_records`, else the 10x .h5 pin or budget: CSR ranges are
+# read with the same `.tenxh5_read_range()`.
 .h5ad_max_rows <- function(batch_records) {
     if (is.null(batch_records) || is.na(batch_records)) {
-        .ingest_batch_records()
+        .ingest_batch_rows(128, pinned = getOption("giottodisk.h5_batch_rows"))
     } else {
         as.numeric(batch_records)
     }
@@ -203,7 +204,7 @@ setClass("h5adInput",
 #' @param layer character or NULL. `NULL` or `"X"` (default) for `X`,
 #'   `"raw"` for `raw/X`, otherwise a name under `layers/`.
 #' @param batch_records numeric or NULL. Records (stored values) per batch.
-#'   `NULL` uses `options(giottodisk.ingest_batch_records)` when set, otherwise
+#'   `NULL` uses `options(giottodisk.h5_batch_rows)` when set, otherwise
 #'   a budget from free RAM (`giottodisk.chunk_ram_frac`); see
 #'   [storeChunkInfo()].
 #' @return An `h5adInput` object.
@@ -248,7 +249,7 @@ h5adInput <- function(h5ad_path, layer = NULL, batch_records = NULL) {
 # 10x h5 holds by cell, so contiguous cell ranges are single hyperslabs read
 # by `.tenxh5_read_range()`. CSC stores them by gene: pass 1 streams gene
 # ranges into cell buckets on disk, pass 2 returns the buckets in cell order
-# (`.gef_spill_iterator()`), so the store is cell-major either way.
+# (`.ingest_spill_iterator()`), so the store is cell-major either way.
 
 #' @rdname storeRead
 #' @export
@@ -263,7 +264,7 @@ setMethod("storeRead", signature("h5adInput"), function(store, ...) {
     h5$close_all()
 
     if (identical(store@params$encoding, "csr_matrix")) {
-        ranges <- .gef_cell_ranges(diff(indptr), max_rows)
+        ranges <- .ingest_cell_ranges(diff(indptr), max_rows)
         i <- 0L
         closed <- FALSE
         close_fn <- function() { closed <<- TRUE; invisible(NULL) }
@@ -278,9 +279,9 @@ setMethod("storeRead", signature("h5adInput"), function(store, ...) {
         }
     } else {
         n_cells <- as.integer(store@n_cells)
-        # .gef_cell_ranges cuts any axis by record count; here, genes
-        chunks <- .gef_cell_ranges(diff(indptr), max_rows)
-        n_buckets <- .gef_n_buckets(indptr[length(indptr)], max_rows)
+        # .ingest_cell_ranges cuts any axis by record count; here, genes
+        chunks <- .ingest_cell_ranges(diff(indptr), max_rows)
+        n_buckets <- .ingest_n_buckets(indptr[length(indptr)], max_rows)
         per_bucket <- max(1L, as.integer(ceiling(n_cells / n_buckets)))
         n_buckets <- as.integer(ceiling(n_cells / per_bucket))
         produce <- function(k) {
@@ -298,7 +299,7 @@ setMethod("storeRead", signature("h5adInput"), function(store, ...) {
             )
         }
         finish <- function(dt) data.table::setorder(dt, row_id, col_id)[]
-        itr <- .gef_spill_iterator(produce, length(chunks), n_buckets, finish, max_rows)
+        itr <- .ingest_spill_iterator(produce, length(chunks), n_buckets, finish, max_rows)
         next_batch <- itr$next_batch
         close_fn <- itr$close
     }
@@ -419,7 +420,7 @@ setMethod("storeWrite",
         oth <- if (!is.null(p$other)) {
             .h5ad_csr_handle(h5, paste0("obsp/", p$other))
         }
-        ranges <- .gef_cell_ranges(diff(pat$indptr), .h5ad_max_rows(p$batch_records))
+        ranges <- .ingest_cell_ranges(diff(pat$indptr), .h5ad_max_rows(p$batch_records))
 
         n_edges <- 0
         n_parts <- 0L

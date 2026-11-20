@@ -13,7 +13,7 @@ h5adInput(h5ad_path, layer = NULL, batch_records = NULL)
 \code{"raw"} for \code{raw/X}, otherwise a name under \verb{layers/}.}
 
 \item{batch_records}{numeric or NULL. Records (stored values) per batch.
-\code{NULL} uses \code{options(giottodisk.ingest_batch_records)} when set, otherwise
+\code{NULL} uses \code{options(giottodisk.h5_batch_rows)} when set, otherwise
 a budget from free RAM (\code{giottodisk.chunk_ram_frac}); see
 \code{\link[=storeChunkInfo]{storeChunkInfo()}}.}
 }
