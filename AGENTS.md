@@ -77,10 +77,8 @@ R/
                             # expression: row_id, col_id, value, source_id)
   class-parquetEdgeStore.R  # parquetEdgeStore (graph edges) + edgeInput hierarchy
   class-fileInputs.R     # exprInput, mtxInput, tenxH5Input, cellbinGefInput, etc.
-  h5ad.R                 # AnnData .h5ad: h5adInput, h5adEdgeInput (obsp ->
-                         # parquetEdgeStore) and per-slot loaders (h5ad*);
-                         # loaders are temporary, see "Importers vs inputs"
-  convenience-h5ad.R     # importH5adDisk() / H5adDiskReader (temporary)
+  h5ad.R                 # AnnData .h5ad inputs: h5adInput, h5adEdgeInput (obsp ->
+                         # parquetEdgeStore); see "Importers vs inputs"
   class-gsource.R        # gsource, gDirSource
   methods-accessors.R    # [,j] indexing, [i, on] join, colnames, nrow, dim, ext, window
   methods-ops.R          # subset, rowSample, head, tail, unique, crop, window<-; .ptabular_apply_op()
@@ -211,10 +209,8 @@ ecosystem). GiottoDisk's part is the file-format **inputs** that stream a
 matrix or graph into a store (`h5adInput`, `h5adEdgeInput`, like
 `tenxH5Input`), which the engine calls when it builds a backed object.
 
-`importH5adDisk()`, `H5adDiskReader` and the `h5adCellMeta` /
-`h5adFeatMeta` / `h5adSpatLocs` / `h5adDimReds` / `h5adNetworks` loaders
-are temporary: remove them once GiottoConnect's `anndataToGiotto()` runs on
-the engine, and before the next release. Do not build new features on them.
+Decoding obs/var, obsm and uns, and assembling the object, is GiottoConnect's
+AnnData adapter (`anndataToGiotto()`); do not add AnnData loaders here.
 
 ### No row indexing
 Positional row indexing not supported — parquet is not row-addressable, and a 2B-row index
