@@ -52,6 +52,7 @@ setMethod("snapshotLoad", signature("gDirSource"), function(src,
 
     gobject <- .load_serialized(snap$file, load_params = load_params)
     gobject <- .drop_legacy_overlaps(gobject)
+    gobject <- .update_store_affine_layout(gobject)
     # the snapshot it came from, which the next save records as its parent
     if (methods::is(gobject, "giotto") || methods::is(gobject, "giottoMulti")) {
         .gdsrc_obj_snapshot(gobject) <- basename(dirname(snap$file))
@@ -116,6 +117,45 @@ setMethod("snapshotLoad", signature("gDirSource"), function(src,
             call. = FALSE)
     }
     gobject
+}
+
+# GiottoClass 0.8.0 stores affine2d pre-multiplied. A store's pending
+# transform in a snapshot saved before then holds the transposed linear block;
+# GiottoClass converts the rest of the object on initialize, which is also
+# what moves the version on, so this runs first.
+.update_store_affine_layout <- function(gobject) {
+    if (methods::is(gobject, "giottoMulti")) {
+        gobject@objects <- lapply(gobject@objects, .update_store_affine_layout)
+        return(gobject)
+    }
+    if (!methods::is(gobject, "giotto")) return(gobject)
+    v <- gobject@versions$gclass
+    if (is.null(v) || v >= "0.8.0") return(gobject)
+    for (sl in c("spatial_info", "feat_info")) {
+        for (nm in names(methods::slot(gobject, sl))) {
+            sv <- methods::slot(gobject, sl)[[nm]]@spatVector
+            if (!inherits(sv, "parquetBase")) next
+            methods::slot(gobject, sl)[[nm]]@spatVector <-
+                .store_affine_from_post(sv)
+        }
+    }
+    gobject
+}
+
+.store_affine_from_post <- function(x) {
+    if (inherits(x, "unionParquetStore")) {
+        x@stores <- lapply(x@stores, .store_affine_from_post)
+    }
+    if (!methods::.hasSlot(x, "post_ops")) return(x)
+    x@post_ops <- lapply(x@post_ops, function(op) {
+        if (!identical(op$type, "transform")) return(op)
+        m <- op$affine2d@affine
+        m[1:2, 1:2] <- t(m[1:2, 1:2])
+        op$affine2d@affine <- m
+        op$affine2d <- methods::initialize(op$affine2d)
+        op
+    })
+    x
 }
 
 .load_serialized <- function(path, load_params = list()) {

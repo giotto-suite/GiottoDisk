@@ -22,6 +22,9 @@
   snapshot is deleted or replaced, so another session using it does not lose
   its data. `sourcePrune(grace = FALSE)` frees the space at once; the
   `giottodisk.grace` option sets the period. See adr/0025.
+- Pending transforms on backed stores follow GiottoClass 0.8.0's
+  pre-multiply `affine()` convention. Snapshots saved earlier are converted
+  by `snapshotLoad()` and place their geometry as before.
 
 ## changes
 - `importCosMxDisk(protein_dir =)` reads the protein export of a CosMx
@@ -100,6 +103,16 @@
 - `sourceContains(src, <giotto>)` tells whether a `snapshotSave()` would move
   any of the object's stores into the project, and names them if so.
 ## new
+- AnnData `.h5ad` files are read without python, as building blocks for a
+  hand-assembled object: `h5adInput()` streams `X`, `raw/X` or a layer (CSR,
+  CSC or dense) into a `parquetExprStore`; `h5adCellMeta()`, `h5adFeatMeta()`,
+  `h5adSpatLocs()` and `h5adDimReds()` return the obs, var, spatial and
+  dimension-reduction subobjects; `h5adNetworks()` streams the graphs named in
+  `uns` (scanpy `neighbors`, squidpy `spatial_neighbors`) into
+  `parquetEdgeStore`s via `h5adEdgeInput()`. A kNN keeps the distances as
+  `distance` and the connectivities as `weight`. Needs hdf5r (Suggests).
+  `importH5adDisk()` wires these into a reader whose `create_gobject()`
+  attaches them all.
 - `importVisiumDisk()` reads standard Visium Space Ranger `outs` directories
   into a project: the feature-barcode matrix (mtx directory or `.h5`) is
   written as a store; spot locations, spot metadata, the image and the
@@ -110,6 +123,9 @@
   `load_polygon()`. Requires `Giotto (>= 4.3.6)`.
 
 ## bug fixes
+- `storeRead(output = "duckdb")` and `output = "sedona"` dropped the
+  translation of a pending transform, so a shifted store, or one spun or
+  scaled about a point other than the origin, was queried in the wrong place.
 - `snapshotSave()` put a small VRT pointer into the vault instead of the image
   for JPEG-2000 OME-TIFFs (every vendor-original Xenium and Atera morphology
   image), so the project broke once the original files moved. It now copies

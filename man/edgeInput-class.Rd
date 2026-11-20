@@ -28,6 +28,8 @@ Other store types:
 \code{\link{dataStore-class}},
 \code{\link{exprInput-class}},
 \code{\link{fileStore-class}},
+\code{\link{h5adEdgeInput-class}},
+\code{\link{h5adInput-class}},
 \code{\link{mtxInput-class}},
 \code{\link{parquetEdgeStore-class}},
 \code{\link{parquetExprStore-class}},

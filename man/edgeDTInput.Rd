@@ -35,6 +35,8 @@ Other store constructors:
 \code{\link[=cellbinGefInput]{cellbinGefInput()}},
 \code{\link[=csvWideInput]{csvWideInput()}},
 \code{\link[=fileStore]{fileStore()}},
+\code{\link[=h5adEdgeInput]{h5adEdgeInput()}},
+\code{\link[=h5adInput]{h5adInput()}},
 \code{\link[=igraphInput]{igraphInput()}},
 \code{\link[=mtxInput]{mtxInput()}},
 \code{\link[=nnSearchInput]{nnSearchInput()}},

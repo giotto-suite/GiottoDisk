@@ -91,10 +91,10 @@ test_that("ext(): exact=FALSE is AABB containing exact=TRUE; half-plane filter r
 test_that("rotation -> crop: half-plane filter injected into @ops", {
     s <- make_grid_pts()
     theta <- pi / 4
-    rot <- matrix(c(cos(theta), sin(theta), -sin(theta), cos(theta)), 2, 2)
+    rot <- matrix(c(cos(theta), -sin(theta), sin(theta), cos(theta)), 2, 2)
     aff <- GiottoClass::affine(rot)
     s2 <- affine(s, aff)
-    # crop in rotated space; grid after 45-deg rotation spans x ~[1.4, 4.2], y ~[-1.4, 1.4]
+    # crop in rotated space; grid after 45-deg clockwise rotation spans x ~[1.4, 4.2], y ~[-1.4, 1.4]
     s3 <- crop(s2, terra::ext(1, 4, -1, 1))
     op_types <- vapply(s3@ops, function(op) op$type, character(1L))
     post_types <- vapply(s3@post_ops, function(op) op$type, character(1L))
@@ -234,4 +234,48 @@ test_that("verb chain: spatShift -> spin -> rescale composes to single transform
     expect_equal(sum(post_types == "transform"), 1L)
     sv <- storeRead(s4, output = "terra")
     expect_equal(nrow(sv), 9L)
+})
+
+test_that("affine: every output reads the matrix pre-multiplied", {
+    s <- make_grid_pts()
+    m <- matrix(c(
+        2, 0.5, 10,
+        -0.3, 1.5, -20,
+        0, 0, 1
+    ), nrow = 3, byrow = TRUE)
+    s2 <- affine(s, GiottoClass::affine(m))
+    xy <- as.matrix(expand.grid(x = 1:3, y = 1:3))
+    expected <- t(m[1:2, 1:2] %*% t(xy) + m[1:2, 3])
+
+    ord <- function(p) p[order(p[, 1L], p[, 2L]), , drop = FALSE]
+    tbl <- storeRead(s2, output = "tibble")
+    expect_equal(ord(unname(cbind(tbl$x_index, tbl$y_index))),
+        ord(unname(expected)), tolerance = 1e-9)
+    expect_equal(ord(unname(terra::crds(storeRead(s2, output = "terra")))),
+        ord(unname(expected)), tolerance = 1e-9)
+    expect_equal(as.vector(ext(s2, exact = TRUE)),
+        c(xmin = min(expected[, 1]), xmax = max(expected[, 1]),
+            ymin = min(expected[, 2]), ymax = max(expected[, 2])),
+        tolerance = 1e-9)
+})
+
+test_that("snapshots saved before GiottoClass 0.8.0 keep pending transforms", {
+    s <- spin(make_grid_pts(), 30)
+    aff <- .pgeom_pending_transform(s)
+    old <- s
+    m <- aff@affine
+    m[1:2, 1:2] <- t(m[1:2, 1:2])
+    old@post_ops[[1L]]$affine2d@affine <- m
+
+    g <- GiottoClass::giotto()
+    g@spatial_info <- list(cell = createGiottoPolygon(old,
+        poly_ID_colname = "cell_ID"))
+    g@versions$gclass <- package_version("0.7.31")
+    g <- .update_store_affine_layout(g)
+    expect_equal(.pgeom_pending_transform(g@spatial_info$cell@spatVector)@affine,
+        aff@affine)
+
+    # current objects are left alone
+    g@versions$gclass <- package_version("0.8.0")
+    expect_identical(.update_store_affine_layout(g), g)
 })

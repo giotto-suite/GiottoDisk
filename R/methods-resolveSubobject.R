@@ -463,7 +463,11 @@ setMethod("resolveKeep", signature(coordinator = "parquetCoordinator"),
         if (backed_geom) {
             if (identical(step$op, "affine") &&
                 inherits(args$y, "matrix")) {
-                # ANY,missing affine method wraps a matrix into an affine2d
+                # ANY,missing affine method wraps a matrix into an affine2d,
+                # which is always pre-multiplied
+                if (isFALSE(args$pre_multiply)) {
+                    args$y[1:2, 1:2] <- t(args$y[1:2, 1:2])
+                }
                 args$y <- affine(args$y)
             }
             subobj@spatVector <- do.call(step$op,
