@@ -146,3 +146,40 @@ test_that("a connectivities-only graph is undirected, upper triangle", {
     expect_true(all(e$from_id < e$to_id))
     expect_equal(sort(e$weight), sort(up@x))
 })
+
+
+# reader ####
+
+test_that("importH5adDisk() builds a backed object from every slot", {
+    withr::local_options(giotto.use_conda = FALSE, giotto.no_python_warn = TRUE)
+    fx <- make_h5ad(seed = 4L)
+    rdr <- importH5adDisk(fx$path, backend = gsrc, layer = "counts")
+    expect_s4_class(rdr, "H5adDiskReader")
+    expect_identical(rdr$layer, "counts")
+    g <- rdr$create_gobject()
+
+    ex <- GiottoClass::getExpression(g, values = "raw", output = "exprObj")
+    expect_equal(.store_triplets(ex[]), .source_triplets(fx$M * 2))
+    expect_identical(GiottoClass::spatIDs(g), rownames(fx$M))
+    expect_identical(nrow(GiottoClass::getSpatialLocations(g, output = "data.table")),
+                     nrow(fx$M))
+    expect_true("group" %in% names(GiottoClass::pDataDT(g)))
+    expect_true("highly_variable" %in% names(GiottoClass::fDataDT(g)))
+    dr <- GiottoClass::list_dim_reductions(g)$name
+    expect_true(all(c("pca", "umap") %in% dr))
+    expect_true("kNN.pca" %in% GiottoClass::list_nearest_networks(g)$name)
+    expect_true("spatial_neighbors" %in% GiottoClass::list_spatial_networks(g)$name)
+})
+
+test_that("create_gobject() skips what it is told to and adds into a gobject", {
+    withr::local_options(giotto.use_conda = FALSE, giotto.no_python_warn = TRUE)
+    fx <- make_h5ad(seed = 5L)
+    rdr <- importH5adDisk(fx$path, backend = gsrc)
+    g <- rdr$create_gobject(load_dimreds = FALSE, load_networks = FALSE)
+    expect_null(GiottoClass::list_dim_reductions(g))
+    expect_null(GiottoClass::list_nearest_networks(g))
+    g <- rdr$create_gobject(load_expression = FALSE, load_spatlocs = FALSE,
+        load_cellmeta = FALSE, load_featmeta = FALSE, load_networks = FALSE,
+        gobject = g)
+    expect_true(all(c("pca", "umap") %in% GiottoClass::list_dim_reductions(g)$name))
+})

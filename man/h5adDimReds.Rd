@@ -39,6 +39,7 @@ Other h5ad readers:
 \code{\link[=h5adCellMeta]{h5adCellMeta()}},
 \code{\link[=h5adFeatMeta]{h5adFeatMeta()}},
 \code{\link[=h5adNetworks]{h5adNetworks()}},
-\code{\link[=h5adSpatLocs]{h5adSpatLocs()}}
+\code{\link[=h5adSpatLocs]{h5adSpatLocs()}},
+\code{\link[=importH5adDisk]{importH5adDisk()}}
 }
 \concept{h5ad readers}
