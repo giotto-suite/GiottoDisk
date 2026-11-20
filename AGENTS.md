@@ -77,6 +77,8 @@ R/
                             # expression: row_id, col_id, value, source_id)
   class-parquetEdgeStore.R  # parquetEdgeStore (graph edges) + edgeInput hierarchy
   class-fileInputs.R     # exprInput, mtxInput, tenxH5Input, cellbinGefInput, etc.
+  h5ad.R                 # AnnData .h5ad: h5adInput, h5adEdgeInput (obsp ->
+                         # parquetEdgeStore) and per-slot loaders (h5ad*)
   class-gsource.R        # gsource, gDirSource
   methods-accessors.R    # [,j] indexing, [i, on] join, colnames, nrow, dim, ext, window
   methods-ops.R          # subset, rowSample, head, tail, unique, crop, window<-; .ptabular_apply_op()

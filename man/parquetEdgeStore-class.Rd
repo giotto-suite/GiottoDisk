@@ -76,6 +76,8 @@ Other store types:
 \code{\link{edgeInput-class}},
 \code{\link{exprInput-class}},
 \code{\link{fileStore-class}},
+\code{\link{h5adEdgeInput-class}},
+\code{\link{h5adInput-class}},
 \code{\link{mtxInput-class}},
 \code{\link{parquetExprStore-class}},
 \code{\link{parquetStore-class}},

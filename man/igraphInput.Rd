@@ -26,6 +26,8 @@ Other store constructors:
 \code{\link[=csvWideInput]{csvWideInput()}},
 \code{\link[=edgeDTInput]{edgeDTInput()}},
 \code{\link[=fileStore]{fileStore()}},
+\code{\link[=h5adEdgeInput]{h5adEdgeInput()}},
+\code{\link[=h5adInput]{h5adInput()}},
 \code{\link[=mtxInput]{mtxInput()}},
 \code{\link[=nnSearchInput]{nnSearchInput()}},
 \code{\link[=parquetEdgeStore]{parquetEdgeStore()}},
