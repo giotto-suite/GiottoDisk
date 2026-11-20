@@ -42,8 +42,11 @@ With distances, the graph is the directed kNN they describe, weighted by
 the connectivity of each pair (0 where the connectivities omit it), with
 self-loops dropped. With connectivities alone it is undirected. scanpy's
 \code{neighbors} is named \verb{kNN.<rep>} (\verb{<rep>} from \code{params/use_rep}, default
-\code{pca}); other keys keep their name. A key containing "spatial" gives a
-spatial network, and one starting with \code{sNN} an sNN.
+\code{pca}). A key containing "spatial" gives a spatial network, named as
+\code{\link[Giotto:createSpatialNetwork]{Giotto::createSpatialNetwork()}} would name it when squidpy's \code{params} say
+which kind it is: \code{kNN_network} or \code{Delaunay_network}. Radius and grid
+graphs, graphs whose kind cannot be told, and any other key keep their
+\code{uns} name. A key starting with \code{sNN} gives an sNN.
 }
 \seealso{
 Other h5ad readers:

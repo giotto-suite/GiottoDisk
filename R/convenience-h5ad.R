@@ -218,12 +218,19 @@ setMethod("show", signature("H5adDiskReader"), function(object) {
 #' ([h5adInput()], [h5adSpatLocs()], [h5adCellMeta()], [h5adFeatMeta()],
 #' [h5adDimReds()], [h5adNetworks()]); `create_gobject()` attaches them all,
 #' optionally into an existing backed `gobject`.
+#'
+#' Observations go to `spat_unit = "cell"` whether they are cells, spots or
+#' bins, as in [Giotto::importVisium()]. Spatial graphs from squidpy are named
+#' as [Giotto::createSpatialNetwork()] would name them (`kNN_network`,
+#' `Delaunay_network`) when their parameters say which kind they are.
 #' @param h5ad_path path to the `.h5ad` file
 #' @param backend a `gsource` (typically `gDirSource`) project backend, or a
 #'   path to one
 #' @param layer character or NULL. Expression matrix to read: `NULL` or `"X"`
-#'   for `X`, `"raw"` for `raw/X`, otherwise a name under `layers/`. Dense
-#'   matrices are refused; many files keep their counts as a sparse layer.
+#'   for `X`, `"raw"` for `raw/X`, otherwise a name under `layers/`. Sparse
+#'   (CSR, CSC) and dense matrices are read; when `X` is dense, a sparse
+#'   counts layer is usually the better choice, and the reader names any it
+#'   finds.
 #' @returns `H5adDiskReader` object
 #' @family h5ad readers
 #' @examples

@@ -4,11 +4,12 @@
 \alias{h5adInput-class}
 \title{AnnData .h5ad expression input}
 \description{
-Wraps one sparse matrix of an \code{.h5ad} file: \code{X}, \code{raw/X} or
-\verb{layers/<name>}. Cell and feature IDs are read at construction; the matrix
-is streamed by \code{\link[=storeRead]{storeRead()}} in record-budgeted cell ranges. A cell-major
-\code{csr_matrix} is read directly; a gene-major \code{csc_matrix} is reordered
-through a temporary spill, as for Stereo-seq GEF files.
+Wraps one matrix of an \code{.h5ad} file: \code{X}, \code{raw/X} or \verb{layers/<name>}.
+Cell and feature IDs are read at construction; the matrix is streamed by
+\code{\link[=storeRead]{storeRead()}} in record-budgeted cell ranges. A cell-major \code{csr_matrix} is
+read directly; a gene-major \code{csc_matrix} is reordered through a temporary
+spill, as for Stereo-seq GEF files; a dense array is read in blocks of
+cells and only its non-zero values are stored.
 }
 \section{Slots}{
 

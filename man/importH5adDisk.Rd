@@ -13,8 +13,10 @@ importH5adDisk(h5ad_path = NULL, backend, layer = NULL)
 path to one}
 
 \item{layer}{character or NULL. Expression matrix to read: \code{NULL} or \code{"X"}
-for \code{X}, \code{"raw"} for \code{raw/X}, otherwise a name under \verb{layers/}. Dense
-matrices are refused; many files keep their counts as a sparse layer.}
+for \code{X}, \code{"raw"} for \code{raw/X}, otherwise a name under \verb{layers/}. Sparse
+(CSR, CSC) and dense matrices are read; when \code{X} is dense, a sparse
+counts layer is usually the better choice, and the reader names any it
+finds.}
 }
 \value{
 \code{H5adDiskReader} object
@@ -29,6 +31,11 @@ memory. Each \verb{load_*()} function is one of the h5ad building blocks
 (\code{\link[=h5adInput]{h5adInput()}}, \code{\link[=h5adSpatLocs]{h5adSpatLocs()}}, \code{\link[=h5adCellMeta]{h5adCellMeta()}}, \code{\link[=h5adFeatMeta]{h5adFeatMeta()}},
 \code{\link[=h5adDimReds]{h5adDimReds()}}, \code{\link[=h5adNetworks]{h5adNetworks()}}); \code{create_gobject()} attaches them all,
 optionally into an existing backed \code{gobject}.
+
+Observations go to \code{spat_unit = "cell"} whether they are cells, spots or
+bins, as in \code{\link[Giotto:importVisium]{Giotto::importVisium()}}. Spatial graphs from squidpy are named
+as \code{\link[Giotto:createSpatialNetwork]{Giotto::createSpatialNetwork()}} would name them (\code{kNN_network},
+\code{Delaunay_network}) when their parameters say which kind they are.
 }
 \examples{
 \dontrun{

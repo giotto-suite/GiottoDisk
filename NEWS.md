@@ -60,13 +60,15 @@
   any of the object's stores into the project, and names them if so.
 ## new
 - AnnData `.h5ad` files are read without python, as building blocks for a
-  hand-assembled object: `h5adInput()` streams `X`, `raw/X` or a layer (CSR
-  or CSC) into a `parquetExprStore`; `h5adCellMeta()`, `h5adFeatMeta()`,
+  hand-assembled object: `h5adInput()` streams `X`, `raw/X` or a layer (CSR,
+  CSC or dense) into a `parquetExprStore`; `h5adCellMeta()`, `h5adFeatMeta()`,
   `h5adSpatLocs()` and `h5adDimReds()` return the obs, var, spatial and
   dimension-reduction subobjects; `h5adNetworks()` streams the graphs named in
   `uns` (scanpy `neighbors`, squidpy `spatial_neighbors`) into
   `parquetEdgeStore`s via `h5adEdgeInput()`. A kNN keeps the distances as
   `distance` and the connectivities as `weight`. Needs hdf5r (Suggests).
+  `importH5adDisk()` wires these into a reader whose `create_gobject()`
+  attaches them all.
 - `importVisiumDisk()` reads standard Visium Space Ranger `outs` directories
   into a project: the feature-barcode matrix (mtx directory or `.h5`) is
   written as a store; spot locations, spot metadata, the image and the

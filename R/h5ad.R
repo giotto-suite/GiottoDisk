@@ -122,6 +122,20 @@ NULL
       if (.h5ad_exists(h5, "layers")) names(h5[["layers"]]))
 }
 
+# Matrices with their encoding, e.g. "X (array), counts (csr_matrix)".
+.h5ad_layers_desc <- function(h5) {
+    toString(vapply(.h5ad_layers(h5), function(l) {
+        sprintf("%s (%s)", l, .h5ad_encoding(h5[[.h5ad_matrix_info(h5, l)$root]]))
+    }, character(1L)))
+}
+
+.h5ad_sparse_layers <- function(h5) {
+    Filter(function(l) {
+        .h5ad_encoding(h5[[.h5ad_matrix_info(h5, l)$root]]) %in%
+            c("csr_matrix", "csc_matrix")
+    }, setdiff(.h5ad_layers(h5), "X"))
+}
+
 # Resolve a matrix: NULL/"X" -> /X over var, "raw" -> /raw/X over raw/var,
 # anything else -> /layers/<layer> over var.
 .h5ad_matrix_info <- function(h5, layer = NULL) {
@@ -182,11 +196,12 @@ NULL
 #' @name h5adInput-class
 #' @title AnnData .h5ad expression input
 #' @description
-#' Wraps one sparse matrix of an `.h5ad` file: `X`, `raw/X` or
-#' `layers/<name>`. Cell and feature IDs are read at construction; the matrix
-#' is streamed by [storeRead()] in record-budgeted cell ranges. A cell-major
-#' `csr_matrix` is read directly; a gene-major `csc_matrix` is reordered
-#' through a temporary spill, as for Stereo-seq GEF files.
+#' Wraps one matrix of an `.h5ad` file: `X`, `raw/X` or `layers/<name>`.
+#' Cell and feature IDs are read at construction; the matrix is streamed by
+#' [storeRead()] in record-budgeted cell ranges. A cell-major `csr_matrix` is
+#' read directly; a gene-major `csc_matrix` is reordered through a temporary
+#' spill, as for Stereo-seq GEF files; a dense array is read in blocks of
+#' cells and only its non-zero values are stored.
 #' @slot batch_records numeric. Records per batch; `NA` (default) sizes it
 #'   from free RAM.
 #' @family store types
@@ -216,10 +231,18 @@ h5adInput <- function(h5ad_path, layer = NULL, batch_records = NULL) {
     on.exit(h5$close_all())
 
     info <- .h5ad_matrix_info(h5, layer)
-    if (!info$encoding %in% c("csr_matrix", "csc_matrix")) {
-        stop("[h5adInput] '/", info$root, "' is a dense '", info$encoding,
-             "'; only sparse csr_matrix and csc_matrix are streamed.",
-             call. = FALSE)
+    if (!info$encoding %in% c("csr_matrix", "csc_matrix", "array")) {
+        stop("[h5adInput] '/", info$root, "' is a '", info$encoding,
+             "'; expected csr_matrix, csc_matrix or a dense array. ",
+             "Matrices in this file: ", .h5ad_layers_desc(h5), call. = FALSE)
+    }
+    if (identical(info$encoding, "array") && is.null(layer)) {
+        sparse <- .h5ad_sparse_layers(h5)
+        if (length(sparse)) {
+            message("[h5adInput] X is dense; sparse layer(s) ",
+                    toString(sQuote(sparse, FALSE)), " are available ",
+                    "(`layer = `). Reading X in row blocks.")
+        }
     }
     cell_ids <- .h5ad_index(h5, "obs")
     feat_ids <- .disambiguate_feat_ids(.h5ad_index(h5, info$feat_group))
@@ -245,6 +268,48 @@ h5adInput <- function(h5ad_path, layer = NULL, batch_records = NULL) {
 
 # storeRead -- h5adInput ####
 
+# A dense matrix is stored obs x var, row-major, so a block of cells is one
+# contiguous hyperslab. hdf5r reports it var x obs (see header): block
+# [, a:b] is genes x cells, and which() walks it cell by cell, gene by gene,
+# so the records come out in store order. Blocks hold `max_rows` values,
+# zeros included, since that is what is read.
+.h5ad_dense_reader <- function(store, max_rows) {
+    path <- store@path
+    root <- store@params$root
+    n_cells <- as.integer(store@n_cells)
+    per_block <- max(1L, as.integer(floor(max_rows / max(1L, store@n_genes))))
+    starts <- seq.int(1L, n_cells, by = per_block)
+    i <- 0L
+    closed <- FALSE
+    close_fn <- function() { closed <<- TRUE; invisible(NULL) }
+    next_batch <- function() {
+        repeat {
+            if (closed || i >= length(starts)) { close_fn(); return(NULL) }
+            i <<- i + 1L
+            a <- starts[[i]]
+            b <- min(n_cells, a + per_block - 1L)
+            h5 <- .h5ad_open(path)
+            m <- h5[[root]][, a:b, drop = FALSE]   # `a:b`: one hyperslab
+            h5$close_all()
+            nz <- which(m != 0, arr.ind = TRUE)
+            if (!nrow(nz)) next
+            return(data.table::data.table(
+                row_id = as.integer(nz[, 2L] + a - 1L),
+                col_id = as.integer(nz[, 1L]),
+                value  = as.double(m[nz])
+            ))
+        }
+    }
+    list(
+        next_batch = next_batch,
+        close      = close_fn,
+        cell_ids   = function() store@cell_ids,
+        feat_ids   = function() store@feat_ids,
+        n_cells    = function() store@n_cells,
+        n_genes    = function() store@n_genes
+    )
+}
+
 # CSR stores each cell's (gene, value) records contiguously, the same arrays a
 # 10x h5 holds by cell, so contiguous cell ranges are single hyperslabs read
 # by `.tenxh5_read_range()`. CSC stores them by gene: pass 1 streams gene
@@ -258,6 +323,10 @@ setMethod("storeRead", signature("h5adInput"), function(store, ...) {
     path     <- store@path
     root     <- store@params$root
     max_rows <- .h5ad_max_rows(store@batch_records)
+
+    if (identical(store@params$encoding, "array")) {
+        return(.h5ad_dense_reader(store, max_rows))
+    }
 
     h5 <- .h5ad_open(path)
     indptr <- as.numeric(h5[[paste0(root, "/indptr")]][])
@@ -607,6 +676,27 @@ h5adDimReds <- function(h5ad_path, keys = NULL,
     out
 }
 
+# Giotto's createSpatialNetwork() name for a squidpy graph, from the params
+# its builder stores in uns. Current squidpy: the kNN builder writes
+# n_neighbors and no radius, the Delaunay builder no n_neighbors and a radius
+# only when one is set, the grid builder coord_type "grid". Older squidpy
+# (1.6) wrote n_neighbors and radius for every graph and did not record delaunay,
+# so a kNN and a Delaunay graph look alike there. Anything that does not
+# say which kind it is keeps its uns key.
+.h5ad_spatial_net_name <- function(h5, g, key) {
+    p <- paste0(g, "/params")
+    if (!.h5ad_exists(h5, p)) return(key)
+    has <- function(x) .h5ad_exists(h5, paste0(p, "/", x))
+    val <- function(x) if (has(x)) h5[[paste0(p, "/", x)]][]
+    if (identical(as.character(val("coord_type")), "grid")) return(key)
+    if (isTRUE(as.logical(val("delaunay")))) return("Delaunay_network")
+    if (has("n_neighbors") && !has("radius")) return("kNN_network")
+    if (!has("n_neighbors") && !length(val("radius"))) {
+        return("Delaunay_network")
+    }
+    key
+}
+
 #' @name h5adNetworks
 #' @title Cell graphs from an AnnData .h5ad
 #' @description
@@ -619,8 +709,11 @@ h5adDimReds <- function(h5ad_path, keys = NULL,
 #' the connectivity of each pair (0 where the connectivities omit it), with
 #' self-loops dropped. With connectivities alone it is undirected. scanpy's
 #' `neighbors` is named `kNN.<rep>` (`<rep>` from `params/use_rep`, default
-#' `pca`); other keys keep their name. A key containing "spatial" gives a
-#' spatial network, and one starting with `sNN` an sNN.
+#' `pca`). A key containing "spatial" gives a spatial network, named as
+#' [Giotto::createSpatialNetwork()] would name it when squidpy's `params` say
+#' which kind it is: `kNN_network` or `Delaunay_network`. Radius and grid
+#' graphs, graphs whose kind cannot be told, and any other key keep their
+#' `uns` name. A key starting with `sNN` gives an sNN.
 #' @inheritParams h5adCellMeta
 #' @param gsource A [gDirSource-class] the edge stores are written to.
 #' @param keys character or NULL. Keys under `uns/`; `NULL` (default) scans
@@ -652,9 +745,15 @@ h5adNetworks <- function(h5ad_path, gsource, keys = NULL,
             } else "pca"
             type <- if (grepl("spatial", k, ignore.case = TRUE)) "spatial"
                 else if (startsWith(k, "sNN")) "sNN" else "kNN"
+            name <- if (k == "neighbors") {
+                paste0("kNN.", rep)
+            } else if (type == "spatial") {
+                .h5ad_spatial_net_name(h5, g, k)
+            } else k
+            # two graphs of one kind: the second keeps its uns name
+            if (name %in% vapply(graphs, `[[`, "", "name")) name <- k
             graphs[[length(graphs) + 1L]] <- list(
-                key = k, ck = ck, dk = dk, type = type,
-                name = if (k == "neighbors") paste0("kNN.", rep) else k)
+                key = k, ck = ck, dk = dk, type = type, name = name)
         }
     }
     h5$close_all()

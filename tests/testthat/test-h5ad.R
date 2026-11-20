@@ -39,7 +39,7 @@ test_that("the session option pins the batch size; the argument wins", {
     expect_identical(.h5ad_max_rows(1e3), 1e3)
 })
 
-test_that("layers and raw resolve; dense layers are refused", {
+test_that("layers and raw resolve; a dense layer streams its non-zeros", {
     fx <- make_h5ad()
     pe <- sourceWrite(gsrc, h5adInput(fx$path, layer = "counts"),
                       store_type = "parquetExpr")
@@ -47,7 +47,10 @@ test_that("layers and raw resolve; dense layers are refused", {
     raw <- h5adInput(fx$path, layer = "raw")
     expect_identical(raw@feat_ids, fx$genes[1:10])
     expect_identical(raw@n_genes, 10L)
-    expect_error(h5adInput(fx$path, layer = "dense"), "dense 'array'")
+    dn <- sourceWrite(gsrc, h5adInput(fx$path, layer = "dense", batch_records = 100),
+                      store_type = "parquetExpr")
+    expect_true(.parts_cell_major(dn))                      # several blocks
+    expect_equal(.store_triplets(dn), .source_triplets(fx$M))
     expect_error(h5adInput(fx$path, layer = "nope"), "Available: X, raw, counts, dense")
 })
 
@@ -182,4 +185,51 @@ test_that("create_gobject() skips what it is told to and adds into a gobject", {
         load_cellmeta = FALSE, load_featmeta = FALSE, load_networks = FALSE,
         gobject = g)
     expect_true(all(c("pca", "umap") %in% GiottoClass::list_dim_reductions(g)$name))
+})
+
+
+test_that("a dense X streams, and the sparse layers are named", {
+    fx <- make_h5ad(seed = 6L)
+    h5 <- hdf5r::H5File$new(fx$path, mode = "r+")
+    h5$link_delete("X")
+    .w_array(h5, "X", as.matrix(fx$M))
+    h5$close_all()
+    expect_message(inp <- h5adInput(fx$path, batch_records = 100), "'counts'")
+    pe <- sourceWrite(gsrc, inp, store_type = "parquetExpr")
+    expect_equal(.store_triplets(pe), .source_triplets(fx$M))
+})
+
+
+# spatial network names ####
+
+.with_params <- function(path, params) {
+    h5 <- hdf5r::H5File$new(path, mode = "r+")
+    on.exit(h5$close_all())
+    pg <- h5[["uns/spatial_neighbors"]]$create_group("params")
+    for (n in names(params)) pg[[n]] <- params[[n]]
+    invisible(path)
+}
+.spat_net_name <- function(path) {
+    names(h5adNetworks(path, gsrc, keys = "spatial_neighbors", verbose = FALSE))
+}
+
+test_that("squidpy params name the spatial network the Giotto way", {
+    expect_identical(.spat_net_name(.with_params(make_h5ad()$path,
+        list(coord_type = "generic", n_neighbors = 6L, transform = "none"))),
+        "kNN_network")
+    expect_identical(.spat_net_name(.with_params(make_h5ad()$path,
+        list(coord_type = "generic", transform = "none"))),
+        "Delaunay_network")
+    expect_identical(.spat_net_name(.with_params(make_h5ad()$path,
+        list(coord_type = "grid", n_neighbors = 6L, n_rings = 1L,
+             delaunay = FALSE))),
+        "spatial_neighbors")                                # grid: no Giotto kind
+    expect_identical(.spat_net_name(.with_params(make_h5ad()$path,
+        list(coord_type = "generic", radius = 50))),
+        "spatial_neighbors")                                # radius graph
+    expect_identical(.spat_net_name(.with_params(make_h5ad()$path,
+        list(n_neighbors = 6L, coord_type = "generic", radius = 50,
+             transform = "none"))),
+        "spatial_neighbors")                                # older squidpy
+    expect_identical(.spat_net_name(make_h5ad()$path), "spatial_neighbors")
 })
