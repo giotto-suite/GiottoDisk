@@ -870,9 +870,12 @@ setMethod("as.terra", "parquetGeomBase", function(x, ...) {
     )
 
     # --- 2. Build inner SQL via shared helper ---
-    # the query geometry takes the CRS of the store's geom column
+    store_crs <- NULL
     sedona_geom_sql_fn <- function(op, store) {
-        .sedona_query_geom_sql(op$y_wkt)
+        if (is.null(store_crs)) {
+            store_crs <<- .sedona_view_has_crs(base_view_name)
+        }
+        .sedona_query_geom_sql(op$y_wkt, store_crs)
     }
     sedona_register_id_fn <- function(ids_tab) {
         name <- tolower(paste0("gd_idf_", .make_uid()))

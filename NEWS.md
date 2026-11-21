@@ -93,6 +93,12 @@
   used to record the same hash. An image whose file is itself a VRT (such as a
   tile mosaic) cannot be copied and errors; save it with
   `export_image = FALSE` or create it from an image file.
+- Spatial queries on SedonaDB found nothing when the store's geometry has no
+  CRS, which current sedonadb releases report for stores written without one:
+  the query geometry was given `ST_Crs(geom)`, a CRS the column itself lacks.
+  It now takes the store's CRS only when there is one. This affected
+  `spatRelate()`, polygon crops (`crop(geom = "poly")`, views) and the zoomed
+  windows of `spatInSituPlotPoints()`.
 
 # GiottoDisk 0.0.0.7
 

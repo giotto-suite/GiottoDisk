@@ -80,10 +80,21 @@ NULL
 # sides of a predicate to share a CRS, and which CRS it gives a store written
 # without one (`crs: null`) depends on its version: `ogc:crs84` in older
 # releases, none in newer ones. The query geometry takes the CRS of the store's
-# own `geom` column, so the two always match.
-.sedona_query_geom_sql <- function(wkt) {
+# own `geom` column, so the two always match; none when the column has none.
+.sedona_query_geom_sql <- function(wkt, store_crs = TRUE) {
     wkt_escaped <- gsub("'", "''", wkt, fixed = TRUE)
+    if (!isTRUE(store_crs)) {
+        return(sprintf("ST_GeomFromText('%s')", wkt_escaped))
+    }
     sprintf("ST_SetCrs(ST_GeomFromText('%s'), ST_Crs(geom))", wkt_escaped)
+}
+
+.sedona_view_has_crs <- function(view_name) {
+    sql <- sprintf(
+        'SELECT ST_Crs(geom) AS crs FROM "%s" WHERE geom IS NOT NULL LIMIT 1',
+        view_name)
+    crs <- sedonadb::sd_collect(sedonadb::sd_sql(sql))$crs
+    length(crs) > 0L && !is.na(crs[[1L]])
 }
 
 # sedona / DuckDB SQL function for a predicate.
@@ -457,7 +468,8 @@ setMethod(
     view_name <- tolower(paste0("gd_srnarrow_", .make_uid()))
     sedonadb::sd_to_view(sdf, view_name, overwrite = TRUE)
     sql_pred <- .sql_relation_fn(op$relation)
-    geom_sql <- .sedona_query_geom_sql(op$y_wkt)
+    geom_sql <- .sedona_query_geom_sql(op$y_wkt,
+        .sedona_view_has_crs(view_name))
     select_sql <- paste(sprintf('"%s"', id_cols), collapse = ", ")
     sql <- sprintf(
         'SELECT %s FROM "%s" WHERE %s(geom, %s)',
