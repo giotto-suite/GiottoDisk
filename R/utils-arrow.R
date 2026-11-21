@@ -62,6 +62,15 @@
         args$compression_level <- lvl
     }
     if (is.null(args$format)) args$format <- "parquet"
+    # write_dataset() writes no file for zero rows; an empty store still needs
+    # one, holding the schema, or reading it fails
+    if (inherits(dataset, "data.frame") && nrow(dataset) == 0L &&
+        identical(args$format, "parquet") && is.null(args$partitioning)) {
+        dir.create(path, recursive = TRUE, showWarnings = FALSE)
+        arrow::write_parquet(dataset, file.path(path, "part-0.parquet"),
+            compression = args$compression)
+        return(invisible(dataset))
+    }
     do.call(arrow::write_dataset,
             c(list(dataset = dataset, path = path), args))
 }
