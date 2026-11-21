@@ -764,9 +764,15 @@ tenxZarrInput <- function(
 #' scanner. `cell_ids` are only known during the stream -- the matrix's own
 #' `cell_ID` column is FOV-local -- so the iterator composes the global
 #' `c_<slide>_<fov>_<cell_ID>` form as it advances.
+#'
+#' The scanner reads every row; rows outside `fovs` and background rows
+#' (`cell_ID == 0`) are dropped from each chunk before it is emitted, and the
+#' kept rows are renumbered, so the store holds only the selected cells.
 #' @slot slide integer. Slide number, used to compose global cell IDs.
 #' @slot skip_cols integer. Leading non-feature columns (`fov`, `cell_ID`).
-#' @slot batch_rows integer. Cells emitted per batch.
+#' @slot batch_rows integer. Rows scanned per batch.
+#' @slot fovs integer. FOVs to keep; empty keeps all.
+#' @slot drop_background logical. Drop rows with `cell_ID == 0`.
 #' @family store types
 #' @keywords internal
 setClass("cosmxScanInput",
@@ -774,12 +780,16 @@ setClass("cosmxScanInput",
     slots = list(
         slide = "integer",
         skip_cols = "integer",
-        batch_rows = "integer"
+        batch_rows = "integer",
+        fovs = "integer",
+        drop_background = "logical"
     ),
     prototype = list(
         slide = 1L,
         skip_cols = 2L,
-        batch_rows = 10000L
+        batch_rows = 10000L,
+        fovs = integer(0L),
+        drop_background = TRUE
     )
 )
 
@@ -787,6 +797,8 @@ setClass("cosmxScanInput",
 # Suggests, and the CosMx expression closure selects this when it is present.
 .cosmx_scan_input <- function(path,
                            slide = 1,
+                           fovs = NULL,
+                           drop_background = TRUE,
                            skip_cols = 2L,
                            batch_rows = 10000L,
                            ...) {
@@ -796,9 +808,7 @@ setClass("cosmxScanInput",
         repository = "github:drieslab/cosmxscan"
     )
 
-    con <- gzfile(path, "rt")
-    on.exit(close(con), add = TRUE)
-    hdr <- strsplit(readLines(con, n = 1L), ",", fixed = TRUE)[[1L]]
+    hdr <- .cosmx_csv_header(path)
     feat_ids <- hdr[-seq_len(skip_cols)]
 
     methods::new("cosmxScanInput",
@@ -808,6 +818,8 @@ setClass("cosmxScanInput",
         slide = as.integer(slide),
         skip_cols = as.integer(skip_cols),
         batch_rows = as.integer(batch_rows),
+        fovs = as.integer(fovs),
+        drop_background = isTRUE(drop_background),
         ...
     )
 }

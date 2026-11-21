@@ -12,7 +12,8 @@ importCosMxDisk(
   version = "default",
   micron = FALSE,
   px2um = 0.12028,
-  poly_pref = c("csv", "mask")
+  poly_pref = c("csv", "mask"),
+  protein_dir = NULL
 )
 }
 \arguments{
@@ -24,17 +25,68 @@ Naming matches \code{\link[GiottoClass:createGiottoObject]{GiottoClass::createGi
 \item{slide, fovs, version, micron, px2um, poly_pref}{passed through to the
 parent \code{CosmxReader} initializer. \code{poly_pref} defaults to \code{"csv"}
 because the disk polygon loader reads the vertex CSV, not masks.}
+
+\item{protein_dir}{protein export folder of a multiomic run (optional).
+Kept separate from \code{cosmx_dir} because the file names are the same.}
 }
 \value{
 \code{CosMxDiskReader} object
 }
 \description{
 Disk-backed counterpart to \code{\link[Giotto:importCosMx]{Giotto::importCosMx()}}. Produces a
-\code{CosMxDiskReader} whose \code{load_expression()} call writes a
-\code{parquetExprStore} into a \code{gDirSource}-managed project vault.
-Transcripts / polys / images / cellmeta remain in-memory via the
-inherited \code{CosmxReader} closures.
+\code{CosMxDiskReader} whose \code{load_expression()}, \code{load_polys()} and
+\code{load_transcripts()} calls write to a \code{gDirSource}-managed project vault:
+a \code{parquetExprStore} for the expression matrix and \code{parquetGeomTile} stores
+for the polygons and transcripts. Images and cell metadata remain in-memory
+via the inherited \code{CosmxReader} closures.
+
+The transcript flatfile is converted to parquet once, in a cache under
+\code{\link[=getArtifactDumpDir]{getArtifactDumpDir()}} (first import converts, later imports reuse).
+Polygons of cells that have no expression (cells removed by the vendor's
+QC) are not loaded, with a warning.
+
+\code{fovs} applies to every input while it is read: the expression and protein
+matrices (both the \code{cosmxscan} and the CSV route), the polygons, the cell
+metadata and the transcripts. A gzipped file is still decompressed in full,
+since gzip cannot seek.
 }
+\section{Protein (multiomic exports)}{
+
+The protein export of a CosMx multiomic run is a second folder whose files
+have the same names as the RNA export, given as \code{protein_dir}. Its
+\code{exprMat_file}, \code{metadata_file} and \verb{plex-*.txt} are found by pattern.
+\verb{$load_protein()} writes the protein matrix to a \code{parquetExprStore} as raw
+mean intensities (decimals, so never through \code{cosmxscan}), without the
+\verb{Channel-*} morphology columns (they repeat the metadata \verb{Mean.*}), split
+into the targets (\code{"protein"}) and the isotype controls (\code{"protein_neg"}:
+\code{CodeClass} \code{"Negative"} in the plex file, else names matching \code{"IgG"}).
+
+\verb{$create_gobject()} then also takes:
+\itemize{
+\item \code{load_protein} (default: \code{TRUE} when a protein matrix was found),
+\code{protein_expression_path}, \code{protein_metadata_path};
+\item \code{protein_feat_type} (\code{c("protein", "protein_neg")}; one name keeps the
+isotypes with the targets), \code{protein_split_keyword} (\code{NULL}: from the
+plex file), \code{protein_drop} (\code{"^Channel-"}; \code{NULL} keeps those columns);
+\item \code{protein_meta_cols}: protein metadata columns to add to the protein
+feat_type, renamed because the vendor file reuses the RNA names for
+protein totals: \code{nCount_RNA} -> \code{nCount_protein} (the sum of the targets
+\strong{and} the \verb{Channel-*} intensities, so not the sum of the stored
+matrix), \code{nFeature_RNA} -> \code{nFeature_protein}, \code{nCount_negprobes} ->
+\code{nCount_protein_neg}, \code{nFeature_negprobes} -> \code{nFeature_protein_neg},
+any other name gets a \verb{_protein} suffix (\code{Panel_protein},
+\code{assay_type_protein}). The \code{meta_cols} not in \code{protein_meta_cols}
+(\code{fov}, \code{Area.um2}) describe the cell and are set on both feat_types;
+\item \code{keep_cells}: \code{"intersect"} (the only mode) keeps the cells in the RNA
+export, protein expression and a polygon, warning with the number
+dropped for each reason. The RNA cells are those of the RNA matrix, or,
+when RNA is loaded only as transcripts, those of the RNA cell metadata;
+with neither, every protein cell with a polygon is kept. Every feature
+type is put in the same cell order (RNA file order). With
+\code{load_expression = FALSE} the object holds no RNA expression.
+}
+}
+
 \seealso{
 \code{\link[Giotto:importCosMx]{Giotto::importCosMx()}} for the in-memory variant
 }

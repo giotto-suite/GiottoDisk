@@ -781,6 +781,28 @@ object, since it has no disk representation yet.
 - The disk `create_gobject()` accepts every argument of the parent's, so the
   Giotto `createGiotto*Object*()` wrappers can call either.
 
+## More than one expression feature type (CosMx RNA + protein)
+
+- **GiottoClass does not check that a second feature type has the object's
+  cells, nor their order**: the cells come from the first expression set,
+  and a protein store with extra, missing or reordered cells is accepted
+  silently. A reader that loads several modalities matches the cell ids
+  itself (`.cosmx_match_cells()`, `keep_cells = "intersect"`) and puts every
+  feature type in one order before `setGiotto()` (on a `parquetExprStore`
+  the reorder is a `cell_idx` view, not a rewrite).
+- Vendor metadata that reuses one modality's column names for another
+  (CosMx protein: `nCount_RNA` = protein intensity total) is renamed and set
+  on its own feat_type, never merged by name.
+- `fovs` filters while reading, on every input. The `cosmxscan` route filters
+  each chunk in R (`storeRead(cosmxScanInput)`) and renumbers the kept rows.
+  The polygon CSV is line-filtered in file order into a temporary CSV before
+  the conversion (an arrow filter would reorder rows and scatter vertices).
+- Decimal matrices do not stay on `cosmxscan` (integer-only):
+  `.cosmx_values_are_integer()` checks the first data row; when an automatic
+  choice of `cosmxscan` meets a decimal further down, the reader falls back
+  to `csvWideInput`. A matrix with interior columns to drop (`Channel-*`)
+  takes `csvWideInput` directly.
+
 ## Zarr input (Xenium / Atera)
 
 The disk readers accept zarr-only output directories (Atera ships zarr
