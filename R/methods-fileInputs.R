@@ -538,6 +538,13 @@ setMethod(
                       sprintf("part-%d.parquet", batch_idx - 1L))
         )
     }
+    # an input without stored values still needs one file, holding the schema
+    if (batch_idx == 0L) {
+        .write_parquet_file(
+            data.table::data.table(row_id = integer(), col_id = integer(), value = double()),
+            file.path(partition_dir, "part-0.parquet")
+        )
+    }
     store@cell_ids <- itr$cell_ids()
     store@feat_ids <- itr$feat_ids()
     store@n_cells  <- as.numeric(itr$n_cells())

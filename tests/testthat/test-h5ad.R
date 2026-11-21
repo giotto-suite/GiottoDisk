@@ -21,6 +21,17 @@ test_that("CSR X streams into a cell-major store equal to the source", {
     expect_true(.parts_cell_major(pe))
 })
 
+test_that("an X without stored values streams into a readable empty store", {
+    fx <- make_h5ad(format = "csr")
+    h5 <- hdf5r::H5File$new(fx$path, mode = "r+")
+    h5$link_delete("X")
+    .w_sparse(h5, "X", Matrix::drop0(fx$M * 0))
+    h5$close_all()
+    pe <- sourceWrite(gsrc, h5adInput(fx$path), store_type = "parquetExpr")
+    expect_equal(dim(pe), c(ncol(fx$M), nrow(fx$M)))
+    expect_identical(nrow(storeRead(pe, output = "tibble")), 0L)
+})
+
 test_that("CSC X is reordered to the same cell-major store", {
     fx <- make_h5ad(format = "csc", seed = 2L)
     pe <- sourceWrite(gsrc, h5adInput(fx$path, batch_records = 40),
