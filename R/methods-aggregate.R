@@ -508,14 +508,15 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "giottoBinPoints"),
     x_sub <- x[, poly_id_col]
     y_sub <- y[, c(feat_id_col, extra_cols, specialCols(y))]
 
+    # Worker closure: `::` on imports (see .calculate_overlap_terra_tiled).
     tile_bins_fn <- function(feat_sv, poly_sv, .I) {
-        if (is.null(feat_sv) || nrow(feat_sv) == 0L) return(NULL)
-        if (is.null(poly_sv) || nrow(poly_sv) == 0L) return(NULL)
+        if (is.null(feat_sv) || base::nrow(feat_sv) == 0L) return(NULL)
+        if (is.null(poly_sv) || base::nrow(poly_sv) == 0L) return(NULL)
         extracted <- GiottoClass::extract_bin_overlap(poly_sv, feat_sv,
             "area", bin_width = bin_geom$width,
             bin_offset = bin_geom$offset, poly_id_col = poly_id_col)
         extracted <- extracted[!is.na(extracted[[poly_id_col]]), , drop = FALSE]
-        if (nrow(extracted) == 0L) return(NULL)
+        if (base::nrow(extracted) == 0L) return(NULL)
         result_df <- .build_overlap_df(
             poly_id_vals = extracted[[poly_id_col]],
             pt_vals = terra::values(feat_sv),

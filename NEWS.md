@@ -82,6 +82,13 @@
   `load_polygon()`. Requires `Giotto (>= 4.3.6)`.
 
 ## bug fixes
+- `calculateOverlap(engine = "terra")`, including on store-backed bin points,
+  and the terra engine of `spatRelate()` on tile stores sent about 200 MB to
+  each parallel task: the per-tile function called an imported function
+  unqualified, so future shipped the package's whole imports environment with
+  it, serialized one task at a time (about 3 s per task). Each task now sends
+  a few MB. The cost scaled with the number of tasks, so the default of one
+  task per worker mostly hid it.
 - `storeRead(output = "duckdb")` and `output = "sedona"` dropped the
   translation of a pending transform, so a shifted store, or one spun or
   scaled about a point other than the origin, was queried in the wrong place.
@@ -419,12 +426,6 @@ Requires GiottoClass 0.7.27.
   overlap's `@spat_ids` / `@feat_ids` narrows the matrix.
 
 ## bug fixes
-- `calculateOverlap(engine = "terra")` and the terra engine of `spatRelate()`
-  on tile stores sent about 200 MB to each parallel task: the per-tile
-  function called an imported function unqualified, so future shipped the
-  package's whole imports environment with it, serialized one task at a time
-  (about 3 s per task). Each task now sends a few MB. The cost scaled with the
-  number of tasks, so the default of one task per worker mostly hid it.
 - `calculateOverlap(engine = "terra", tile_idx = )` on a point tile store
   failed for any `tile_idx`: it widened the outermost tiles' bounds on the
   tile selection, which exposes no bounds, instead of on the plan (#92).
