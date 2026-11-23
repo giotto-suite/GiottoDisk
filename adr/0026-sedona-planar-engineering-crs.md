@@ -39,11 +39,17 @@ scans.
 ## Decision
 
 The sedona base view puts every geom store without a CRS in one fixed PROJJSON
-engineering CRS, `.SEDONA_PLANAR_CRS`: `ST_SetCrs(geom, …)` for stored
-geometry, and `ST_Point(x_index, y_index, …)` for points. Query geometries copy
-it with `ST_Crs(geom)`; geometry built in a join takes the constant
-(`.sedona_planar_crs_sql()`). Files keep `crs: null`; the CRS exists only in
-the engine adapter.
+engineering CRS, `.SEDONA_PLANAR_CRS`, and a store with a CRS in its own:
+`ST_SetCrs(geom, …)` for stored geometry, and `ST_Point(x_index, y_index, …)`
+for points. Query geometries copy it with `ST_Crs(geom)`; geometry built in a
+join takes it as a constant (`.sedona_crs_sql()`). Files keep `crs: null`; the
+planar CRS exists only in the engine adapter.
+
+Whether a store has a CRS is decided from our side, never by asking sedona:
+`@params$crs` when set, else the `crs` its files record (a store opened from a
+path has no params). Asking sedona (`ST_Crs(geom)`) cannot tell an intended
+CRS from its own reading of `crs: null`, which is OGC:CRS84 on 0.4. The planar
+constant claims no unit (`unity`) and no axis orientation.
 
 Points are rebuilt from their coordinates because sedona reads a WKB column
 whose file statistics have min == max (a one-point tile) as plain binary, and
@@ -54,8 +60,12 @@ whose file statistics have min == max (a one-point tile) as plain binary, and
 - No dependence on how a sedona version reads `crs: null`, and no probe.
 - Files commit to nothing: when the suite gets a real CRS concept, this is one
   function to change, with no artifacts to migrate.
-- A store with a real `@params$crs` is not overridden. No such stores exist
-  yet.
+- A store with a real CRS is read in it, and geometry built against it takes
+  it too. When the suite gets per-sample frames, `.pgeom_store_crs()` is where
+  a store's frame is decided; sedona then refuses to compare two frames
+  without a transform between them.
+- A store with a CRS compared with one without (or with a different CRS) is a
+  sedona error, not a silent overlap. No such pairs exist yet.
 - The sedona dataframe from `storeRead(output = "sedona")` carries this CRS, so
   user SQL that joins it with its own geometry must set the same CRS. It did
   already: 0.4 gave the column OGC:CRS84. Its `geom` is now the last column.
@@ -83,7 +93,8 @@ whose file statistics have min == max (a one-point tile) as plain binary, and
 
 ## References
 
-- `.sedona_view_sql()`, `.sedona_planar_crs_sql()`, `.SEDONA_PLANAR_CRS`
+- `.sedona_view_sql()`, `.sedona_crs_sql()`, `.pgeom_store_crs()`,
+  `.SEDONA_PLANAR_CRS`
   (`R/methods-storeRead.R`); `.sedona_query_geom_sql()`
   (`R/methods-spatRelate.R`); `.bin_area_sql()` (`R/methods-aggregate.R`);
   `.geoparquet_metadata()` (`R/utils-spatial.R`).

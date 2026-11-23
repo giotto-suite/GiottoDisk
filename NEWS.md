@@ -82,6 +82,9 @@
   `load_polygon()`. Requires `Giotto (>= 4.3.6)`.
 
 ## bug fixes
+- SedonaDB queries read a store with a CRS in that CRS, including one opened
+  from its path, and geometry the bin-points area rule builds against it
+  takes it too.
 - SedonaDB queries put stores without a CRS (all Giotto data) in a planar
   engineering CRS, whatever sedona version is installed, instead of the
   lng/lat CRS sedona 0.4 assumes. Files are unchanged. This fixes
