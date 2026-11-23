@@ -729,7 +729,10 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "giottoBinPoints"),
     join_sql <- function(poly_from, pt_from) sprintf(
         "SELECT %s FROM %s AS poly JOIN %s AS pt ON ST_Intersects(poly.geom, pt.geom)",
         paste(sel, collapse = ", "), poly_from, pt_from)
-    if (!is.null(bin_geom)) join_sql <- .bin_area_sql(sel, bin_geom, extra_cols)
+    if (!is.null(bin_geom)) {
+        join_sql <- .bin_area_sql(sel, bin_geom, extra_cols,
+            crs = if (engine == "sedona") .sedona_planar_crs_sql(x))
+    }
 
     if (engine == "duckdb") {
         conn <- .duckdb_connect()
@@ -771,15 +774,19 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "giottoBinPoints"),
 # the polygons sharing interior with it (intersecting, not only touching); the
 # bin goes to the one candidate holding its centre or, when none or several do,
 # to the one covering most of it, ties to the lowest poly_ID. Areas are only
-# computed for bins with several candidates.
-.bin_area_sql <- function(sel, bin_geom, extra_cols) {
+# computed for bins with several candidates. `crs` (sedona) is the SQL literal
+# of the polygons' CRS, which the bin squares and centres must share.
+.bin_area_sql <- function(sel, bin_geom, extra_cols, crs = NULL) {
     h <- bin_geom$width / 2
     px <- sprintf("(ST_X(pt.geom) + %.17g)", bin_geom$offset[[1L]])
     py <- sprintf("(ST_Y(pt.geom) + %.17g)", bin_geom$offset[[2L]])
     sq <- function(x, y) {
-        sprintf(paste0("ST_MakeEnvelope(%1$s - %3$.17g, %2$s - %3$.17g, ",
+        env <- sprintf(paste0("ST_MakeEnvelope(%1$s - %3$.17g, %2$s - %3$.17g, ",
             "%1$s + %3$.17g, %2$s + %3$.17g)"), x, y, h)
+        if (is.null(crs)) env else sprintf("ST_SetCrs(%s, %s)", env, crs)
     }
+    ctr <- if (is.null(crs)) sprintf("ST_Point(%s, %s)", px, py) else
+        sprintf("ST_Point(%s, %s, %s)", px, py, crs)
     out <- paste(sprintf('"%s"', c("poly_ID", "feat_ID", extra_cols,
         "pt_tile_index", "pt_row_index")), collapse = ", ")
     by_bin <- 'PARTITION BY "feat_ID"'
@@ -795,7 +802,7 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "giottoBinPoints"),
             by_bin),
         sprintf("FROM (SELECT %s, poly.geom AS pg, %s AS px, %s AS py,",
             paste(sel, collapse = ", "), px, py),
-        sprintf("ST_Intersects(poly.geom, ST_Point(%s, %s)) AS ctr", px, py),
+        sprintf("ST_Intersects(poly.geom, %s) AS ctr", ctr),
         sprintf("FROM %s AS poly JOIN %s AS pt ON", poly_from, pt_from),
         sprintf("ST_Intersects(poly.geom, %s) AND NOT %s",
             sq(px, py), sprintf("ST_Touches(poly.geom, %s)", sq(px, py))),

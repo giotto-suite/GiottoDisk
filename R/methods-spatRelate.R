@@ -77,10 +77,9 @@ NULL
 }
 
 # SedonaDB SQL for the query geometry of a spat_relate. SedonaDB requires both
-# sides of a predicate to share a CRS, and which CRS it gives a store written
-# without one (`crs: null`) depends on its version: `ogc:crs84` in older
-# releases, none in newer ones. The query geometry takes the CRS of the store's
-# own `geom` column, so the two always match.
+# sides of a predicate to share a CRS. The query geometry takes the CRS of the
+# store's `geom` column -- the planar frame the base view sets on a store
+# without one (.sedona_view_sql()), or the store's own -- so the two match.
 .sedona_query_geom_sql <- function(wkt) {
     wkt_escaped <- gsub("'", "''", wkt, fixed = TRUE)
     sprintf("ST_SetCrs(ST_GeomFromText('%s'), ST_Crs(geom))", wkt_escaped)
