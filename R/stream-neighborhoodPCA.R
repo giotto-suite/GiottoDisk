@@ -45,7 +45,11 @@ setMethod("reduceData",
     rm(nb, pairs)
     if (!local) ops <- lapply(ops, function(o) o[ord, ord])
     tmp <- .dump_tempfile()
-    src <- if (local) {
+    # a single store in a local order is read in place; otherwise copied
+    subs <- .exprbase_substores(x)
+    src <- if (local && length(subs) == 1L) {
+        x
+    } else if (local) {
         storeWrite(parquetExprStore(path = tmp), x)
     } else {
         .pe_rewrite_cell_order(x, ord, tmp)
@@ -55,7 +59,8 @@ setMethod("reduceData",
     } else {
         c(1 - param$lambda, param$lambda)
     }
-    list(src = src, info = list(sub = .exprbase_substores(src)[[1L]]$store),
+    if (!identical(src, x)) subs <- .exprbase_substores(src)
+    list(src = src, info = list(sub = subs[[1L]]$store),
         ops = ops, ord = ord, tmp = tmp, lam = lam,
         absolute = isTRUE(param$absolute),
         windows = .pe_chunk_ranges(1L, n_cells, budget))
