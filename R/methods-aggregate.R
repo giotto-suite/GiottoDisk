@@ -731,7 +731,7 @@ setMethod("calculateOverlap", signature("parquetGeomStore", "giottoBinPoints"),
         paste(sel, collapse = ", "), poly_from, pt_from)
     if (!is.null(bin_geom)) {
         join_sql <- .bin_area_sql(sel, bin_geom, extra_cols,
-            crs = if (engine == "sedona") .sedona_planar_crs_sql(x))
+            crs = if (engine == "sedona") .sedona_crs_sql(x))
     }
 
     if (engine == "duckdb") {

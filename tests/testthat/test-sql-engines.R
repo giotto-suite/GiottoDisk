@@ -330,3 +330,58 @@ test_that("sedonadb: a store without a CRS reads in the planar engineering frame
         output = "vector")
     expect_equal(area, c(100, 100))
 })
+
+test_that("sedonadb: a store with a CRS reads in it, also when reopened from its path", {
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
+    view_crs <- function(s) {
+        sedonadb::sd_to_view(storeRead(s, output = "sedona"), "gd_crs_t",
+            overwrite = TRUE)
+        sedonadb::sd_collect(sedonadb::sd_sql(
+            'SELECT ST_Crs(geom) AS crs FROM "gd_crs_t" LIMIT 1'))$crs
+    }
+    sq <- terra::vect(c("POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))",
+        "POLYGON ((20 0, 30 0, 30 10, 20 10, 20 0))"), crs = "EPSG:32633")
+    sq$poly_ID <- c("a", "b")
+    utm <- parquetGeomStore() |> storeWrite(sq)
+    expect_match(view_crs(utm), "UTM zone 33N", fixed = TRUE)
+    # a path-opened store has no @params; the CRS comes from the files
+    reopened <- parquetGeomStore(path = storePaths(utm)[[1L]], uid = utm@uid)
+    expect_null(reopened@params$crs)
+    expect_match(view_crs(reopened), "UTM zone 33N", fixed = TRUE)
+    plain <- parquetGeomStore() |> storeWrite(make_pts(5))
+    expect_match(view_crs(parquetGeomStore(path = storePaths(plain)[[1L]],
+        uid = plain@uid)),
+        "EngineeringCRS", fixed = TRUE)
+})
+
+test_that("sedonadb: a reopened one-point tile reads as points", {
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
+    # one point per tile: sedona reads its WKB as plain binary, so the view
+    # must build points from x/y -- known from the files, not @geomtype
+    pts <- parquetGeomStore() |> storeWrite(make_pts(2))
+    tiled <- parquetGeomTileStore() |> storeWrite(pts, threshold = 1L)
+    reopened <- parquetGeomTileStore(path = storePaths(tiled)[[1L]],
+        uid = tiled@uid)
+    expect_length(reopened@geomtype, 0L)
+    df <- sedonadb::sd_collect(storeRead(reopened, output = "sedona"))
+    expect_equal(nrow(df), 2L)
+})
+
+test_that("sedonadb: spatRelate and overlap run on stores with a CRS", {
+    skip_if_not_installed("sedonadb", minimum_version = "0.4.0")
+    sq <- terra::vect(c("POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))",
+        "POLYGON ((20 0, 30 0, 30 10, 20 10, 20 0))"), crs = "EPSG:32633")
+    sq$poly_ID <- c("a", "b")
+    polys <- parquetGeomStore() |> storeWrite(sq)
+    roi <- terra::vect("POLYGON ((15 -1, 35 -1, 35 11, 15 11, 15 -1))",
+        crs = "EPSG:32633")
+    hit <- storeRead(spatRelate(polys, roi, "intersects", engine = "sedona"),
+        output = "tibble")
+    expect_equal(hit$poly_ID, "b")
+    g <- data.frame(x = c(5, 25, 26, 50), y = 5, feat_ID = c("f", "g", "g", "h"))
+    pts <- parquetGeomStore() |>
+        storeWrite(terra::vect(g, geom = c("x", "y"), crs = "EPSG:32633"))
+    ov <- storeRead(calculateOverlap(polys, pts, engine = "sedona")@data,
+        output = "tibble")
+    expect_equal(sort(paste(ov$poly_ID, ov$feat_ID)), c("a f", "b g", "b g"))
+})

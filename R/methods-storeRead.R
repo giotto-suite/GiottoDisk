@@ -924,42 +924,85 @@ sd_view_ref <- function(sdf) {
 # `crs: null` (unknown), which sedona reads as OGC:CRS84 or as no CRS
 # depending on version. Lng/lat would be wrong for spatial omics coordinates
 # and invite geographic math on them; a local engineering frame claims only
-# a planar Cartesian space. Set at read time so no artifact commits to it.
-# adr/0026.
+# a planar Cartesian space -- no unit (`unity`) and no axis orientation. Set
+# at read time so no artifact commits to it. adr/0026.
 .SEDONA_PLANAR_CRS <- as.character(jsonlite::toJSON(list(
     `$schema` = "https://proj.org/schemas/v0.7/projjson.schema.json",
     type = "EngineeringCRS",
     name = "Giotto planar",
     datum = list(type = "EngineeringDatum", name = "Giotto planar"),
     coordinate_system = list(subtype = "Cartesian", axis = list(
-        list(name = "x", abbreviation = "x", direction = "east",
-            unit = "metre"),
-        list(name = "y", abbreviation = "y", direction = "north",
-            unit = "metre")))
+        list(name = "x", abbreviation = "x", direction = "unspecified",
+            unit = "unity"),
+        list(name = "y", abbreviation = "y", direction = "unspecified",
+            unit = "unity")))
 ), auto_unbox = TRUE))
 
-# SQL literal of the CRS a geom store is read in on sedona: the planar frame
-# for a store without a CRS, NULL for one with its own. SQL that builds
-# geometry to compare against the store's uses it as a constant -- copying
-# `ST_Crs()` per row turns a spatial join into a nested loop.
-.sedona_planar_crs_sql <- function(store) {
-    if (!inherits(store, "parquetGeomBase")) return(NULL)
-    if (nzchar(store@params$crs %||% "")) return(NULL)
-    sprintf("'%s'", gsub("'", "''", .SEDONA_PLANAR_CRS, fixed = TRUE))
+# GeoParquet metadata of a geom store's `geom` column, from its first file.
+# NULL when the files carry none.
+.pgeom_geo_meta <- function(store) {
+    f <- list.files(storePaths(store)[[1L]], pattern = "[.]parquet$",
+        recursive = TRUE, full.names = TRUE)[1L]
+    if (is.na(f)) return(NULL)
+    geo <- arrow::open_dataset(f)$schema$metadata$geo
+    if (is.null(geo)) return(NULL)
+    geo <- jsonlite::fromJSON(geo, simplifyVector = FALSE)
+    geo$columns[[geo$primary_column %||% "geom"]]
 }
 
-# Sedona base view of a store: a geom store without a CRS gets the planar
-# frame on its `geom`. Points are rebuilt from x_index/y_index rather than
-# given a CRS: sedona reads a WKB column whose file statistics have
-# min == max (a one-point tile) as plain binary, which ST_SetCrs rejects. The
-# 3-arg ST_Point, because ST_SetCrs(ST_Point()) fails to plan over multi-file
-# scans in sedonadb 0.4.
+# The CRS a geom store is in, "" for none. `@params$crs` when set (GiottoDisk
+# sets it on write), else what the files record -- a store opened from a path
+# loses its params, and one written outside the suite never had them.
+# GiottoDisk writes `crs: null` for none; under GeoParquet an omitted `crs`
+# is OGC:CRS84.
+.pgeom_store_crs <- function(store, geo_meta = .pgeom_geo_meta(store)) {
+    if (!is.null(store@params$crs)) return(store@params$crs)
+    if (is.null(geo_meta)) return("")
+    if (!"crs" %in% names(geo_meta)) return("OGC:CRS84")
+    crs <- geo_meta$crs
+    if (is.null(crs)) return("")
+    if (is.list(crs)) {
+        return(as.character(jsonlite::toJSON(crs, auto_unbox = TRUE)))
+    }
+    crs
+}
+
+# SQL literal of the CRS a geom store is read in on sedona: its own CRS, or
+# the planar frame for a store without one. SQL that builds geometry to
+# compare against the store's uses it as a constant -- copying `ST_Crs()` per
+# row turns a spatial join into a nested loop.
+.sedona_crs_sql <- function(store, geo_meta = .pgeom_geo_meta(store)) {
+    if (!inherits(store, "parquetGeomBase")) return(NULL)
+    crs <- .pgeom_store_crs(store, geo_meta)
+    if (!nzchar(crs)) crs <- .SEDONA_PLANAR_CRS
+    sprintf("'%s'", gsub("'", "''", crs, fixed = TRUE))
+}
+
+# Sedona base view of a store: a geom store's `geom` is put in the CRS of
+# .sedona_crs_sql(), so the view never depends on how a sedona version reads
+# the file's `crs`. Points are rebuilt from x_index/y_index rather than given
+# a CRS: sedona reads a WKB column whose file statistics have min == max (a
+# one-point tile) as plain binary, which ST_SetCrs rejects. The 3-arg
+# ST_Point, because ST_SetCrs(ST_Point()) fails to plan over multi-file scans
+# in sedonadb 0.4.
 .sedona_view_sql <- function(store, base_sql) {
-    crs <- .sedona_planar_crs_sql(store)
-    if (is.null(crs) || !"geom" %in% .pstore_get_fields(store)) {
+    if (!inherits(store, "parquetGeomBase") ||
+            !"geom" %in% .pstore_get_fields(store)) {
         return(base_sql)
     }
-    geom_sql <- if (identical(store@geomtype, "points")) {
+    # the files are read only for a store opened from a path, which has
+    # neither @params$crs nor @geomtype
+    has_type <- isTRUE(nzchar(store@geomtype))
+    geo_meta <- if (is.null(store@params$crs) || !has_type) {
+        .pgeom_geo_meta(store)
+    }
+    crs <- .sedona_crs_sql(store, geo_meta)
+    points <- if (has_type) {
+        identical(store@geomtype, "points")
+    } else {
+        identical(unlist(geo_meta$geometry_types), "Point")
+    }
+    geom_sql <- if (points) {
         sprintf("ST_Point(x_index, y_index, %s)", crs)
     } else {
         sprintf("ST_SetCrs(geom, %s)", crs)
