@@ -97,6 +97,7 @@ least one.
 | [0023](0023-registry-versions-by-exclusive-create.md) | The registry is committed as numbered versions by exclusive create; edits only create records or add tags | Proposed | 2026-11-09 |
 | [0024](0024-save-described-beside-it-delete-keeps-folder.md) | A save is described in a file beside it; deleting one keeps its folder | Proposed | 2026-11-09 |
 | [0025](0025-prune-keeps-recently-deleted-snapshots.md) | A prune keeps what recently deleted snapshots reached | Proposed | 2026-11-11 |
+| [0026](0026-sedona-planar-engineering-crs.md) | Sedona reads CRS-less stores in a planar engineering CRS; files stay `crs: null` | Proposed | 2026-11-23 |
 
 ## Backfill candidates
 
@@ -104,10 +105,6 @@ Decisions already argued out elsewhere in the repo or in commit messages, not
 yet written up. Not a queue — write one when it next comes up in conversation,
 so the ADR captures the argument while it is fresh.
 
-- **GeoParquet CRS is written as `crs: null` + `edges: planar`.** sedonadb
-  hardcodes `null` → `OGC:CRS84`, so the WKT side must emit
-  `ST_GeomFromText(wkt, 4326)` for predicates to match. Constrains anything
-  touching `.arrow_meta_add_geoparquet()`.
 - **`spat_relate` engine precedence** (per-call > option > auto sedona >
   duckdb > terra) and why the narrow path caches ids as an `id_filter` op
   rather than using a tuple-IN subquery (DataFusion does not support it).

@@ -82,6 +82,10 @@
   `load_polygon()`. Requires `Giotto (>= 4.3.6)`.
 
 ## bug fixes
+- SedonaDB queries put stores without a CRS (all Giotto data) in a planar
+  engineering CRS, whatever sedona version is installed, instead of the
+  lng/lat CRS sedona 0.4 assumes. Files are unchanged. This fixes
+  `calculateOverlap(engine = "sedona")` on bin points with the area rule.
 - `calculateOverlap(engine = "terra")`, including on store-backed bin points,
   and the terra engine of `spatRelate()` on tile stores sent about 200 MB to
   each parallel task: the per-tile function called an imported function

@@ -467,6 +467,16 @@ store@ops <- c(store@ops, list(list(type = "filter", expr = my_call)))
 `store@params$disk_extent` as bounding box, `store@params$crs %||% ""` for CRS.
 Tiled stores write the top-level extent to each tile file (intentional — files are internal).
 
+### Sedona CRS: a planar engineering frame, set at read time
+Files of a store with no CRS say `crs: null`. The sedona base view
+(`.sedona_view_sql()`) puts every such store in `.SEDONA_PLANAR_CRS`, a PROJJSON
+engineering CRS: `ST_SetCrs(geom, …)` for polygons, `ST_Point(x_index, y_index, …)` for
+points (the 3-arg form — `ST_SetCrs(ST_Point())` fails to plan over multi-file scans).
+Query geometries copy it via `ST_Crs(geom)`; geometry built inside a join takes the
+constant from `.sedona_planar_crs_sql()`. Do not write it into files, and do not make it
+per-row or per-side: a constant on both sides is what keeps the overlap a spatial join
+rather than a nested loop. A store with a real `@params$crs` is left alone. adr/0026.
+
 ## Output Formats
 
 **`storeRead` holds no engine-side state between calls.** Its job is to derive
