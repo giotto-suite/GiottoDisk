@@ -106,3 +106,20 @@ test_that("runNeighborhoodPCA on a backed object equals the in-memory one", {
     r <- abs(diag(stats::cor(a, b[rownames(a), ])))
     expect_gt(min(r), 1 - 1e-8)
 })
+
+test_that("an undirected network on a store equals the in-memory result", {
+    skip_if_not(methods::existsMethod("reduceData",
+        c("allMatrix", "neighborhoodPCAParam")))
+    o <- .npca_parts()
+    p <- Giotto::neighborhoodPCAParam(lambda = 0.8, npcs = 4L,
+        compute_agf = TRUE)
+    dp <- function(out) GiottoClass::delaunayNetworkParam(output = out)
+    ref <- GiottoClass::reduceData(o$mem, p, spatial_locs = o$locs,
+        network = GiottoClass::createNetwork(o$locs, dp("igraph")))
+    disk <- GiottoClass::createNetwork(o$locs, dp("parquet"))
+    expect_false(disk@directed)
+    got <- withr::with_options(list(giottodisk.chunk_size = 12L),
+        GiottoClass::reduceData(o$store, p, spatial_locs = o$locs,
+            network = disk))
+    .npca_same(got, ref)
+})

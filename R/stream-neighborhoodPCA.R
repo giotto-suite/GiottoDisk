@@ -12,8 +12,9 @@
 #' @rdname reduceData
 #' @param spatial_locs for a `neighborhoodPCAParam`: cells x 2 coordinates
 #'   with the cell IDs as row names.
-#' @param network,agf_network for a `neighborhoodPCAParam`: the kNN spatial
-#'   network(s) of the neighbours, as `parquetEdgeStore`s.
+#' @param network,agf_network for a `neighborhoodPCAParam`: the spatial
+#'   network(s) of the neighbours, as `parquetEdgeStore`s; an undirected one
+#'   gives both ends of each edge.
 #' @importClassesFrom Giotto neighborhoodPCAParam
 #' @importFrom Giotto neighborhood_operators neighborhood_agf
 #' @export
@@ -41,6 +42,10 @@ setMethod("reduceData",
                 call. = FALSE)
         }
         e <- .edge_view_ends(net, .edge_to_cell_map(net, x))
+        # an undirected network (Delaunay) gives each pair to both cells
+        if (!isTRUE(net@directed)) {
+            e <- list(a = c(e$a, e$b), b = c(e$b, e$a))
+        }
         neighborhood_operators(e$a, e$b, locs)
     }
     ops <- operators(network)
