@@ -25,6 +25,13 @@
     list(store = store, mem = mem[, colnames(m)], locs = xy)
 }
 
+# the same kNN spatial network in memory and as an edge store
+.npca_net <- function(locs, k) {
+    p <- function(out) GiottoClass::kNNNetworkParam(k = k, output = out)
+    list(mem = GiottoClass::createNetwork(locs, p("data.table")),
+        disk = GiottoClass::createNetwork(locs, p("parquet")))
+}
+
 .npca_same <- function(got, ref) {
     expect_equal(dim(got$u), dim(ref$u))
     expect_identical(rownames(got$u), rownames(ref$u))
@@ -37,14 +44,17 @@ test_that("neighborhoodPCAParam on a store equals the in-memory result", {
     skip_if_not(methods::existsMethod("reduceData",
         c("allMatrix", "neighborhoodPCAParam")))
     o <- .npca_parts()
+    net <- .npca_net(o$locs, 6L)
     for (agf in c(FALSE, TRUE)) {
         p <- Giotto::neighborhoodPCAParam(lambda = 0.8, k_geom = 6L,
             npcs = 5L, compute_agf = agf)
-        ref <- GiottoClass::reduceData(o$mem, p, spatial_locs = o$locs)
+        ref <- GiottoClass::reduceData(o$mem, p, spatial_locs = o$locs,
+            network = net$mem)
         # one window, then windows small enough to need the local reorder
         for (cs in list(NULL, 12L)) {
             got <- withr::with_options(list(giottodisk.chunk_size = cs),
-                GiottoClass::reduceData(o$store, p, spatial_locs = o$locs))
+                GiottoClass::reduceData(o$store, p, spatial_locs = o$locs,
+                    network = net$disk))
             .npca_same(got, ref)
         }
     }
@@ -57,8 +67,12 @@ test_that("a feature subset of the store gives the subset's embedding", {
     feats <- rownames(o$mem)[c(1:4, 19:25)]
     p <- Giotto::neighborhoodPCAParam(lambda = 0.2, k_geom = 6L, npcs = 4L,
         compute_agf = TRUE)
-    ref <- GiottoClass::reduceData(o$mem[feats, ], p, spatial_locs = o$locs)
-    got <- GiottoClass::reduceData(o$store[feats, ], p, spatial_locs = o$locs)
+    n6 <- .npca_net(o$locs, 6L)
+    n9 <- .npca_net(o$locs, 9L)
+    ref <- GiottoClass::reduceData(o$mem[feats, ], p, spatial_locs = o$locs,
+        network = n6$mem, agf_network = n9$mem)
+    got <- GiottoClass::reduceData(o$store[feats, ], p, spatial_locs = o$locs,
+        network = n6$disk, agf_network = n9$disk)
     .npca_same(got, ref)
 })
 

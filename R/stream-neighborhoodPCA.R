@@ -12,13 +12,15 @@
 #' @rdname reduceData
 #' @param spatial_locs for a `neighborhoodPCAParam`: cells x 2 coordinates
 #'   with the cell IDs as row names.
+#' @param network,agf_network for a `neighborhoodPCAParam`: the kNN spatial
+#'   network(s) of the neighbours, as `parquetEdgeStore`s.
 #' @importClassesFrom Giotto neighborhoodPCAParam
 #' @importFrom Giotto neighborhood_operators neighborhood_agf
 #' @export
 setMethod("reduceData",
     signature(x = "parquetExprBase", param = "neighborhoodPCAParam"),
-    function(x, param, ..., spatial_locs) {
-        prep <- .pe_npca_prepare(x, param, spatial_locs)
+    function(x, param, ..., spatial_locs, network, agf_network = network) {
+        prep <- .pe_npca_prepare(x, param, spatial_locs, network, agf_network)
         on.exit(unlink(prep$tmp, recursive = TRUE), add = TRUE)
         .pe_npca_pca(prep, param$npcs)
     }
@@ -26,17 +28,23 @@ setMethod("reduceData",
 
 # The neighbour operators, the block weights and the windows (spatial patches
 # of target cells, as view positions).
-.pe_npca_prepare <- function(x, param, spatial_locs) {
+.pe_npca_prepare <- function(x, param, spatial_locs, network, agf_network) {
     locs <- as.matrix(spatial_locs)[x@cell_ids, , drop = FALSE]
     if (anyNA(locs)) {
         stop("[neighborhoodPCAParam] some cells have no spatial location",
             call. = FALSE)
     }
-    k0 <- param$k_geom[1L]
-    k1 <- param$k_geom[length(param$k_geom)]
     agf <- isTRUE(param$compute_agf)
-    ops <- neighborhood_operators(locs, k0)
-    ops1 <- if (agf && k1 != k0) neighborhood_operators(locs, k1)
+    operators <- function(net) {
+        if (!inherits(net, "parquetEdgeStore")) {
+            stop("[neighborhoodPCAParam] `network` must be a parquetEdgeStore",
+                call. = FALSE)
+        }
+        e <- .edge_view_ends(net, .edge_to_cell_map(net, x))
+        neighborhood_operators(e$a, e$b, locs)
+    }
+    ops <- operators(network)
+    ops1 <- if (agf && !identical(agf_network, network)) operators(agf_network)
     ops <- list(w = ops$w, a = (ops1 %||% ops)$a, wc = (ops1 %||% ops)$wc,
         ws = (ops1 %||% ops)$ws)
     if (!agf) ops <- ops["w"]

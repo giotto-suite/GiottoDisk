@@ -105,6 +105,22 @@ NULL
             weighted = isTRUE(weighted), dedupe = isTRUE(x@directed))
         return(data.table::data.table(a = p$a, b = p$b, w = p$w))
     }
+    ev <- .edge_view_ends(x, map, weighted, drop_outside = FALSE)
+    pairs <- data.table::data.table(a = pmin(ev$a, ev$b),
+        b = pmax(ev$a, ev$b), w = ev$w)
+    rm(ev)
+    pairs <- pairs[!is.na(a) & !is.na(b)]
+    if (isTRUE(x@directed)) pairs <- pairs[, list(w = mean(w)), by = c("a", "b")]
+    pairs[]
+}
+
+# The edges of `x` as stored, direction kept: data.table(a, b, w) of the view
+# positions of each edge's `from` and `to` ends and its weight (stored
+# `weight` when `weighted = TRUE`, else 1). `map` is `.edge_to_cell_map(x,
+# pe)`. Edges with an end outside the view are dropped (kept as NA with
+# `drop_outside = FALSE`).
+.edge_view_ends <- function(x, map, weighted = FALSE, drop_outside = TRUE) {
+    a <- b <- NULL  # NSE
     cols <- c("from_id", "to_id", if (isTRUE(weighted)) "weight")
     ev <- storeRead(x, output = "arrow") |>
         dplyr::select(dplyr::all_of(cols)) |>
@@ -119,14 +135,11 @@ NULL
         out[out == 0L] <- NA_integer_
         out
     }
-    pa <- lookup(ev$from_id)
-    pb <- lookup(ev$to_id)
-    pairs <- data.table::data.table(a = pmin(pa, pb), b = pmax(pa, pb),
+    ends <- data.table::data.table(a = lookup(ev$from_id),
+        b = lookup(ev$to_id),
         w = if (isTRUE(weighted)) as.numeric(ev$weight) else 1)
-    rm(ev, pa, pb)
-    pairs <- pairs[!is.na(a) & !is.na(b)]
-    if (isTRUE(x@directed)) pairs <- pairs[, list(w = mean(w)), by = c("a", "b")]
-    pairs[]
+    if (drop_outside) ends <- ends[!is.na(a) & !is.na(b)]
+    ends[]
 }
 
 # Weighted degree of every view cell from `.edge_view_pairs()`, 0 for none.
