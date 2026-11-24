@@ -103,6 +103,12 @@
 - `sourceContains(src, <giotto>)` tells whether a `snapshotSave()` would move
   any of the object's stores into the project, and names them if so.
 ## new
+- `processData()` takes `zscoreScaleParam` and `defaultScaleParam`, as in
+  memory. The means and standard deviations are computed once and frozen
+  into the store, so a slice reads the values of the whole. Centred values
+  are dense: they are read only as a bounded slice
+  (`storeRead(output = "dgcmatrix")`, capped by option
+  `giottodisk.dense_max`); streaming passes refuse a centred store.
 - AnnData `.h5ad` files are read without python, as building blocks for a
   hand-assembled object: `h5adInput()` streams `X`, `raw/X` or a layer (CSR,
   CSC or dense) into a `parquetExprStore`; `h5adCellMeta()`, `h5adFeatMeta()`,

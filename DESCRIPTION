@@ -136,6 +136,7 @@ Collate:
     'stream-motif.R'
     'stream-normalize.R'
     'stream-pca.R'
+    'stream-scale.R'
     'stream-spatialSmooth.R'
     'utils-spatial.R'
     'tilework.R'

@@ -59,21 +59,23 @@ NULL
 #                to a numeric vector INDEXED BY ON-DISK ID. Invariant under
 #                `[` -- on-disk ids do not move when a view narrows.
 #
-#   add               (STUB -- recorded and refused, not implemented)
-#     Add a per-axis offset. Params mirror `multiply`, with `terms` in place
-#     of `factors`. Both executors refuse it; no verb emits one. Intended
-#     shape, scope and why it is deferred are in
-#     vignettes/articles/roadmap.Rmd, "An `add` op for centred display values".
+#   add               (phase: post only; bounded reads only)
+#     Add a per-axis offset (centring). Params mirror `multiply`, with
+#     `terms` in place of `factors`. Emitted by zscoreScaleParam with
+#     `center = TRUE`, always onto @post_ops: Acero cannot synthesize the
+#     implicit zeros, so `.pe_apply_op` refuses it.
 #
-#     Note for whoever implements it: every sufficient-statistic verb here
-#     (`.pe_accum_raw` and its callers -- QC stats, grouped feature stats, HVF,
-#     marker moments) is correct only because an absent entry means 0 in the
-#     value space being aggregated. `multiply` has f(0) = 0 and `log` is log1p
-#     with `offset != 1` refused precisely to keep it. `add` is the first op
-#     that would break it, and it would break it SILENTLY -- wrong means, no
-#     error. The roadmap's densification into triplet form is what preserves
-#     the invariant, by making the zero block explicit before f(0) != 0 can
-#     matter. It is not an optimisation detail; ship it with the op.
+#     The R-side executor densifies the frame into triplet form over the
+#     slice being read (`.op_add_df`), so the zero block is explicit before
+#     f(0) != 0 can matter. It runs only for a read that hands the fold that
+#     slice -- `storeRead(output = "dgcmatrix")`, already bounded by
+#     `.pe_check_dgc_dims()`. Every other consumer reaches the fold without
+#     one and is refused: the sufficient-statistic verbs (`.pe_accum_raw`
+#     and its callers -- QC stats, grouped feature stats, HVF, marker
+#     moments) are correct only because an absent entry means 0, and a
+#     windowed pass over a centred chain would densify the whole store. A
+#     statistic over a centred chain that the producers need is derived from
+#     the chain before the `add` instead (`.pe_axis_moments`). See adr/0027.
 #
 #   log               (phase: lazy or post)
 #     log(value + 1) / log(base). Carries no axis-keyed state.
@@ -300,15 +302,58 @@ NULL
     dplyr::tbl(dbplyr::remote_con(x), name)
 }
 
-# `add` is recorded but not yet executable. It cannot be lowered to Acero
-# (arrow has no way to synthesize the implicit zeros), and the R-side executor
-# would need to densify the slice into triplet form first -- see the op
-# inventory above for the intended shape.
+# `add` cannot be lowered to Acero (arrow has no way to synthesize the
+# implicit zeros), and over triplets it runs only on a bounded slice -- see the
+# op inventory above.
 .op_add_refuse <- function(op) {
-    stop("[.pe_apply_op] `add` ops are recorded but not yet executable. ",
-         "Adding a per-", op$axis %||% "cell", " offset requires densifying ",
-         "the slice (every implicit zero becomes the offset), which no ",
-         "executor does yet.", call. = FALSE)
+    stop("[storeRead] the store is centred (a per-", op$axis %||% "cell",
+         " `add` op, from zscoreScaleParam(center = TRUE)): its values are ",
+         "dense, so they are read only as a bounded slice, with ",
+         "storeRead(output = \"dgcmatrix\") on a `[`-subset. Streaming passes ",
+         "and tabular reads over the whole store are refused.", call. = FALSE)
+}
+
+# The slice a bounded read covers, for `.op_add_df`: one entry per substore,
+# with its uid and the ON-DISK row and col ids in view.
+.pe_read_slice <- function(store) {
+    lapply(.exprbase_substores(store), function(se) {
+        s <- se$store
+        list(uid = as.character(s@uid),
+            rows = if (length(s@cell_idx)) s@cell_idx else seq_len(as.integer(s@n_cells)),
+            cols = if (length(s@gene_idx)) s@gene_idx else seq_len(as.integer(s@n_genes)))
+    })
+}
+
+# Add a per-axis offset over a slice: the frame densifies into triplet form
+# (every (row_id, col_id) of the slice, absent entries as 0), so every op
+# after it keeps working on triplets. A slice too large to hold dense is
+# refused (option `giottodisk.dense_max`, entries).
+.op_add_df <- function(df, op, slice) {
+    value <- source_id <- row_id <- col_id <- NULL   # NSE
+    n <- sum(vapply(slice, function(s) as.numeric(length(s$rows)) * length(s$cols), 1))
+    cap <- getOption("giottodisk.dense_max", 1e7)
+    if (n > cap) {
+        stop("[storeRead] the store is centred, so this read is dense: ",
+             format(n, big.mark = ","), " values, over `giottodisk.dense_max` (",
+             format(cap, big.mark = ","), "). `[`-subset to fewer cells or ",
+             "features first.", call. = FALSE)
+    }
+    if (!"source_id" %in% names(df)) df[, source_id := slice[[1L]]$uid]
+    full <- data.table::rbindlist(lapply(slice, function(s)
+        data.table::CJ(source_id = s$uid, row_id = as.integer(s$rows),
+            col_id = as.integer(s$cols))))
+    df <- df[, list(source_id = as.character(source_id), row_id = as.integer(row_id),
+        col_id = as.integer(col_id), value = as.numeric(value))]
+    df <- df[full, on = c("source_id", "row_id", "col_id")]
+    df[is.na(value), value := 0]
+    axis <- op$axis %||% "cell"
+    if (identical(axis, "all")) {
+        df[, value := value + as.numeric(op$terms)]
+        return(df)
+    }
+    key <- if (identical(axis, "feat")) "col_id" else "row_id"
+    df[, value := value + .pe_payload_rows(df, op$terms, key, missing = 0)]
+    df
 }
 
 
@@ -318,21 +363,22 @@ NULL
 # by any consumer that collects a triplet chunk into a data.table. Ops
 # mutate `df$value` in place.
 
-.pe_apply_post_op_df <- function(df, op) {
+# `slice` (`.pe_read_slice()`): given by a bounded read, it lets an `add` run.
+.pe_apply_post_op_df <- function(df, op, slice = NULL) {
     switch(op$type,
         "log"      = .op_transform_log(df, op),
         "expm1"    = .op_transform_expm1(df, op),
         "multiply" = .pe_apply_post_op_multiply_df(df, op),
         "compare"  = .op_compare(df, op),
-        "add"      = .op_add_refuse(op),
+        "add"      = if (is.null(slice)) .op_add_refuse(op) else .op_add_df(df, op, slice),
         stop("[.pe_apply_post_op_df] unknown post op type: ", op$type,
             call. = FALSE)
     )
 }
 
-.pe_apply_post_ops_df <- function(df, post_ops) {
+.pe_apply_post_ops_df <- function(df, post_ops, slice = NULL) {
     if (length(post_ops) == 0L) return(df)
-    for (op in post_ops) df <- .pe_apply_post_op_df(df, op)
+    for (op in post_ops) df <- .pe_apply_post_op_df(df, op, slice)
     df
 }
 

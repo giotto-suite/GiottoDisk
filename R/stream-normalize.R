@@ -29,10 +29,7 @@ NULL
 # .pe_apply_post_op_multiply_df). The recipe survives saveRDS / load
 # cycles without special handling — no closures.
 #
-# zscoreScaleParam is intentionally NOT implemented for parquetExprBase:
-# per-cell / per-gene centering+scaling densifies the sparse matrix and
-# breaks the O(N*k) streaming guarantee. normalizeGiotto already errors
-# upstream when scale_cells / scale_feats = TRUE on a streaming backend.
+# Scaling (zscoreScaleParam, defaultScaleParam) is in stream-scale.R.
 
 # ---- libraryNormParam: compute & store JIT scale factors -------------------
 

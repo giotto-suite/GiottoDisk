@@ -287,8 +287,9 @@ grouped statistics, for ungrouped-with-`@post_ops`, for both PCA paths and for
 the bake. Grouped statistics are also downstream of clustering, so nothing
 propagates into kNN / Leiden / UMAP.
 
-That line moves if an op ever lands on `@post_ops` (the stubbed `add`, or a
-z-score/scale op). A post-op chain is a different computation anyway, so its
+That line moves if a sparse op ever lands on `@post_ops`. A centred store's
+`add` (zscoreScaleParam) does not move it: the accumulators refuse a centred
+chain, which is read only as a bounded slice (adr/0027). A post-op chain is a different computation anyway, so its
 *values* are expected to differ — the thing to notice is structural: the
 ungrouped accumulator would become windowed, which makes HVG variance
 window-count dependent, and HVG selection is a discrete top-N cut **upstream**
