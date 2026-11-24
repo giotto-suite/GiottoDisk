@@ -98,6 +98,7 @@ least one.
 | [0024](0024-save-described-beside-it-delete-keeps-folder.md) | A save is described in a file beside it; deleting one keeps its folder | Proposed | 2026-11-09 |
 | [0025](0025-prune-keeps-recently-deleted-snapshots.md) | A prune keeps what recently deleted snapshots reached | Proposed | 2026-11-11 |
 | [0026](0026-sedona-planar-engineering-crs.md) | Sedona reads CRS-less stores in a planar engineering CRS; files stay `crs: null` | Proposed | 2026-11-23 |
+| [0027](0027-centred-values-are-read-as-a-slice.md) | Centred values are recorded, and read only as a bounded slice | Accepted | 2026-11-24 |
 
 ## Backfill candidates
 

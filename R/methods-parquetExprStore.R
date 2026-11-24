@@ -277,12 +277,9 @@ setMethod("storeRead", signature("parquetExprStore"), function(store,
 # `[`-subset first. Defaults from options
 # `giottodisk.dgc_max_rows` / `giottodisk.dgc_max_cols` (100 each).
 #
-# TODO ScaledMatrix: when zscoreScaleParam / per-gene centering arrives
-# (cell-population op kind), the dgCMatrix here can be wrapped in
-# ScaledMatrix::ScaledMatrix(., center = gene_means, scale = gene_sds)
-# so per-gene centering applies lazily on top of the sparse libsize-log
-# values without densifying. The op record's gene-axis lookup table
-# would supply `center` / `scale` directly.
+# A centred store (an `add` op, zscoreScaleParam) is the one case where the
+# slice is dense: the fold is handed the slice (`.pe_read_slice()`) and fills
+# it in, and the matrix built from it has every entry stored (adr/0027).
 
 .pe_check_dgc_dims <- function(n_rows, n_cols, max_rows, max_cols) {
     if (is.null(max_rows)) max_rows <-
@@ -337,7 +334,7 @@ setMethod("storeRead", signature("parquetExprStore"), function(store,
             dplyr::any_of(c("row_id", "col_id", "value", "source_id"))))
         data.table::setDT(df)
         # Apply @post_ops R-side; mutates df$value in place.
-        df <- .pe_apply_post_ops_df(df, store@post_ops)
+        df <- .pe_apply_post_ops_df(df, store@post_ops, .pe_read_slice(store))
         col_ids <- df$col_id
         row_ids <- df$row_id
         x_col <- df$value
@@ -507,7 +504,7 @@ setMethod("storeRead", signature("unionParquetExprStore"), function(store,
     # payload (e.g. a `multiply` op's per-substore factor vectors) is keyed
     # by uid + on-disk id, so .pe_apply_post_op_multiply_df resolves it across
     # substores.
-    df <- .pe_apply_post_ops_df(df, store@post_ops)
+    df <- .pe_apply_post_ops_df(df, store@post_ops, .pe_read_slice(store))
 
     # j: union-global cell position from (source_id, row_id). Build a
     # lookup per substore: orig_row_id within the substore's @cell_idx
