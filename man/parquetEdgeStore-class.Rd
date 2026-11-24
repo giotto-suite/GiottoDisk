@@ -44,10 +44,12 @@ results at read time. Spatial coords (\code{x_index}, \code{y_index}) are NOT
 duplicated here — they live in \code{parquetGeomStore} and are joined
 across stores when needed.
 
-For undirected networks (sNN, spatial) edges are stored once in
-canonical form (\code{from_id <= to_id}). kNN networks are symmetrized
-at write time and stored canonical. Algorithms requiring directed
-traversal can union with a swap.
+Undirected networks (sNN, Delaunay, radius) store each pair once,
+\code{from_id <= to_id}, and are marked \code{directed = FALSE}; algorithms that
+need both directions union the edges with their swap. Directed networks
+(kNN) keep each edge as written, from a cell to its neighbour, and are
+marked \code{directed = TRUE}. The writer only sorts edges; the caller gives
+the canonical form and the direction.
 }
 \section{Slots}{
 
@@ -60,8 +62,8 @@ traversal can union with a swap.
 
 \item{\code{type}}{character. One of "kNN", "sNN", "spatial".}
 
-\item{\code{directed}}{logical. TRUE = edges stored directed as-is;
-FALSE = canonical undirected form.}
+\item{\code{directed}}{logical. \code{TRUE}: edges as written (kNN); \code{FALSE}: each
+undirected pair once.}
 }}
 
 \seealso{

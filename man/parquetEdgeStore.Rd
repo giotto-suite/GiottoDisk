@@ -19,7 +19,8 @@ written into \verb{<path>/edges/} and \verb{<path>/nodes/} respectively.}
 
 \item{type}{character. Network type ("kNN" / "sNN" / "spatial").}
 
-\item{directed}{logical. Storage convention. Default FALSE.}
+\item{directed}{logical. \code{TRUE} for a directed network (kNN), \code{FALSE}
+(default) for an undirected one stored once per pair.}
 
 \item{n_edges}{numeric. Edge count. Auto-counted lazily if NA.}
 
