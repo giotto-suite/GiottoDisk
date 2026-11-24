@@ -24,7 +24,7 @@ Imports:
     data.table (>= 1.12.2),
     digest,
     dplyr,
-    Giotto (>= 4.3.6),
+    Giotto (>= 4.3.7),
     GiottoClass (>= 0.8.0),
     GiottoUtils (>= 0.2.9),
     igraph,
@@ -92,6 +92,8 @@ Collate:
     'convenience-xenium.R'
     'convenience-visium.R'
     'convenience-visiumhd.R'
+    'methods-storeWrite.R'
+    'cosmx-tx-store.R'
     'image-cog.R'
     'methods-accessors.R'
     'methods-aggregate.R'
@@ -119,7 +121,6 @@ Collate:
     'methods-specialCols.R'
     'methods-storeInspect.R'
     'methods-storeRead.R'
-    'methods-storeWrite.R'
     'methods-store_nostate.R'
     'methods-transforms.R'
     'pca-param.R'
