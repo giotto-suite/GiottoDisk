@@ -4,6 +4,10 @@
 # adds up its per-feature sums and Gram matrix; per-feature scaling and the
 # lambda weights act on the Gram matrix exactly, and its eigenvectors are the
 # loadings. Pass 2 projects each window.
+#
+# Windows are spatial patches of target cells rather than cell ranges: each
+# reads its targets and their neighbours through the store view (`[`), so the
+# stored cell order does not matter and the store is never rewritten.
 
 #' @rdname reduceData
 #' @param spatial_locs for a `neighborhoodPCAParam`: cells x 2 coordinates
@@ -19,10 +23,9 @@ setMethod("reduceData",
     }
 )
 
-# The materialized source in a local cell order, the neighbour operators in
-# that order, the block weights and the windows of target cells.
+# The neighbour operators, the block weights and the windows (spatial patches
+# of target cells, as view positions).
 .pe_npca_prepare <- function(x, param, spatial_locs) {
-    n_cells <- as.integer(x@n_cells)
     locs <- as.matrix(spatial_locs)[x@cell_ids, , drop = FALSE]
     if (anyNA(locs)) {
         stop("[neighborhoodPCAParam] some cells have no spatial location",
@@ -36,34 +39,41 @@ setMethod("reduceData",
     ops <- list(w = ops$w, a = (ops1 %||% ops)$a, wc = (ops1 %||% ops)$wc,
         ws = (ops1 %||% ops)$ws)
     if (!agf) ops <- ops["w"]
-    nb <- Matrix::summary(Reduce(`+`, lapply(ops, abs)))
-    pairs <- list(a = nb$i, b = nb$j)
     P <- length(x@feat_ids)
     budget <- .pe_npca_window_cells(x, P * (2L + agf))
-    local <- budget >= n_cells || .pairs_local(pairs, budget)
-    ord <- if (local) seq_len(n_cells) else .pairs_bfs_order(pairs, n_cells)
-    rm(nb, pairs)
-    if (!local) ops <- lapply(ops, function(o) o[ord, ord])
-    tmp <- .dump_tempfile()
-    # a single store in a local order is read in place; otherwise copied
-    subs <- .exprbase_substores(x)
-    src <- if (local && length(subs) == 1L) {
-        x
-    } else if (local) {
-        storeWrite(parquetExprStore(path = tmp), x)
-    } else {
-        .pe_rewrite_cell_order(x, ord, tmp)
-    }
     lam <- if (agf) {
         c(1 - param$lambda, param$lambda * c(2, 1) / 3)
     } else {
         c(1 - param$lambda, param$lambda)
     }
-    if (!identical(src, x)) subs <- .exprbase_substores(src)
-    list(src = src, info = list(sub = subs[[1L]]$store),
-        ops = ops, ord = ord, tmp = tmp, lam = lam,
+    list(src = x, ops = ops, tmp = character(), lam = lam,
         absolute = isTRUE(param$absolute),
-        windows = .pe_chunk_ranges(1L, n_cells, budget))
+        windows = .pe_spatial_windows(locs, budget))
+}
+
+# Cells grouped into compact spatial patches of at most `budget` cells: a grid
+# of about four tiles per patch, walked row by row in alternating direction,
+# with consecutive tiles gathered until the next would exceed the budget.
+.pe_spatial_windows <- function(locs, budget) {
+    n <- nrow(locs)
+    if (budget >= n) return(list(seq_len(n)))
+    r <- apply(locs[, 1:2, drop = FALSE], 2L, range)
+    side <- sqrt(prod(pmax(r[2L, ] - r[1L, ], 1e-12)) * (budget / 4) / n)
+    gx <- floor((locs[, 1L] - r[1L, 1L]) / side)
+    gy <- floor((locs[, 2L] - r[1L, 2L]) / side)
+    gx <- ifelse(gy %% 2 == 0, gx, max(gx) - gx)
+    tiles <- split(seq_len(n), gy * (max(gx) + 1) + gx)
+    out <- list()
+    cur <- integer()
+    for (t in tiles) {
+        if (length(cur) && length(cur) + length(t) > budget) {
+            out[[length(out) + 1L]] <- sort(cur)
+            cur <- integer()
+        }
+        cur <- c(cur, t)
+    }
+    if (length(cur)) out[[length(out) + 1L]] <- sort(cur)
+    out
 }
 
 # Target cells per window: the dense blocks of a window (features x 2 or 3,
@@ -86,19 +96,17 @@ setMethod("reduceData",
 # Window `i` of the joint values: features x 2 or 3 blocks (rows: x, x_H0,
 # x_H1) x the window's target cells, unscaled, and their view positions.
 .pe_npca_block <- function(prep, i) {
-    w <- prep$windows[[i]]
-    tgt <- w[[1L]]:w[[2L]]
+    tgt <- prep$windows[[i]]
     rows <- lapply(prep$ops, function(o) o[tgt, , drop = FALSE])
     nbr <- unlist(lapply(rows, function(r) which(diff(r@p) > 0L)))
-    rng <- range(c(tgt, nbr))
-    X <- .pe_read_cell_range(prep, rng)
-    P <- length(prep$src@feat_ids)
+    idx <- sort(unique(c(tgt, nbr)))
+    feats <- prep$src@feat_ids
+    P <- length(feats)
     out <- matrix(0, P * length(prep$lam), length(tgt))
-    if (is.null(X)) return(list(J = out, vp = prep$ord[tgt]))
-    X <- X[prep$src@feat_ids, , drop = FALSE]
-    rr <- rng[1L]:rng[2L]
-    op <- function(name) Matrix::t(rows[[name]][, rr, drop = FALSE])
-    out[seq_len(P), ] <- as.matrix(X[, tgt - rng[1L] + 1L, drop = FALSE])
+    X <- .pe_read_cells(prep$src, idx)
+    if (is.null(X)) return(list(J = out, vp = tgt))
+    op <- function(name) Matrix::t(rows[[name]][, idx, drop = FALSE])
+    out[seq_len(P), ] <- as.matrix(X[, match(tgt, idx), drop = FALSE])
     h0 <- as.matrix(X %*% op("w"))
     out[P + seq_len(P), ] <- if (prep$absolute) abs(h0) else h0
     if (length(prep$lam) == 3L) {
@@ -109,27 +117,22 @@ setMethod("reduceData",
             sweep(m, 2L, Matrix::rowSums(rows$ws), "*")
         out[2L * P + seq_len(P), ] <- sqrt(re^2 + im^2)
     }
-    list(J = out, vp = prep$ord[tgt])
+    list(J = out, vp = tgt)
 }
 
-# Values of the source cells rng[1]:rng[2] (features x cells, all of the
-# range's columns, in order); NULL when the range holds no values.
-.pe_read_cell_range <- function(prep, rng) {
-    X <- .pe_read_chunk_sub(prep$info, rng[1L], rng[2L], list(),
-        length(prep$src@feat_ids))
-    if (is.null(X)) return(NULL)
+# Values of the view's cells `idx` (sorted view positions) through the view
+# (`[`): features (all of the view's, in order) x cells (in `idx` order);
+# NULL when they hold no values.
+.pe_read_cells <- function(x, idx) {
+    X <- storeRead(x[, idx], output = "dgcmatrix", max_rows = Inf,
+        max_cols = Inf)
+    if (length(X@x) == 0L) return(NULL)
     Xt <- methods::as(X, "TsparseMatrix")
-    cj <- match(colnames(X), prep$src@cell_ids[rng[1L]:rng[2L]])
-    full <- Matrix::sparseMatrix(i = Xt@i + 1L, j = cj[Xt@j + 1L], x = Xt@x,
-        dims = c(nrow(X), rng[2L] - rng[1L] + 1L),
-        dimnames = list(rownames(X), NULL))
-    miss <- setdiff(prep$src@feat_ids, rownames(full))
-    if (length(miss)) {
-        full <- rbind(full, Matrix::sparseMatrix(i = integer(), j = integer(),
-            dims = c(length(miss), ncol(full)),
-            dimnames = list(miss, NULL)))
-    }
-    full
+    ri <- match(rownames(X), x@feat_ids)
+    cj <- match(colnames(X), x@cell_ids[idx])
+    Matrix::sparseMatrix(i = ri[Xt@i + 1L], j = cj[Xt@j + 1L], x = Xt@x,
+        dims = c(length(x@feat_ids), length(idx)),
+        dimnames = list(x@feat_ids, NULL))
 }
 
 # Both passes and the eigen solve; the output of pcaParam's reduceData()
@@ -166,7 +169,7 @@ setMethod("reduceData",
         z <- (b$J[keep, , drop = FALSE] - mu[keep]) * cf[keep]
         u[b$vp, ] <- crossprod(z, V)
     }
-    rownames(u) <- prep$src@cell_ids[order(prep$ord)]
+    rownames(u) <- prep$src@cell_ids
     ev <- pmax(e$values[seq_len(npcs)], 0)
     list(u = u, d = sqrt(ev), v = V, sdev = sqrt(ev / (n - 1)),
         eigenvalues = ev / (n - 1))
