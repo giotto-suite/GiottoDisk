@@ -24,7 +24,7 @@ Imports:
     data.table (>= 1.12.2),
     digest,
     dplyr,
-    Giotto (>= 4.3.6),
+    Giotto (>= 4.3.7),
     GiottoClass (>= 0.8.0),
     GiottoUtils (>= 0.2.9),
     igraph,
