@@ -787,7 +787,7 @@ object, since it has no disk representation yet.
   cells, nor their order**: the cells come from the first expression set,
   and a protein store with extra, missing or reordered cells is accepted
   silently. A reader that loads several modalities matches the cell ids
-  itself (`.cosmx_match_cells()`, `keep_cells = "intersect"`) and puts every
+  itself (`@helpers$match_cells()`, `keep_cells = "intersect"`) and puts every
   feature type in one order before `setGiotto()` (on a `parquetExprStore`
   the reorder is a `cell_idx` view, not a rewrite).
 - Vendor metadata that reuses one modality's column names for another

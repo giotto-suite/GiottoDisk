@@ -85,10 +85,6 @@ test_that("isotypes fall back to the IgG pattern without a plex file", {
     r <- .cosmx_reader(d, protein_dir = pd)
     st <- r$load_protein(output = "store", verbose = FALSE)
     expect_identical(st$protein_neg@feat_ids, c("Ms IgG1", "Rb IgG"))
-    expect_identical(
-        GiottoDisk:::.cosmx_protein_negatives(NULL),
-        list("IgG")
-    )
 })
 
 test_that("a decimal .csv.gz matrix is read by the CSV route", {
@@ -284,8 +280,12 @@ test_that("several matching files in protein_dir warn and take the first", {
     pd <- .mk_cosmx_protein_dir(d)
     file.copy(file.path(pd, "Fixture_exprMat_file.csv"),
               file.path(pd, "Other_exprMat_file.csv"))
-    expect_warning(GiottoDisk:::.cosmx_protein_paths(pd),
-                   "2 exprMat_file files in protein_dir; using Fixture")
+    p <- tempfile("cosmx_proj_")
+    dir.create(p)
+    expect_warning(
+        importCosMxDisk(d, backend = p, version = "v6", protein_dir = pd),
+        "2 exprMat_file files in protein_dir; using Fixture"
+    )
 })
 
 test_that("an empty split group is dropped by name, not shifted", {
