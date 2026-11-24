@@ -58,12 +58,10 @@ whose file statistics have min == max (a one-point tile) as plain binary, and
 ## Consequences
 
 - No dependence on how a sedona version reads `crs: null`, and no probe.
-- Files commit to nothing: when the suite gets a real CRS concept, this is one
-  function to change, with no artifacts to migrate.
+- Files commit to nothing: the planar CRS exists only in the adapter, so
+  changing it migrates no artifacts.
 - A store with a real CRS is read in it, and geometry built against it takes
-  it too. When the suite gets per-sample frames, `.pgeom_store_crs()` is where
-  a store's frame is decided; sedona then refuses to compare two frames
-  without a transform between them.
+  it too.
 - A store with a CRS compared with one without (or with a different CRS) is a
   sedona error, not a silent overlap. No such pairs exist yet.
 - The sedona dataframe from `storeRead(output = "sedona")` carries this CRS, so
