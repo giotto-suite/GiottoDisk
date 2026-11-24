@@ -134,6 +134,7 @@ Collate:
     'stream-labelProportions.R'
     'stream-markers.R'
     'stream-motif.R'
+    'stream-neighborhoodPCA.R'
     'stream-normalize.R'
     'stream-pca.R'
     'stream-spatialSmooth.R'
