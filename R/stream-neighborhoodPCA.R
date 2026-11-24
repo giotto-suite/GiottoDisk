@@ -13,6 +13,7 @@
 #' @param spatial_locs for a `neighborhoodPCAParam`: cells x 2 coordinates
 #'   with the cell IDs as row names.
 #' @importClassesFrom Giotto neighborhoodPCAParam
+#' @importFrom Giotto neighborhood_operators neighborhood_agf
 #' @export
 setMethod("reduceData",
     signature(x = "parquetExprBase", param = "neighborhoodPCAParam"),
@@ -34,8 +35,8 @@ setMethod("reduceData",
     k0 <- param$k_geom[1L]
     k1 <- param$k_geom[length(param$k_geom)]
     agf <- isTRUE(param$compute_agf)
-    ops <- Giotto:::.neighbor_operators(locs, k0)
-    ops1 <- if (agf && k1 != k0) Giotto:::.neighbor_operators(locs, k1)
+    ops <- neighborhood_operators(locs, k0)
+    ops1 <- if (agf && k1 != k0) neighborhood_operators(locs, k1)
     ops <- list(w = ops$w, a = (ops1 %||% ops)$a, wc = (ops1 %||% ops)$wc,
         ws = (ops1 %||% ops)$ws)
     if (!agf) ops <- ops["w"]
@@ -110,12 +111,8 @@ setMethod("reduceData",
     h0 <- as.matrix(X %*% op("w"))
     out[P + seq_len(P), ] <- if (prep$absolute) abs(h0) else h0
     if (length(prep$lam) == 3L) {
-        m <- as.matrix(X %*% op("a"))
-        re <- as.matrix(X %*% op("wc")) -
-            sweep(m, 2L, Matrix::rowSums(rows$wc), "*")
-        im <- as.matrix(X %*% op("ws")) -
-            sweep(m, 2L, Matrix::rowSums(rows$ws), "*")
-        out[2L * P + seq_len(P), ] <- sqrt(re^2 + im^2)
+        sub <- lapply(rows[c("a", "wc", "ws")], function(r) r[, idx, drop = FALSE])
+        out[2L * P + seq_len(P), ] <- neighborhood_agf(X, sub)
     }
     list(J = out, vp = tgt)
 }
