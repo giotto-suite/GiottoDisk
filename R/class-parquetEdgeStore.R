@@ -57,17 +57,19 @@ NULL
 #' duplicated here — they live in `parquetGeomStore` and are joined
 #' across stores when needed.
 #'
-#' For undirected networks (sNN, spatial) edges are stored once in
-#' canonical form (`from_id <= to_id`). kNN networks are symmetrized
-#' at write time and stored canonical. Algorithms requiring directed
-#' traversal can union with a swap.
+#' Undirected networks (sNN, Delaunay, radius) store each pair once,
+#' `from_id <= to_id`, and are marked `directed = FALSE`; algorithms that
+#' need both directions union the edges with their swap. Directed networks
+#' (kNN) keep each edge as written, from a cell to its neighbour, and are
+#' marked `directed = TRUE`. The writer only sorts edges; the caller gives
+#' the canonical form and the direction.
 #'
 #' @slot n_cells numeric. Vertex count (= nrow nodes sidecar).
 #' @slot n_edges numeric. Edge count.
 #' @slot nodes parquetStore handle to the node sidecar.
 #' @slot type character. One of "kNN", "sNN", "spatial".
-#' @slot directed logical. TRUE = edges stored directed as-is;
-#'   FALSE = canonical undirected form.
+#' @slot directed logical. `TRUE`: edges as written (kNN); `FALSE`: each
+#'   undirected pair once.
 #' @family store types
 #' @seealso [parquetEdgeStore()]
 NULL
@@ -110,7 +112,8 @@ setClass("parquetEdgeStore",
 #'   exist yet; [storeWrite()] creates it. Edges + nodes parquets are
 #'   written into `<path>/edges/` and `<path>/nodes/` respectively.
 #' @param type character. Network type ("kNN" / "sNN" / "spatial").
-#' @param directed logical. Storage convention. Default FALSE.
+#' @param directed logical. `TRUE` for a directed network (kNN), `FALSE`
+#'   (default) for an undirected one stored once per pair.
 #' @param n_edges numeric. Edge count. Auto-counted lazily if NA.
 #' @param ... additional slots passed to `new()`.
 #' @return [parquetEdgeStore-class] object.
@@ -338,7 +341,7 @@ nnSearchInput <- function(nn, cell_ids, node_meta = NULL) {
 #   (i) coerce input -> data.table of edges with string IDs + node universe
 #   (ii) build node sidecar with dense int enumeration (+ optional meta)
 #   (iii) substitute int IDs into edges
-#   (iv) canonicalize (sort + dedup if undirected)
+#   (iv) sort by (from_id, to_id); the caller gives canonical edges
 #   (v) write edge parquet
 
 #' @rdname storeWrite
