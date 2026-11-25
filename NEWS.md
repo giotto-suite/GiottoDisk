@@ -103,6 +103,9 @@
 - `sourceContains(src, <giotto>)` tells whether a `snapshotSave()` would move
   any of the object's stores into the project, and names them if so.
 ## new
+- `processData(<store>, normParam("library", scalefactor = "median"))`
+  scales each cell to the median library size of the cells, as Giotto's
+  in-memory methods do (needs a Giotto with the same option).
 - AnnData `.h5ad` files are read without python, as building blocks for a
   hand-assembled object: `h5adInput()` streams `X`, `raw/X` or a layer (CSR,
   CSC or dense) into a `parquetExprStore`; `h5adCellMeta()`, `h5adFeatMeta()`,

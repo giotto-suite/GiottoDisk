@@ -24,6 +24,26 @@ test_that("libraryNormParam appends a multiply op to @post_ops", {
 })
 
 
+test_that("libraryNormParam scales to the median library size, as in memory", {
+    skip_if_not_installed("Giotto")
+
+    mat <- .rand_counts(seed = 5)
+    pe  <- storeWrite(parquetExprStore(path = tempfile(fileext = ".parquet")), mat)
+    p   <- Giotto::normParam("library", scalefactor = "median")
+    pe2 <- GiottoClass::processData(pe, p)
+
+    libsz <- as.numeric(Matrix::colSums(mat))
+    med <- stats::median(libsz[libsz > 0])
+    libsz[libsz == 0] <- 1
+    expect_equal(unname(pe2@ops[[1]]$factors[[pe@uid]]), unname(med / libsz))
+    mem <- suppressWarnings(GiottoClass::processData(mat, p))
+    expect_equal(as.matrix(storeRead(pe2, "dgcmatrix")), as.matrix(mem),
+        ignore_attr = TRUE)
+    expect_error(GiottoClass::processData(pe,
+        Giotto::normParam("library", scalefactor = "mean")))
+})
+
+
 test_that("logNormParam appends an independent log op", {
     skip_if_not_installed("Giotto")
 
