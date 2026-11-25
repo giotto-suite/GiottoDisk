@@ -53,8 +53,14 @@ setMethod("processData",
         # normalizing an already-normalized store yields factors of ~1, and
         # normalizing to a new scalefactor yields the ratio.
         libsizes <- .stream_expr_accum(x, axis = "cell", stats = "sum")$sum
+        # "median": the median library size of the cells with any counts,
+        # as Giotto's in-memory methods
+        if (identical(scalefactor, "median")) {
+            scalefactor <- stats::median(libsizes[libsizes > 0])
+        }
+        checkmate::assert_number(scalefactor, lower = 0, finite = TRUE)
         libsizes[libsizes == 0] <- 1   # guard div-by-zero
-        scalef <- as.numeric(scalefactor) / libsizes
+        scalef <- scalefactor / libsizes
 
         # Payload: one full-length vector per substore, indexed by ON-DISK
         # row_id. Invariant under `[`, so nothing needs slicing later.
